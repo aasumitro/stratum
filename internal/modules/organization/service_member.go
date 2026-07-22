@@ -1,0 +1,189 @@
+package organization
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/contracts/events"
+	"github.com/aasumitro/stratum/internal/platform/apperr"
+)
+
+// listMembers stitches membership rows with profile data (email/full_name/
+// avatar_url) resolved in one batch call, replacing what used to be a
+// cross-schema JOIN into account.users. A missing userReader (or a lookup
+// failure) fails open — members are returned with profile fields omitted
+// rather than the whole list erroring out, same nil-safe convention as
+// every other optional cross-module dependency in this codebase.
+func (s *service) listMembers(ctx context.Context, organizationID string) ([]memberView, error) {
+	rows, err := s.repo.listMembers(ctx, s.pool, organizationID)
+	if err != nil {
+		return nil, apperr.Internal("MEMBERS_FETCH_FAILED", "failed to list members", err)
+	}
+
+	var profiles map[string]contracts.UserInfo
+	if s.userReader != nil {
+		authSubs := make([]string, len(rows))
+		for i, r := range rows {
+			authSubs[i] = r.AuthSub
+		}
+		profiles, _ = s.userReader.GetUsersByAuthSubs(ctx, authSubs)
+	}
+
+	out := make([]memberView, len(rows))
+	for i, r := range rows {
+		mv := memberView{ID: r.ID, OrganizationID: r.OrganizationID, AuthSub: r.AuthSub, Role: r.Role, JoinedAt: r.JoinedAt}
+		if p, ok := profiles[r.AuthSub]; ok {
+			if p.Email != "" {
+				mv.Email = &p.Email
+			}
+			if p.Name != "" {
+				mv.FullName = &p.Name
+			}
+			if p.AvatarURL != "" {
+				mv.AvatarURL = &p.AvatarURL
+			}
+		}
+		out[i] = mv
+	}
+	return out, nil
+}
+
+func (s *service) removeAllMemberships(ctx context.Context, authSub string) error {
+	return s.repo.removeAllMemberships(ctx, s.pool, authSub)
+}
+
+func (s *service) addMember(
+	ctx context.Context, organizationID, authSub, role string,
+) (rec *membershipRecord, err error) {
+	defer func() {
+		if err == nil {
+			return
+		}
+		rec = nil
+		switch {
+		case errors.Is(err, ErrPlanLimitReached):
+			err = apperr.Validation("PLAN_LIMIT_REACHED", "member limit reached for your current plan")
+		case isUniqueViolation(err):
+			err = apperr.Conflict("MEMBER_EXISTS", "member already exists")
+		default:
+			err = apperr.Internal("MEMBER_ADD_FAILED", "failed to add member", err)
+		}
+	}()
+
+	if s.billingReader != nil {
+		current, limit, err := s.billingReader.CheckUsageLimit(ctx, organizationID, "members")
+		if err == nil && limit >= 0 && current >= int64(limit) {
+			return nil, ErrPlanLimitReached
+		}
+	}
+	rec, err = s.repo.insertMembership(ctx, s.pool, organizationID, authSub, role)
+	if err != nil {
+		return nil, err
+	}
+	s.syncMemberUsage(ctx, organizationID)
+	return rec, nil
+}
+
+func (s *service) removeMember(ctx context.Context, organizationID, authSub string) error {
+	if err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
+		return apperr.Internal("MEMBER_REMOVE_FAILED", "failed to remove member", err)
+	}
+	s.syncMemberUsage(ctx, organizationID)
+	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
+		events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub})
+	return nil
+}
+
+func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub, role string) error {
+	if err := s.repo.updateMemberRole(ctx, s.pool, organizationID, authSub, role); err != nil {
+		return apperr.Internal("MEMBER_ROLE_UPDATE_FAILED", "failed to update member role", err)
+	}
+	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRoleChanged, "organization", organizationID,
+		events.MemberRoleChanged{OrganizationID: organizationID, AuthSub: authSub, Role: role})
+	return nil
+}
+
+func (s *service) getMemberRole(ctx context.Context, organizationID, authSub string) (string, error) {
+	return s.repo.getMemberRole(ctx, s.pool, organizationID, authSub)
+}
+
+// syncMemberUsage records the current active-member count for organizationID
+// as a fire-and-forget background op. Errors are silently dropped — usage
+// drift is non-critical and will self-correct on the next mutation.
+func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
+	if s.billingWriter == nil {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		count, err := s.repo.countActiveMembers(ctx, s.pool, organizationID)
+		if err != nil {
+			return
+		}
+		_ = s.billingWriter.RecordUsage(ctx, organizationID, "members", count)
+	}()
+}
+
+// leaveOrganization and transferOwnership both map every failure to a 422
+// carrying the raw err.Error() text — matches the pre-migration handler,
+// which passed err.Error() straight through unconditionally for these two.
+func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub string) (err error) {
+	defer func() {
+		if err != nil {
+			err = apperr.Validation("UNPROCESSABLE", err.Error())
+		}
+	}()
+
+	role, err := s.repo.getMemberRole(ctx, s.pool, organizationID, authSub)
+	if err != nil {
+		return err
+	}
+	if role == contracts.RoleOwner {
+		return errors.New("owner cannot leave — transfer ownership first")
+	}
+	if err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
+		return err
+	}
+	s.syncMemberUsage(ctx, organizationID)
+	return nil
+}
+
+func (s *service) transferOwnership(ctx context.Context, organizationID, currentOwner, newOwnerAuthSub string) (err error) {
+	defer func() {
+		if err != nil {
+			err = apperr.Validation("UNPROCESSABLE", err.Error())
+		}
+	}()
+
+	role, err := s.repo.getMemberRole(ctx, s.pool, organizationID, newOwnerAuthSub)
+	if err != nil {
+		return errors.New("target user is not a member")
+	}
+	if role == contracts.RoleOwner {
+		return errors.New("target is already the owner")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
+		return err
+	}
+	if err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
+		return err
+	}
+	if err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOwnershipTransferred, "organization", organizationID,
+		events.OwnershipTransferred{OrganizationID: organizationID, PreviousOwner: currentOwner, NewOwner: newOwnerAuthSub})
+	return nil
+}

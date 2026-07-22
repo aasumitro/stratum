@@ -1,0 +1,9 @@
+<!-- subject: Payment received — {{.Amount}} -->
+<h2>Payment Received</h2>
+<p>Hi,</p>
+<p>Thanks — we've received your payment for <strong>{{.OrganizationName}}</strong>.</p>
+<table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+  <tr><td style="padding: 8px 0; color: #6b7280;">Amount Paid</td><td style="padding: 8px 0;"><strong>{{.Amount}}</strong></td></tr>
+  <tr><td style="padding: 8px 0; color: #6b7280;">Paid On</td><td style="padding: 8px 0;"><strong>{{.DueDate}}</strong></td></tr>
+</table>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">View Billing</a></p>

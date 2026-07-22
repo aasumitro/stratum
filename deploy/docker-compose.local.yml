@@ -1,0 +1,109 @@
+# Local development infrastructure for Stratum.
+#
+# Versions pinned deliberately:
+#   - postgres:18  → uuidv7() ships natively, no extension needed (see
+#     db/migrations and internal/platform/db). NOTE: Postgres 18 changed
+#     its Docker volume convention — PGDATA defaults to
+#     /var/lib/postgresql/18/docker and the documented volume mount
+#     target is /var/lib/postgresql (not .../data as in older images).
+#     This compose file mounts at that new path.
+#   - rabbitmq:4.3 → required for native quorum-queue delayed retry
+#     (x-delayed-retry-type/min/max) used in
+#     internal/platform/messaging/topology.go. management-alpine variant
+#     bundles the management UI on :15672.
+#   - redis:8 → current stable. Note: Redis 8.0+ changed licensing to a
+#     tri-license model (RSALv2/SSPLv1/AGPLv3), not pure BSD — fine for
+#     local dev, worth knowing before any commercial redistribution.
+#   - openobserve:v0.91.1, otel-collector-contrib:0.156.0 → latest stable
+#     as of pinning (2026-07-13). Behind the `observability` profile, opt-in
+#     via `make infra-observability-up`. Bump deliberately, same as above.
+#
+# Usage: see Makefile targets `infra-up` / `infra-down` at the project root.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: stratum-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stratum
+      POSTGRES_PASSWORD: stratum
+      POSTGRES_DB: stratum
+    ports:
+      - "5432:5432"
+    volumes:
+      - stratum-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stratum -d stratum"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4.3-management-alpine
+    container_name: stratum-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: stratum
+      RABBITMQ_DEFAULT_PASS: stratum
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI: http://localhost:15672
+    volumes:
+      - stratum-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    container_name: stratum-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - stratum-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v0.91.1
+    container_name: stratum-o2
+    profiles:
+      - observability
+    restart: unless-stopped
+    environment:
+      ZO_ROOT_USER_EMAIL: obs@stratum.xyz
+      ZO_ROOT_USER_PASSWORD: Stratum123!
+      ZO_DATA_DIR: /data
+    ports:
+      - "5080:5080"
+    volumes:
+      - stratum-openobserve-data:/data
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.156.0
+    container_name: stratum-otelc
+    restart: unless-stopped
+    profiles:
+      - observability
+    command:
+      - "--config=/etc/otel/config.yaml"
+    volumes:
+      - ./otel/config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - openobserve
+
+volumes:
+  stratum-postgres-data:
+  stratum-rabbitmq-data:
+  stratum-redis-data:
+  stratum-openobserve-data:

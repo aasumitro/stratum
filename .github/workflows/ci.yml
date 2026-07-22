@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs on the same PR when a new push arrives.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Changes — decide which jobs actually need to run
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      web: ${{ steps.filter.outputs.web }}
+      studio: ${{ steps.filter.outputs.studio }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          echo "$changed"
+          echo "api=$(grep -qE '^(db/|internal/|cmd/|go\.(mod|sum))' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "web=$(grep -q '^ui/app/' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "studio=$(grep -q '^ui/studio/' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # API — Go backend
+  # ---------------------------------------------------------------------------
+  api:
+    name: API
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: stratum
+          POSTGRES_PASSWORD: stratum
+          POSTGRES_DB: stratum
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      rabbitmq:
+        image: rabbitmq:4.3-alpine
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify modules
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Format
+        run: gofmt -w .
+
+      - name: Lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          golangci-lint run ./...
+
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Install migrate
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
+        run: migrate -path db/migrations -database "$DATABASE_URL" up
+
+      - name: Test
+        env:
+          TEST_DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
+        run: go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
+
+      - name: Coverage
+        run: go tool cover -func=coverage.out
+
+  # ---------------------------------------------------------------------------
+  # Web — React frontend
+  # ---------------------------------------------------------------------------
+  web:
+    name: Web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/app
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "25"
+          cache: npm
+          cache-dependency-path: ui/app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npx prettier --check "**/*.{ts,tsx}"
+
+      - name: Build
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Studio — Desktop (Wails) Go backend & React frontend
+  # ---------------------------------------------------------------------------
+  studio:
+    name: Studio
+    needs: changes
+    if: needs.changes.outputs.studio == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/studio
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ui/studio/go.mod
+          cache-dependency-path: ui/studio/go.sum
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "25"
+          cache: npm
+          cache-dependency-path: ui/studio/frontend/package-lock.json
+
+      # Wails v3 links against GTK/WebKit on Linux — required for `go build`/`go vet`.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Build frontend
+        run: cd frontend && npm run build
+
+      - name: Verify modules
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Format
+        run: gofmt -w .
+
+      - name: Build
+        run: go build ./...

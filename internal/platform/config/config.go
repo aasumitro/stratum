@@ -1,0 +1,144 @@
+// Package config loads typed application configuration from environment
+// variables. All config lives in one struct so every dependency
+// (db, cache, messaging, http) is constructed from a single source of truth
+// passed explicitly through main.go — never read from os.Getenv() deep
+// inside a module.
+package config
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/caarlos0/env/v11"
+)
+
+// Config is the root configuration struct. Nested structs group config
+// by infrastructure concern, mirroring the platform/ package layout.
+type Config struct {
+	Env            string `env:"APP_ENV" envDefault:"development"`
+	Port           string `env:"PORT" envDefault:"8080"`
+	AppURL         string `env:"APP_URL" envDefault:"http://localhost:3000"`
+	ServiceName    string `env:"SERVICE_NAME" envDefault:"stratum"`
+	ServiceVersion string `env:"SERVICE_VERSION" envDefault:"dev"`
+	CORSOrigins    string `env:"CORS_ORIGINS"` // comma-separated, empty = allow all
+
+	AuditRetentionDays int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
+
+	// StatsToken gates GET /health/stats (goroutine/heap/pool internals —
+	// a reconnaissance surface if reachable from the public internet).
+	// Empty = unauthenticated, same graceful-degrade convention as the
+	// webhook secrets below — fine for local dev, but every non-dev
+	// deployment should set this. Studio sends it back as X-Stats-Token.
+	StatsToken string `env:"STATS_TOKEN"`
+
+	Postgres PostgresConfig
+	Redis    RedisConfig
+	RabbitMQ RabbitMQConfig
+	Auth     AuthConfig
+	Log      LogConfig
+	OTel     OTelConfig
+	Stripe   StripeConfig
+	Xendit   XenditConfig
+	SMTP     SMTPConfig
+	Storage  StorageConfig
+}
+
+type PostgresConfig struct {
+	URL          string        `env:"POSTGRES_URL,required"`
+	MaxOpenConns int32         `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
+	MaxIdleTime  time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
+}
+
+type RedisConfig struct {
+	URL string `env:"REDIS_URL,required"`
+}
+
+type RabbitMQConfig struct {
+	URL string `env:"RABBITMQ_URL,required"`
+}
+
+// AuthConfig holds settings for validating third-party tokens
+// (Supabase or Clerk). JWKSURL is the only required field — we verify
+// tokens via their published JSON Web Key Set rather than a shared secret.
+type AuthConfig struct {
+	JWKSURL        string `env:"AUTH_JWKS_URL,required"`
+	Issuer         string `env:"AUTH_ISSUER,required"`
+	Audience       string `env:"AUTH_AUDIENCE"`
+	AdminURL       string `env:"AUTH_ADMIN_URL"`          // e.g. https://xxx.supabase.co/auth/v1
+	ServiceRoleKey string `env:"AUTH_SERVICE_ROLE_KEY"`   // Supabase service_role key
+	WebhookSecret  string `env:"SUPABASE_WEBHOOK_SECRET"` // shared secret header for the auth.users Database Webhook; empty = skip verification
+}
+
+type LogConfig struct {
+	Level  string `env:"LOG_LEVEL" envDefault:"info"`
+	Format string `env:"LOG_FORMAT" envDefault:"json"`
+}
+
+// OTelConfig holds OpenTelemetry collector settings. CollectorURL left
+// empty disables telemetry entirely — see otel.Setup, which no-ops in
+// that case. This matters for local dev when no collector is running.
+type OTelConfig struct {
+	CollectorURL string `env:"OTEL_COLLECTOR_URL"`
+}
+
+type StripeConfig struct {
+	APIKey        string `env:"STRIPE_API_KEY"`
+	WebhookSecret string `env:"STRIPE_WEBHOOK_SECRET"`
+	SuccessURL    string `env:"STRIPE_SUCCESS_URL"`
+	CancelURL     string `env:"STRIPE_CANCEL_URL"`
+}
+
+type XenditConfig struct {
+	APIKey        string `env:"XENDIT_API_KEY"`
+	CallbackToken string `env:"XENDIT_CALLBACK_TOKEN"`
+}
+
+type SMTPConfig struct {
+	Host     string `env:"SMTP_HOST"`
+	Port     int    `env:"SMTP_PORT" envDefault:"587"`
+	Username string `env:"SMTP_USERNAME"`
+	Password string `env:"SMTP_PASSWORD"`
+	FromName string `env:"SMTP_FROM_NAME" envDefault:"Stratum"`
+}
+
+type StorageConfig struct {
+	URL string `env:"STORAGE_URL"`
+}
+
+// Load reads environment variables into a Config, returning an error
+// (not a panic) so main.go decides how to fail.
+func Load() (*Config, error) {
+	cfg := &Config{}
+	if err := env.Parse(cfg); err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	return cfg, nil
+}
+
+// RequireWebhookSecretsOutsideDev enforces that every registered webhook
+// route has its verification secret configured once Env isn't
+// "development". Each of these routes' handlers treats an empty secret as
+// "skip verification" — fine for local dev, but an unset secret in any
+// other env means the route silently accepts unsigned/forged payloads that
+// mutate real state (payment status, account email). Call this right after
+// Load() so a missing secret fails startup instead of serving.
+func (c *Config) RequireWebhookSecretsOutsideDev() error {
+	if c.Env == "development" {
+		return nil
+	}
+	var missing []string
+	if c.Stripe.WebhookSecret == "" {
+		missing = append(missing, "STRIPE_WEBHOOK_SECRET")
+	}
+	if c.Xendit.CallbackToken == "" {
+		missing = append(missing, "XENDIT_CALLBACK_TOKEN")
+	}
+	if c.Auth.WebhookSecret == "" {
+		missing = append(missing, "SUPABASE_WEBHOOK_SECRET")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("config: missing required webhook secret(s) outside development: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}

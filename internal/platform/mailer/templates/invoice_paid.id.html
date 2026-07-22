@@ -1,0 +1,9 @@
+<!-- subject: Pembayaran diterima — {{.Amount}} -->
+<h2>Pembayaran Diterima</h2>
+<p>Halo,</p>
+<p>Terima kasih — kami telah menerima pembayaran Anda untuk <strong>{{.OrganizationName}}</strong>.</p>
+<table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+  <tr><td style="padding: 8px 0; color: #6b7280;">Jumlah Dibayar</td><td style="padding: 8px 0;"><strong>{{.Amount}}</strong></td></tr>
+  <tr><td style="padding: 8px 0; color: #6b7280;">Tanggal Bayar</td><td style="padding: 8px 0;"><strong>{{.DueDate}}</strong></td></tr>
+</table>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Lihat Tagihan</a></p>

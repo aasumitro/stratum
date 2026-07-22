@@ -1,0 +1,17 @@
+<!-- subject: Invoice ready — {{.Amount}} due {{.DueDate}} -->
+{{if .FromTrial}}
+<h2>Your Trial Has Ended</h2>
+<p>Hi,</p>
+<p>Your free trial for <strong>{{.OrganizationName}}</strong> has ended, and your first invoice is ready:</p>
+{{else}}
+<h2>Invoice Generated</h2>
+<p>Hi,</p>
+<p>A new invoice has been generated for <strong>{{.OrganizationName}}</strong>:</p>
+{{end}}
+<table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+  <tr><td style="padding: 8px 0; color: #6b7280;">Plan</td><td style="padding: 8px 0;"><strong>{{.PlanName}}</strong></td></tr>
+  <tr><td style="padding: 8px 0; color: #6b7280;">Amount</td><td style="padding: 8px 0;"><strong>{{.Amount}}</strong></td></tr>
+  <tr><td style="padding: 8px 0; color: #6b7280;">Due Date</td><td style="padding: 8px 0;"><strong>{{.DueDate}}</strong></td></tr>
+</table>
+<p>Please complete payment to continue your subscription:</p>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Pay Now</a></p>

@@ -1,0 +1,105 @@
+package middleware
+
+import (
+	"net"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/aasumitro/stratum/internal/contracts"
+)
+
+const organizationContextKey = "organization.organization"
+
+// isSuspensionExempt reports whether route must stay reachable even while
+// an organization is suspended — otherwise a suspended organization could
+// never be reversed. Currently just unsuspend; found via a live-DB
+// integration test run where self-suspend followed by self-unsuspend
+// deadlocked (the unsuspend request itself was being rejected by this same
+// active-only check it exists to clear). Matched by suffix, not full path,
+// since the route's mount prefix differs between the real app (/api/v1)
+// and this module's own test harness (/api).
+func isSuspensionExempt(route string) bool {
+	return strings.HasSuffix(route, "/unsuspend")
+}
+
+func organizationIDExtractor(c *gin.Context) string {
+	if id := c.Param("organizationID"); id != "" {
+		return id
+	}
+	return c.GetHeader("X-Organization-ID")
+}
+
+// NewOrganizationMiddleware resolves the organization from the request path param
+// (:organizationID) or X-Organization-ID header, validates it is active, and
+// injects it into context for handlers via OrganizationFromContext.
+func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		organizationID := organizationIDExtractor(c)
+		if organizationID == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing organization id"})
+			return
+		}
+
+		ws, err := reader.GetOrganizationByID(c.Request.Context(), organizationID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "organization not found"})
+			return
+		}
+
+		if ws.Status != "active" && !isSuspensionExempt(c.FullPath()) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "organization is not active"})
+			return
+		}
+
+		claims, ok := ClaimsFromContext(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		role, err := reader.GetMemberRole(c.Request.Context(), organizationID, claims.Subject)
+		if err != nil || role == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this organization"})
+			return
+		}
+
+		if len(ws.AllowedIPs) > 0 && !ipAllowed(c.ClientIP(), ws.AllowedIPs) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "access denied from this IP address"})
+			return
+		}
+
+		c.Set(organizationContextKey, *ws)
+		c.Set(memberRoleContextKey, role)
+		c.Next()
+	}
+}
+
+// ipAllowed returns true if clientIP is covered by any entry in allowedIPs.
+// Entries may be plain IPs or CIDR blocks.
+func ipAllowed(clientIP string, allowedIPs []string) bool {
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
+		return false
+	}
+	for _, entry := range allowedIPs {
+		if entry == clientIP {
+			return true
+		}
+		if _, network, err := net.ParseCIDR(entry); err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// OrganizationFromContext retrieves the OrganizationInfo injected by NewOrganizationMiddleware.
+func OrganizationFromContext(c *gin.Context) (contracts.OrganizationInfo, bool) {
+	v, exists := c.Get(organizationContextKey)
+	if !exists {
+		return contracts.OrganizationInfo{}, false
+	}
+	ws, ok := v.(contracts.OrganizationInfo)
+	return ws, ok
+}

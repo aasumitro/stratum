@@ -1,0 +1,4990 @@
+basePath: /api/v1
+definitions:
+  AddonInfo:
+    properties:
+      active:
+        description: |-
+          Active/CreatedAt round out the wire shape GET /references/addons
+          has always returned.
+        type: boolean
+      created_at:
+        type: string
+      description:
+        type: string
+      features:
+        additionalProperties:
+          type: integer
+        description: feature_id -> limit_value delta
+        type: object
+      id:
+        type: string
+      name:
+        type: string
+      prices:
+        additionalProperties:
+          $ref: '#/definitions/PlanPrices'
+        type: object
+    type: object
+  EventRecord:
+    properties:
+      action:
+        type: string
+      actor:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      ip:
+        type: string
+      metadata:
+        items:
+          type: integer
+        type: array
+      organization_id:
+        type: string
+      resource:
+        type: string
+      status_code:
+        type: integer
+      user_agent:
+        type: string
+    type: object
+  FeatureInfo:
+    properties:
+      active:
+        description: |-
+          Active/CreatedAt round out the wire shape GET /references/features
+          has always returned.
+        type: boolean
+      created_at:
+        type: string
+      description:
+        type: string
+      id:
+        type: string
+      metric_key:
+        type: string
+      name:
+        type: string
+      type:
+        description: '"metered" | "boolean" | "static" | "config"'
+        type: string
+    type: object
+  Payload:
+    properties:
+      data: {}
+      next_cursor:
+        type: string
+      pagination:
+        $ref: '#/definitions/pagination'
+      status:
+        $ref: '#/definitions/Status'
+    type: object
+  PlanInfo:
+    properties:
+      active:
+        description: |-
+          Active/CreatedAt/UpdatedAt round out the wire shape GET /references/plans
+          has always returned; internal callers (rate-limit middleware, plan
+          validation) don't use them.
+        type: boolean
+      config_values:
+        additionalProperties:
+          items:
+            type: integer
+          type: array
+        description: |-
+          ConfigValues holds the raw config_value JSON for this plan's
+          type='config' features (billing.plan_features), keyed by feature ID —
+          e.g. {"api_rate_limit": {"requests_per_minute": 300}}.
+        type: object
+      created_at:
+        type: string
+      description:
+        type: string
+      features:
+        items:
+          type: string
+        type: array
+      id:
+        type: string
+      limits:
+        additionalProperties:
+          type: integer
+        type: object
+      name:
+        type: string
+      prices:
+        additionalProperties:
+          $ref: '#/definitions/PlanPrices'
+        type: object
+      sort_order:
+        description: |-
+          SortOrder mirrors billing.plans.sort_order — the tier ranking used to
+          detect upgrade vs downgrade, replacing a hardcoded plan-slug map.
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  PlanPrices:
+    properties:
+      monthly:
+        type: integer
+      yearly:
+        type: integer
+    type: object
+  Status:
+    properties:
+      code:
+        type: string
+      details: {}
+      error:
+        type: boolean
+      message:
+        type: string
+      request_id:
+        type: string
+    type: object
+  acceptInvitationRequest:
+    properties:
+      token:
+        type: string
+    required:
+    - token
+    type: object
+  addMemberRequest:
+    properties:
+      auth_sub:
+        type: string
+      role:
+        enum:
+        - admin
+        - member
+        type: string
+    required:
+    - auth_sub
+    - role
+    type: object
+  attachAddonRequest:
+    properties:
+      addon_id:
+        type: string
+      quantity:
+        minimum: 1
+        type: integer
+    required:
+    - addon_id
+    type: object
+  attachedAddonRecord:
+    properties:
+      addon_id:
+        type: string
+      name:
+        type: string
+      prices:
+        additionalProperties:
+          $ref: '#/definitions/PlanPrices'
+        type: object
+      quantity:
+        type: integer
+    type: object
+  bulkDeleteFilesRequest:
+    properties:
+      file_ids:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - file_ids
+    type: object
+  changePlanRequest:
+    properties:
+      cycle:
+        enum:
+        - monthly
+        - yearly
+        type: string
+      plan:
+        description: |-
+          Plan is validated dynamically against billing.plans via the catalog
+          lookup in changePlan — no oneof here: a static enum would reject any plan an
+          operator adds through Studio's catalog composition UI that isn't one
+          of the 3 originally-seeded slugs.
+        type: string
+    required:
+    - cycle
+    - plan
+    type: object
+  countryRecord:
+    properties:
+      active:
+        type: boolean
+      code:
+        type: string
+      created_at:
+        type: string
+      currency_code:
+        type: string
+      name:
+        type: string
+      phone_code:
+        type: string
+    type: object
+  couponRecord:
+    properties:
+      active:
+        type: boolean
+      amount_cents:
+        type: integer
+      cadence:
+        type: string
+      code:
+        type: string
+      currency:
+        type: string
+      discount_type:
+        type: string
+      duration_count:
+        type: integer
+      max_redemptions:
+        type: integer
+      name:
+        type: string
+      percent_off:
+        type: integer
+      redeemed_count:
+        type: integer
+      valid_from:
+        type: string
+      valid_until:
+        type: string
+    type: object
+  createFolderRequest:
+    properties:
+      name:
+        maxLength: 255
+        minLength: 1
+        type: string
+      parent_folder_id:
+        type: string
+    required:
+    - name
+    type: object
+  createInvitationRequest:
+    properties:
+      email:
+        type: string
+      role:
+        enum:
+        - admin
+        - member
+        type: string
+    required:
+    - email
+    - role
+    type: object
+  createOrganizationAddonRequest:
+    properties:
+      addon_id:
+        type: string
+      quantity:
+        minimum: 1
+        type: integer
+    required:
+    - addon_id
+    type: object
+  createOrganizationRequest:
+    properties:
+      addons:
+        description: |-
+          Addons and CouponCode are both optional — the "cart" the caller can
+          build alongside plan/cycle so the org's first invoice (or, for a
+          trial, the invoice cut at trial-end) already includes them instead of
+          requiring separate attach/redeem calls raced against async
+          provisioning. Both are validated against the live billing catalog
+          before the organization is written, same as Plan.
+        items:
+          $ref: '#/definitions/createOrganizationAddonRequest'
+        type: array
+      country_code:
+        type: string
+      coupon_code:
+        maxLength: 64
+        type: string
+      cycle:
+        description: Cycle is required, same reasoning as Plan above — no silent default.
+        enum:
+        - monthly
+        - yearly
+        type: string
+      name:
+        maxLength: 100
+        minLength: 1
+        type: string
+      plan:
+        description: |-
+          Plan is required and validated dynamically against the billing
+          catalog (service.createOrganization, via refReader.GetPlanByID) —
+          no oneof here, same reasoning as billing.changePlanRequest.Plan: a
+          static enum would reject any plan an operator adds through Studio.
+          The caller must always choose one explicitly — no silent default.
+        maxLength: 64
+        type: string
+      slug:
+        maxLength: 63
+        minLength: 1
+        type: string
+    required:
+    - cycle
+    - name
+    - plan
+    - slug
+    type: object
+  createWebhookRequest:
+    properties:
+      subscribed_events:
+        items:
+          type: string
+        type: array
+      url:
+        type: string
+    required:
+    - url
+    type: object
+  currencyRecord:
+    properties:
+      active:
+        type: boolean
+      code:
+        type: string
+      created_at:
+        type: string
+      decimal_places:
+        type: integer
+      name:
+        type: string
+      symbol:
+        type: string
+    type: object
+  declineInvitationRequest:
+    properties:
+      token:
+        type: string
+    required:
+    - token
+    type: object
+  entitlementRecord:
+    properties:
+      addon_delta:
+        description: metered only; sum of attached-addon deltas ("6/8 · 3 plan + 5
+          addon")
+        type: integer
+      config_value:
+        description: config only
+        items:
+          type: integer
+        type: array
+      current:
+        description: metered only
+        type: integer
+      feature_id:
+        type: string
+      limit:
+        description: metered only; -1 = unlimited; PlanLimit + AddonDelta
+        type: integer
+      name:
+        type: string
+      plan_limit:
+        description: metered only; the plan's own limit before addons
+        type: integer
+      remaining:
+        description: metered only; -1 = unlimited
+        type: integer
+      type:
+        type: string
+    type: object
+  extendSubscriptionRequest:
+    properties:
+      months:
+        maximum: 24
+        minimum: 1
+        type: integer
+    required:
+    - months
+    type: object
+  fileRecord:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      deleted_at:
+        type: string
+      folder_id:
+        type: string
+      id:
+        type: string
+      mime_type:
+        type: string
+      name:
+        type: string
+      organization_id:
+        type: string
+      path:
+        type: string
+      size_bytes:
+        type: integer
+    type: object
+  folderRecord:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      organization_id:
+        type: string
+      parent_folder_id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  historyView:
+    properties:
+      action:
+        type: string
+      amount_cents:
+        type: integer
+      changed_at:
+        type: string
+      changed_by:
+        type: string
+      changed_by_kind:
+        description: '"user" | "system" | "webhook"'
+        type: string
+      changed_by_name:
+        type: string
+      currency:
+        type: string
+      from_plan:
+        type: string
+      id:
+        type: string
+      metadata:
+        items:
+          type: integer
+        type: array
+      subscription_id:
+        type: string
+      to_plan:
+        type: string
+    type: object
+  importMembersRequest:
+    properties:
+      dry_run:
+        type: boolean
+      rows:
+        items:
+          $ref: '#/definitions/importRowRaw'
+        maxItems: 200
+        type: array
+    required:
+    - rows
+    type: object
+  importRowRaw:
+    properties:
+      email:
+        type: string
+      role:
+        type: string
+    type: object
+  importRowResult:
+    properties:
+      email:
+        type: string
+      index:
+        type: integer
+      reason:
+        type: string
+    type: object
+  invitationPreview:
+    properties:
+      invitedByEmail:
+        type: string
+      invitedEmail:
+        description: |-
+          InvitedEmail is only populated on an ErrInvitationEmailMismatch
+          return — the address the invitation actually targets.
+        type: string
+      organizationID:
+        type: string
+      organizationName:
+        type: string
+      role:
+        type: string
+    type: object
+  invitationRecord:
+    properties:
+      created_at:
+        type: string
+      email:
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: string
+      invited_by:
+        type: string
+      organization_id:
+        type: string
+      role:
+        type: string
+      status:
+        type: string
+    type: object
+  inviteCodePreview:
+    properties:
+      organization_id:
+        type: string
+      organization_name:
+        type: string
+      owner_avatar_url:
+        type: string
+      owner_email:
+        type: string
+      owner_name:
+        type: string
+    type: object
+  invoicePreview:
+    properties:
+      addon_lines:
+        items:
+          $ref: '#/definitions/lineItemSpec'
+        type: array
+      coupon_code:
+        type: string
+      currency:
+        type: string
+      cycle:
+        type: string
+      discount_cents:
+        type: integer
+      new_period_end:
+        description: |-
+          NewPeriodEnd is only set when plan/cycle differ from the subscription's
+          current plan/cycle — a hypothetical-change preview, not the steady-state one.
+        type: string
+      plan:
+        type: string
+      plan_line_cents:
+        type: integer
+      total_cents:
+        type: integer
+    type: object
+  invoiceRecord:
+    properties:
+      amount_cents:
+        type: integer
+      created_at:
+        type: string
+      currency:
+        type: string
+      due_at:
+        type: string
+      id:
+        type: string
+      invoice_number:
+        type: string
+      paid_at:
+        type: string
+      provider_invoice_id:
+        type: string
+      status:
+        type: string
+      subscription_id:
+        type: string
+      subtotal_cents:
+        type: integer
+      tax_cents:
+        type: integer
+      tax_rate_bps:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  joinByCodeRequest:
+    properties:
+      code:
+        type: string
+    required:
+    - code
+    type: object
+  lineItemSpec:
+    properties:
+      description:
+        type: string
+      quantity:
+        type: integer
+      total_cents:
+        type: integer
+      unit_price_cents:
+        type: integer
+    type: object
+  loginEventRecord:
+    properties:
+      auth_sub:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      ip_address:
+        type: string
+      user_agent:
+        type: string
+    type: object
+  memberView:
+    properties:
+      auth_sub:
+        type: string
+      avatar_url:
+        type: string
+      email:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: string
+      joined_at:
+        type: string
+      organization_id:
+        type: string
+      role:
+        type: string
+    type: object
+  membershipRecord:
+    properties:
+      auth_sub:
+        type: string
+      id:
+        type: string
+      joined_at:
+        type: string
+      organization_id:
+        type: string
+      role:
+        type: string
+    type: object
+  messageRecord:
+    properties:
+      auth_sub:
+        type: string
+      body:
+        type: string
+      channel:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      kind:
+        type: string
+      organization_id:
+        type: string
+      payload:
+        items:
+          type: integer
+        type: array
+      read_at:
+        type: string
+      sent_at:
+        type: string
+      status:
+        type: string
+      subject:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  moveFileRequest:
+    properties:
+      folder_id:
+        type: string
+    type: object
+  myInvitationRecord:
+    properties:
+      created_at:
+        type: string
+      email:
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: string
+      invited_by:
+        type: string
+      invited_by_email:
+        type: string
+      organization_id:
+        type: string
+      organization_name:
+        type: string
+      role:
+        type: string
+      token:
+        description: |-
+          Token IS exposed here (unlike the admin-facing invitationRecord,
+          which keeps json:"-") so the caller's own onboarding screen can
+          one-click POST /invitations/accept without a redirect — this
+          endpoint is already scoped to the authenticated caller's own email,
+          the same audience the token was already emailed to.
+        type: string
+    type: object
+  organizationRecord:
+    properties:
+      country_code:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      invite_code:
+        type: string
+      invite_code_enabled:
+        type: boolean
+      locale:
+        type: string
+      name:
+        type: string
+      owner_id:
+        type: string
+      settings:
+        items:
+          type: integer
+        type: array
+      slug:
+        type: string
+      status:
+        type: string
+      suspended_at:
+        type: string
+      suspended_reason:
+        type: string
+      timezone:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  organizationView:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      joined_at:
+        type: string
+      name:
+        type: string
+      owner_id:
+        type: string
+      role:
+        type: string
+      slug:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  pagination:
+    properties:
+      current_page:
+        type: integer
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total_items:
+        type: integer
+      total_pages:
+        type: integer
+    type: object
+  paymentLinkRecord:
+    properties:
+      amount_cents:
+        type: integer
+      created_at:
+        type: string
+      currency:
+        type: string
+      expires_at:
+        type: string
+      external_id:
+        type: string
+      id:
+        type: string
+      invoice_id:
+        type: string
+      provider:
+        type: string
+      status:
+        type: string
+      url:
+        type: string
+    type: object
+  paymentRecord:
+    properties:
+      amount_cents:
+        type: integer
+      created_at:
+        type: string
+      currency:
+        type: string
+      external_id:
+        type: string
+      id:
+        type: string
+      invoice_id:
+        type: string
+      paid_at:
+        type: string
+      provider:
+        type: string
+      status:
+        type: string
+    type: object
+  preferenceRecord:
+    properties:
+      channel:
+        type: string
+      created_at:
+        type: string
+      enabled:
+        type: boolean
+      event_type:
+        type: string
+      id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  recordUsageRequest:
+    properties:
+      metric:
+        type: string
+      value:
+        minimum: 1
+        type: integer
+    required:
+    - metric
+    - value
+    type: object
+  redeemCouponRequest:
+    properties:
+      code:
+        type: string
+    required:
+    - code
+    type: object
+  requestNewInvitationRequest:
+    properties:
+      token:
+        type: string
+    required:
+    - token
+    type: object
+  safeEndpoint:
+    properties:
+      auto_disabled_at:
+        type: string
+      created_at: {}
+      enabled:
+        type: boolean
+      health:
+        $ref: '#/definitions/webhookHealthDTO'
+      id:
+        type: string
+      secret_rotation_expires_at:
+        type: string
+      subscribed_events:
+        items:
+          type: string
+        type: array
+      updated_at: {}
+      url:
+        type: string
+    type: object
+  subscriptionRecord:
+    properties:
+      created_at:
+        type: string
+      currency:
+        type: string
+      cycle:
+        type: string
+      id:
+        type: string
+      period_end:
+        type: string
+      period_start:
+        type: string
+      plan:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      subject_type:
+        type: string
+      trial_end:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  subscriptionWithCoupon:
+    properties:
+      active_coupon:
+        type: string
+      created_at:
+        type: string
+      currency:
+        type: string
+      cycle:
+        type: string
+      id:
+        type: string
+      period_end:
+        type: string
+      period_start:
+        type: string
+      plan:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      subject_type:
+        type: string
+      trial_end:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  supabaseUserWebhookPayload:
+    properties:
+      old_record:
+        properties:
+          email:
+            type: string
+        type: object
+      record:
+        properties:
+          email:
+            type: string
+          id:
+            description: auth.users.id — matches account.users.auth_sub
+            type: string
+        type: object
+      table:
+        type: string
+    type: object
+  suspendOrganizationRequest:
+    properties:
+      reason:
+        maxLength: 500
+        type: string
+    type: object
+  taskRecord:
+    properties:
+      auth_sub:
+        type: string
+      completed_at:
+        type: string
+      created_at:
+        type: string
+      error:
+        type: string
+      id:
+        type: string
+      kind:
+        type: string
+      result:
+        items:
+          type: integer
+        type: array
+      status:
+        type: string
+    type: object
+  toggleInviteCodeRequest:
+    properties:
+      enabled:
+        type: boolean
+    type: object
+  transferOwnershipRequest:
+    properties:
+      auth_sub:
+        type: string
+    required:
+    - auth_sub
+    type: object
+  updateFolderRequest:
+    properties:
+      name:
+        type: string
+      parent_folder_id:
+        description: |-
+          ParentFolderID is only applied when explicitly present in the JSON
+          body — moveToParent distinguishes "move to root" (field present,
+          null) from "don't touch the parent" (field absent entirely).
+        type: string
+    type: object
+  updateMemberRoleRequest:
+    properties:
+      role:
+        enum:
+        - admin
+        - member
+        type: string
+    required:
+    - role
+    type: object
+  updateOrganizationRequest:
+    properties:
+      name:
+        maxLength: 100
+        minLength: 1
+        type: string
+      slug:
+        maxLength: 63
+        minLength: 1
+        type: string
+    type: object
+  updateProfileRequest:
+    properties:
+      avatar_url:
+        maxLength: 2048
+        type: string
+      full_name:
+        maxLength: 255
+        type: string
+    type: object
+  updateSettingsRequest:
+    properties:
+      allowed_ips:
+        items:
+          type: string
+        type: array
+      locale:
+        type: string
+      timezone:
+        type: string
+    required:
+    - locale
+    - timezone
+    type: object
+  updateWebhookRequest:
+    properties:
+      enabled:
+        type: boolean
+      subscribed_events:
+        items:
+          type: string
+        type: array
+      url:
+        type: string
+    required:
+    - url
+    type: object
+  upsertPrefRequest:
+    properties:
+      channel:
+        type: string
+      enabled:
+        type: boolean
+      event_type:
+        type: string
+    required:
+    - channel
+    - event_type
+    type: object
+  upsertProfileRequest:
+    properties:
+      avatar_url:
+        maxLength: 2048
+        type: string
+      full_name:
+        maxLength: 255
+        type: string
+    type: object
+  usageRecord:
+    properties:
+      id:
+        type: string
+      metric:
+        type: string
+      organization_id:
+        type: string
+      period_end:
+        type: string
+      period_start:
+        type: string
+      recorded_at:
+        type: string
+      value:
+        type: integer
+    type: object
+  userRecord:
+    properties:
+      auth_sub:
+        type: string
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      email:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: string
+      preferences:
+        items:
+          type: integer
+        type: array
+      updated_at:
+        type: string
+    type: object
+  webhookDeliveryRecord:
+    properties:
+      attempts:
+        type: integer
+      attempts_log:
+        items:
+          type: integer
+        type: array
+      created_at:
+        type: string
+      delivered_at:
+        type: string
+      endpoint_id:
+        type: string
+      event_id:
+        type: string
+      event_type:
+        type: string
+      id:
+        type: string
+      last_error:
+        type: string
+      latency_ms:
+        type: integer
+      response_body:
+        type: string
+      response_status_code:
+        type: integer
+      status:
+        type: string
+    type: object
+  webhookHealthDTO:
+    properties:
+      delivered_24h:
+        type: integer
+      success_percent_24h:
+        type: integer
+      total_24h:
+        type: integer
+    type: object
+info:
+  contact: {}
+  description: REST API for Stratum — organizations, accounts, billing, and notifications.
+  title: Stratum API
+  version: "1.0"
+paths:
+  /billing/coupons/eligible:
+    get:
+      description: Same eligibility rules as the per-organization list, minus org-targeted
+        coupons (there is no organization yet) — for the "create organization" cart.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/couponRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List coupons eligible for a not-yet-created organization
+      tags:
+      - billing
+  /invitations/accept:
+    post:
+      consumes:
+      - application/json
+      description: Accepts an invitation token for the caller's own (authenticated)
+        email; the token must match the caller's email.
+      parameters:
+      - description: Invitation token
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/acceptInvitationRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: invitation not found, expired, email mismatch, already a member,
+            or plan limit reached
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Accept an invitation
+      tags:
+      - organization
+  /invitations/decline:
+    post:
+      consumes:
+      - application/json
+      description: Declines and deletes an invitation for the caller's own (authenticated)
+        email; the original inviter is notified in-app.
+      parameters:
+      - description: Invitation token
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/declineInvitationRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: invitation not found, expired, email mismatch, or already a
+            member
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Decline an invitation
+      tags:
+      - organization
+  /invitations/preview:
+    get:
+      description: Read-only invitation details (organization name, role, inviter)
+        for the caller's own email, before committing to accept.
+      parameters:
+      - description: Invitation token
+        in: query
+        name: token
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/invitationPreview'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: missing token, not found, expired, email mismatch, or already
+            a member
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Preview an invitation
+      tags:
+      - organization
+  /invitations/request-new:
+    post:
+      consumes:
+      - application/json
+      description: Notifies the original inviter that the caller's invitation (identified
+        by an expired/invalid token) needs to be resent — does not resend automatically.
+      parameters:
+      - description: Expired/invalid invitation token
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/requestNewInvitationRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Request a fresh invitation
+      tags:
+      - organization
+  /me:
+    delete:
+      description: Queues an async GDPR account-deletion task. Requires step-up MFA
+        (aal2) if the caller has MFA enabled.
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/taskRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: MFA (aal2) step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Request account deletion
+      tags:
+      - account
+    get:
+      description: Returns the authenticated user's profile row.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/userRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Get the caller's profile
+      tags:
+      - account
+    patch:
+      consumes:
+      - application/json
+      description: Partially updates the authenticated user's full name and/or avatar
+        URL. Email is not updatable here — see the Supabase user-updated webhook.
+      parameters:
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/updateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/userRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Update the caller's profile
+      tags:
+      - account
+    post:
+      consumes:
+      - application/json
+      description: Upserts the authenticated user's profile row (full name, avatar
+        URL); creates it on first call. Email is always taken from the caller's verified
+        JWT claim, never the request body.
+      parameters:
+      - description: Profile fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/upsertProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/userRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed, or the caller's token has no verified email
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Create or update the caller's profile
+      tags:
+      - account
+  /me/audit-log:
+    get:
+      description: Cursor-paginated audit log entries for actions taken by or affecting
+        the caller, optionally bounded by from/to timestamps.
+      parameters:
+      - description: max results (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: pagination cursor from a previous response
+        in: query
+        name: cursor
+        type: string
+      - description: RFC3339 start timestamp
+        in: query
+        name: from
+        type: string
+      - description: RFC3339 end timestamp
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/EventRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List audit log entries
+      tags:
+      - account
+  /me/audit-log/export:
+    get:
+      description: Streams the caller's audit log as a CSV attachment, optionally
+        bounded by from/to timestamps.
+      parameters:
+      - description: RFC3339 start timestamp
+        in: query
+        name: from
+        type: string
+      - description: RFC3339 end timestamp
+        in: query
+        name: to
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Export audit log as CSV
+      tags:
+      - account
+  /me/avatar:
+    delete:
+      description: Removes the caller's avatar image and clears avatar_url.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    avatar_url:
+                      type: string
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Delete the caller's avatar
+      tags:
+      - account
+    post:
+      consumes:
+      - multipart/form-data
+      description: Uploads and sets the caller's avatar image (max 2MB, image/* content
+        type).
+      parameters:
+      - description: Avatar image file
+        in: formData
+        name: avatar
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    avatar_url:
+                      type: string
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: missing file, too large, or not an image
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Upload an avatar
+      tags:
+      - account
+  /me/export:
+    post:
+      description: Queues an async GDPR data-export task (profile, memberships, notifications,
+        audit log).
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/taskRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Request a data export
+      tags:
+      - account
+  /me/invitations:
+    get:
+      description: Returns pending invitations sent to the caller's authenticated
+        email, across every organization.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/myInvitationRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List the caller's pending invitations
+      tags:
+      - organization
+  /me/mfa/sync:
+    post:
+      description: Re-fetches MFA enrollment status from Supabase and persists it.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    mfa_enabled:
+                      type: boolean
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Sync MFA status
+      tags:
+      - account
+  /me/notifications:
+    get:
+      description: Returns the caller's notifications. Page-based (limit/page) unless
+        a cursor is supplied, in which case it switches to cursor pagination.
+      parameters:
+      - description: filter by organization
+        in: query
+        name: organization_id
+        type: string
+      - description: filter by channel
+        in: query
+        name: channel
+        type: string
+      - description: max results (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: page number, ignored once cursor is set (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: pagination cursor from a previous response; switches to cursor
+          mode
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/messageRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List notifications
+      tags:
+      - notification
+  /me/notifications/{id}/read:
+    patch:
+      parameters:
+      - description: Notification ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: notification not found
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Mark a notification as read
+      tags:
+      - notification
+  /me/notifications/preferences:
+    get:
+      description: Returns the caller's per-channel/event-type notification preferences.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/preferenceRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List notification preferences
+      tags:
+      - notification
+    patch:
+      consumes:
+      - application/json
+      description: Creates or updates the caller's preference for a given channel
+        + event type.
+      parameters:
+      - description: Preference to set
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/upsertPrefRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/preferenceRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Set a notification preference
+      tags:
+      - notification
+  /me/notifications/read-all:
+    patch:
+      parameters:
+      - description: scope to an organization
+        in: query
+        name: organization_id
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Mark all notifications as read
+      tags:
+      - notification
+  /me/notifications/stream:
+    get:
+      description: Server-sent events stream; emits a "notification" event whenever
+        a new message arrives for the caller. Only mounted when Redis is configured.
+        Capped at 3 concurrent streams per caller.
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: text/event-stream connection
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "429":
+          description: too many concurrent streams already open
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Stream notifications (SSE)
+      tags:
+      - notification
+  /me/notifications/unread-count:
+    get:
+      description: Returns the number of unread notifications for the caller, optionally
+        scoped to an organization.
+      parameters:
+      - description: filter by organization
+        in: query
+        name: organization_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    unread:
+                      type: integer
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Get unread notification count
+      tags:
+      - notification
+  /me/password/changed:
+    post:
+      description: No-op endpoint that exists solely to give a client-side Supabase
+        password change an audit trail entry. Must be called with an empty body.
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: request body not allowed
+          schema:
+            $ref: '#/definitions/Payload'
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Record a password change
+      tags:
+      - account
+  /me/preferences:
+    patch:
+      consumes:
+      - application/json
+      description: Shallow-merges the given JSON object into the authenticated user's
+        opaque preferences (e.g. {"lang":"en"}) — keys not in the body are left untouched.
+        Preferences holds several independently-saved settings, each written by its
+        own single-key PATCH, so merge (not replace) keeps one update from wiping
+        out the others.
+      parameters:
+      - description: Arbitrary JSON object
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: body is not a JSON object
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Merge into the caller's preferences
+      tags:
+      - account
+  /me/sessions:
+    get:
+      description: Cursor-paginated login history for the caller.
+      parameters:
+      - description: max results (default 50, max 50)
+        in: query
+        name: limit
+        type: integer
+      - description: pagination cursor from a previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/loginEventRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List login sessions
+      tags:
+      - account
+  /me/sessions/revoke-all:
+    post:
+      description: Revokes every active session for the caller, including the one
+        making this request — a global sign-out. The caller will need to log in again.
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Revoke all sessions
+      tags:
+      - account
+  /me/tasks:
+    get:
+      description: Returns all GDPR delete/export tasks requested by the authenticated
+        user.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/taskRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List the caller's async tasks
+      tags:
+      - account
+  /me/tasks/{taskID}:
+    get:
+      description: Returns a single GDPR delete/export task belonging to the authenticated
+        user.
+      parameters:
+      - description: Task ID
+        in: path
+        name: taskID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/taskRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: task not found
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Get a task by ID
+      tags:
+      - account
+  /organizations:
+    get:
+      description: Returns every organization the caller is a member of, with their
+        role.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/organizationView'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List the caller's organizations
+      tags:
+      - organization
+    post:
+      consumes:
+      - application/json
+      description: Creates a new organization owned by the caller. Plan and cycle
+        are required and validated against the billing catalog.
+      parameters:
+      - description: Organization fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/createOrganizationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/organizationRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Create an organization
+      tags:
+      - organization
+  /organizations/{organizationID}:
+    delete:
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Delete an organization
+      tags:
+      - organization
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/organizationRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: organization not found
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Get an organization
+      tags:
+      - organization
+    patch:
+      consumes:
+      - application/json
+      description: Updates name and/or slug. Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/updateOrganizationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/organizationRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Update an organization
+      tags:
+      - organization
+  /organizations/{organizationID}/audit-log:
+    get:
+      description: Page-based (limit/page) unless a cursor is supplied, in which case
+        it switches to cursor pagination. Filterable by actor/action/resource/from/to.
+        Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: max results (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: page number, ignored once cursor is set (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: pagination cursor from a previous response; switches to cursor
+          mode
+        in: query
+        name: cursor
+        type: string
+      - description: filter by actor
+        in: query
+        name: actor
+        type: string
+      - description: filter by action
+        in: query
+        name: action
+        type: string
+      - description: filter by resource
+        in: query
+        name: resource
+        type: string
+      - description: RFC3339 lower bound on created_at
+        in: query
+        name: from
+        type: string
+      - description: RFC3339 upper bound on created_at
+        in: query
+        name: to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/EventRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List organization audit log entries
+      tags:
+      - organization
+  /organizations/{organizationID}/audit-log/export:
+    get:
+      description: Streams the organization's audit log as a CSV attachment, filterable
+        by actor/action/resource/from/to. Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: filter by actor
+        in: query
+        name: actor
+        type: string
+      - description: filter by action
+        in: query
+        name: action
+        type: string
+      - description: filter by resource
+        in: query
+        name: resource
+        type: string
+      - description: RFC3339 lower bound on created_at
+        in: query
+        name: from
+        type: string
+      - description: RFC3339 upper bound on created_at
+        in: query
+        name: to
+        type: string
+      produces:
+      - text/csv
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Export organization audit log as CSV
+      tags:
+      - organization
+  /organizations/{organizationID}/billing:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/subscriptionWithCoupon'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Get the organization's subscription
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/activate:
+    post:
+      description: Owner only. Converts an active trial to a paid subscription before
+        its scheduled end. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/invoiceRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Activate a trial immediately
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/addons:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/attachedAddonRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List attached addons
+      tags:
+      - billing
+    post:
+      consumes:
+      - application/json
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Addon to attach
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/attachAddonRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Attach an addon
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/addons/{addonID}:
+    delete:
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Addon ID
+        in: path
+        name: addonID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Detach an addon
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/cancel:
+    post:
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/subscriptionRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Cancel the subscription
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/coupons:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/couponRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List eligible coupons
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/coupons/redeem:
+    post:
+      consumes:
+      - application/json
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Coupon code
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/redeemCouponRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed or invalid/ineligible coupon
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Redeem a coupon
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/extend:
+    post:
+      consumes:
+      - application/json
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Months to extend by
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/extendSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/invoiceRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Extend the subscription
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/features:
+    get:
+      description: Returns the organization's effective feature limits (plan limit
+        + addon deltas) and current usage.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/entitlementRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List resolved feature entitlements
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/history:
+    get:
+      description: Returns the audit trail of subscription changes (plan changes,
+        cancellations, etc.) for the organization.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/historyView'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List subscription history
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/invoices:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/invoiceRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List invoices
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/invoices/{invoiceID}/pay:
+    post:
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Invoice ID
+        in: path
+        name: invoiceID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/paymentLinkRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Create a payment link
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/invoices/{invoiceID}/pay/regenerate:
+    post:
+      description: Owner only. Issues a fresh payment link for an invoice, replacing
+        an expired/failed one.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Invoice ID
+        in: path
+        name: invoiceID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/paymentLinkRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Regenerate a payment link
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/invoices/{invoiceID}/pdf:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Invoice ID
+        in: path
+        name: invoiceID
+        required: true
+        type: string
+      - description: PDF language (default en)
+        in: query
+        name: lang
+        type: string
+      produces:
+      - application/pdf
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "500":
+          description: PDF generation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Download an invoice as PDF
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/payment-links:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/paymentLinkRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List payment links
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/payments:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/paymentRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List payments
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/plan:
+    patch:
+      consumes:
+      - application/json
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: New plan and cycle
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/changePlanRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/subscriptionRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Change the subscription plan
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/preview:
+    get:
+      description: Read-only proration preview. With no query params, previews the
+        subscription's current plan/cycle/addons/coupon; with plan/cycle, previews
+        a hypothetical change.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: hypothetical target plan
+        in: query
+        name: plan
+        type: string
+      - description: hypothetical target billing cycle
+        in: query
+        name: cycle
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/invoicePreview'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Preview an invoice
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/resume:
+    post:
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/subscriptionRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Resume a cancelled subscription
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/usage:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/usageRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Get metered usage
+      tags:
+      - billing
+    post:
+      consumes:
+      - application/json
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Usage to record
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/recordUsageRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Record a manual usage correction
+      tags:
+      - billing
+  /organizations/{organizationID}/files:
+    get:
+      description: Cursor-paginated file listing, optionally scoped to a folder or
+        filtered by search. Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: filter by folder
+        in: query
+        name: folder_id
+        type: string
+      - description: filter by name
+        in: query
+        name: search
+        type: string
+      - description: search across all folders instead of just folder_id
+        in: query
+        name: search_all
+        type: boolean
+      - description: pagination cursor from a previous response
+        in: query
+        name: cursor
+        type: string
+      - description: max results (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    items:
+                      items:
+                        $ref: '#/definitions/fileRecord'
+                      type: array
+                    next_cursor:
+                      type: string
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List files
+      tags:
+      - organization
+    post:
+      consumes:
+      - multipart/form-data
+      description: Admin/owner only. Max 50MB.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: Destination folder ID (root if omitted)
+        in: formData
+        name: folder_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/fileRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: missing file or too large
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Upload a file
+      tags:
+      - organization
+  /organizations/{organizationID}/files/{fileID}:
+    delete:
+      description: Moves a file to trash. Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: File ID
+        in: path
+        name: fileID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Soft-delete a file
+      tags:
+      - organization
+    patch:
+      consumes:
+      - application/json
+      description: Changes a file's folder (null moves it to root). Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: File ID
+        in: path
+        name: fileID
+        required: true
+        type: string
+      - description: Destination folder
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/moveFileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/fileRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Move a file
+      tags:
+      - organization
+  /organizations/{organizationID}/files/{fileID}/download:
+    get:
+      description: Redirects to a short-lived signed download URL. Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: File ID
+        in: path
+        name: fileID
+        required: true
+        type: string
+      responses:
+        "302":
+          description: redirect to signed URL
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: file not found
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Download a file
+      tags:
+      - organization
+  /organizations/{organizationID}/files/{fileID}/permanent:
+    delete:
+      description: Irreversibly deletes a soft-deleted file and its stored object.
+        Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: File ID
+        in: path
+        name: fileID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Permanently delete a file
+      tags:
+      - organization
+  /organizations/{organizationID}/files/{fileID}/restore:
+    post:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: File ID
+        in: path
+        name: fileID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/fileRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Restore a file from trash
+      tags:
+      - organization
+  /organizations/{organizationID}/files/bulk-delete:
+    post:
+      consumes:
+      - application/json
+      description: Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: File IDs to delete
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/bulkDeleteFilesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    deleted_count:
+                      type: integer
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Bulk soft-delete files
+      tags:
+      - organization
+  /organizations/{organizationID}/files/folders:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/folderRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List folders
+      tags:
+      - organization
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Folder fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/createFolderRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/folderRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Create a folder
+      tags:
+      - organization
+  /organizations/{organizationID}/files/folders/{folderID}:
+    delete:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Folder ID
+        in: path
+        name: folderID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Delete a folder
+      tags:
+      - organization
+    patch:
+      consumes:
+      - application/json
+      description: Rename and/or move a folder. parent_folder_id is only applied when
+        the field is explicitly present in the body (null moves to root; omitted leaves
+        the parent unchanged). Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Folder ID
+        in: path
+        name: folderID
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/updateFolderRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/folderRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Update a folder
+      tags:
+      - organization
+  /organizations/{organizationID}/files/trash:
+    get:
+      description: Returns up to the 50 most recently soft-deleted files. Admin/owner
+        only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/fileRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List deleted files
+      tags:
+      - organization
+  /organizations/{organizationID}/invitations:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/invitationRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List organization invitations
+      tags:
+      - organization
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Invitation fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/createInvitationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/invitationRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed or invitee already a member
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Invite a member by email
+      tags:
+      - organization
+  /organizations/{organizationID}/invitations/{invitationID}:
+    delete:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Invitation ID
+        in: path
+        name: invitationID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Revoke an invitation
+      tags:
+      - organization
+  /organizations/{organizationID}/invite-code:
+    patch:
+      consumes:
+      - application/json
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Enabled flag
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/toggleInviteCodeRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Enable or disable the invite code
+      tags:
+      - organization
+    post:
+      description: Owner only. Invalidates the previous code.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    invite_code:
+                      type: string
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Regenerate the invite code
+      tags:
+      - organization
+  /organizations/{organizationID}/leave:
+    delete:
+      description: Removes the caller's own membership.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Leave an organization
+      tags:
+      - organization
+  /organizations/{organizationID}/logo:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Admin/owner only. Max 2MB, image/* content type.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Logo image file
+        in: formData
+        name: logo
+        required: true
+        type: file
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: missing file, too large, or not an image
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Upload organization logo
+      tags:
+      - organization
+  /organizations/{organizationID}/members:
+    get:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/memberView'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List organization members
+      tags:
+      - organization
+    post:
+      consumes:
+      - application/json
+      description: Directly adds an existing user by auth_sub. Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Member to add
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/addMemberRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/membershipRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Add a member
+      tags:
+      - organization
+  /organizations/{organizationID}/members/{authSub}:
+    delete:
+      description: Admin/owner only. Cannot remove yourself or the organization owner.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Member's auth subject
+        in: path
+        name: authSub
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: cannot remove yourself
+          schema:
+            $ref: '#/definitions/Payload'
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: cannot remove the owner, or admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Remove a member
+      tags:
+      - organization
+  /organizations/{organizationID}/members/{authSub}/role:
+    patch:
+      consumes:
+      - application/json
+      description: Admin/owner only. Cannot change the organization owner's role.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Member's auth subject
+        in: path
+        name: authSub
+        required: true
+        type: string
+      - description: New role
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/updateMemberRoleRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: cannot change the owner's role, or admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Change a member's role
+      tags:
+      - organization
+  /organizations/{organizationID}/members/import:
+    post:
+      consumes:
+      - application/json
+      description: Bulk-invites by email + role, up to 200 rows per request. With
+        dry_run=true, validates and returns counts/errors without inviting anyone;
+        otherwise commits and returns imported/failed counts. Admin/owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Rows to import
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/importMembersRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: commit result (dry_run=false)
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    failed:
+                      items:
+                        $ref: '#/definitions/importRowResult'
+                      type: array
+                    imported:
+                      type: integer
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Bulk-import members by email
+      tags:
+      - organization
+  /organizations/{organizationID}/settings:
+    patch:
+      consumes:
+      - application/json
+      description: Updates timezone, locale, and the IP allowlist. Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Settings fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/updateSettingsRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Update organization settings
+      tags:
+      - organization
+  /organizations/{organizationID}/suspend:
+    post:
+      consumes:
+      - application/json
+      description: Owner-facing self-service pause — reversible, read-only for everyone
+        including the owner while active. Requires step-up MFA (aal2) if the caller
+        has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Optional reason
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/suspendOrganizationRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Suspend an organization
+      tags:
+      - organization
+  /organizations/{organizationID}/transfer:
+    post:
+      consumes:
+      - application/json
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: New owner
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/transferOwnershipRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Transfer organization ownership
+      tags:
+      - organization
+  /organizations/{organizationID}/unsuspend:
+    post:
+      description: Reverses a self-service suspension. Owner only, requires step-up
+        MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Unsuspend an organization
+      tags:
+      - organization
+  /organizations/{organizationID}/webhooks:
+    get:
+      description: Owner only. Includes 24h delivery health per endpoint.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/safeEndpoint'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List webhook endpoints
+      tags:
+      - organization
+    post:
+      consumes:
+      - application/json
+      description: Owner only. The signing secret is returned once, in this response
+        only — it is never re-fetchable.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/createWebhookRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    created_at:
+                      type: string
+                    enabled:
+                      type: boolean
+                    id:
+                      type: string
+                    secret:
+                      type: string
+                    subscribed_events:
+                      items:
+                        type: string
+                      type: array
+                    updated_at:
+                      type: string
+                    url:
+                      type: string
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Create a webhook endpoint
+      tags:
+      - organization
+  /organizations/{organizationID}/webhooks/{webhookID}:
+    delete:
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook ID
+        in: path
+        name: webhookID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Delete a webhook endpoint
+      tags:
+      - organization
+    patch:
+      consumes:
+      - application/json
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook ID
+        in: path
+        name: webhookID
+        required: true
+        type: string
+      - description: Webhook fields
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/updateWebhookRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/safeEndpoint'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Update a webhook endpoint
+      tags:
+      - organization
+  /organizations/{organizationID}/webhooks/{webhookID}/deliveries:
+    get:
+      description: Cursor-paginated delivery attempts for an endpoint, optionally
+        filtered. Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook ID
+        in: path
+        name: webhookID
+        required: true
+        type: string
+      - description: max results (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: pagination cursor from a previous response
+        in: query
+        name: cursor
+        type: string
+      - description: filter by delivery status
+        in: query
+        name: status
+        type: string
+      - description: filter by event type
+        in: query
+        name: event_type
+        type: string
+      - description: RFC3339 lower bound on created_at
+        in: query
+        name: since
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/webhookDeliveryRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: webhook not found
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List webhook deliveries
+      tags:
+      - organization
+  /organizations/{organizationID}/webhooks/{webhookID}/deliveries/{deliveryID}/retry:
+    post:
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook ID
+        in: path
+        name: webhookID
+        required: true
+        type: string
+      - description: Delivery ID
+        in: path
+        name: deliveryID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Retry a single webhook delivery
+      tags:
+      - organization
+  /organizations/{organizationID}/webhooks/{webhookID}/deliveries/retry-failed:
+    post:
+      description: Queues up to the 50 most recent failed deliveries for this endpoint
+        to be retried asynchronously — the returned count is how many were queued,
+        not how many ultimately succeed.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook ID
+        in: path
+        name: webhookID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    retried:
+                      type: integer
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Retry all failed webhook deliveries
+      tags:
+      - organization
+  /organizations/{organizationID}/webhooks/{webhookID}/rotate-secret:
+    post:
+      description: Owner only. The new secret is returned once, in this response only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook ID
+        in: path
+        name: webhookID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    id:
+                      type: string
+                    secret:
+                      type: string
+                    secret_rotation_expires_at:
+                      type: string
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Rotate a webhook's signing secret
+      tags:
+      - organization
+  /organizations/{organizationID}/webhooks/{webhookID}/test-event:
+    post:
+      description: Owner only. Fires a synthetic delivery to verify the endpoint is
+        reachable and correctly signed.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Webhook ID
+        in: path
+        name: webhookID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  properties:
+                    delivery:
+                      $ref: '#/definitions/webhookDeliveryRecord'
+                    success:
+                      type: boolean
+                  type: object
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Send a test event
+      tags:
+      - organization
+  /organizations/join:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Invite code
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/joinByCodeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/organizationRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed, invalid code, invite code disabled, already
+            a member, or plan limit reached
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Join an organization by invite code
+      tags:
+      - organization
+  /organizations/join/preview:
+    get:
+      description: Read-only organization + owner details for a code, before committing
+        to join.
+      parameters:
+      - description: Invite code
+        in: query
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/inviteCodePreview'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: missing code, invalid code, invite code disabled, or already
+            a member
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Preview an organization by invite code
+      tags:
+      - organization
+  /references/addons:
+    get:
+      description: Returns the billing addon catalog; delegated to the billing module's
+        catalog reader. Pass country_code to scope each addon's prices down to the
+        currency that country is actually billed in — omit it to get every currency.
+      parameters:
+      - description: ISO country code — scopes prices to that country's currency
+        in: query
+        name: country_code
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/AddonInfo'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List billing addons
+      tags:
+      - reference
+  /references/countries:
+    get:
+      description: Returns the static reference list of countries.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/countryRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List countries
+      tags:
+      - reference
+  /references/currencies:
+    get:
+      description: Returns the static reference list of currencies.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/currencyRecord'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List currencies
+      tags:
+      - reference
+  /references/features:
+    get:
+      description: Returns the billing feature catalog; delegated to the billing module's
+        catalog reader.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/FeatureInfo'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List billing features
+      tags:
+      - reference
+  /references/plans:
+    get:
+      description: Returns the billing plan catalog (pricing, limits, features); delegated
+        to the billing module's catalog reader. Pass country_code to scope each plan's
+        prices down to the currency that country is actually billed in — omit it to
+        get every currency.
+      parameters:
+      - description: ISO country code — scopes prices to that country's currency
+        in: query
+        name: country_code
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/PlanInfo'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List billing plans
+      tags:
+      - reference
+  /webhooks/stripe:
+    post:
+      consumes:
+      - application/json
+      description: Public webhook receiving Stripe Checkout Session and payment_intent
+        events. Verified via HMAC-SHA256 Stripe-Signature header, not bearer auth.
+        Non-relevant event types are ACK'd 200 to stop retries.
+      parameters:
+      - description: HMAC-SHA256 signature (t=,v1=)
+        in: header
+        name: Stripe-Signature
+        required: true
+        type: string
+      - description: Stripe event payload
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "200":
+          description: ok (processed or ACK'd)
+        "400":
+          description: invalid body or payload
+          schema:
+            $ref: '#/definitions/Payload'
+        "401":
+          description: invalid signature
+          schema:
+            $ref: '#/definitions/Payload'
+      summary: Stripe webhook
+      tags:
+      - webhooks
+  /webhooks/supabase/user-updated:
+    post:
+      consumes:
+      - application/json
+      description: 'Internal webhook: syncs account.users.email after Supabase''s
+        own Secure Email Change flow commits a change. Verified via X-Webhook-Secret,
+        not bearer auth.'
+      parameters:
+      - description: Shared webhook secret
+        in: header
+        name: X-Webhook-Secret
+        required: true
+        type: string
+      - description: Supabase database webhook payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/supabaseUserWebhookPayload'
+      responses:
+        "200":
+          description: ok
+        "400":
+          description: invalid payload
+          schema:
+            $ref: '#/definitions/Payload'
+        "401":
+          description: invalid webhook secret
+          schema:
+            $ref: '#/definitions/Payload'
+      summary: Supabase user-updated webhook
+      tags:
+      - webhooks
+  /webhooks/xendit:
+    post:
+      consumes:
+      - application/json
+      description: Public webhook receiving Xendit payment callbacks. Verified via
+        x-callback-token header, not bearer auth.
+      parameters:
+      - description: Shared callback token
+        in: header
+        name: x-callback-token
+        required: true
+        type: string
+      - description: Xendit callback payload
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      responses:
+        "200":
+          description: ok (processed or ACK'd)
+        "400":
+          description: invalid payload
+          schema:
+            $ref: '#/definitions/Payload'
+        "401":
+          description: invalid token
+          schema:
+            $ref: '#/definitions/Payload'
+      summary: Xendit webhook
+      tags:
+      - webhooks
+securityDefinitions:
+  BearerAuth:
+    description: Bearer token issued by Supabase auth.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

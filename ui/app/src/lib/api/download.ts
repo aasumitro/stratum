@@ -1,0 +1,23 @@
+import { api } from "./axios"
+
+export async function downloadFile(
+  url: string,
+  filename: string,
+  responseType: "blob" | "arraybuffer" = "blob"
+): Promise<void> {
+  // No timeout — the shared `api` instance's 5s default is sized for JSON
+  // requests, not a large binary export/download.
+  const res = await api.get(url, { responseType, timeout: 0 })
+  const blob =
+    responseType === "arraybuffer"
+      ? new Blob([res.data as ArrayBuffer])
+      : (res.data as Blob)
+  const blobUrl = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = blobUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+}

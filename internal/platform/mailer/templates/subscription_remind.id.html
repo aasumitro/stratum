@@ -1,0 +1,16 @@
+<!-- subject: {{if .IsTrial}}Uji coba gratis Anda akan segera berakhir{{else}}Langganan Anda akan segera berakhir{{end}} -->
+{{if .IsTrial}}
+<h2>Uji Coba Segera Berakhir</h2>
+<p>Halo,</p>
+<p>Uji coba gratis paket <strong>{{.PlanName}}</strong> untuk <strong>{{.OrganizationName}}</strong> berakhir pada <strong>{{.DueDate}}</strong>.</p>
+<p>Tambahkan metode pembayaran agar akses Anda tidak terganggu:</p>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Tambah Metode Pembayaran</a></p>
+<p style="color: #6b7280; font-size: 14px;">Jika Anda sudah menambahkan metode pembayaran, abaikan email ini.</p>
+{{else}}
+<h2>Langganan Segera Berakhir</h2>
+<p>Halo,</p>
+<p>Langganan <strong>{{.PlanName}}</strong> untuk <strong>{{.OrganizationName}}</strong> akan berakhir pada <strong>{{.DueDate}}</strong>.</p>
+<p>Silakan perpanjang agar tidak terganggu:</p>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Perpanjang Langganan</a></p>
+<p style="color: #6b7280; font-size: 14px;">Jika Anda sudah memperpanjang, abaikan email ini.</p>
+{{end}}

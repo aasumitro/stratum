@@ -1,0 +1,88 @@
+version: "2"
+
+run:
+  go: "1.26"
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - copyloopvar
+    - dogsled
+    - dupl
+    - goconst
+    - gocritic
+    - goprintffuncname
+    - gosec
+    - lll
+    - misspell
+    - modernize
+    - nakedret
+    - noctx
+    - nolintlint
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    dupl:
+      threshold: 800
+    gosec:
+      excludes:
+        # G404 (weak RNG): audited 2026-07-16 — no math/rand usage anywhere in
+        # the repo; the one secret generator (organization/service.go) already
+        # uses crypto/rand. Exclusion is currently a no-op, kept in case a
+        # future non-secret use (e.g. jitter/backoff) needs math/rand.
+        - G404
+        - G101
+    lll:
+      line-length: 450
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - dupl
+          - goconst
+          - govet
+          - lll
+          - mnd
+          - gosec
+          - errcheck
+          - noctx
+          - nolintlint
+          - revive
+        path: _test\.go
+      - linters:
+          - goconst
+        path: cmd/
+      - linters:
+          - goconst
+        path: internal/platform/httpserver/middleware/
+      - linters:
+          - unparam
+        path: internal/modules/billing/repository_history\.go
+      - linters:
+          - unparam
+        path: internal/modules/notification/service\.go
+      - linters:
+          - unparam
+        path: internal/platform/pdf/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - node_modules
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

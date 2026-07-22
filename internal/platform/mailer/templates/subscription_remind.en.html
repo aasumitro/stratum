@@ -1,0 +1,16 @@
+<!-- subject: {{if .IsTrial}}Your free trial is ending soon{{else}}Your subscription is expiring soon{{end}} -->
+{{if .IsTrial}}
+<h2>Trial Ending Soon</h2>
+<p>Hi,</p>
+<p>Your free trial of the <strong>{{.PlanName}}</strong> plan for <strong>{{.OrganizationName}}</strong> ends on <strong>{{.DueDate}}</strong>.</p>
+<p>Add a payment method to keep access without interruption:</p>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Add Payment Method</a></p>
+<p style="color: #6b7280; font-size: 14px;">If you've already added a payment method, you can ignore this email.</p>
+{{else}}
+<h2>Subscription Expiring Soon</h2>
+<p>Hi,</p>
+<p>Your <strong>{{.PlanName}}</strong> subscription for <strong>{{.OrganizationName}}</strong> will expire on <strong>{{.DueDate}}</strong>.</p>
+<p>Please renew to avoid interruption:</p>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Renew Subscription</a></p>
+<p style="color: #6b7280; font-size: 14px;">If you've already renewed, you can ignore this email.</p>
+{{end}}

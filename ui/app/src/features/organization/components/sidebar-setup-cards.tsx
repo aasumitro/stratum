@@ -1,0 +1,151 @@
+import { useState } from "react"
+import { useTranslation } from "react-i18next"
+import { IconX } from "@tabler/icons-react"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { SidebarCardStack } from "@/components/layout/sidebar-card-stack"
+import {
+  useOrganizationMembers,
+  useOrganizationFiles,
+  useWebhooks,
+} from "@/features/organization/hooks"
+import { useBillingSubscription } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
+import { cn } from "@/lib/ui"
+
+function daysLeft(iso?: string): number | null {
+  if (!iso) return null
+  const ms = new Date(iso).getTime() - Date.now()
+  return ms > 0 ? Math.ceil(ms / (1000 * 60 * 60 * 24)) : 0
+}
+
+/**
+ * Trial badge + first-run checklist, relocated from the removed Overview
+ * page into the sidebar's card-stack slot — same slot future
+ * announcement/changelog cards will use, one at a time, priority order.
+ */
+export function SidebarSetupCards({
+  organizationId,
+}: {
+  organizationId: string
+}) {
+  const { t } = useTranslation()
+  const perms = usePermissions()
+  const { data: subscriptionData } = useBillingSubscription(organizationId)
+  const { data: membersData } = useOrganizationMembers(organizationId)
+  const { data: webhooksData } = useWebhooks(
+    organizationId,
+    perms.canAccessWebhooks
+  )
+  const { data: filesData } = useOrganizationFiles(
+    organizationId,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    perms.canAccessFiles
+  )
+  const subscription = subscriptionData?.data
+  const trialDays = daysLeft(subscription?.trial_end)
+  const memberCount = membersData?.data?.length ?? 0
+  const webhookCount = webhooksData?.data?.length ?? 0
+  const filesCount = filesData?.data?.items?.length ?? 0
+
+  const [checklistDismissed, setChecklistDismissed] = useState(
+    () => localStorage.getItem(`checklist_dismissed_${organizationId}`) === "1"
+  )
+  function dismissChecklist() {
+    localStorage.setItem(`checklist_dismissed_${organizationId}`, "1")
+    setChecklistDismissed(true)
+  }
+
+  const checklist = [
+    { key: "create", done: true, labelKey: "dashboard.checklist.create" },
+    { key: "profile", done: true, labelKey: "dashboard.checklist.profile" },
+    {
+      key: "invite",
+      done: memberCount > 1,
+      labelKey: "dashboard.checklist.invite",
+      href: `/organization/${organizationId}/members`,
+    },
+    ...(perms.canAccessFiles
+      ? [
+          {
+            key: "file",
+            done: filesCount > 0,
+            labelKey: "dashboard.checklist.file",
+            href: `/organization/${organizationId}/files`,
+          },
+        ]
+      : []),
+    ...(perms.canAccessWebhooks
+      ? [
+          {
+            key: "webhook",
+            done: webhookCount > 0,
+            labelKey: "dashboard.checklist.webhook",
+            href: `/organization/${organizationId}/webhooks`,
+          },
+        ]
+      : []),
+  ]
+  const checklistDone = checklist.filter((c) => c.done).length
+  const showChecklist = !checklistDismissed && checklistDone < checklist.length
+
+  const trialCard = subscription?.status === "trialing" &&
+    trialDays !== null && (
+      <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-700 dark:text-blue-400">
+        {t("dashboard.trialDaysLeft", { count: trialDays })}
+      </div>
+    )
+
+  const checklistCard = showChecklist && (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            {t("dashboard.checklist.title", {
+              done: checklistDone,
+              total: checklist.length,
+            })}
+          </span>
+          <button
+            onClick={dismissChecklist}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label={t("common.dismiss")}
+          >
+            <IconX className="size-3.5" />
+          </button>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {checklist.map((item) => (
+          <span
+            key={item.key}
+            className={cn(
+              "flex items-center gap-2 text-sm",
+              item.done
+                ? "text-muted-foreground line-through"
+                : "hover:underline"
+            )}
+          >
+            <span
+              className={cn(
+                "flex size-4 shrink-0 items-center justify-center rounded border",
+                item.done && "border-primary bg-primary text-primary-foreground"
+              )}
+            >
+              {item.done && "✓"}
+            </span>
+            {item.href ? (
+              <a href={item.href}>{t(item.labelKey)}</a>
+            ) : (
+              t(item.labelKey)
+            )}
+          </span>
+        ))}
+      </CardContent>
+    </Card>
+  )
+
+  return <SidebarCardStack cards={[trialCard, checklistCard]} />
+}
