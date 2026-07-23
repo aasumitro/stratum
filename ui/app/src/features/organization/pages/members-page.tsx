@@ -1,19 +1,23 @@
 import { useState } from "react"
-import { Outlet, useParams, Link, useRouterState } from "@tanstack/react-router"
+import { Outlet, useParams } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
-import { IconUpload, IconMail } from "@tabler/icons-react"
-import type { OrganizationRole } from "@/types/organization"
+import { IconUpload, IconMail, IconChevronDown } from "@tabler/icons-react"
 import {
-  useOrganizations,
   useOrganizationMembers,
   useOrganizationInvitations,
 } from "@/features/organization/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { ImportMembersSheet } from "@/features/organization/components/import-members-sheet"
 import { InviteEmailSheet } from "@/features/organization/components/invite-email-sheet"
 import { PageHeader } from "@/components/shared/page-header"
+import { RouteTabs } from "@/components/shared/route-tabs"
 import { Button } from "@/components/ui/button"
-import { LockedTag } from "@/components/shared/permission-guard"
-import { cn } from "@/lib/ui"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 // Members/Invitations as real routes (was client `useState` tab),
 // mirroring the pattern Billing already validated: deep-linkable,
@@ -23,16 +27,10 @@ export function MembersPage() {
   const { organizationId } = useParams({ strict: false }) as {
     organizationId: string
   }
-  const { location } = useRouterState()
   const [importOpen, setImportOpen] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
 
-  const { data: listData } = useOrganizations()
-  const role = listData?.data?.find((w) => w.id === organizationId)?.role as
-    | OrganizationRole
-    | undefined
-  const canManage = role === "owner" || role === "admin"
-  const isOwner = role === "owner"
+  const { canManageMembers: canManage, isOwner } = usePermissions()
 
   const { data: membersData } = useOrganizationMembers(organizationId)
   const { data: invitationsData } = useOrganizationInvitations(
@@ -45,16 +43,20 @@ export function MembersPage() {
   const base = `/organization/${organizationId}/members`
   const TABS = [
     {
-      id: "members",
       label: t("organization.members.tabLabel", { count: memberCount }),
       suffix: "",
     },
-    {
-      id: "invitations",
-      label: t("organization.invitations.tabLabel", { count: inviteCount }),
-      suffix: "/invitations",
-    },
-  ] as const
+    ...(canManage
+      ? [
+          {
+            label: t("organization.invitations.tabLabel", {
+              count: inviteCount,
+            }),
+            suffix: "/invitations",
+          },
+        ]
+      : []),
+  ]
 
   return (
     <div className="flex flex-col gap-6">
@@ -62,20 +64,22 @@ export function MembersPage() {
         title={t("organization.tabs.members")}
         actions={
           canManage && (
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setImportOpen(true)}
-              >
-                <IconUpload data-icon="inline-start" />
-                {t("organization.members.importMembers")}
-              </Button>
-              <Button size="sm" onClick={() => setInviteOpen(true)}>
-                <IconMail data-icon="inline-start" />
-                {t("organization.members.inviteMember")}
-              </Button>
-            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger render={<Button size="sm" />}>
+                {t("organization.members.addMembers")}
+                <IconChevronDown data-icon="inline-end" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setInviteOpen(true)}>
+                  <IconMail className="shrink-0" />
+                  {t("organization.members.inviteMember")}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setImportOpen(true)}>
+                  <IconUpload className="shrink-0" />
+                  {t("organization.members.importMembers")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )
         }
       />
@@ -92,35 +96,7 @@ export function MembersPage() {
         isOwner={isOwner}
       />
 
-      <div className="flex gap-1 border-b">
-        {TABS.map((tab) => {
-          const href = `${base}${tab.suffix}`
-          const isActive =
-            tab.suffix === ""
-              ? location.pathname === base || location.pathname === `${base}/`
-              : location.pathname === href
-          return (
-            <Link
-              key={tab.id}
-              to={href as string}
-              className={cn(
-                "-mb-px flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium transition-colors",
-                isActive
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {tab.label}
-              {tab.id === "invitations" && !canManage && (
-                <LockedTag
-                  label={t("nav.adminTag")}
-                  tooltip={t("nav.adminRequiredTooltip")}
-                />
-              )}
-            </Link>
-          )
-        })}
-      </div>
+      <RouteTabs base={base} tabs={TABS} />
 
       <Outlet />
     </div>

@@ -18,6 +18,7 @@ type invoiceRecord struct {
 	TaxCents          int64      `json:"tax_cents"`
 	Currency          string     `json:"currency"`
 	Status            string     `json:"status"`
+	Kind              string     `json:"kind"`
 	ProviderInvoiceID *string    `json:"provider_invoice_id,omitempty"`
 	DueAt             *time.Time `json:"due_at,omitempty"`
 	PaidAt            *time.Time `json:"paid_at,omitempty"`
@@ -42,7 +43,7 @@ func (r *repository) listInvoices(
 ) ([]invoiceRecord, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		       provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       kind, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices
 		WHERE subscription_id = $1
 		ORDER BY created_at DESC`,
@@ -58,7 +59,7 @@ func (r *repository) listInvoices(
 		var inv invoiceRecord
 		if err := rows.Scan(
 			&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
-			&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status,
+			&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
 			&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -72,11 +73,11 @@ func (r *repository) findInvoiceByID(ctx context.Context, q db.Querier, id strin
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		       provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       kind, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices WHERE id = $1`,
 		id,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
-		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status,
+		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
 		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
@@ -90,13 +91,13 @@ func (r *repository) findInvoiceByIDAndSubject(
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT i.id, i.subscription_id, i.invoice_number, i.amount_cents, i.subtotal_cents, i.tax_rate_bps, i.tax_cents,
-		       i.currency, i.status, i.provider_invoice_id, i.due_at, i.paid_at, i.created_at, i.updated_at
+		       i.currency, i.status, i.kind, i.provider_invoice_id, i.due_at, i.paid_at, i.created_at, i.updated_at
 		FROM billing.invoices i
 		JOIN billing.subscriptions s ON s.id = i.subscription_id
 		WHERE i.id = $1 AND s.subject_type = $2 AND s.subject_id = $3`,
 		invoiceID, subjectType, subjectID,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
-		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status,
+		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
 		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
@@ -108,24 +109,33 @@ func (r *repository) findPendingInvoiceBySubscription(ctx context.Context, q db.
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents,
-		       currency, status, provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       currency, status, kind, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices
 		WHERE subscription_id = $1 AND status = 'pending'
 		ORDER BY created_at DESC LIMIT 1`,
 		subscriptionID,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
-		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status,
+		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
 		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
 
-func (r *repository) markInvoicePaid(ctx context.Context, q db.Querier, id string, paidAt time.Time) error {
-	_, err := q.Exec(ctx, `
+// markInvoicePaid transitions a pending invoice to paid. The WHERE clause
+// makes this the idempotency boundary for the paid-webhook path: it returns
+// false when the invoice was already paid, so a redelivered payment
+// notification (a provider retry or a second event type for the same
+// underlying payment, arriving under a different event ID than the first)
+// is a no-op instead of re-applying the invoice's effects a second time.
+func (r *repository) markInvoicePaid(ctx context.Context, q db.Querier, id string, paidAt time.Time) (bool, error) {
+	tag, err := q.Exec(ctx, `
 		UPDATE billing.invoices SET status = 'paid', paid_at = $2, updated_at = now()
-		WHERE id = $1`,
+		WHERE id = $1 AND status = 'pending'`,
 		id, paidAt,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *repository) nextInvoiceNumber(ctx context.Context, q db.Querier, organizationID string, year int) (string, error) {
@@ -147,7 +157,7 @@ func (r *repository) nextInvoiceNumber(ctx context.Context, q db.Querier, organi
 func (r *repository) insertInvoice(
 	ctx context.Context, q db.Querier,
 	organizationID, subscriptionID string, subtotalCents int64,
-	taxRateBPS int, taxCents int64, currency string,
+	taxRateBPS int, taxCents int64, currency, kind string,
 ) (*invoiceRecord, error) {
 	var inv invoiceRecord
 	dueAt := time.Now().AddDate(0, 0, 7)
@@ -162,13 +172,13 @@ func (r *repository) insertInvoice(
 	}
 
 	err := q.QueryRow(ctx, `
-		INSERT INTO billing.invoices (subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, due_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO billing.invoices (subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, kind, due_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		          provider_invoice_id, due_at, paid_at, created_at, updated_at`,
-		subscriptionID, invNum, totalCents, subtotalCents, taxRateBPS, taxCents, currency, dueAt,
+		          kind, provider_invoice_id, due_at, paid_at, created_at, updated_at`,
+		subscriptionID, invNum, totalCents, subtotalCents, taxRateBPS, taxCents, currency, kind, dueAt,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
-		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status,
+		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
 		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return &inv, err
 }
@@ -215,6 +225,18 @@ func (r *repository) hasPendingInvoice(ctx context.Context, q db.Querier, subscr
 		SELECT COUNT(*) FROM billing.invoices
 		WHERE subscription_id = $1 AND status = 'pending'`,
 		subscriptionID,
+	).Scan(&count)
+	return count > 0, err
+}
+
+func (r *repository) hasPendingInvoiceOfKind(
+	ctx context.Context, q db.Querier, subscriptionID, kind string,
+) (bool, error) {
+	var count int
+	err := q.QueryRow(ctx, `
+		SELECT COUNT(*) FROM billing.invoices
+		WHERE subscription_id = $1 AND status = 'pending' AND kind = $2`,
+		subscriptionID, kind,
 	).Scan(&count)
 	return count > 0, err
 }

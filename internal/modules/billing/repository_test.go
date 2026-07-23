@@ -181,6 +181,22 @@ func getSubscriptionID(pool *pgxpool.Pool, orgID string) string {
 	return id
 }
 
+// getSubscriptionExpectedEnd returns the subscription's current trial_end (if
+// trialing) or period_end — the value HandleSubscriptionRemind/AutoInvoice's
+// staleness guard compares a delayed SubscriptionCheck's ExpectedEnd against.
+// Tests simulating a delayed check firing "on time" must pass this, not an
+// arbitrary offset, or the guard treats the check as stale and no-ops.
+func getSubscriptionExpectedEnd(pool *pgxpool.Pool, subID string) (end time.Time, isTrial bool) {
+	var periodEnd, trialEnd *time.Time
+	pool.QueryRow(context.Background(),
+		`SELECT period_end, trial_end FROM billing.subscriptions WHERE id = $1`, subID,
+	).Scan(&periodEnd, &trialEnd)
+	if trialEnd != nil {
+		return *trialEnd, true
+	}
+	return *periodEnd, false
+}
+
 // seedBillingOrganization inserts a minimal organization.organizations row so that
 // countSubscriptionsByOwner (which JOINs organization.organizations) can resolve the owner.
 func seedBillingOrganization(pool *pgxpool.Pool, orgID, ownerID string) {

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/contracts/events"
 )
 
 // --- calculateTax ---
@@ -477,6 +478,65 @@ func TestResolveChangedBy(t *testing.T) {
 			gotName, gotKind := c.svc.resolveChangedBy(ctx, c.changedBy)
 			if gotName != c.wantName || gotKind != c.wantKind {
 				t.Errorf("resolveChangedBy(%q) = (%q, %q), want (%q, %q)", c.changedBy, gotName, gotKind, c.wantName, c.wantKind)
+			}
+		})
+	}
+}
+
+// --- staleSubscriptionCheck ---
+
+func TestStaleSubscriptionCheck(t *testing.T) {
+	periodEnd := time.Date(2027, 8, 23, 0, 0, 0, 0, time.UTC)
+	trialEnd := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	otherEnd := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		sub   *subscriptionRecord
+		check events.SubscriptionCheck
+		want  bool
+	}{
+		{
+			"active sub, ExpectedEnd matches current period_end: not stale",
+			&subscriptionRecord{PeriodEnd: &periodEnd},
+			events.SubscriptionCheck{ExpectedEnd: periodEnd},
+			false,
+		},
+		{
+			"active sub, ExpectedEnd doesn't match (period_end moved since scheduling): stale",
+			&subscriptionRecord{PeriodEnd: &periodEnd},
+			events.SubscriptionCheck{ExpectedEnd: otherEnd},
+			true,
+		},
+		{
+			"trialing sub, ExpectedEnd matches current trial_end: not stale",
+			&subscriptionRecord{TrialEnd: &trialEnd},
+			events.SubscriptionCheck{ExpectedEnd: trialEnd, IsTrial: true},
+			false,
+		},
+		{
+			"trialing sub, ExpectedEnd doesn't match trial_end: stale",
+			&subscriptionRecord{TrialEnd: &trialEnd},
+			events.SubscriptionCheck{ExpectedEnd: otherEnd, IsTrial: true},
+			true,
+		},
+		{
+			"IsTrial but sub has no trial_end (e.g. converted to active since scheduling): stale",
+			&subscriptionRecord{PeriodEnd: &periodEnd, TrialEnd: nil},
+			events.SubscriptionCheck{ExpectedEnd: trialEnd, IsTrial: true},
+			true,
+		},
+		{
+			"not IsTrial but sub has no period_end (e.g. still trialing since scheduling): stale",
+			&subscriptionRecord{PeriodEnd: nil, TrialEnd: &trialEnd},
+			events.SubscriptionCheck{ExpectedEnd: periodEnd, IsTrial: false},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := staleSubscriptionCheck(c.sub, c.check); got != c.want {
+				t.Errorf("staleSubscriptionCheck() = %v, want %v", got, c.want)
 			}
 		})
 	}

@@ -48,10 +48,6 @@
     "backTo": "Back to {{name}}",
     "myAccount": "My account",
     "setDefault": "Set default",
-    "ownerTag": "owner",
-    "adminTag": "admin",
-    "ownerOnlyTooltip": "Owner only",
-    "adminRequiredTooltip": "Admin required",
     "billingLockedTooltip": "Resolve billing to unlock",
     "groups": {
       "manage": "Manage"
@@ -460,6 +456,7 @@
       "accountIdPlaceholder": "user_xyz123",
       "accountIdRequired": "Account ID is required",
       "addDescription": "Add a user by their account ID.",
+      "addMembers": "Add members",
       "importMembers": "Import Members",
       "importTitle": "Import Members",
       "importDescription": "Paste CSV rows (email, role) or use the template.",
@@ -845,6 +842,7 @@
     }
   },
   "billing": {
+    "invoicesOwnerOnlyRedirect": "Invoices and history are only visible to organization owners.",
     "payment": {
       "successTitle": "Payment successful!",
       "successDescription": "Thank you for your payment. This tab will close shortly.",
@@ -884,7 +882,7 @@
       "extendMonths": "Months to add",
       "extendConfirm": "Extend",
       "extending": "Extending…",
-      "extended": "Subscription extended — check Invoices to pay",
+      "extended": "Extension invoice created — pay it to add the extra time",
       "extendFailed": "Failed to extend subscription",
       "planChanged": "Plan changed",
       "planChangeFailed": "Failed to change plan"

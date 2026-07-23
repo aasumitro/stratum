@@ -53,7 +53,7 @@ CREATE INDEX idx_subscriptions_subject ON billing.subscriptions (subject_type, s
 CREATE TABLE billing.invoices (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     subscription_id     UUID        NOT NULL REFERENCES billing.subscriptions(id),
-    invoice_number      TEXT        UNIQUE,
+    invoice_number      TEXT,
     amount_cents        BIGINT      NOT NULL CHECK (amount_cents > 0),
     subtotal_cents      BIGINT,
     tax_rate_bps        INT         NOT NULL DEFAULT 0,
@@ -61,6 +61,8 @@ CREATE TABLE billing.invoices (
     currency            TEXT        NOT NULL DEFAULT 'USD',
     status              TEXT        NOT NULL DEFAULT 'pending'
                                     CHECK (status IN ('pending', 'paid', 'failed', 'void')),
+    kind                TEXT        NOT NULL DEFAULT 'subscription'
+                                    CHECK (kind IN ('subscription', 'extension')),
     provider_invoice_id TEXT,
     due_at              TIMESTAMPTZ,
     paid_at             TIMESTAMPTZ,
@@ -69,6 +71,12 @@ CREATE TABLE billing.invoices (
 );
 CREATE INDEX idx_invoices_subscription ON billing.invoices (subscription_id);
 CREATE INDEX idx_invoices_status       ON billing.invoices (status);
+-- invoice_number is only unique per subscription (i.e. per organization —
+-- one subscription row exists for the lifetime of an org), not globally:
+-- it's generated from a per-organization counter (billing.invoice_sequences),
+-- so two different organizations' Nth invoice can legitimately share the
+-- same formatted number (most commonly, both orgs' very first invoice).
+CREATE UNIQUE INDEX idx_invoices_subscription_number ON billing.invoices (subscription_id, invoice_number);
 
 CREATE TABLE billing.invoice_sequences (
     organization_id UUID     NOT NULL,

@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 
@@ -50,6 +51,23 @@ func (w *Worker) HandleSubscriptionCheck(ctx context.Context, body []byte) error
 	return w.svc.expireIfDue(ctx, check.SubscriptionID)
 }
 
+// staleSubscriptionCheck reports whether a delayed SubscriptionCheck message
+// still matches the subscription's current end date. scheduleRenewalSequence
+// is called every time period_end/trial_end changes (extend, reactivate,
+// resume, plan change), but the previously-scheduled delayed message for the
+// old end date is never cancelled — this platform's events.PublishDelayed has
+// no cancellation primitive. A message whose ExpectedEnd no longer matches
+// the subscription's current end date is one of those leftovers: a fresh
+// message for the new end date was already published by whatever changed it,
+// so this one should no-op rather than act on a date that's no longer real.
+func staleSubscriptionCheck(sub *subscriptionRecord, check events.SubscriptionCheck) bool {
+	currentEnd := sub.PeriodEnd
+	if check.IsTrial {
+		currentEnd = sub.TrialEnd
+	}
+	return currentEnd == nil || !currentEnd.Equal(check.ExpectedEnd)
+}
+
 // HandleSubscriptionRemind re-publishes as a normal event so notification can consume it.
 func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
@@ -58,6 +76,10 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 	}
 	sub, err := w.svc.repo.findSubscriptionByID(ctx, w.svc.pool, check.SubscriptionID)
 	if err != nil || (sub.Status != statusActive && sub.Status != statusTrialing) {
+		return nil
+	}
+	if staleSubscriptionCheck(sub, check) {
+		slog.Info("skipping stale subscription reminder", "subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
 		return nil
 	}
 	events.Publish(ctx, w.svc.pub, events.ExchangeBilling, events.RoutingKeySubscriptionRemind, "billing", sub.SubjectID,
@@ -76,6 +98,10 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 	}
 	sub, err := w.svc.repo.findSubscriptionByID(ctx, w.svc.pool, check.SubscriptionID)
 	if err != nil || (sub.Status != statusActive && sub.Status != statusTrialing) {
+		return nil
+	}
+	if staleSubscriptionCheck(sub, check) {
+		slog.Info("skipping stale auto-invoice", "subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
 		return nil
 	}
 
@@ -117,7 +143,7 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		taxRate, _ = w.svc.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
 	}
 	tax := calculateTax(composed, taxRate)
-	inv, err := w.svc.repo.insertInvoice(ctx, w.svc.pool, sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency)
+	inv, err := w.svc.repo.insertInvoice(ctx, w.svc.pool, sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription")
 	if err != nil {
 		return err
 	}

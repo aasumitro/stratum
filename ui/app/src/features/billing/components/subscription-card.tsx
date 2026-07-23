@@ -10,7 +10,7 @@ import {
   useExtendSubscription,
   useActivateTrialNow,
 } from "@/features/billing/hooks"
-import { useOrganizations } from "@/features/organization/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { PlanSelector } from "./plan-selector"
 import { SubscriptionStatusBanner } from "./subscription-status-banner"
 import { SubscriptionExtendDialog } from "./subscription-extend-dialog"
@@ -34,11 +34,9 @@ export function SubscriptionCard({ organizationId }: Props) {
   const [extendMonths, setExtendMonths] = useState("1")
 
   const { data: subData, isLoading } = useBillingSubscription(organizationId)
-  const { data: listData } = useOrganizations()
+  const { isOwner } = usePermissions()
 
   const sub = subData?.data
-  const isOwner =
-    listData?.data?.find((w) => w.id === organizationId)?.role === "owner"
 
   const { mutate: cancel, isPending: cancelling } =
     useCancelSubscription(organizationId)

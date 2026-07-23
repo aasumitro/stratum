@@ -24,7 +24,10 @@ export function useBillingStatus(): BillingStatus {
     !!organizationId && isOwner
   )
   const hasPendingInvoice =
-    isOwner && (invoicesData?.data ?? []).some((i) => i.status === "pending")
+    isOwner &&
+    (invoicesData?.data ?? []).some(
+      (i) => i.status === "pending" && i.kind !== "extension"
+    )
 
   return {
     isOwner,

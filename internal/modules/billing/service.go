@@ -60,6 +60,7 @@ var (
 	ErrAddonNotFound               = errors.New("addon not found")
 	ErrUnknownPlan                 = errors.New("unknown plan")
 	ErrSubscriptionNotExtendable   = errors.New("subscription is not in an extendable state")
+	ErrExtensionAlreadyPending     = errors.New("an extension invoice is already pending payment")
 	ErrExtensionExceedsMaxDuration = errors.New("extension would exceed the maximum subscription duration")
 	ErrSubscriptionNotTrialing     = errors.New("subscription is not currently trialing")
 	ErrSubscriptionNotResumable    = errors.New("subscription is not in a resumable state")

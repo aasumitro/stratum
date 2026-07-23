@@ -45,6 +45,7 @@ export interface Invoice {
   tax_cents: number
   currency: string
   status: InvoiceStatus
+  kind: "subscription" | "extension"
   provider_invoice_id?: string
   due_at?: string
   paid_at?: string

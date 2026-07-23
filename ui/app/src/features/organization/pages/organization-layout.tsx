@@ -12,11 +12,10 @@ import { IconBuilding, IconCopy } from "@tabler/icons-react"
 import { useAuth } from "@/components/auth-provider"
 import {
   useOrganization,
-  useOrganizations,
   useOrganizationMembers,
   useUnsuspendOrganization,
 } from "@/features/organization/hooks"
-import { useInvoices } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -69,16 +68,9 @@ export function OrganizationLayout() {
     void navigate({ to: "/organizations" })
   }, [isError, error, navigate, t])
 
-  const { data: listData } = useOrganizations()
+  const { role, isOwner, hasPendingInvoice } = usePermissions()
   const organization = wsData?.data
-  const role = listData?.data?.find((w) => w.id === organizationId)?.role
-  const isOwner = role === "owner"
   const isSuspended = organization?.status === "suspended"
-
-  const { data: invoicesData } = useInvoices(organizationId, isOwner)
-  const hasPendingInvoice =
-    isOwner && (invoicesData?.data ?? []).some((i) => i.status === "pending")
-  const isBillingBlocked = hasPendingInvoice
 
   // Billing-caused suspension is the one that resolves itself by
   // payment (the "subscription expired" sentinel billing's auto-suspend
@@ -101,13 +93,13 @@ export function OrganizationLayout() {
   const subSegments = location.pathname.split("/").filter(Boolean).slice(2) // drop "organization" and organizationId
   const currentSegment = subSegments[0]
   useEffect(() => {
-    if (!isBillingBlocked || !currentSegment) return
+    if (!hasPendingInvoice || !currentSegment) return
     if (BILLING_ALLOWED_SEGMENTS.has(currentSegment)) return
     void navigate({
       to: "/organization/$organizationId/billing",
       params: { organizationId },
     })
-  }, [isBillingBlocked, currentSegment, navigate, organizationId])
+  }, [hasPendingInvoice, currentSegment, navigate, organizationId])
 
   return (
     <div className="flex flex-1 flex-col gap-6">

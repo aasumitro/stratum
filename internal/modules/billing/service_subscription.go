@@ -76,6 +76,28 @@ func (s *service) provisionSubscription(
 			}
 		}
 
+		// Seed the owner's own seat so "members" usage starts accurate
+		// instead of missing: checkUsageLimit fails open to current=0 when
+		// no billing.usage row exists yet, which would let the very first
+		// invite/add past the plan's limit regardless of the owner already
+		// occupying one seat. Only on first provisioning (isNew) — a
+		// redelivery must not reset usage that's grown since the original
+		// commit. periodStart/periodEnd mirror recordUsage's own derivation
+		// so a later syncMemberUsage call upserts this same row.
+		if isNew {
+			periodStart := sub.CreatedAt
+			periodEnd := sub.CreatedAt.AddDate(0, 1, 0)
+			if sub.PeriodStart != nil {
+				periodStart = *sub.PeriodStart
+			}
+			if sub.PeriodEnd != nil {
+				periodEnd = *sub.PeriodEnd
+			}
+			if err := s.repo.upsertUsage(ctx, s.querier(ctx), subjectID, "members", 1, periodStart, periodEnd); err != nil {
+				return err
+			}
+		}
+
 		// Attach the cart's addons/coupon before any invoice is composed
 		// below — both organization.createOrganization's up-front
 		// validation already confirmed these are valid, so this is pure
@@ -130,7 +152,7 @@ func (s *service) provisionSubscription(
 					taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryCode)
 				}
 				tax := calculateTax(composed, taxRate)
-				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency)
+				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency, "subscription")
 				if invErr != nil {
 					return fmt.Errorf("billing.provisionSubscription: insert invoice: %w", invErr)
 				}
@@ -208,7 +230,7 @@ func (s *service) changePlan(
 
 	oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, fmt.Errorf("%w: current plan", ErrUnknownPlan)
+		return nil, fmt.Errorf("billing.changePlan: %w: current plan", ErrUnknownPlan)
 	}
 
 	action := "upgrade"
@@ -248,7 +270,7 @@ func (s *service) changePlan(
 			}
 			tax := calculateTax(composed, taxRate)
 			if inv, err := s.repo.insertInvoice(
-				ctx, s.querier(ctx), subjectID, updated.ID, composed, taxRate, tax, updated.Currency,
+				ctx, s.querier(ctx), subjectID, updated.ID, composed, taxRate, tax, updated.Currency, "subscription",
 			); err == nil {
 				_ = s.insertPlanLineItem(ctx, inv, newPlanInfo)
 				s.applyInvoiceCharges(ctx, s.querier(ctx), updated.ID, inv.ID,

@@ -31,7 +31,7 @@ const maxSubscriptionDuration = 2 * 365 * 24 * time.Hour
 // exceeded — rejected outright rather than silently clamped, so the caller
 // always knows exactly how much time an extension bought.
 func (s *service) extendSubscription(
-	ctx context.Context, subjectType, subjectID string, months int, extendedBy string,
+	ctx context.Context, subjectType, subjectID string, months int, _ string,
 ) (inv *invoiceRecord, err error) {
 	defer func() {
 		if err == nil {
@@ -43,6 +43,8 @@ func (s *service) extendSubscription(
 			err = apperr.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found", err)
 		case errors.Is(err, ErrSubscriptionNotExtendable):
 			err = apperr.Validation("SUBSCRIPTION_NOT_EXTENDABLE", "subscription cannot be extended in its current state")
+		case errors.Is(err, ErrExtensionAlreadyPending):
+			err = apperr.Validation("EXTENSION_ALREADY_PENDING", "an extension invoice is already pending payment")
 		case errors.Is(err, ErrExtensionExceedsMaxDuration):
 			err = apperr.Validation("EXTENSION_EXCEEDS_MAX_DURATION", err.Error())
 		case errors.Is(err, ErrUnknownPlan):
@@ -63,10 +65,14 @@ func (s *service) extendSubscription(
 		return nil, ErrSubscriptionNotExtendable
 	}
 
+	if isPending, _ := s.repo.hasPendingInvoiceOfKind(ctx, s.querier(ctx), sub.ID, "extension"); isPending {
+		return nil, ErrExtensionAlreadyPending
+	}
+
 	newPeriodEnd := sub.PeriodEnd.AddDate(0, months, 0)
 	maxAllowedEnd := sub.CreatedAt.Add(maxSubscriptionDuration)
 	if newPeriodEnd.After(maxAllowedEnd) {
-		return nil, fmt.Errorf("%w: at most until %s", ErrExtensionExceedsMaxDuration, maxAllowedEnd.Format(time.RFC3339))
+		return nil, fmt.Errorf("billing.extendSubscription: %w: at most until %s", ErrExtensionExceedsMaxDuration, maxAllowedEnd.Format(time.RFC3339))
 	}
 
 	planInfo, err := s.planCatalog(ctx, sub.Plan)
@@ -92,7 +98,7 @@ func (s *service) extendSubscription(
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
-		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, subtotal, taxRate, tax, sub.Currency)
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, subtotal, taxRate, tax, sub.Currency, "extension")
 		if err != nil {
 			return err
 		}
@@ -103,13 +109,6 @@ func (s *service) extendSubscription(
 		); err != nil {
 			return err
 		}
-		if err := s.repo.updateSubscriptionPeriod(
-			ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, newPeriodEnd,
-		); err != nil {
-			return err
-		}
-		_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "extend",
-			&sub.Plan, &sub.Plan, subtotal, sub.Currency, extendedBy, nil)
 		return nil
 	})
 	if err != nil {
@@ -194,7 +193,7 @@ func (s *service) activateTrialNow(
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
-		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency)
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription")
 		if err != nil {
 			return err
 		}
@@ -312,7 +311,7 @@ func (s *service) resumeSubscription(
 	case statusExpired:
 		planInfo, err := s.planCatalog(ctx, sub.Plan)
 		if err != nil {
-			return nil, fmt.Errorf("%w: current plan", ErrUnknownPlan)
+			return nil, fmt.Errorf("billing.HandleSubscriptionRemind: %w: current plan", ErrUnknownPlan)
 		}
 		composed, addonLines, couponCode, discountCents := s.composeInvoiceAmount(
 			ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, sub.Cycle)
@@ -326,7 +325,7 @@ func (s *service) resumeSubscription(
 		err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 			ctx := db.WithQuerier(ctx, tx)
 			var err error
-			inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency)
+			inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription")
 			if err != nil {
 				return err
 			}

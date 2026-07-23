@@ -175,3 +175,15 @@ export interface WebhookDelivery {
   delivered_at?: string
   created_at: string
 }
+
+export type PermissionFeature =
+  | "members"
+  | "invitations"
+  | "files"
+  | "webhooks"
+  | "auditLog"
+  | "billing"
+  | "settingsGeneral"
+  | "settingsSecurity"
+  | "settingsDanger"
+export type PermissionAction = "view" | "manage" | "edit" | "delete"

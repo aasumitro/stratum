@@ -1,5 +1,7 @@
-import { useParams } from "@tanstack/react-router"
+import { useEffect } from "react"
+import { useParams, useNavigate } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
 import { IconRobot, IconWebhook } from "@tabler/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -12,6 +14,7 @@ import {
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useBillingHistory } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { formatMoney, initials } from "@/lib/format"
 
 function formatDate(s: string) {
@@ -61,6 +64,19 @@ export function BillingHistoryPage() {
   const { organizationId } = useParams({ strict: false }) as {
     organizationId: string
   }
+  const navigate = useNavigate()
+  const { isOwner } = usePermissions()
+
+  useEffect(() => {
+    if (!isOwner) {
+      toast(t("billing.invoicesOwnerOnlyRedirect"))
+      void navigate({
+        to: "/organization/$organizationId/billing",
+        params: { organizationId },
+      })
+    }
+  }, [isOwner, navigate, organizationId, t])
+
   const { data, isLoading } = useBillingHistory(organizationId)
   const history = data?.data ?? []
 

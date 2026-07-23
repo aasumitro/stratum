@@ -48,10 +48,6 @@
     "backTo": "Kembali ke {{name}}",
     "myAccount": "Akun saya",
     "setDefault": "Jadikan default",
-    "ownerTag": "pemilik",
-    "adminTag": "admin",
-    "ownerOnlyTooltip": "Khusus pemilik",
-    "adminRequiredTooltip": "Perlu admin",
     "billingLockedTooltip": "Selesaikan tagihan untuk membuka",
     "groups": {
       "manage": "Kelola"
@@ -460,6 +456,7 @@
       "accountIdPlaceholder": "user_xyz123",
       "accountIdRequired": "ID Akun wajib diisi",
       "addDescription": "Tambahkan pengguna menggunakan ID akun mereka.",
+      "addMembers": "Tambah anggota",
       "importMembers": "Impor Anggota",
       "importTitle": "Impor Anggota",
       "importDescription": "Tempel baris CSV (email, role) atau gunakan templat.",
@@ -845,6 +842,7 @@
     }
   },
   "billing": {
+    "invoicesOwnerOnlyRedirect": "Faktur dan riwayat hanya dapat dilihat oleh pemilik organisasi.",
     "payment": {
       "successTitle": "Pembayaran berhasil!",
       "successDescription": "Terima kasih atas pembayaran Anda. Tab ini akan segera ditutup.",
@@ -884,7 +882,7 @@
       "extendMonths": "Jumlah bulan",
       "extendConfirm": "Perpanjang",
       "extending": "Memperpanjang…",
-      "extended": "Langganan diperpanjang — periksa Faktur untuk membayar",
+      "extended": "Faktur perpanjangan dibuat — bayar untuk menambah waktu",
       "extendFailed": "Gagal memperpanjang langganan",
       "planChanged": "Paket diubah",
       "planChangeFailed": "Gagal mengubah paket"
