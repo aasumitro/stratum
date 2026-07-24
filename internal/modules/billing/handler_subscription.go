@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/audit"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/reqctx"
@@ -99,6 +100,60 @@ func (h *handler) changePlan(c *gin.Context) {
 	}
 	audit.SetAfter(c, map[string]any{"plan": sub.Plan, "cycle": sub.Cycle, "status": sub.Status})
 	response.Success(sub).JSON(c, http.StatusOK)
+}
+
+type downgradeSubscriptionRequest struct {
+	Plan                    string   `json:"plan" binding:"required"`
+	Cycle                   string   `json:"cycle" binding:"required,oneof=monthly yearly"`
+	PreferredMemberAuthSubs []string `json:"preferred_member_auth_subs"`
+	PreferredFileIDs        []string `json:"preferred_file_ids"`
+}
+
+// downgradeSubscriptionResponse carries the OverageResolution alongside the
+// updated subscription so the frontend's success screen can show exactly
+// what was removed and whether each item was owner-selected or
+// auto-selected, instead of only recording it in the audit trail.
+type downgradeSubscriptionResponse struct {
+	Subscription *subscriptionRecord         `json:"subscription"`
+	Overage      contracts.OverageResolution `json:"overage"`
+}
+
+// downgradeSubscription godoc
+// @Summary      Downgrade the subscription plan and resolve overage
+// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+// @Tags         billing
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string                        true  "Organization ID"
+// @Param        body            body      downgradeSubscriptionRequest  true  "Downgrade details"
+// @Success      200             {object}  response.Payload{data=downgradeSubscriptionResponse}
+// @Failure      422             {object}  response.Payload  "validation failed"
+// @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/downgrade [post]
+func (h *handler) downgradeSubscription(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	sub, err := h.svc.getSubscription(c.Request.Context(), "organization", ws.ID)
+	if err == nil {
+		audit.SetBefore(c, map[string]any{"current_plan": sub.Plan, "current_cycle": sub.Cycle})
+	}
+
+	var req downgradeSubscriptionRequest
+	if !request.Bind(c, &req) {
+		return
+	}
+
+	audit.SetAfter(c, map[string]any{"target_plan": req.Plan, "target_cycle": req.Cycle, "preferred_member_auth_subs": req.PreferredMemberAuthSubs, "preferred_file_ids": req.PreferredFileIDs})
+
+	updated, overage, err := h.svc.downgradeSubscription(c.Request.Context(), "organization", ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), req.PreferredMemberAuthSubs, req.PreferredFileIDs)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	audit.SetAfter(c, map[string]any{"plan": updated.Plan, "cycle": updated.Cycle, "status": updated.Status})
+	response.Success(downgradeSubscriptionResponse{Subscription: updated, Overage: overage}).JSON(c, http.StatusOK)
 }
 
 // cancelSubscription godoc

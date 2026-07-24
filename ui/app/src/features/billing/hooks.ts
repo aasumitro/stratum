@@ -21,6 +21,7 @@ import type {
   AttachedAddon,
   Coupon,
   InvoicePreview,
+  DowngradeResult,
 } from "@/types/billing"
 import type { Plan, Feature, Addon } from "@/types/reference"
 
@@ -260,6 +261,45 @@ export function useChangePlan(organizationId: string) {
         })
       },
       onError: () => toast.error(t("billing.subscription.planChangeFailed")),
+    },
+  })
+}
+
+export function useDowngradeSubscription(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<
+    DowngradeResult,
+    {
+      plan: string
+      cycle: string
+      preferred_member_auth_subs?: string[]
+      preferred_file_ids?: string[]
+    }
+  >({
+    url: API.billing(organizationId, "downgrade"),
+    options: {
+      onSuccess: (_data, vars) => {
+        toast.success(t("billing.subscription.downgradeSuccess"))
+        capture("subscription_downgraded", {
+          organization_id: organizationId,
+          plan: vars.plan,
+          cycle: vars.cycle,
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.invoices(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.paymentLinks(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.history(organizationId),
+        })
+      },
+      onError: () => toast.error(t("billing.subscription.downgradeFailed")),
     },
   })
 }

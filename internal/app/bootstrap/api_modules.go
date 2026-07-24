@@ -71,6 +71,7 @@ func NewAPIModules(ctx context.Context, infra *Infra, storageClient *storage.Cli
 	organizationMod.SetUserReader(accountMod)
 	billingMod.SetUserReader(accountMod)
 	billingMod.SetOrganizationReader(organizationMod)
+	billingMod.SetOrganizationCommander(organizationMod)
 	organizationMod.SetCatalogReader(billingMod)
 	refMod.SetCatalogReader(billingMod)
 	accountMod.SetOrganizationWriter(organizationMod)

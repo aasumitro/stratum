@@ -32,6 +32,7 @@ CREATE TABLE organization.memberships (
 );
 CREATE INDEX idx_organization_memberships_organization ON organization.memberships (organization_id);
 CREATE INDEX idx_organization_memberships_auth_sub     ON organization.memberships (auth_sub);
+CREATE INDEX idx_organization_memberships_org_joined    ON organization.memberships (organization_id, joined_at DESC);
 
 CREATE TABLE organization.invitations (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

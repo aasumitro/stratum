@@ -82,10 +82,11 @@ type service struct {
 	pool         *pgxpool.Pool
 	pub          messaging.EventPublisher
 	provider     ProviderConfig
-	taxReader    contracts.CountryTaxReader // optional; nil means tax rate defaults to 0
-	orgSuspender contracts.OrganizationSuspender
-	orgReader    contracts.OrganizationReader // optional; nil = every org owner treated as first-time (gets a trial)
 	userReader   contracts.UserReader
+	orgReader    contracts.OrganizationReader
+	orgCommander contracts.OrganizationCommander
+	taxReader    contracts.CountryTaxReader
+	orgSuspender contracts.OrganizationSuspender
 }
 
 // findPlanByID/listPlansRecords/listFeaturesRecords/listAddonsRecords/findAddonByID

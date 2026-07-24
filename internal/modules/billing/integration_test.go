@@ -6,16 +6,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
@@ -2404,6 +2408,417 @@ func TestIntegration_PreviewInvoice_HypotheticalPlanChange_SetsNewPeriodEnd(t *t
 	}
 }
 
+func TestIntegration_PreviewInvoice_Downgrade_IncludesOverage(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_preview_down_user"
+		user2 = "integ_billing_preview_down_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f34"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	// Upgrade to growth so we can downgrade
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: user})
+		c.Next()
+	}
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{
+			ID: wsID1, Slug: "test-ws", Name: "Test WS",
+			Status: "active", OwnerID: user,
+		})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	// Add owner and second member to organization schema so ResolveDowngradeOverage finds them
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`, wsID1, user, user2)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	// Also record usage in billing schema so listCurrentUsage returns 2
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	// Manually change plan to growth to test downgrade
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d: %s", wUpdate.Code, wUpdate.Body)
+	}
+
+	// Preview downgrade to solo
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodGet, billingURL(wsID1)+"/preview?plan=solo&cycle=monthly", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview downgrade: %d: %s", w.Code, w.Body)
+	}
+
+	var resp struct {
+		Data struct {
+			Plan    string `json:"plan"`
+			Overage *struct {
+				Members struct {
+					Current            int      `json:"current"`
+					Allowed            int      `json:"allowed"`
+					AutoSelectRemovals []string `json:"auto_select_removals"`
+				} `json:"members"`
+				Storage struct {
+					Current            int      `json:"current"`
+					Allowed            int      `json:"allowed"`
+					AutoSelectRemovals []string `json:"auto_select_removals"`
+				} `json:"storage"`
+			} `json:"overage"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.Data.Plan != "solo" {
+		t.Errorf("preview downgrade: want plan=solo, got %q", resp.Data.Plan)
+	}
+	if resp.Data.Overage == nil {
+		t.Fatal("preview downgrade: want overage populated, got nil")
+	}
+
+	if resp.Data.Overage.Members.Current != 2 {
+		t.Errorf("overage current members: want 2, got %d", resp.Data.Overage.Members.Current)
+	}
+	if resp.Data.Overage.Members.Allowed != 1 {
+		t.Errorf("overage allowed members: want 1, got %d", resp.Data.Overage.Members.Allowed)
+	}
+	if len(resp.Data.Overage.Members.AutoSelectRemovals) != 1 {
+		t.Errorf("overage autoselect members: want 1, got %d", len(resp.Data.Overage.Members.AutoSelectRemovals))
+	}
+}
+
+func TestIntegration_DowngradeSubscription_ManualSelection(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_man_user"
+		user2 = "integ_billing_down_man_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f35"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`, wsID1, user, user2)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	wDown := httptest.NewRecorder()
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly","preferred_member_auth_subs":["`+user2+`"]}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade: %d: %s", wDown.Code, wDown.Body)
+	}
+
+	// Verify member was actually removed
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("manual downgrade: want 1 member left, got %d", count)
+	}
+
+	// Verify the response body itself carries the overage summary — this is
+	// what the frontend's success screen renders; the audit trail below is a
+	// separate write of the same data, not the only place it should exist.
+	var resp struct {
+		Data struct {
+			Overage contracts.OverageResolution `json:"overage"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(wDown.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal downgrade response: %v", err)
+	}
+	if !slices.Contains(resp.Data.Overage.RemovedMemberAuthSubs, user2) {
+		t.Errorf("response overage: want %s in RemovedMemberAuthSubs, got %v", user2, resp.Data.Overage.RemovedMemberAuthSubs)
+	}
+	if slices.Contains(resp.Data.Overage.AutoSelectedMemberSubs, user2) {
+		t.Errorf("response overage: %s was a manual pick, should not be in AutoSelectedMemberSubs, got %v", user2, resp.Data.Overage.AutoSelectedMemberSubs)
+	}
+
+	// Verify the audit trail: the downgrade's subscription_history row must
+	// record user2 as removed and NOT as auto-selected, since it was the
+	// owner's manual pick — this is the record support/the owner would
+	// read after the fact to know what happened and why.
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='downgrade' ORDER BY changed_at DESC LIMIT 1`,
+		wsID1).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var overage contracts.OverageResolution
+	if err := json.Unmarshal(metadataRaw, &overage); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if !slices.Contains(overage.RemovedMemberAuthSubs, user2) {
+		t.Errorf("subscription_history metadata: want %s in RemovedMemberAuthSubs, got %v", user2, overage.RemovedMemberAuthSubs)
+	}
+	if slices.Contains(overage.AutoSelectedMemberSubs, user2) {
+		t.Errorf("subscription_history metadata: %s was a manual pick, should not be in AutoSelectedMemberSubs, got %v", user2, overage.AutoSelectedMemberSubs)
+	}
+}
+
+func TestIntegration_DowngradeSubscription_AutoFill(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_auto_user"
+		user2 = "integ_billing_down_auto_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f36"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`, wsID1, user, user2)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	wDown := httptest.NewRecorder()
+	// No manual selections sent, it should trigger auto-fill
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade: %d: %s", wDown.Code, wDown.Body)
+	}
+
+	// Verify member was actually removed
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("auto-fill downgrade: want 1 member left, got %d", count)
+	}
+}
+
+func TestIntegration_DowngradeSubscription_ResumeOnRetry(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_retry_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f37"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	// Already on solo
+	wDown := httptest.NewRecorder()
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade retry: %d: %s", wDown.Code, wDown.Body)
+	}
+}
+
+// TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavailable
+// is the genuine version of the risk PLAN-007's reordering was designed to
+// mitigate — its sibling test above only exercises the trivial "already on
+// target plan" branch by calling downgrade once when there was never
+// anything to resolve. This test actually interrupts a real downgrade
+// between the plan change and the overage resolution (by leaving
+// orgCommander unset for the first call, simulating that dependency being
+// unavailable — the same effect a real failure inside
+// ResolveDowngradeOverage would have, since either way the method returns
+// before resolving anything), confirms the org lands in the "benign
+// grandfathered" state PLAN-007's ordering promised (cheaper plan, still
+// over limit, nothing removed), then retries and confirms the resume
+// branch actually finishes the job the first attempt couldn't.
+func TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavailable(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_retry2_user"
+		user2 = "integ_billing_down_retry2_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f41"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	// Deliberately not calling SetOrganizationCommander yet — the first
+	// downgrade call below must go through with orgCommander nil.
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	if _, err := pool.Exec(t.Context(),
+		`INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`,
+		wsID1, user, user2); err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	// First attempt: orgCommander is nil, so the plan change goes through
+	// but overage resolution can't run — this is the interrupted state.
+	wDown1 := httptest.NewRecorder()
+	e.ServeHTTP(wDown1, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown1.Code != http.StatusOK {
+		t.Fatalf("first downgrade attempt: %d: %s", wDown1.Code, wDown1.Body)
+	}
+
+	var planAfterFirst string
+	if err := pool.QueryRow(t.Context(), `SELECT plan FROM billing.subscriptions WHERE subject_id=$1`, wsID1).Scan(&planAfterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if planAfterFirst != "solo" {
+		t.Fatalf("plan change should have gone through despite resolution being unavailable: got %q, want solo", planAfterFirst)
+	}
+	var countAfterFirst int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&countAfterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if countAfterFirst != 2 {
+		t.Fatalf("member should NOT have been removed yet (resolution was unavailable): got %d members, want 2", countAfterFirst)
+	}
+
+	// "Recovery": the dependency the first attempt was missing is now
+	// available. Retry the identical request.
+	mod.SetOrganizationCommander(orgMod)
+
+	wDown2 := httptest.NewRecorder()
+	e.ServeHTTP(wDown2, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown2.Code != http.StatusOK {
+		t.Fatalf("retry downgrade: %d: %s", wDown2.Code, wDown2.Body)
+	}
+
+	var countAfterRetry int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&countAfterRetry); err != nil {
+		t.Fatal(err)
+	}
+	if countAfterRetry != 1 {
+		t.Errorf("retry should have finished resolving the overage the first attempt couldn't: got %d members, want 1", countAfterRetry)
+	}
+}
+
 func TestIntegration_ListEligibleCoupons_FiltersByTargetAndValidity(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -2533,5 +2948,329 @@ func TestIntegration_Webhook_Extension_Concurrency(t *testing.T) {
 	).Scan(&historyCount)
 	if historyCount != 1 {
 		t.Errorf("want exactly 1 'extend' history row despite concurrent webhook deliveries, got %d", historyCount)
+	}
+}
+
+func TestIntegration_DowngradeSubscription_AddonLimit(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_addon_user"
+		user2 = "integ_billing_down_addon_user2"
+		user3 = "integ_billing_down_addon_user3"
+		user4 = "integ_billing_down_addon_user4"
+		wsID1 = "00000000-0000-0000-0000-000000000f38"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, wsID1)
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	// Upgrade to growth first
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	// Add 3 more members, so 4 total. (Growth allows 15, so this is well within limit).
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'member', now()), ($1, $3, 'member', now()), ($1, $4, 'member', now())`, wsID1, user2, user3, user4)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	// Record usage = 4 members
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":4}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	// Attach addon +2 extra seats
+	_, err = pool.Exec(t.Context(), `INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity) VALUES ($1, 'extra-seat', 2)`, subID)
+	if err != nil {
+		t.Fatalf("attach addon: %v", err)
+	}
+
+	// Preview downgrade to solo
+	wPrev := httptest.NewRecorder()
+	e.ServeHTTP(wPrev, httpserver.JSONTestRequest(http.MethodGet, billingURL(wsID1)+"/preview?plan=solo&cycle=monthly", ""))
+	if wPrev.Code != http.StatusOK {
+		t.Fatalf("preview downgrade: %d: %s", wPrev.Code, wPrev.Body)
+	}
+	var prevResp struct {
+		Data struct {
+			Overage struct {
+				Members struct {
+					Current int `json:"current"`
+					Allowed int `json:"allowed"`
+				} `json:"members"`
+			} `json:"overage"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(wPrev.Body.Bytes(), &prevResp); err != nil {
+		t.Fatalf("parse preview: %v", err)
+	}
+
+	// solo base member limit is 1. +2 addon = 3.
+	// We have 4 members, so allowed should be 3.
+	if prevResp.Data.Overage.Members.Allowed != 3 {
+		t.Errorf("preview allowed members: want 3, got %d", prevResp.Data.Overage.Members.Allowed)
+	}
+
+	wDown := httptest.NewRecorder()
+	// No manual selections sent, it should trigger auto-fill, removing 4 - 3 = 1 member
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade: %d: %s", wDown.Code, wDown.Body)
+	}
+
+	// Verify members left
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	// solo limit (1) + addon (2) = 3 members allowed
+	if count != 3 {
+		t.Errorf("auto-fill downgrade with addon: want 3 members left, got %d", count)
+	}
+}
+
+// TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember uses
+// the real middleware.NewRLSTxMiddleware, not the noopMW every other test in
+// this file substitutes for it — that substitution is exactly why the
+// prod-only crash this test guards against went undetected: NewRLSTxMiddleware
+// is what stashes a request-scoped *pgx.Tx into the request context
+// (db.WithQuerier), and only a downgrade that actually removes a member
+// exercises the organization module's fire-and-forget syncMemberUsage, which
+// calls back into billing.RecordUsage via a context.WithoutCancel-derived
+// context. Before the WithoutQuerier fix, that context still carried the
+// caller's in-flight transaction, so the background goroutine and the
+// request's own goroutine both drove the same *pgx.Conn concurrently —
+// observed live as "fatal error: concurrent map writes" in pgx's internal
+// statement cache. -race (part of this suite's standard run) is the actual
+// regression guard; this test's job is just to exercise the real code path
+// that a fatal error can't be recovered from or asserted on directly.
+func TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_rls_user"
+		user2 = "integ_billing_down_rls_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f39"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+	orgMod.SetBillingReader(mod)
+	orgMod.SetBillingWriter(mod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{
+		Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW,
+		RLS: middleware.NewRLSTxMiddleware(pool), MFA: noopMW,
+	})
+
+	// The owner's own membership row — resolveDowngradeOverage's "never
+	// remove the owner" exclusion only has something to exclude if this
+	// exists; HandleOrganizationCreated above only provisions the billing
+	// subscription, not the organization-side membership row a real
+	// POST /organizations would create.
+	if _, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now())`, wsID1, user); err != nil {
+		t.Fatalf("insert owner membership: %v", err)
+	}
+
+	// Repeat the upgrade→add-member→downgrade-and-remove cycle several times
+	// in one process: a data race is timing-dependent and a single
+	// iteration isn't guaranteed to hit the exact interleaving even when
+	// the bug is present, so more attempts (under -race's happens-before
+	// instrumentation, which persists across iterations within one process)
+	// give it more chances to be caught if this ever regresses.
+	for i := range 15 {
+		wUpdate := httptest.NewRecorder()
+		e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+		if wUpdate.Code != http.StatusOK {
+			t.Fatalf("iteration %d: upgrade: %d", i, wUpdate.Code)
+		}
+
+		_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'member', now())`, wsID1, user2)
+		if err != nil {
+			t.Fatalf("iteration %d: insert member: %v", i, err)
+		}
+		wUsage := httptest.NewRecorder()
+		e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+		if wUsage.Code != http.StatusNoContent {
+			t.Fatalf("iteration %d: record usage: %d", i, wUsage.Code)
+		}
+
+		// Auto-fill downgrade to solo (limit 1): the owner and user2 are
+		// both present, so this must actually remove user2, which is what
+		// fires syncMemberUsage's fire-and-forget call back into
+		// billing.RecordUsage through the real request-scoped transaction
+		// this test's RLS middleware opened.
+		wDown := httptest.NewRecorder()
+		e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+		if wDown.Code != http.StatusOK {
+			t.Fatalf("iteration %d: downgrade: %d: %s", i, wDown.Code, wDown.Body)
+		}
+
+		var count int
+		if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("iteration %d: want 1 member left (owner only), got %d", i, count)
+		}
+
+		// The background usage sync races the test's own assertions by
+		// design (that's the point) — poll briefly rather than asserting
+		// immediately, so this doesn't flake on a slow CI runner.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			var usage int64
+			uErr := pool.QueryRow(t.Context(),
+				`SELECT value FROM billing.usage WHERE organization_id=$1 AND metric='members'`, wsID1).Scan(&usage)
+			if uErr == nil && usage == 1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("iteration %d: usage sync after downgrade never converged to 1 (last err=%v, value=%d)", i, uErr, usage)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+}
+
+// TestIntegration_DowngradeSubscription_ConcurrentDoubleSubmit verifies the
+// per-organization lock requirement (lockSubscriptionForUpdate's
+// SELECT ... FOR UPDATE, held for the real RLS transaction's lifetime):
+// two concurrent downgrade requests for the same org must serialize, not
+// double-remove members or otherwise race. Uses the real RLS middleware
+// (see TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember's
+// comment for why every other test in this file substituting noopMW matters
+// here too — a noop RLS means no real transaction, and no real transaction
+// means the row lock is a no-op).
+func TestIntegration_DowngradeSubscription_ConcurrentDoubleSubmit(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_concurrent_user"
+		user2 = "integ_billing_down_concurrent_user2"
+		user3 = "integ_billing_down_concurrent_user3"
+		wsID1 = "00000000-0000-0000-0000-000000000f40"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+	orgMod.SetBillingReader(mod)
+	orgMod.SetBillingWriter(mod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{
+		Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW,
+		RLS: middleware.NewRLSTxMiddleware(pool), MFA: noopMW,
+	})
+
+	if _, err := pool.Exec(t.Context(),
+		`INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES
+		 ($1, $2, 'owner', now()), ($1, $3, 'member', now()), ($1, $4, 'member', now())`,
+		wsID1, user, user2, user3); err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	// Fire two identical auto-fill downgrade requests for the same org at
+	// once. Whichever acquires the row lock first changes the plan and
+	// removes both extra members; the other blocks on the lock, then (once
+	// it proceeds) finds the subscription already on the target plan and
+	// takes the resume-on-retry branch — both must return 200, and members
+	// must be removed exactly once, not twice or zero times.
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+			codes[i] = w.Code
+		}(i)
+	}
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Errorf("concurrent request %d: status = %d, want 200", i, code)
+		}
+	}
+
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("want exactly 1 member left (owner only) after both requests settle, got %d — a race would show up as 0 (double-removed, second delete matching nothing is harmless) or the members never actually removed", count)
+	}
+
+	var plan string
+	if err := pool.QueryRow(t.Context(), `SELECT plan FROM billing.subscriptions WHERE subject_id=$1`, wsID1).Scan(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan != "solo" {
+		t.Errorf("want plan solo after both requests settle, got %q", plan)
 	}
 }

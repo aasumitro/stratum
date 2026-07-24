@@ -885,7 +885,30 @@
       "extended": "Faktur perpanjangan dibuat — bayar untuk menambah waktu",
       "extendFailed": "Gagal memperpanjang langganan",
       "planChanged": "Paket diubah",
-      "planChangeFailed": "Gagal mengubah paket"
+      "planChangeFailed": "Gagal mengubah paket",
+      "downgradeSuccess": "Paket diturunkan",
+      "downgradeFailed": "Gagal menurunkan paket"
+    },
+    "downgrade": {
+      "previewTitle": "Turunkan ke paket yang lebih rendah",
+      "previewDescription": "Kami akan memeriksa penggunaan Anda saat ini terhadap batas paket baru.",
+      "previewInfo": "Beralih ke {{plan}} ({{cycle}}). Jika penggunaan Anda melebihi batas paket baru, Anda akan diminta memilih apa yang akan dihapus sebelum ini berlaku.",
+      "selectionTitle": "Pilih item yang akan dihapus",
+      "autoFillDisclosure": "Penggunaan Anda melebihi batas paket baru. Pilih siapa atau apa yang akan dihapus — <b>apa pun yang tidak Anda pilih akan dipilih otomatis untuk Anda</b>.",
+      "selectMembersToRemove": "Anggota yang akan dihapus",
+      "selectFilesToRemove": "File yang akan dihapus",
+      "filesSelectionNotImplementedYet": "Pemilihan file belum tersedia — file terlama akan dihapus otomatis agar sesuai batas penyimpanan baru.",
+      "reviewTitle": "Tinjau Penurunan Paket",
+      "reviewDescription": "Konfirmasi apa yang akan terjadi sebelum Anda menurunkan paket.",
+      "warningTitle": "Tindakan ini tidak dapat dibatalkan",
+      "warningBody": "Menurunkan paket menyebabkan hilangnya fitur yang tidak termasuk dalam paket baru, dan anggota/file yang dihapus tidak dapat dipulihkan.",
+      "toBeRemoved": "Akan dihapus",
+      "autoSelected": "(dipilih otomatis)",
+      "confirmDowngrade": "Konfirmasi penurunan paket",
+      "successTitle": "Penurunan paket selesai",
+      "successDescription": "Paket Anda telah diubah.",
+      "successRemovedInfo": "Dihapus:",
+      "successNothingRemoved": "Penggunaan Anda sudah sesuai batas paket baru — tidak ada yang perlu dihapus."
     },
     "plans": {
       "title": "Pilih paket",

@@ -1,7 +1,7 @@
 import { createFileRoute, isRedirect, redirect } from "@tanstack/react-router"
 import { resolveLandingRoute } from "@/lib/resolve-landing-organization"
 import { isConnectionError } from "@/lib/api/error"
-import { ConnectionErrorPage } from "@/components/shared/connection-error-page"
+
 
 export const Route = createFileRoute("/")({
   beforeLoad: async ({ context }) => {
@@ -19,5 +19,4 @@ export const Route = createFileRoute("/")({
     }
   },
   component: () => null,
-  errorComponent: ConnectionErrorPage,
 })

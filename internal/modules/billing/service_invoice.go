@@ -229,6 +229,20 @@ type invoicePreview struct {
 	// NewPeriodEnd is only set when plan/cycle differ from the subscription's
 	// current plan/cycle — a hypothetical-change preview, not the steady-state one.
 	NewPeriodEnd *time.Time `json:"new_period_end,omitempty"`
+	// Overage is only populated when the hypothetical plan is a downgrade and
+	// the organization's current usage exceeds the new plan's limits.
+	Overage *overagePreview `json:"overage,omitempty"`
+}
+
+type metricOverage struct {
+	Current            int      `json:"current"`
+	Allowed            int      `json:"allowed"`
+	AutoSelectRemovals []string `json:"auto_select_removals"`
+}
+
+type overagePreview struct {
+	Members metricOverage `json:"members"`
+	Storage metricOverage `json:"storage"`
 }
 
 func (s *service) previewInvoice(
@@ -276,12 +290,49 @@ func (s *service) previewInvoice(
 	}
 
 	changingPlan := targetPlan != sub.Plan || targetCycle != sub.Cycle
-	if changingPlan && sub.PeriodStart != nil && sub.PeriodEnd != nil && sub.Status != statusTrialing {
+	if changingPlan {
 		if oldPlanInfo, err := s.planCatalog(ctx, sub.Plan); err == nil {
-			oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
-			newPrice := int(planInfo.Price(sub.Currency, targetCycle))
-			preview.NewPeriodEnd = new(prorate(time.Now(), *sub.PeriodStart,
-				*sub.PeriodEnd, oldPrice, newPrice, sub.Cycle, targetCycle))
+			if sub.PeriodStart != nil && sub.PeriodEnd != nil && sub.Status != statusTrialing {
+				oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
+				newPrice := int(planInfo.Price(sub.Currency, targetCycle))
+				preview.NewPeriodEnd = new(prorate(time.Now(), *sub.PeriodStart,
+					*sub.PeriodEnd, oldPrice, newPrice, sub.Cycle, targetCycle))
+			}
+
+			// Dry-run overage resolution if this is a downgrade
+			if planInfo.SortOrder < oldPlanInfo.SortOrder && s.orgCommander != nil {
+				memberLimit, storageLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
+				res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID,
+					nil, memberLimit,
+					nil, storageLimit, true)
+				if err == nil {
+					usages, _ := s.repo.listCurrentUsage(ctx, s.querier(ctx), subjectID)
+					var curMembers, curStorage int
+					for _, u := range usages {
+						switch u.Metric {
+						case "members":
+							curMembers = int(u.Value)
+						case "storage_bytes":
+							curStorage = int(u.Value)
+						}
+					}
+					preview.Overage = &overagePreview{
+						Members: metricOverage{
+							Current:            curMembers,
+							Allowed:            memberLimit,
+							AutoSelectRemovals: res.AutoSelectedMemberSubs,
+						},
+						Storage: metricOverage{
+							Current:            curStorage,
+							Allowed:            int(storageLimit),
+							AutoSelectRemovals: res.AutoSelectedFileIDs,
+						},
+					}
+				} else {
+					slog.Error("previewInvoice: failed to dry-run overage resolution",
+						"organization_id", subjectID, "error", err)
+				}
+			}
 		}
 	}
 

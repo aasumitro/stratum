@@ -8,7 +8,7 @@ import type { UserProfile } from "@/types/account"
 import type { OrganizationView } from "@/types/organization"
 import { needsMfaChallenge } from "@/lib/auth/mfa"
 import { OnboardingPage } from "@/features/onboarding/pages/onboarding-page"
-import { ConnectionErrorPage } from "@/components/shared/connection-error-page"
+
 
 export const Route = createFileRoute("/onboarding")({
   beforeLoad: async ({ context }) => {
@@ -55,5 +55,4 @@ export const Route = createFileRoute("/onboarding")({
     }
   },
   component: OnboardingPage,
-  errorComponent: ConnectionErrorPage,
 })

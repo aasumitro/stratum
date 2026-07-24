@@ -96,3 +96,30 @@ type OrganizationWriter interface {
 	// all organizations.
 	RemoveAllMemberships(ctx context.Context, authSub string) error
 }
+
+type OrganizationCommander interface {
+	// ResolveDowngradeOverage brings organizationID's member count to at most
+	// memberLimit and storage usage to at most storageLimitBytes, in one
+	// organization-owned transaction. preferredMemberAuthSubs/preferredFileIDs
+	// are removed first (silently ignoring IDs that don't belong to this org
+	// or are the owner); if that isn't enough, additional non-owner members
+	// / files are removed deterministically (see selection order below) until
+	// the targets are met or nothing removable remains. A limit of -1 means
+	// unlimited (no removal for that dimension). Returns everything actually
+	// removed, split by whether it was in the caller's preferred list or
+	// auto-selected. dryRun=true computes the same result without deleting
+	// anything, for the preview endpoint.
+	ResolveDowngradeOverage(
+		ctx context.Context, organizationID string,
+		preferredMemberAuthSubs []string, memberLimit int,
+		preferredFileIDs []string, storageLimitBytes int64,
+		dryRun bool,
+	) (result OverageResolution, err error)
+}
+
+type OverageResolution struct {
+	RemovedMemberAuthSubs  []string `json:"removed_member_auth_subs"`
+	AutoSelectedMemberSubs []string `json:"auto_selected_member_subs"` // subset of RemovedMemberAuthSubs
+	RemovedFileIDs         []string `json:"removed_file_ids"`
+	AutoSelectedFileIDs    []string `json:"auto_selected_file_ids"` // subset of RemovedFileIDs
+}

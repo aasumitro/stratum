@@ -2453,6 +2453,82 @@
                 }
             }
         },
+        "/organizations/{organizationID}/billing/downgrade": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Downgrade the subscription plan and resolve overage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Downgrade details",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/downgradeSubscriptionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/downgradeSubscriptionResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
         "/organizations/{organizationID}/billing/extend": {
             "post": {
                 "security": [
@@ -6244,6 +6320,37 @@
                 }
             }
         },
+        "OverageResolution": {
+            "type": "object",
+            "properties": {
+                "auto_selected_file_ids": {
+                    "description": "subset of RemovedFileIDs",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "auto_selected_member_subs": {
+                    "description": "subset of RemovedMemberAuthSubs",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "removed_file_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "removed_member_auth_subs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "Payload": {
             "type": "object",
             "properties": {
@@ -6660,6 +6767,48 @@
                 }
             }
         },
+        "downgradeSubscriptionRequest": {
+            "type": "object",
+            "required": [
+                "cycle",
+                "plan"
+            ],
+            "properties": {
+                "cycle": {
+                    "type": "string",
+                    "enum": [
+                        "monthly",
+                        "yearly"
+                    ]
+                },
+                "plan": {
+                    "type": "string"
+                },
+                "preferred_file_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "preferred_member_auth_subs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "downgradeSubscriptionResponse": {
+            "type": "object",
+            "properties": {
+                "overage": {
+                    "$ref": "#/definitions/OverageResolution"
+                },
+                "subscription": {
+                    "$ref": "#/definitions/subscriptionRecord"
+                }
+            }
+        },
         "entitlementRecord": {
             "type": "object",
             "properties": {
@@ -6958,6 +7107,14 @@
                     "description": "NewPeriodEnd is only set when plan/cycle differ from the subscription's\ncurrent plan/cycle — a hypothetical-change preview, not the steady-state one.",
                     "type": "string"
                 },
+                "overage": {
+                    "description": "Overage is only populated when the hypothetical plan is a downgrade and\nthe organization's current usage exceeds the new plan's limits.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/overagePreview"
+                        }
+                    ]
+                },
                 "plan": {
                     "type": "string"
                 },
@@ -6988,6 +7145,9 @@
                     "type": "string"
                 },
                 "invoice_number": {
+                    "type": "string"
+                },
+                "kind": {
                     "type": "string"
                 },
                 "paid_at": {
@@ -7160,6 +7320,23 @@
                 }
             }
         },
+        "metricOverage": {
+            "type": "object",
+            "properties": {
+                "allowed": {
+                    "type": "integer"
+                },
+                "auto_select_removals": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "current": {
+                    "type": "integer"
+                }
+            }
+        },
         "moveFileRequest": {
             "type": "object",
             "properties": {
@@ -7286,6 +7463,17 @@
                 },
                 "updated_at": {
                     "type": "string"
+                }
+            }
+        },
+        "overagePreview": {
+            "type": "object",
+            "properties": {
+                "members": {
+                    "$ref": "#/definitions/metricOverage"
+                },
+                "storage": {
+                    "$ref": "#/definitions/metricOverage"
                 }
             }
         },

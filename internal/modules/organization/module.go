@@ -46,9 +46,15 @@ func (m *Module) UnsuspendOrganization(ctx context.Context, organizationID strin
 }
 
 // SetCacheInvalidator wires the cache invalidator after construction.
-// Called from main.go after the cached reader is created.
+// Called from main.go after the cached reader is created. Also wired onto
+// svc, not just the handler, so service-layer bulk operations that never
+// go through this module's own HTTP handler (resolveDowngradeOverage,
+// called cross-module from billing) can still invalidate a removed
+// member's cached RBAC role immediately instead of leaving them with
+// stale cached access for up to the cache's TTL.
 func (m *Module) SetCacheInvalidator(inv contracts.OrganizationCacheInvalidator) {
 	m.cacheInval = inv
+	m.svc.cacheInval = inv
 }
 
 // SetBillingReader wires the billing reader after construction to enforce plan limits.
@@ -171,6 +177,16 @@ func (m *Module) ListOwnedOrganizationIDs(ctx context.Context, authSub string) (
 // Called by the account module's GDPR delete-account gate.
 func (m *Module) CountActiveOwnedOrganizations(ctx context.Context, authSub string) (int, error) {
 	return m.svc.countActiveOwnedOrganizations(ctx, authSub)
+}
+
+// ResolveDowngradeOverage implements contracts.OrganizationCommander.
+func (m *Module) ResolveDowngradeOverage(
+	ctx context.Context, organizationID string,
+	preferredMemberAuthSubs []string, memberLimit int,
+	preferredFileIDs []string, storageLimitBytes int64,
+	dryRun bool,
+) (contracts.OverageResolution, error) {
+	return m.svc.resolveDowngradeOverage(ctx, organizationID, preferredMemberAuthSubs, memberLimit, preferredFileIDs, storageLimitBytes, dryRun)
 }
 
 // CleanupExpiredInvitations deletes invitations past their expiry. Called by the worker ticker.

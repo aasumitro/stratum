@@ -71,6 +71,27 @@ definitions:
         description: '"metered" | "boolean" | "static" | "config"'
         type: string
     type: object
+  OverageResolution:
+    properties:
+      auto_selected_file_ids:
+        description: subset of RemovedFileIDs
+        items:
+          type: string
+        type: array
+      auto_selected_member_subs:
+        description: subset of RemovedMemberAuthSubs
+        items:
+          type: string
+        type: array
+      removed_file_ids:
+        items:
+          type: string
+        type: array
+      removed_member_auth_subs:
+        items:
+          type: string
+        type: array
+    type: object
   Payload:
     properties:
       data: {}
@@ -375,6 +396,34 @@ definitions:
     required:
     - token
     type: object
+  downgradeSubscriptionRequest:
+    properties:
+      cycle:
+        enum:
+        - monthly
+        - yearly
+        type: string
+      plan:
+        type: string
+      preferred_file_ids:
+        items:
+          type: string
+        type: array
+      preferred_member_auth_subs:
+        items:
+          type: string
+        type: array
+    required:
+    - cycle
+    - plan
+    type: object
+  downgradeSubscriptionResponse:
+    properties:
+      overage:
+        $ref: '#/definitions/OverageResolution'
+      subscription:
+        $ref: '#/definitions/subscriptionRecord'
+    type: object
   entitlementRecord:
     properties:
       addon_delta:
@@ -579,6 +628,12 @@ definitions:
           NewPeriodEnd is only set when plan/cycle differ from the subscription's
           current plan/cycle — a hypothetical-change preview, not the steady-state one.
         type: string
+      overage:
+        allOf:
+        - $ref: '#/definitions/overagePreview'
+        description: |-
+          Overage is only populated when the hypothetical plan is a downgrade and
+          the organization's current usage exceeds the new plan's limits.
       plan:
         type: string
       plan_line_cents:
@@ -599,6 +654,8 @@ definitions:
       id:
         type: string
       invoice_number:
+        type: string
+      kind:
         type: string
       paid_at:
         type: string
@@ -711,6 +768,17 @@ definitions:
       updated_at:
         type: string
     type: object
+  metricOverage:
+    properties:
+      allowed:
+        type: integer
+      auto_select_removals:
+        items:
+          type: string
+        type: array
+      current:
+        type: integer
+    type: object
   moveFileRequest:
     properties:
       folder_id:
@@ -800,6 +868,13 @@ definitions:
         type: string
       updated_at:
         type: string
+    type: object
+  overagePreview:
+    properties:
+      members:
+        $ref: '#/definitions/metricOverage'
+      storage:
+        $ref: '#/definitions/metricOverage'
     type: object
   pagination:
     properties:
@@ -2626,6 +2701,52 @@ paths:
       security:
       - BearerAuth: []
       summary: Redeem a coupon
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/downgrade:
+    post:
+      consumes:
+      - application/json
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Downgrade details
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/downgradeSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/downgradeSubscriptionResponse'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Downgrade the subscription plan and resolve overage
       tags:
       - billing
   /organizations/{organizationID}/billing/extend:

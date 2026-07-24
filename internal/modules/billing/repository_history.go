@@ -26,16 +26,23 @@ func (r *repository) insertHistory(
 	fromPlan, toPlan *string,
 	amountCents int64, currency, changedBy string,
 	metadata []byte,
-) error {
+) (string, error) {
 	if metadata == nil {
 		metadata = []byte("{}")
 	}
-	_, err := q.Exec(ctx, `
+	var id string
+	err := q.QueryRow(ctx, `
 		INSERT INTO billing.subscription_history
 			(subscription_id, action, from_plan, to_plan, amount_cents, currency, changed_by, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id`,
 		subscriptionID, action, fromPlan, toPlan, amountCents, currency, changedBy, metadata,
-	)
+	).Scan(&id)
+	return id, err
+}
+
+func (r *repository) updateHistoryMetadata(ctx context.Context, q db.Querier, historyID string, metadata []byte) error {
+	_, err := q.Exec(ctx, `UPDATE billing.subscription_history SET metadata = $2 WHERE id = $1`, historyID, metadata)
 	return err
 }
 

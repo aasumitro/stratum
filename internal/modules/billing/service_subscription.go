@@ -137,7 +137,7 @@ func (s *service) provisionSubscription(
 					trialStarted = &events.TrialStarted{OrgID: subjectID, Plan: plan, TrialEnd: *sub.TrialEnd}
 				}
 			}
-			_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
+			_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
 				nil, &plan, subtotal, currency, createdBy, nil)
 		}
 
@@ -203,11 +203,19 @@ func (s *service) getSubscription(ctx context.Context, subjectType, subjectID st
 func (s *service) changePlan(
 	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string,
 ) (sub *subscriptionRecord, err error) {
+	_, sub, err = s.changePlanWithMetadata(ctx, subjectType, subjectID, plan, cycle, changedBy, nil)
+	return sub, err
+}
+
+func (s *service) changePlanWithMetadata(
+	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string, metadata []byte,
+) (historyID string, sub *subscriptionRecord, err error) {
 	defer func() {
 		if err == nil {
 			return
 		}
 		sub = nil
+		historyID = ""
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			err = apperr.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found", err)
@@ -220,17 +228,17 @@ func (s *service) changePlan(
 
 	newPlanInfo, err := s.planCatalog(ctx, plan)
 	if err != nil {
-		return nil, ErrUnknownPlan
+		return "", nil, ErrUnknownPlan
 	}
 
 	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, fmt.Errorf("billing.changePlan: %w: current plan", ErrUnknownPlan)
+		return "", nil, fmt.Errorf("billing.changePlan: %w: current plan", ErrUnknownPlan)
 	}
 
 	action := "upgrade"
@@ -249,17 +257,20 @@ func (s *service) changePlan(
 		updated, err = s.repo.updateSubscriptionPlan(ctx, s.querier(ctx), sub.ID, plan, cycle)
 	}
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
-		new(sub.Plan), &plan, 0, sub.Currency, changedBy, nil)
+	historyID, err = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
+		new(sub.Plan), &plan, 0, sub.Currency, changedBy, metadata)
+	if err != nil {
+		return "", nil, err
+	}
 
 	// Void any pending invoices from the previous plan and issue a fresh one
 	// for the new plan + cycle so the user pays the correct amount.
 	if hasPending, _ := s.repo.hasPendingInvoice(ctx, s.querier(ctx), updated.ID); hasPending {
 		if err = s.repo.voidPendingInvoicesAndLinks(ctx, s.querier(ctx), updated.ID); err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		composed, addonLines, couponCode, discountCents := s.composeInvoiceAmount(
 			ctx, s.querier(ctx), updated.ID, newPlanInfo, updated.Currency, cycle)
@@ -286,7 +297,7 @@ func (s *service) changePlan(
 			Plan:           updated.Plan,
 			ActivatedAt:    updated.UpdatedAt,
 		})
-	return updated, nil
+	return historyID, updated, nil
 }
 
 func (s *service) cancelSubscription(
@@ -321,7 +332,7 @@ func (s *service) cancelSubscription(
 		return nil, err
 	}
 
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
+	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
 		&sub.Plan, nil, 0, sub.Currency, cancelledBy, nil)
 
 	s.publishAfterCommit(ctx, events.RoutingKeySubscriptionCancelled, subjectID,
@@ -358,7 +369,7 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 		return err
 	}
 
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
+	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
 		nil, 0, sub.Currency, changedBySystem, nil)
 
 	if s.orgSuspender != nil && sub.SubjectType == "organization" {
@@ -387,7 +398,7 @@ func (s *service) cancelOnDeletion(ctx context.Context, organizationID string) e
 	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusCancelled); err != nil {
 		return err
 	}
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
+	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
 		&sub.Plan, nil, 0, sub.Currency, changedBySystem, nil)
 	return nil
 }

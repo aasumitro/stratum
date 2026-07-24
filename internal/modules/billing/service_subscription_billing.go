@@ -204,7 +204,7 @@ func (s *service) activateTrialNow(
 		if err != nil {
 			return err
 		}
-		_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "activate", &sub.Plan, &sub.Plan, composed, sub.Currency, activatedBy, nil)
+		_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "activate", &sub.Plan, &sub.Plan, composed, sub.Currency, activatedBy, nil)
 		return nil
 	})
 	if err != nil {
@@ -287,8 +287,8 @@ func (s *service) resumeSubscription(
 				return err
 			}
 			_ = s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd)
-			_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
-				&sub.Plan, &sub.Plan, 0, sub.Currency, resumedBy, nil)
+			_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
+				&sub.Plan, &sub.Plan, 0, sub.Currency, changedBySystem, nil)
 			return nil
 		})
 		if err != nil {
@@ -331,7 +331,7 @@ func (s *service) resumeSubscription(
 			}
 			_ = s.insertPlanLineItem(ctx, inv, planInfo)
 			s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents)
-			_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume", &sub.Plan, &sub.Plan, composed, sub.Currency, resumedBy, nil)
+			_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume", &sub.Plan, &sub.Plan, composed, sub.Currency, resumedBy, nil)
 			return nil
 		})
 		if err != nil {

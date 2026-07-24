@@ -160,8 +160,8 @@ func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatu
 			if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: update period on reactivation: %w", err)
 			}
-			if err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
-				&sub.Plan, &sub.Plan, 0, sub.Currency, changedByWebhook, nil); err != nil {
+			if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
+				&sub.Plan, &sub.Plan, 0, sub.Currency, changedBySystem, nil); err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: insert resume history: %w", err)
 			}
 			// Suspension state lives in the organization module (a separate
@@ -190,7 +190,7 @@ func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatu
 			if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, newPeriodEnd); err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: apply extension period: %w", err)
 			}
-			if err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "extend",
+			if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "extend",
 				&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedByWebhook, nil); err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: insert extend history: %w", err)
 			}

@@ -165,3 +165,75 @@ func (r *repository) countActiveMembers(ctx context.Context, q db.Querier, organ
 	).Scan(&n)
 	return n, err
 }
+
+func (r *repository) selectMembersForRemoval(ctx context.Context, q db.Querier, organizationID string, excludeAuthSubs []string, limit int) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT auth_sub FROM organization.memberships 
+		WHERE organization_id = $1 AND role != 'owner' AND NOT (auth_sub = ANY(COALESCE($2, '{}'::text[])))
+		ORDER BY joined_at DESC
+		LIMIT $3`,
+		organizationID, excludeAuthSubs, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var sub string
+		if err := rows.Scan(&sub); err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+func (r *repository) bulkRemoveMembers(ctx context.Context, q db.Querier, organizationID string, authSubs []string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		DELETE FROM organization.memberships 
+		WHERE organization_id = $1 AND role != 'owner' AND auth_sub = ANY(COALESCE($2, '{}'::text[]))
+		RETURNING auth_sub`,
+		organizationID, authSubs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var sub string
+		if err := rows.Scan(&sub); err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+func (r *repository) filterRemovableMembers(ctx context.Context, q db.Querier, organizationID string, authSubs []string) ([]string, error) {
+	if len(authSubs) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT auth_sub FROM organization.memberships 
+		WHERE organization_id = $1 AND role != 'owner' AND auth_sub = ANY($2)`,
+		organizationID, authSubs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var sub string
+		if err := rows.Scan(&sub); err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}

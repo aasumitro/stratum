@@ -885,7 +885,30 @@
       "extended": "Extension invoice created — pay it to add the extra time",
       "extendFailed": "Failed to extend subscription",
       "planChanged": "Plan changed",
-      "planChangeFailed": "Failed to change plan"
+      "planChangeFailed": "Failed to change plan",
+      "downgradeSuccess": "Plan downgraded",
+      "downgradeFailed": "Failed to downgrade plan"
+    },
+    "downgrade": {
+      "previewTitle": "Downgrade to a lower plan",
+      "previewDescription": "We'll check your current usage against the new plan's limits.",
+      "previewInfo": "Switching to {{plan}} ({{cycle}}). If your usage exceeds the new plan's limits, you'll be asked to choose what to remove before this takes effect.",
+      "selectionTitle": "Select items to remove",
+      "autoFillDisclosure": "Your usage is over the new plan's limits. Pick who or what to remove — <b>anything you don't select will be chosen for you automatically</b>.",
+      "selectMembersToRemove": "Members to remove",
+      "selectFilesToRemove": "Files to remove",
+      "filesSelectionNotImplementedYet": "File selection isn't available yet — the oldest files will be removed automatically to fit the new storage limit.",
+      "reviewTitle": "Review Downgrade",
+      "reviewDescription": "Confirm what happens before you downgrade.",
+      "warningTitle": "This can't be undone",
+      "warningBody": "Downgrading results in feature loss for anything not included in the new plan, and removed members/files cannot be recovered.",
+      "toBeRemoved": "Will be removed",
+      "autoSelected": "(auto-selected)",
+      "confirmDowngrade": "Confirm downgrade",
+      "successTitle": "Downgrade complete",
+      "successDescription": "Your plan has been changed.",
+      "successRemovedInfo": "Removed:",
+      "successNothingRemoved": "Your usage was already within the new plan's limits — nothing needed to be removed."
     },
     "plans": {
       "title": "Choose a plan",

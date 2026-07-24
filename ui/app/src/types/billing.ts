@@ -172,4 +172,33 @@ export interface InvoicePreview {
   discount_cents?: number
   total_cents: number
   new_period_end?: string
+  overage?: {
+    members?: {
+      current: number
+      allowed: number
+      auto_select_removals: string[]
+    }
+    storage?: {
+      current: number
+      allowed: number
+      auto_select_removals: string[]
+    }
+  }
+}
+
+// OverageResolution mirrors contracts.OverageResolution — what
+// POST .../billing/downgrade actually removed, split by whether each item
+// was the owner's manual pick or the deterministic auto-fill. Distinct from
+// InvoicePreview's `overage` field above: that one is a dry-run computed
+// with no manual selection, this one is what really happened.
+export interface OverageResolution {
+  removed_member_auth_subs: string[]
+  auto_selected_member_subs: string[]
+  removed_file_ids: string[]
+  auto_selected_file_ids: string[]
+}
+
+export interface DowngradeResult {
+  subscription: Subscription
+  overage: OverageResolution
 }
