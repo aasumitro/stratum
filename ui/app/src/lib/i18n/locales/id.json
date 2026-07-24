@@ -870,8 +870,6 @@
       "changePlan": "Ganti paket",
       "cancel": "Batalkan langganan",
       "resume": "Lanjutkan langganan",
-      "cancelTitle": "Batalkan langganan?",
-      "cancelDescription": "Langganan Anda tetap aktif hingga akhir periode penagihan saat ini.",
       "cancelled": "Langganan dibatalkan",
       "cancelFailed": "Gagal membatalkan langganan",
       "resumed": "Langganan dilanjutkan",
@@ -909,6 +907,34 @@
       "successDescription": "Paket Anda telah diubah.",
       "successRemovedInfo": "Dihapus:",
       "successNothingRemoved": "Penggunaan Anda sudah sesuai batas paket baru — tidak ada yang perlu dihapus."
+    },
+    "cancel": {
+      "reasonTitle": "Mengapa Anda membatalkan?",
+      "reasonDescription": "Masukan Anda membantu kami meningkatkan layanan — ini opsional, tetapi sangat dihargai.",
+      "reasons": {
+        "too_expensive": "Terlalu mahal",
+        "missing_features": "Kurang fitur yang saya butuhkan",
+        "switching_provider": "Beralih ke penyedia lain",
+        "no_longer_needed": "Sudah tidak dibutuhkan lagi",
+        "other": "Lainnya"
+      },
+      "hints": {
+        "too_expensive": "Menurunkan ke paket yang lebih rendah mungkin lebih cocok daripada membatalkan sepenuhnya.",
+        "missing_features": "Lihat roadmap kami — fitur yang Anda butuhkan mungkin sedang dalam pengembangan.",
+        "switching_provider": "Kami ingin kesempatan untuk memperbaiki apa yang kurang sebelum Anda pergi.",
+        "no_longer_needed": "Anda selalu bisa melanjutkan nanti — data Anda tetap tersimpan hingga akhir periode penagihan."
+      },
+      "detailsLabel": "Ada hal lain yang ingin Anda sampaikan?",
+      "detailsPlaceholder": "Ceritakan lebih lanjut…",
+      "reviewTitle": "Tinjau pembatalan",
+      "reviewAccessUntil": "Langganan Anda tetap aktif — akses berlanjut hingga {{date}}.",
+      "reviewAfterPeriodEnd": "Setelah tanggal tersebut, Anda akan kehilangan akses ke fitur berbayar organisasi ini. Sebelum itu, Anda mungkin ingin mengekspor data Anda.",
+      "exportTitle": "Ekspor data Anda",
+      "exportPersonalData": "Ekspor data pribadi saya (Akun)",
+      "exportOrganizationData": "Ekspor data organisasi (Log audit)",
+      "confirmCancel": "Konfirmasi pembatalan",
+      "successTitle": "Langganan dibatalkan",
+      "successDescription": "Akses Anda berlanjut hingga {{date}}. Anda dapat melanjutkan kapan saja sebelum itu."
     },
     "plans": {
       "title": "Pilih paket",

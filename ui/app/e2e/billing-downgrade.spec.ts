@@ -128,18 +128,31 @@ test("downgrade with no overage skips selection", async ({ page }) => {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          data: { plan: "solo", cycle: "monthly", total_cents: 900 },
+          data: {
+            plan: "solo",
+            cycle: "monthly",
+            currency: "USD",
+            plan_line_cents: 900,
+            total_cents: 900,
+          },
           status: { error: false },
         }),
       })
     }
   )
 
-  await page.goto("/org-1/settings/billing")
+  await page.goto("/organization/org-1/billing")
   await page.getByRole("button", { name: /change plan/i }).click()
 
   // Select downgrade
   await page.getByLabel(/Solo/).click()
+  await page.getByRole("button", { name: /continue/i }).click()
+
+  // First Continue enters DowngradeWizard's own preview step; a second
+  // Continue moves past it — no overage means straight to review.
+  await expect(
+    page.getByRole("heading", { name: /Downgrade to a lower plan/i })
+  ).toBeVisible()
   await page.getByRole("button", { name: /continue/i }).click()
 
   // Verify review step is shown directly (no selection step)
@@ -170,6 +183,8 @@ test("downgrade with overage shows disclosure and candidates", async ({
           data: {
             plan: "solo",
             cycle: "monthly",
+            currency: "USD",
+            plan_line_cents: 900,
             total_cents: 900,
             overage: {
               members: {
@@ -200,11 +215,18 @@ test("downgrade with overage shows disclosure and candidates", async ({
     }
   )
 
-  await page.goto("/org-1/settings/billing")
+  await page.goto("/organization/org-1/billing")
   await page.getByRole("button", { name: /change plan/i }).click()
 
   // Select downgrade
   await page.getByLabel(/Solo/).click()
+  await page.getByRole("button", { name: /continue/i }).click()
+
+  // First Continue enters DowngradeWizard's own preview step; a second
+  // Continue moves past it — overage means the selection step is next.
+  await expect(
+    page.getByRole("heading", { name: /Downgrade to a lower plan/i })
+  ).toBeVisible()
   await page.getByRole("button", { name: /continue/i }).click()
 
   // Verify selection step and disclosure

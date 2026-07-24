@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   useBillingSubscription,
-  useCancelSubscription,
   useResumeSubscription,
   useExtendSubscription,
   useActivateTrialNow,
@@ -38,8 +37,6 @@ export function SubscriptionCard({ organizationId }: Props) {
 
   const sub = subData?.data
 
-  const { mutate: cancel, isPending: cancelling } =
-    useCancelSubscription(organizationId)
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
   const { mutate: extend, isPending: extending } =
@@ -136,12 +133,11 @@ export function SubscriptionCard({ organizationId }: Props) {
                   }
                 />
               )}
-              {canCancel && (
-                <SubscriptionCancelDialog
-                  cancelling={cancelling}
-                  onCancel={() => cancel()}
-                />
-              )}
+              <SubscriptionCancelDialog
+                organizationId={organizationId}
+                periodEnd={sub.period_end}
+                canCancel={canCancel}
+              />
             </div>
           </div>
         </CardHeader>

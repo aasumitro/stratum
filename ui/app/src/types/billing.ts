@@ -7,6 +7,12 @@ export type SubscriptionStatus =
   | "past_due"
   | "expired"
 export type BillingCycle = "monthly" | "yearly"
+export type CancelReason =
+  | "too_expensive"
+  | "missing_features"
+  | "switching_provider"
+  | "no_longer_needed"
+  | "other"
 export type InvoiceStatus = "pending" | "paid" | "failed" | "void"
 export type HistoryAction =
   | "trial"

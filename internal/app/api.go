@@ -38,7 +38,7 @@ func RunAPI() error {
 	// The parking queue is declared by the worker binary.
 	if setupCh, chErr := infra.MQConn.Channel(); chErr == nil {
 		_ = setupCh.ExchangeDeclare("billing.delay", "direct", true, false, false, false, nil)
-		setupCh.Close()
+		_ = setupCh.Close()
 	}
 
 	var storageClient *storage.Client

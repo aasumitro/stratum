@@ -2298,6 +2298,9 @@ const docTemplate = `{
                     }
                 ],
                 "description": "Owner only.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2312,6 +2315,15 @@ const docTemplate = `{
                         "name": "organizationID",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Cancellation reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/cancelSubscriptionRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -2341,6 +2353,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "validation failed",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -6535,6 +6553,28 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "cancelSubscriptionRequest": {
+            "type": "object",
+            "required": [
+                "reason"
+            ],
+            "properties": {
+                "details": {
+                    "type": "string",
+                    "maxLength": 500
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": [
+                        "too_expensive",
+                        "missing_features",
+                        "switching_provider",
+                        "no_longer_needed",
+                        "other"
+                    ]
                 }
             }
         },

@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -301,7 +302,7 @@ func (s *service) changePlanWithMetadata(
 }
 
 func (s *service) cancelSubscription(
-	ctx context.Context, subjectType, subjectID, cancelledBy string,
+	ctx context.Context, subjectType, subjectID, cancelledBy, reason, details string,
 ) (sub *subscriptionRecord, err error) {
 	defer func() {
 		if err == nil {
@@ -332,8 +333,12 @@ func (s *service) cancelSubscription(
 		return nil, err
 	}
 
+	metadata, _ := json.Marshal(struct {
+		Reason  string `json:"reason"`
+		Details string `json:"details,omitempty"`
+	}{Reason: reason, Details: details})
 	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
-		&sub.Plan, nil, 0, sub.Currency, cancelledBy, nil)
+		&sub.Plan, nil, 0, sub.Currency, cancelledBy, metadata)
 
 	s.publishAfterCommit(ctx, events.RoutingKeySubscriptionCancelled, subjectID,
 		events.SubscriptionCancelled{

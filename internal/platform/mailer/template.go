@@ -168,9 +168,9 @@ func RenderTemplate(name, lang string, data TemplateData) (string, string, error
 	}
 
 	var htmlBuf bytes.Buffer
-	//nolint:gosec // G203: bodyBuf was already through html/template's own auto-escaping
-	// one line up — this isn't raw/untrusted input, it's that same output being composed
-	// into the outer layout, the standard html/template layout-wrapping pattern.
+	//#nosec G203 -- bodyBuf was already through html/template's own auto-escaping one line
+	// up — this isn't raw/untrusted input, it's that same output being composed into the
+	// outer layout, the standard html/template layout-wrapping pattern.
 	if err := layoutTmpl.Execute(&htmlBuf, layoutData{TemplateData: data, Body: template.HTML(bodyBuf.String())}); err != nil {
 		return "", "", fmt.Errorf("rendering layout: %w", err)
 	}

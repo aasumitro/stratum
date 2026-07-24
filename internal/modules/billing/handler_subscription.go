@@ -164,23 +164,36 @@ func (h *handler) downgradeSubscription(c *gin.Context) {
 	response.Success(downgradeSubscriptionResponse{Subscription: updated, Overage: overage}).JSON(c, http.StatusOK)
 }
 
+type cancelSubscriptionRequest struct {
+	Reason  string `json:"reason"  binding:"required,oneof=too_expensive missing_features switching_provider no_longer_needed other"`
+	Details string `json:"details" binding:"omitempty,max=500"`
+}
+
 // cancelSubscription godoc
 // @Summary      Cancel the subscription
 // @Description  Owner only.
 // @Tags         billing
+// @Accept       json
 // @Produce      json
 // @Security     BearerAuth
-// @Param        organizationID  path      string  true  "Organization ID"
+// @Param        organizationID  path      string                     true  "Organization ID"
+// @Param        body            body      cancelSubscriptionRequest  true  "Cancellation reason"
 // @Success      200             {object}  response.Payload{data=subscriptionRecord}
+// @Failure      422             {object}  response.Payload  "validation failed"
 // @Failure      403             {object}  response.Payload  "owner role required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/billing/cancel [post]
 func (h *handler) cancelSubscription(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
+	var req cancelSubscriptionRequest
+	if !request.Bind(c, &req) {
+		return
+	}
+
 	sub, err := h.svc.cancelSubscription(
 		c.Request.Context(), subjectTypeOrganization,
-		ws.ID, reqctx.Subject(c))
+		ws.ID, reqctx.Subject(c), req.Reason, req.Details)
 	if err != nil {
 		response.FromError(c, err)
 		return

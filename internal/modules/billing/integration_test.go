@@ -244,7 +244,7 @@ func TestIntegration_CancelSubscription_Active(t *testing.T) {
 
 	e := billing.NewModuleEngine(pool, user, orgID)
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -269,12 +269,131 @@ func TestIntegration_CancelSubscription_AlreadyCancelled(t *testing.T) {
 	}
 
 	e := billing.NewModuleEngine(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 	if w.Code == http.StatusOK {
 		t.Errorf("double cancel should fail, got 200")
+	}
+}
+
+// TestIntegration_CancelSubscription_RecordsReasonInHistory posts a real
+// request through the full handler->service->DB stack and asserts the
+// reason actually lands in subscription_history.metadata — not a mocked
+// network layer, and not just that the handler accepted the shape.
+func TestIntegration_CancelSubscription_RecordsReasonInHistory(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancelreason_user"
+		orgID = "00000000-0000-0000-0000-000000000d13"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"missing_features"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='cancel' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var got struct {
+		Reason  string `json:"reason"`
+		Details string `json:"details"`
+	}
+	if err := json.Unmarshal(metadataRaw, &got); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if got.Reason != "missing_features" {
+		t.Errorf("subscription_history metadata: want reason=missing_features, got %q", got.Reason)
+	}
+	if got.Details != "" {
+		t.Errorf("subscription_history metadata: want empty details, got %q", got.Details)
+	}
+}
+
+// TestIntegration_CancelSubscription_OtherReasonWithDetails covers the
+// "other" escape hatch, where details carries the actual free-text reason —
+// and also proves details is stored regardless of which reason was picked
+// (an owner picking a named reason may still add context; not gated to
+// "other" only).
+func TestIntegration_CancelSubscription_OtherReasonWithDetails(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancelother_user"
+		orgID = "00000000-0000-0000-0000-000000000d14"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel",
+		`{"reason":"other","details":"Moving to a self-hosted alternative"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='cancel' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var got struct {
+		Reason  string `json:"reason"`
+		Details string `json:"details"`
+	}
+	if err := json.Unmarshal(metadataRaw, &got); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if got.Reason != "other" || got.Details != "Moving to a self-hosted alternative" {
+		t.Errorf("subscription_history metadata: want reason=other with details, got %+v", got)
+	}
+}
+
+// TestIntegration_CancelSubscription_InvalidReasonRejected mimics a
+// malformed/bad-faith client sending a reason outside the closed enum
+// through the full stack — must be rejected at binding, before the
+// subscription is touched at all.
+func TestIntegration_CancelSubscription_InvalidReasonRejected(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancelinvalid_user"
+		orgID = "00000000-0000-0000-0000-000000000d15"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"just_because"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("invalid reason: want 422, got %d: %s", w.Code, w.Body)
+	}
+
+	data := getSubscriptionData(t, e, orgID)
+	if data["status"] == "cancelled" {
+		t.Error("invalid reason must not cancel the subscription")
 	}
 }
 
@@ -301,7 +420,7 @@ func TestIntegration_ResumeSubscription_Cancelled(t *testing.T) {
 	}
 
 	e := billing.NewModuleEngine(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
@@ -340,7 +459,7 @@ func TestIntegration_ResumeSubscription_CancelledAfterTrialExpired(t *testing.T)
 	pool.Exec(t.Context(), `UPDATE billing.subscriptions SET trial_end = now() - interval '1 day' WHERE id = $1`, subID)
 
 	e := billing.NewModuleEngine(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
@@ -1448,6 +1567,20 @@ func TestIntegration_HandleOrganizationDeleted_CancelsSubscription(t *testing.T)
 	if status != "cancelled" {
 		t.Errorf("after organization deleted: want status=cancelled, got %q", status)
 	}
+
+	// cancelOnDeletion is a distinct method from the owner-facing
+	// cancelSubscription and must stay reason-less — there's no owner
+	// interaction to capture one from. Confirms it's untouched by the new
+	// reason/details plumbing, not just assumed unaffected.
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='cancel' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	if string(metadataRaw) != "{}" {
+		t.Errorf("cancelOnDeletion history metadata: want empty {}, got %s", metadataRaw)
+	}
 }
 
 func TestIntegration_CreatePaymentLink_InvoiceAlreadyPaid(t *testing.T) {
@@ -2287,7 +2420,7 @@ func TestIntegration_ActivateTrialNow_NotTrialing_Rejected(t *testing.T) {
 	// Already-active (via cancel+resume-after-trial-expired trick is
 	// overkill here) — simplest: cancel while trialing, which flips status
 	// to "cancelled", also not "trialing".
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/activate", ""))

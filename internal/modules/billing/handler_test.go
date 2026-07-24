@@ -132,9 +132,58 @@ func TestCancelSubscription_OwnerAllowed(t *testing.T) {
 	defer func() { recover() }()
 	w := httptest.NewRecorder()
 	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
-		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", ""))
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{"reason":"too_expensive"}`))
 	if w.Code == http.StatusForbidden {
 		t.Errorf("owner should not get 403")
+	}
+}
+
+func TestCancelSubscription_MissingReason(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestCancelSubscription_InvalidReason(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{"reason":"not_a_real_reason"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestCancelSubscription_DetailsTooLong(t *testing.T) {
+	w := httptest.NewRecorder()
+	longDetails := strings.Repeat("a", 501)
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel",
+			`{"reason":"other","details":"`+longDetails+`"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+// Every enum value the frontend can send must bind successfully — a
+// mismatch between the frontend's option list and this binding tag would
+// otherwise go undetected until a real client sends the value.
+func TestCancelSubscription_AllValidReasons(t *testing.T) {
+	for _, reason := range []string{
+		"too_expensive", "missing_features", "switching_provider",
+		"no_longer_needed", "other",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			defer func() { recover() }()
+			w := httptest.NewRecorder()
+			billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+				httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{"reason":"`+reason+`"}`))
+			if w.Code == http.StatusUnprocessableEntity {
+				t.Errorf("reason %q should bind successfully, got 422: %s", reason, w.Body)
+			}
+		})
 	}
 }
 

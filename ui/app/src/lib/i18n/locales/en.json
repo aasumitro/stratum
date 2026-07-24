@@ -870,8 +870,6 @@
       "changePlan": "Change plan",
       "cancel": "Cancel subscription",
       "resume": "Resume subscription",
-      "cancelTitle": "Cancel subscription?",
-      "cancelDescription": "Your subscription stays active until the end of the current billing period.",
       "cancelled": "Subscription cancelled",
       "cancelFailed": "Failed to cancel subscription",
       "resumed": "Subscription resumed",
@@ -909,6 +907,34 @@
       "successDescription": "Your plan has been changed.",
       "successRemovedInfo": "Removed:",
       "successNothingRemoved": "Your usage was already within the new plan's limits — nothing needed to be removed."
+    },
+    "cancel": {
+      "reasonTitle": "Why are you cancelling?",
+      "reasonDescription": "Your feedback helps us improve — this is optional but appreciated.",
+      "reasons": {
+        "too_expensive": "It's too expensive",
+        "missing_features": "Missing features I need",
+        "switching_provider": "Switching to another provider",
+        "no_longer_needed": "No longer need it",
+        "other": "Other"
+      },
+      "hints": {
+        "too_expensive": "Downgrading to a lower plan might be a better fit than cancelling entirely.",
+        "missing_features": "Check our roadmap — the feature you need might already be on the way.",
+        "switching_provider": "We'd love the chance to fix what's not working before you go.",
+        "no_longer_needed": "You can always resume later — your data stays put until the end of your billing period."
+      },
+      "detailsLabel": "Anything else you'd like to share?",
+      "detailsPlaceholder": "Tell us more…",
+      "reviewTitle": "Review cancellation",
+      "reviewAccessUntil": "Your subscription stays active — access continues until {{date}}.",
+      "reviewAfterPeriodEnd": "After that date, you'll lose access to this organization's paid features. Before you go, you may want to export your data.",
+      "exportTitle": "Export your data",
+      "exportPersonalData": "Export my personal data (Account)",
+      "exportOrganizationData": "Export organization data (Audit log)",
+      "confirmCancel": "Confirm cancellation",
+      "successTitle": "Subscription cancelled",
+      "successDescription": "Your access continues until {{date}}. You can resume anytime before then."
     },
     "plans": {
       "title": "Choose a plan",

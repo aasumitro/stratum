@@ -22,6 +22,7 @@ import type {
   Coupon,
   InvoicePreview,
   DowngradeResult,
+  CancelReason,
 } from "@/types/billing"
 import type { Plan, Feature, Addon } from "@/types/reference"
 
@@ -157,7 +158,7 @@ export function useEligibleCouponsForNewOrg(enabled = true) {
 export function useCancelSubscription(organizationId: string) {
   const queryClient = useQueryClient()
   const { t } = useTranslation()
-  return useHTTPActionPost<void>({
+  return useHTTPActionPost<void, { reason: CancelReason; details?: string }>({
     url: API.billing(organizationId, "cancel"),
     options: {
       onSuccess: () => {
