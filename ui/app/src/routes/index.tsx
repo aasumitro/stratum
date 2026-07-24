@@ -2,7 +2,6 @@ import { createFileRoute, isRedirect, redirect } from "@tanstack/react-router"
 import { resolveLandingRoute } from "@/lib/resolve-landing-organization"
 import { isConnectionError } from "@/lib/api/error"
 
-
 export const Route = createFileRoute("/")({
   beforeLoad: async ({ context }) => {
     if (!context.auth.session) throw redirect({ to: "/login" })

@@ -21,7 +21,7 @@ func (s *service) downgradeSubscription(
 	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string,
 	removeMemberIDs []string, removeFileIDs []string,
 ) (*subscriptionRecord, contracts.OverageResolution, error) {
-	if subjectType != "organization" {
+	if subjectType != subjectTypeOrganization {
 		return nil, contracts.OverageResolution{}, apperr.Validation("DOWNGRADE_UNSUPPORTED", "downgrade is only supported for organizations")
 	}
 

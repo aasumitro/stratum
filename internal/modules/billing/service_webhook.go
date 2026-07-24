@@ -168,7 +168,7 @@ func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatu
 			// schema/service, not this transaction) — a failure here is
 			// logged, not rolled back; the paid reactivation itself already
 			// committed correctly and shouldn't be undone over this.
-			if s.orgSuspender != nil && sub.SubjectType == "organization" {
+			if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
 				if err := s.orgSuspender.UnsuspendOrganization(ctx, sub.SubjectID); err != nil {
 					slog.Error("UnsuspendOrganization failed", "organization_id", sub.SubjectID, "error", err)
 				}

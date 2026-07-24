@@ -15,6 +15,14 @@ import (
 
 // --- subscription routes (organization-scoped) ---
 
+// Audit before/after snapshot keys shared by changePlan and
+// downgradeSubscription's before/after logging below.
+const (
+	auditKeyPlan   = "plan"
+	auditKeyCycle  = "cycle"
+	auditKeyStatus = "status"
+)
+
 // subscriptionWithCoupon extends subscriptionRecord's JSON shape with the
 // subscription's currently-active coupon code, if any — kept as a response
 // wrapper rather than a field on subscriptionRecord itself so every other
@@ -37,7 +45,7 @@ func (h *handler) getSubscription(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	sub, err := h.svc.getSubscription(
-		c.Request.Context(), "organization", ws.ID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -80,9 +88,9 @@ func (h *handler) changePlan(c *gin.Context) {
 
 	if h.svc != nil {
 		if before, err := h.svc.getSubscription(
-			c.Request.Context(), "organization", ws.ID,
+			c.Request.Context(), subjectTypeOrganization, ws.ID,
 		); err == nil {
-			audit.SetBefore(c, map[string]any{"plan": before.Plan, "cycle": before.Cycle, "status": before.Status})
+			audit.SetBefore(c, map[string]any{auditKeyPlan: before.Plan, auditKeyCycle: before.Cycle, auditKeyStatus: before.Status})
 		}
 	}
 
@@ -92,13 +100,13 @@ func (h *handler) changePlan(c *gin.Context) {
 	}
 
 	sub, err := h.svc.changePlan(
-		c.Request.Context(), "organization",
+		c.Request.Context(), subjectTypeOrganization,
 		ws.ID, req.Plan, req.Cycle, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
 		return
 	}
-	audit.SetAfter(c, map[string]any{"plan": sub.Plan, "cycle": sub.Cycle, "status": sub.Status})
+	audit.SetAfter(c, map[string]any{auditKeyPlan: sub.Plan, auditKeyCycle: sub.Cycle, auditKeyStatus: sub.Status})
 	response.Success(sub).JSON(c, http.StatusOK)
 }
 
@@ -135,7 +143,7 @@ type downgradeSubscriptionResponse struct {
 func (h *handler) downgradeSubscription(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
-	sub, err := h.svc.getSubscription(c.Request.Context(), "organization", ws.ID)
+	sub, err := h.svc.getSubscription(c.Request.Context(), subjectTypeOrganization, ws.ID)
 	if err == nil {
 		audit.SetBefore(c, map[string]any{"current_plan": sub.Plan, "current_cycle": sub.Cycle})
 	}
@@ -147,12 +155,12 @@ func (h *handler) downgradeSubscription(c *gin.Context) {
 
 	audit.SetAfter(c, map[string]any{"target_plan": req.Plan, "target_cycle": req.Cycle, "preferred_member_auth_subs": req.PreferredMemberAuthSubs, "preferred_file_ids": req.PreferredFileIDs})
 
-	updated, overage, err := h.svc.downgradeSubscription(c.Request.Context(), "organization", ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), req.PreferredMemberAuthSubs, req.PreferredFileIDs)
+	updated, overage, err := h.svc.downgradeSubscription(c.Request.Context(), subjectTypeOrganization, ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), req.PreferredMemberAuthSubs, req.PreferredFileIDs)
 	if err != nil {
 		response.FromError(c, err)
 		return
 	}
-	audit.SetAfter(c, map[string]any{"plan": updated.Plan, "cycle": updated.Cycle, "status": updated.Status})
+	audit.SetAfter(c, map[string]any{auditKeyPlan: updated.Plan, auditKeyCycle: updated.Cycle, auditKeyStatus: updated.Status})
 	response.Success(downgradeSubscriptionResponse{Subscription: updated, Overage: overage}).JSON(c, http.StatusOK)
 }
 
@@ -171,7 +179,7 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	sub, err := h.svc.cancelSubscription(
-		c.Request.Context(), "organization",
+		c.Request.Context(), subjectTypeOrganization,
 		ws.ID, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
@@ -207,7 +215,7 @@ func (h *handler) extendSubscription(c *gin.Context) {
 	}
 
 	inv, err := h.svc.extendSubscription(
-		c.Request.Context(), "organization",
+		c.Request.Context(), subjectTypeOrganization,
 		ws.ID, req.Months, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
@@ -231,7 +239,7 @@ func (h *handler) activateTrialNow(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	inv, err := h.svc.activateTrialNow(
-		c.Request.Context(), "organization",
+		c.Request.Context(), subjectTypeOrganization,
 		ws.ID, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
@@ -255,7 +263,7 @@ func (h *handler) resumeSubscription(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	sub, err := h.svc.resumeSubscription(
-		c.Request.Context(), "organization",
+		c.Request.Context(), subjectTypeOrganization,
 		ws.ID, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)

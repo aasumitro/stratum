@@ -372,7 +372,7 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
 		nil, 0, sub.Currency, changedBySystem, nil)
 
-	if s.orgSuspender != nil && sub.SubjectType == "organization" {
+	if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
 		_ = s.orgSuspender.SuspendOrganization(ctx, sub.SubjectID, "subscription expired")
 	}
 
@@ -385,7 +385,7 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 // cancelOnDeletion cancels the organization subscription when the organization is deleted.
 // No event is published — the organization is already gone.
 func (s *service) cancelOnDeletion(ctx context.Context, organizationID string) error {
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil

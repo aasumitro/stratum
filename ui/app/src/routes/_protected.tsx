@@ -8,7 +8,6 @@ import { needsMfaChallenge } from "@/lib/auth/mfa"
 import { ProtectedLayout } from "@/components/layout/protected-layout"
 import { NotFoundPage } from "@/components/shared/not-found-page"
 
-
 export const Route = createFileRoute("/_protected")({
   beforeLoad: async ({ context }) => {
     if (!context.auth.session) {

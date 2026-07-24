@@ -22,7 +22,7 @@ import (
 func (h *handler) getUsage(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
-	usage, err := h.svc.getUsage(c.Request.Context(), "organization", ws.ID)
+	usage, err := h.svc.getUsage(c.Request.Context(), subjectTypeOrganization, ws.ID)
 	if err != nil {
 		response.FromError(c, err)
 		return

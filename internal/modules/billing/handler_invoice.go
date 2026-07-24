@@ -30,7 +30,7 @@ func (h *handler) previewInvoice(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	preview, err := h.svc.previewInvoice(
-		c.Request.Context(), "organization",
+		c.Request.Context(), subjectTypeOrganization,
 		ws.ID, c.Query("plan"), c.Query("cycle"))
 	if err != nil {
 		response.FromError(c, err)
@@ -52,7 +52,7 @@ func (h *handler) listInvoices(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	invoices, err := h.svc.listInvoices(
-		c.Request.Context(), "organization", ws.ID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -73,7 +73,7 @@ func (h *handler) listPaymentLinks(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	links, err := h.svc.listPaymentLinks(
-		c.Request.Context(), "organization", ws.ID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -98,7 +98,7 @@ func (h *handler) regeneratePaymentLink(c *gin.Context) {
 	invoiceID := c.Param("invoiceID")
 
 	link, err := h.svc.regeneratePaymentLink(
-		c.Request.Context(), "organization", ws.ID, invoiceID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID, invoiceID)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -123,7 +123,7 @@ func (h *handler) createPaymentLink(c *gin.Context) {
 	invoiceID := c.Param("invoiceID")
 
 	link, err := h.svc.createPaymentLinkForOwner(
-		c.Request.Context(), "organization", ws.ID, invoiceID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID, invoiceID)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -149,7 +149,7 @@ func (h *handler) invoicePDF(c *gin.Context) {
 	c.Set("audit.action", "invoice.pdf_download")
 
 	inv, sub, planInfo, dbLineItems, err := h.svc.getInvoicePDFData(
-		c.Request.Context(), "organization", ws.ID, invoiceID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID, invoiceID)
 	if err != nil {
 		response.FromError(c, err)
 		return

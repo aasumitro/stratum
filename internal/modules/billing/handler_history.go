@@ -23,7 +23,7 @@ func (h *handler) listHistory(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	history, err := h.svc.listHistory(
-		c.Request.Context(), "organization", ws.ID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -44,7 +44,7 @@ func (h *handler) listPayments(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	payments, err := h.svc.listPayments(
-		c.Request.Context(), "organization", ws.ID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID)
 	if err != nil {
 		response.FromError(c, err)
 		return

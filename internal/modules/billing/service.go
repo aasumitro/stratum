@@ -30,6 +30,11 @@ const (
 	cycleMonthly = "monthly"
 	cycleYearly  = "yearly"
 
+	// subjectTypeOrganization is the only subjectType this codebase's
+	// subject-polymorphic subscription model currently exercises — the
+	// field exists for a future non-organization subject, not used yet.
+	subjectTypeOrganization = "organization"
+
 	cadenceForever  = "forever"
 	cadenceOnce     = "once"
 	cadenceRepeated = "repeated"

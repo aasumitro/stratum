@@ -10,7 +10,7 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 	if _, err := s.addonCatalog(ctx, addonID); err != nil {
 		return apperr.NotFound("ADDON_NOT_FOUND", "addon not found", ErrAddonNotFound)
 	}
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return apperr.Internal("ADDON_ATTACH_FAILED", "failed to attach addon", err)
 	}
@@ -21,7 +21,7 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 }
 
 func (s *service) detachAddon(ctx context.Context, organizationID, addonID string) error {
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return apperr.Internal("ADDON_DETACH_FAILED", "failed to detach addon", err)
 	}
@@ -32,7 +32,7 @@ func (s *service) detachAddon(ctx context.Context, organizationID, addonID strin
 }
 
 func (s *service) listAddons(ctx context.Context, organizationID string) ([]attachedAddonRecord, error) {
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return nil, apperr.Internal("ADDONS_FETCH_FAILED", "failed to list addons", err)
 	}

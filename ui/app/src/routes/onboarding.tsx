@@ -9,7 +9,6 @@ import type { OrganizationView } from "@/types/organization"
 import { needsMfaChallenge } from "@/lib/auth/mfa"
 import { OnboardingPage } from "@/features/onboarding/pages/onboarding-page"
 
-
 export const Route = createFileRoute("/onboarding")({
   beforeLoad: async ({ context }) => {
     if (!context.auth.session) throw redirect({ to: "/login" })

@@ -36,7 +36,7 @@ func (w *Worker) HandleOrganizationCreated(ctx context.Context, body []byte) err
 	if err != nil {
 		return err
 	}
-	_, err = w.svc.provisionSubscription(ctx, "organization", evt.OrganizationID,
+	_, err = w.svc.provisionSubscription(ctx, subjectTypeOrganization, evt.OrganizationID,
 		evt.Plan, evt.Cycle, evt.CreatedBy, evt.CountryCode, evt.Addons, evt.CouponCode)
 	return err
 }

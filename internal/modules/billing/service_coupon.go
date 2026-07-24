@@ -128,7 +128,7 @@ func (s *service) redeemCoupon(ctx context.Context, organizationID, authSub, cod
 		return fmt.Errorf("%w: not targeted to this organization or user", ErrCouponNotRedeemable)
 	}
 
-	sub, err := s.repo.findSubscriptionBySubject(ctx, q, "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, q, subjectTypeOrganization, organizationID)
 	if err != nil {
 		return err
 	}
