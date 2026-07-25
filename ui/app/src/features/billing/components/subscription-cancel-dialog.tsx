@@ -186,7 +186,10 @@ export function SubscriptionCancelDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(v) => (v ? setOpen(v) : handleClose())}
+    >
       <DialogTrigger render={<Button variant="outline" size="sm" />}>
         {t("billing.subscription.cancel")}
       </DialogTrigger>

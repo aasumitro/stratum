@@ -85,6 +85,15 @@ export function PlanSelector({
     setShowUpgradeWizard(false)
   }
 
+  // Every close path (X/escape, footer Cancel, a wizard's own Done/close)
+  // must go through this so PlanSelector's own state — which wizard step
+  // to show, the in-progress plan/cycle selection — never survives into
+  // the next time the modal is opened.
+  function handleOpenChange(v: boolean) {
+    if (!v) reset()
+    onOpenChange(v)
+  }
+
   // Deliberately not re-checking isDowngrade/isChanging here: they're only
   // meant to gate *entry* into a wizard (see where setShowDowngradeWizard/
   // setShowUpgradeWizard(true) are called below). Once a wizard is open, a
@@ -97,7 +106,7 @@ export function PlanSelector({
       <DowngradeWizard
         organizationId={organizationId}
         open={open}
-        onOpenChange={onOpenChange}
+        onOpenChange={handleOpenChange}
         targetPlan={selectedPlan}
         targetCycle={cycle}
         onBackToPlans={() => setShowDowngradeWizard(false)}
@@ -110,7 +119,7 @@ export function PlanSelector({
       <UpgradeWizard
         organizationId={organizationId}
         open={open}
-        onOpenChange={onOpenChange}
+        onOpenChange={handleOpenChange}
         targetPlan={selectedPlan}
         targetCycle={cycle}
         currentPlan={currentPlan}
@@ -123,13 +132,7 @@ export function PlanSelector({
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) reset()
-        onOpenChange(v)
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("billing.plans.changePlanTitle")}</DialogTitle>
@@ -239,7 +242,7 @@ export function PlanSelector({
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             {t("common.cancel")}
           </Button>
           <Button
