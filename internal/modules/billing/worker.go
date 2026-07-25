@@ -143,7 +143,7 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		taxRate, _ = w.svc.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
 	}
 	tax := calculateTax(composed, taxRate)
-	inv, err := w.svc.repo.insertInvoice(ctx, w.svc.pool, sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription")
+	inv, err := w.svc.repo.insertInvoice(ctx, w.svc.pool, sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
 	if err != nil {
 		return err
 	}

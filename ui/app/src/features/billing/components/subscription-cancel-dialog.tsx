@@ -15,10 +15,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import {
+  usePlans,
   useCancelSubscription,
   useResumeSubscription,
 } from "@/features/billing/hooks"
-import type { CancelReason } from "@/types/billing"
+import { formatPrice } from "@/features/billing/utils"
+import type { BillingCycle, CancelReason } from "@/types/billing"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -39,6 +41,9 @@ const REASONS: CancelReason[] = [
 
 interface Props {
   organizationId: string
+  plan: string
+  cycle: BillingCycle
+  currency: string
   periodEnd?: string
   canCancel: boolean
 }
@@ -47,6 +52,9 @@ type Step = "reason" | "review" | "success"
 
 export function SubscriptionCancelDialog({
   organizationId,
+  plan,
+  cycle,
+  currency,
   periodEnd,
   canCancel,
 }: Props) {
@@ -60,6 +68,18 @@ export function SubscriptionCancelDialog({
     useCancelSubscription(organizationId)
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
+  const { data: plansData } = usePlans()
+
+  const planInfo = (plansData?.data ?? []).find((p) => p.id === plan)
+  const prices = planInfo?.prices[currency] ?? planInfo?.prices["USD"]
+  const priceLabel = prices
+    ? formatPrice(
+        cycle === "monthly" ? prices.monthly : prices.yearly,
+        currency,
+        cycle,
+        t
+      )
+    : undefined
 
   // Cancelling flips the subscription's status to "cancelled", which is
   // exactly what canCancel is derived from — if this component unmounted
@@ -99,6 +119,25 @@ export function SubscriptionCancelDialog({
               })}
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.cancel.planLabel")}
+              </span>
+              <span className="font-medium">
+                {planInfo?.name ?? plan}
+                {priceLabel ? ` — ${priceLabel}` : ""}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.cancel.accessUntilLabel")}
+              </span>
+              <span className="font-medium">{formatDate(periodEnd)}</span>
+            </div>
+          </div>
+
           <DialogFooter>
             <Button
               variant="outline"
@@ -132,6 +171,24 @@ export function SubscriptionCancelDialog({
               })}
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.cancel.planLabel")}
+              </span>
+              <span className="font-medium">
+                {planInfo?.name ?? plan}
+                {priceLabel ? ` — ${priceLabel}` : ""}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.cancel.accessUntilLabel")}
+              </span>
+              <span className="font-medium">{formatDate(periodEnd)}</span>
+            </div>
+          </div>
 
           <div className="flex flex-col gap-3 py-2 text-sm text-muted-foreground">
             <p>{t("billing.cancel.reviewAfterPeriodEnd")}</p>

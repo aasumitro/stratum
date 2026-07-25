@@ -26,12 +26,19 @@ const (
 )
 
 // subscriptionWithCoupon extends subscriptionRecord's JSON shape with the
-// subscription's currently-active coupon code, if any — kept as a response
-// wrapper rather than a field on subscriptionRecord itself so every other
-// call site returning that type is unaffected.
+// subscription's currently-active coupon code and its extend-cap, if any —
+// kept as a response wrapper rather than fields on subscriptionRecord
+// itself so every other call site returning that type is unaffected.
 type subscriptionWithCoupon struct {
 	subscriptionRecord
 	ActiveCoupon *string `json:"active_coupon,omitempty"`
+	// MaxExtendableMonths lets the frontend gate the Extend flow's counter,
+	// "Switch to Annual" option, and entry point without re-deriving the
+	// 24-month lifetime cap from raw dates itself (see maxExtendableMonths
+	// in service_subscription_billing.go for why that's rejected). 0 for a
+	// subscription with no current period (e.g. still trialing) — nothing
+	// to extend.
+	MaxExtendableMonths int `json:"max_extendable_months"`
 }
 
 // getSubscription godoc
@@ -58,6 +65,9 @@ func (h *handler) getSubscription(c *gin.Context) {
 		c.Request.Context(), h.svc.querier(c.Request.Context()), sub.ID,
 	); err == nil {
 		resp.ActiveCoupon = &redemption.CouponCode
+	}
+	if sub.PeriodEnd != nil {
+		resp.MaxExtendableMonths = maxExtendableMonths(sub.CreatedAt, *sub.PeriodEnd, time.Now())
 	}
 	response.Success(resp).JSON(c, http.StatusOK)
 }
@@ -217,7 +227,8 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 }
 
 type extendSubscriptionRequest struct {
-	Months int `json:"months" binding:"required,min=1,max=24"`
+	Months         int  `json:"months" binding:"required_without=SwitchToAnnual,omitempty,min=1,max=24"`
+	SwitchToAnnual bool `json:"switch_to_annual"`
 }
 
 // extendSubscription godoc
@@ -228,7 +239,7 @@ type extendSubscriptionRequest struct {
 // @Produce      json
 // @Security     BearerAuth
 // @Param        organizationID  path      string                      true  "Organization ID"
-// @Param        body            body      extendSubscriptionRequest  true  "Months to extend by"
+// @Param        body            body      extendSubscriptionRequest  true  "Months to extend by, or switch_to_annual"
 // @Success      200             {object}  response.Payload{data=invoiceRecord}
 // @Failure      422             {object}  response.Payload  "validation failed"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
@@ -244,7 +255,7 @@ func (h *handler) extendSubscription(c *gin.Context) {
 
 	inv, err := h.svc.extendSubscription(
 		c.Request.Context(), subjectTypeOrganization,
-		ws.ID, req.Months, reqctx.Subject(c))
+		ws.ID, req.Months, req.SwitchToAnnual, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
 		return

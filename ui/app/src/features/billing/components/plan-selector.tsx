@@ -12,20 +12,11 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
 import { formatPrice } from "@/features/billing/utils"
-import { formatMoney } from "@/lib/format"
 import type { BillingCycle } from "@/types/billing"
 import { cn } from "@/lib/ui"
 import { DowngradeWizard } from "./downgrade-wizard"
 import { UpgradeWizard } from "./upgrade-wizard"
-
-function formatDate(s?: string) {
-  if (!s) return "—"
-  return new Date(s).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })
-}
+import { InvoicePreviewNote } from "./invoice-preview-note"
 
 interface Props {
   organizationId: string
@@ -109,6 +100,10 @@ export function PlanSelector({
         onOpenChange={handleOpenChange}
         targetPlan={selectedPlan}
         targetCycle={cycle}
+        currentPlan={currentPlan}
+        currentCycle={currentCycle}
+        currentPeriodEnd={currentPeriodEnd}
+        currency={currency}
         onBackToPlans={() => setShowDowngradeWizard(false)}
       />
     )
@@ -220,25 +215,11 @@ export function PlanSelector({
         )}
 
         {isChanging && selectedPlan !== "custom" && (
-          <div className="rounded-lg bg-muted p-3 text-sm">
-            {previewLoading || !preview ? (
-              <Skeleton className="h-8 w-full" />
-            ) : preview.new_period_end ? (
-              <p>
-                <b>{t("billing.plans.noChargeToday")}</b>{" "}
-                {t("billing.plans.prorationExplainer", {
-                  newDate: formatDate(preview.new_period_end),
-                  oldDate: formatDate(currentPeriodEnd),
-                })}
-              </p>
-            ) : (
-              <p>
-                {t("billing.plans.nextInvoiceTotal", {
-                  amount: formatMoney(preview.total_cents, preview.currency),
-                })}
-              </p>
-            )}
-          </div>
+          <InvoicePreviewNote
+            preview={preview}
+            loading={previewLoading}
+            currentPeriodEnd={currentPeriodEnd}
+          />
         )}
 
         <DialogFooter>

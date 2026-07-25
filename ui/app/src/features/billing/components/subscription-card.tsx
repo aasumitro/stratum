@@ -6,7 +6,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import {
   useBillingSubscription,
   useResumeSubscription,
-  useExtendSubscription,
   useActivateTrialNow,
 } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
@@ -29,8 +28,6 @@ interface Props {
 export function SubscriptionCard({ organizationId }: Props) {
   const { t } = useTranslation()
   const [showSelector, setShowSelector] = useState(false)
-  const [extendOpen, setExtendOpen] = useState(false)
-  const [extendMonths, setExtendMonths] = useState("1")
 
   const { data: subData, isLoading } = useBillingSubscription(organizationId)
   const { isOwner } = usePermissions()
@@ -39,8 +36,6 @@ export function SubscriptionCard({ organizationId }: Props) {
 
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
-  const { mutate: extend, isPending: extending } =
-    useExtendSubscription(organizationId)
   const { mutate: activateNow, isPending: activating } =
     useActivateTrialNow(organizationId)
 
@@ -120,21 +115,15 @@ export function SubscriptionCard({ organizationId }: Props) {
               )}
               {canExtend && (
                 <SubscriptionExtendDialog
-                  open={extendOpen}
-                  onOpenChange={setExtendOpen}
-                  months={extendMonths}
-                  onMonthsChange={setExtendMonths}
-                  extending={extending}
-                  onExtend={() =>
-                    extend(
-                      { months: Number(extendMonths) },
-                      { onSuccess: () => setExtendOpen(false) }
-                    )
-                  }
+                  organizationId={organizationId}
+                  subscription={sub}
                 />
               )}
               <SubscriptionCancelDialog
                 organizationId={organizationId}
+                plan={sub.plan}
+                cycle={sub.cycle}
+                currency={sub.currency}
                 periodEnd={sub.period_end}
                 canCancel={canCancel}
               />

@@ -182,12 +182,24 @@ func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatu
 			if err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: list extension invoice line items: %w", err)
 			}
-			months := 1
-			if len(lineItems) > 0 {
-				months = lineItems[0].Quantity
+			// Summed across every line item's quantity, not read off a single
+			// fixed index — a tiered extension purchase splits into up to two
+			// line items (a 12-month-block line and a monthly-remainder line,
+			// see insertExtensionLineItems in service_subscription_billing.go),
+			// each carrying its own share of the total months in its Quantity.
+			months := 0
+			for _, li := range lineItems {
+				months += li.Quantity
+			}
+			if months == 0 {
+				months = 1
 			}
 			newPeriodEnd := sub.PeriodEnd.AddDate(0, months, 0)
-			if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, newPeriodEnd); err != nil {
+			if inv.SwitchToAnnual {
+				if err := s.repo.updateSubscriptionCycleAndPeriod(ctx, s.querier(ctx), sub.ID, cycleYearly, *sub.PeriodStart, newPeriodEnd); err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: apply extension period and cycle: %w", err)
+				}
+			} else if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, newPeriodEnd); err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: apply extension period: %w", err)
 			}
 			if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "extend",

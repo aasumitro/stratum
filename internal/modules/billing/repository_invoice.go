@@ -19,6 +19,7 @@ type invoiceRecord struct {
 	Currency          string     `json:"currency"`
 	Status            string     `json:"status"`
 	Kind              string     `json:"kind"`
+	SwitchToAnnual    bool       `json:"switch_to_annual"`
 	ProviderInvoiceID *string    `json:"provider_invoice_id,omitempty"`
 	DueAt             *time.Time `json:"due_at,omitempty"`
 	PaidAt            *time.Time `json:"paid_at,omitempty"`
@@ -43,7 +44,7 @@ func (r *repository) listInvoices(
 ) ([]invoiceRecord, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		       kind, provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices
 		WHERE subscription_id = $1
 		ORDER BY created_at DESC`,
@@ -60,7 +61,7 @@ func (r *repository) listInvoices(
 		if err := rows.Scan(
 			&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 			&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-			&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt,
+			&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -73,12 +74,12 @@ func (r *repository) findInvoiceByID(ctx context.Context, q db.Querier, id strin
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		       kind, provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices WHERE id = $1`,
 		id,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
 
@@ -91,14 +92,14 @@ func (r *repository) findInvoiceByIDAndSubject(
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT i.id, i.subscription_id, i.invoice_number, i.amount_cents, i.subtotal_cents, i.tax_rate_bps, i.tax_cents,
-		       i.currency, i.status, i.kind, i.provider_invoice_id, i.due_at, i.paid_at, i.created_at, i.updated_at
+		       i.currency, i.status, i.kind, i.switch_to_annual, i.provider_invoice_id, i.due_at, i.paid_at, i.created_at, i.updated_at
 		FROM billing.invoices i
 		JOIN billing.subscriptions s ON s.id = i.subscription_id
 		WHERE i.id = $1 AND s.subject_type = $2 AND s.subject_id = $3`,
 		invoiceID, subjectType, subjectID,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
 
@@ -109,14 +110,14 @@ func (r *repository) findPendingInvoiceBySubscription(ctx context.Context, q db.
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents,
-		       currency, status, kind, provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       currency, status, kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices
 		WHERE subscription_id = $1 AND status = 'pending'
 		ORDER BY created_at DESC LIMIT 1`,
 		subscriptionID,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
 
@@ -157,7 +158,7 @@ func (r *repository) nextInvoiceNumber(ctx context.Context, q db.Querier, organi
 func (r *repository) insertInvoice(
 	ctx context.Context, q db.Querier,
 	organizationID, subscriptionID string, subtotalCents int64,
-	taxRateBPS int, taxCents int64, currency, kind string,
+	taxRateBPS int, taxCents int64, currency, kind string, switchToAnnual bool,
 ) (*invoiceRecord, error) {
 	var inv invoiceRecord
 	dueAt := time.Now().AddDate(0, 0, 7)
@@ -172,14 +173,14 @@ func (r *repository) insertInvoice(
 	}
 
 	err := q.QueryRow(ctx, `
-		INSERT INTO billing.invoices (subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, kind, due_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO billing.invoices (subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, kind, switch_to_annual, due_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		          kind, provider_invoice_id, due_at, paid_at, created_at, updated_at`,
-		subscriptionID, invNum, totalCents, subtotalCents, taxRateBPS, taxCents, currency, kind, dueAt,
+		          kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at`,
+		subscriptionID, invNum, totalCents, subtotalCents, taxRateBPS, taxCents, currency, kind, switchToAnnual, dueAt,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return &inv, err
 }
 

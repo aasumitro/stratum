@@ -541,3 +541,76 @@ func TestStaleSubscriptionCheck(t *testing.T) {
 		})
 	}
 }
+
+// --- maxExtendableMonths ---
+
+func TestMaxExtendableMonths(t *testing.T) {
+	// 2025-01-01: the 24-month window from here (Feb 2025 + Feb 2026) crosses
+	// no leap day, so 24 calendar months == exactly 730 fixed days and lines
+	// up cleanly with RV-001's worked examples. A leap-year anchor (e.g.
+	// 2024-01-01) makes 24 calendar months span 731 days — one more than the
+	// fixed-duration cap — which is exactly the calendar-vs-fixed-duration
+	// drift the plan's own Decision #11 warns about, not a bug in the
+	// function; picking a non-leap-spanning anchor avoids exercising that
+	// drift in a test that's meant to check round numbers.
+	createdAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := createdAt // unused by the calculation (anchored to createdAt, not now) but always passed, matching prorate's convention of taking now explicitly rather than calling time.Now() internally.
+
+	cases := []struct {
+		name           string
+		monthsElapsed  int // periodEnd = createdAt + monthsElapsed
+		wantExtendable int
+	}{
+		// RV-001's own worked examples, used as literal test cases.
+		{"1 month elapsed leaves 23 extendable", 1, 23},
+		{"13 months elapsed leaves 11 extendable", 13, 11},
+		// Boundaries.
+		{"0 months elapsed (brand new sub) leaves the full 24", 0, 24},
+		{"24 months elapsed (already at cap) leaves 0", 24, 0},
+		{"23 months elapsed leaves exactly 1", 23, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			periodEnd := createdAt.AddDate(0, c.monthsElapsed, 0)
+			if got := maxExtendableMonths(createdAt, periodEnd, now); got != c.wantExtendable {
+				t.Errorf("maxExtendableMonths() = %d, want %d", got, c.wantExtendable)
+			}
+		})
+	}
+
+	t.Run("never returns more than the 24-month bound regardless of how far in the past periodEnd is", func(t *testing.T) {
+		periodEnd := createdAt.AddDate(0, -100, 0) // pathological: periodEnd long before createdAt
+		if got := maxExtendableMonths(createdAt, periodEnd, now); got > 24 {
+			t.Errorf("maxExtendableMonths() = %d, want <= 24", got)
+		}
+	})
+}
+
+// --- computeExtensionSubtotal ---
+
+func TestComputeExtensionSubtotal(t *testing.T) {
+	planInfo := &contracts.PlanInfo{
+		Prices: map[string]contracts.PlanPrices{
+			"USD": {Monthly: 9_00, Yearly: 90_00}, // $9/mo, $90/yr (2 months free)
+		},
+	}
+
+	cases := []struct {
+		name   string
+		months int
+		want   int64
+	}{
+		{"months < 12 stays flat monthly x months (today's existing behavior)", 1, 9_00},
+		{"months < 12, multiple months", 6, 54_00},
+		{"exactly 12 months bills one yearly block, not 12x monthly", 12, 90_00},
+		{"13 months = 1 yearly block + 1 month remainder", 13, 90_00 + 9_00},
+		{"24 months = 2 yearly blocks, no remainder", 24, 2 * 90_00},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := computeExtensionSubtotal(planInfo, "USD", c.months); got != c.want {
+				t.Errorf("computeExtensionSubtotal(%d) = %d, want %d", c.months, got, c.want)
+			}
+		})
+	}
+}

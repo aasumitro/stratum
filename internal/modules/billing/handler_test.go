@@ -205,6 +205,56 @@ func TestCancelSubscription_AllValidReasons(t *testing.T) {
 	}
 }
 
+// --- extend subscription tests ---
+
+// months is required_without=switch_to_annual — neither present must still
+// fail at the binding layer, not fall through to the service as months=0.
+func TestExtendSubscription_MissingMonthsAndSwitchToAnnual(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestExtendSubscription_MonthsOutOfRange(t *testing.T) {
+	for _, months := range []string{"0", "25"} {
+		t.Run(months, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+				httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{"months":`+months+`}`))
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Errorf("want 422, got %d", w.Code)
+			}
+		})
+	}
+}
+
+// switch_to_annual:true must bind successfully even with months entirely
+// absent — the binding layer's job is only to waive months' required_without
+// requirement; forcing months to 12 is a service-layer concern
+// (TestIntegration_ExtendSubscription_SwitchToAnnual).
+func TestExtendSubscription_SwitchToAnnualWithoutMonths(t *testing.T) {
+	defer func() { recover() }()
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{"switch_to_annual":true}`))
+	if w.Code == http.StatusUnprocessableEntity {
+		t.Errorf("switch_to_annual without months should bind successfully, got 422: %s", w.Body)
+	}
+}
+
+func TestExtendSubscription_PlainMonthsValid(t *testing.T) {
+	defer func() { recover() }()
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{"months":6}`))
+	if w.Code == http.StatusUnprocessableEntity {
+		t.Errorf("months=6 should bind successfully, got 422: %s", w.Body)
+	}
+}
+
 // --- resume subscription tests ---
 
 func TestResumeSubscription_NonOwnerForbidden(t *testing.T) {

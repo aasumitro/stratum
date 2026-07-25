@@ -187,3 +187,20 @@ func (r *repository) updateSubscriptionPeriod(
 	)
 	return err
 }
+
+// updateSubscriptionCycleAndPeriod mirrors updateSubscriptionPeriod but also
+// sets cycle, atomically in the same statement — used by the extend
+// switch-to-annual path so the cycle conversion and the period extension it
+// pays for always land together.
+func (r *repository) updateSubscriptionCycleAndPeriod(
+	ctx context.Context, q db.Querier,
+	id, cycle string, periodStart, periodEnd time.Time,
+) error {
+	_, err := q.Exec(ctx, `
+		UPDATE billing.subscriptions
+		SET cycle = $2, period_start = $3, period_end = $4, updated_at = now()
+		WHERE id = $1`,
+		id, cycle, periodStart, periodEnd,
+	)
+	return err
+}

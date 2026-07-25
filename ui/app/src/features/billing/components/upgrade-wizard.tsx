@@ -21,7 +21,8 @@ import {
 } from "@/features/billing/hooks"
 import { formatPrice } from "@/features/billing/utils"
 import { formatMoney, formatBytes } from "@/lib/format"
-import type { BillingCycle } from "@/types/billing"
+import type { BillingCycle, InvoicePreview } from "@/types/billing"
+import { InvoicePreviewNote } from "./invoice-preview-note"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -74,6 +75,14 @@ export function UpgradeWizard({
   const { t } = useTranslation()
   const [step, setStep] = useState<Step>("changes")
   const [termsAgreed, setTermsAgreed] = useState(false)
+  // Frozen at confirm time, not read live from the query in the success
+  // step — useChangePlan's onSuccess invalidates the subscription query,
+  // and this component stays mounted through that, so the preview hook
+  // could in principle refetch under different (post-change) inputs before
+  // the success view renders. Capturing it once removes any dependency on
+  // that race.
+  const [confirmedPreview, setConfirmedPreview] =
+    useState<InvoicePreview | null>(null)
 
   const { data: plansData, isLoading: plansLoading } = usePlans()
   const { data: catalogData } = useFeatures()
@@ -111,6 +120,7 @@ export function UpgradeWizard({
     setTimeout(() => {
       setStep("changes")
       setTermsAgreed(false)
+      setConfirmedPreview(null)
     }, 300)
   }
 
@@ -118,7 +128,12 @@ export function UpgradeWizard({
     if (!termsAgreed) return
     changePlan(
       { plan: targetPlan, cycle: targetCycle, terms_agreed: true },
-      { onSuccess: () => setStep("success") }
+      {
+        onSuccess: () => {
+          setConfirmedPreview(preview ?? null)
+          setStep("success")
+        },
+      }
     )
   }
 
@@ -134,6 +149,43 @@ export function UpgradeWizard({
               })}
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.upgrade.planLabel")}
+              </span>
+              <span className="font-medium">
+                {targetPlanInfo?.name ?? targetPlan}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.upgrade.cycleLabel")}
+              </span>
+              <span className="font-medium">
+                {t(`billing.plans.${targetCycle}`)}
+              </span>
+            </div>
+            {confirmedPreview?.new_period_end ? (
+              <p className="pt-1 text-xs text-muted-foreground">
+                {t("billing.plans.noChargeToday")}{" "}
+                {t("billing.upgrade.successRenewsOn", {
+                  date: formatDate(confirmedPreview.new_period_end),
+                })}
+              </p>
+            ) : confirmedPreview ? (
+              <p className="pt-1 text-xs text-muted-foreground">
+                {t("billing.upgrade.successCharged", {
+                  amount: formatMoney(
+                    confirmedPreview.total_cents,
+                    confirmedPreview.currency
+                  ),
+                })}
+              </p>
+            ) : null}
+          </div>
+
           <DialogFooter>
             <Button onClick={handleClose}>{t("common.done")}</Button>
           </DialogFooter>
@@ -153,25 +205,35 @@ export function UpgradeWizard({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="rounded-lg bg-muted p-3 text-sm">
-            {previewLoading || !preview ? (
-              <Skeleton className="h-8 w-full" />
-            ) : preview.new_period_end ? (
-              <p>
-                <b>{t("billing.plans.noChargeToday")}</b>{" "}
-                {t("billing.plans.prorationExplainer", {
-                  newDate: formatDate(preview.new_period_end),
-                  oldDate: formatDate(currentPeriodEnd),
-                })}
-              </p>
-            ) : (
-              <p>
-                {t("billing.plans.nextInvoiceTotal", {
-                  amount: formatMoney(preview.total_cents, preview.currency),
-                })}
-              </p>
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.upgrade.planLabel")}
+              </span>
+              <span className="font-medium">
+                {planChanged
+                  ? `${currentPlanInfo?.name ?? currentPlan} → ${targetPlanInfo?.name ?? targetPlan}`
+                  : (targetPlanInfo?.name ?? targetPlan)}
+              </span>
+            </div>
+            {cycleChanged && (
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">
+                  {t("billing.upgrade.cycleLabel")}
+                </span>
+                <span className="font-medium">
+                  {t(`billing.plans.${currentCycle}`)} →{" "}
+                  {t(`billing.plans.${targetCycle}`)}
+                </span>
+              </div>
             )}
           </div>
+
+          <InvoicePreviewNote
+            preview={preview}
+            loading={previewLoading}
+            currentPeriodEnd={currentPeriodEnd}
+          />
 
           <div className="flex items-start gap-2 py-2">
             <Checkbox

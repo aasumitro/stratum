@@ -37,6 +37,11 @@ export interface Subscription {
   period_end?: string
   trial_end?: string
   active_coupon?: string
+  // How many more months this subscription can be extended by before
+  // hitting its 24-month lifetime cap — backend-computed (same arithmetic
+  // the extend endpoint itself enforces) so the frontend never re-derives
+  // it from period_end/created_at and risks disagreeing by a day.
+  max_extendable_months: number
   created_at: string
   updated_at: string
 }
@@ -52,6 +57,10 @@ export interface Invoice {
   currency: string
   status: InvoiceStatus
   kind: "subscription" | "extension"
+  // Only meaningful on an "extension" invoice — whether paying it also
+  // converts the subscription's cycle to yearly (applied by the backend on
+  // payment confirmation, not when the invoice is created).
+  switch_to_annual: boolean
   provider_invoice_id?: string
   due_at?: string
   paid_at?: string

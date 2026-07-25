@@ -2406,6 +2406,480 @@ func TestIntegration_ExtendSubscription_Trialing_Rejected(t *testing.T) {
 	}
 }
 
+// --- switch to annual + tiered pricing ---
+
+// TestIntegration_ExtendSubscription_SwitchToAnnual_HappyPath verifies the
+// full async round trip for the switch-to-annual flow: switch_to_annual is
+// persisted on the invoice at request time, has no effect until the invoice
+// is actually paid, and only the webhook's payment-confirmation path (not
+// extendSubscription itself) ever touches cycle.
+func TestIntegration_ExtendSubscription_SwitchToAnnual_HappyPath(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_switchannual_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f70"
+		wsID2 = "00000000-0000-0000-0000-000000000f71"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+
+	before := getSubscriptionData(t, e, wsID2)
+	if before["cycle"] != "monthly" {
+		t.Fatalf("precondition: want cycle=monthly, got %v", before["cycle"])
+	}
+	beforePeriodEnd, err := time.Parse(time.RFC3339, before["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse before period_end: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend switch_to_annual: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			Kind        string `json:"kind"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.AmountCents != 9000 { // solo plan: $90/yr (seed data) — one yearly block, not 12x monthly
+		t.Errorf("switch_to_annual invoice: want amount_cents=9000, got %d", resp.Data.AmountCents)
+	}
+
+	// cycle (and period) must not move until the invoice is actually paid —
+	// the whole point of moving the branch out of extendSubscription.
+	mid := getSubscriptionData(t, e, wsID2)
+	if mid["cycle"] != "monthly" {
+		t.Errorf("want cycle unchanged before payment, got %v", mid["cycle"])
+	}
+	if mid["period_end"] != before["period_end"] {
+		t.Error("want period_end unchanged before payment")
+	}
+
+	const extID = "stripe_sess_switch_annual_happy"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	after := getSubscriptionData(t, e, wsID2)
+	if after["cycle"] != "yearly" {
+		t.Errorf("want cycle=yearly after paid webhook, got %v", after["cycle"])
+	}
+	afterPeriodEnd, err := time.Parse(time.RFC3339, after["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse after period_end: %v", err)
+	}
+	if want := beforePeriodEnd.AddDate(0, 12, 0); !afterPeriodEnd.Equal(want) {
+		t.Errorf("want period_end advanced by exactly 12 months to %v, got %v", want, afterPeriodEnd)
+	}
+}
+
+// TestIntegration_ExtendSubscription_SwitchToAnnual_RejectedWhenAlreadyYearly
+// covers Decision #10's zero-trust requirement: rejected server-side
+// regardless of what the UI would have shown, not just hidden client-side.
+func TestIntegration_ExtendSubscription_SwitchToAnnual_RejectedWhenAlreadyYearly(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_switchannual_yearly_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f72"
+		wsID2 = "00000000-0000-0000-0000-000000000f73"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+		encodeOrganizationCreatedEventWithPlan(wsID2, user, "solo", "yearly")); err != nil {
+		t.Fatalf("second provision (yearly): %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("switch_to_annual on already-yearly sub: want 422, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// TestIntegration_ExtendSubscription_UnpaidSwitchToAnnual_LeavesCycleUntouched
+// confirms an abandoned switch-to-annual invoice (created, never paid) has
+// no effect at all — the cycle write only happens in handleWebhook.
+func TestIntegration_ExtendSubscription_UnpaidSwitchToAnnual_LeavesCycleUntouched(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_switchannual_unpaid_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f82"
+		wsID2 = "00000000-0000-0000-0000-000000000f83"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend switch_to_annual: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	data := getSubscriptionData(t, e, wsID2)
+	if data["cycle"] != "monthly" {
+		t.Errorf("want cycle unchanged for an unpaid switch_to_annual invoice, got %v", data["cycle"])
+	}
+
+	var historyCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = (SELECT id FROM billing.subscriptions WHERE subject_id = $1) AND action = 'extend'`, wsID2,
+	).Scan(&historyCount)
+	if historyCount != 0 {
+		t.Errorf("want no 'extend' history row before payment, got %d", historyCount)
+	}
+}
+
+// TestIntegration_ExtendSubscription_TieredPricing_13Months is the
+// strongest regression test for the review-caught line-item fix: it fails
+// if handleWebhook regresses to reading only lineItems[0].Quantity (which
+// would apply 12 months, the block line item's quantity, not the correct
+// 13) instead of summing every line item's quantity.
+func TestIntegration_ExtendSubscription_TieredPricing_13Months(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_tiered13_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f74"
+		wsID2 = "00000000-0000-0000-0000-000000000f75"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+	before := getSubscriptionData(t, e, wsID2)
+	beforePeriodEnd, err := time.Parse(time.RFC3339, before["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse before period_end: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":13}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend 13 months: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.AmountCents != 9900 { // 1 yearly block ($90) + 1 month ($9) = $99
+		t.Errorf("13-month extend: want amount_cents=9900 (1 yearly block + 1 month), got %d", resp.Data.AmountCents)
+	}
+
+	// Two line items, each internally consistent (unit_price * quantity ==
+	// total_cents) — the review-caught invoice-PDF correctness fix.
+	rows, err := pool.Query(t.Context(),
+		`SELECT quantity, unit_price_cents, total_cents FROM billing.invoice_line_items WHERE invoice_id = $1 ORDER BY sort_order`, resp.Data.ID)
+	if err != nil {
+		t.Fatalf("query line items: %v", err)
+	}
+	defer rows.Close()
+	type li struct{ qty, unit, total int64 }
+	var items []li
+	for rows.Next() {
+		var it li
+		if err := rows.Scan(&it.qty, &it.unit, &it.total); err != nil {
+			t.Fatalf("scan line item: %v", err)
+		}
+		items = append(items, it)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 line items for a 13-month tiered extension, got %d: %+v", len(items), items)
+	}
+	if items[0].qty != 12 || items[0].total != 9000 || items[0].unit*items[0].qty != items[0].total {
+		t.Errorf("block line item: want qty=12 total=9000 unit*qty==total, got %+v", items[0])
+	}
+	if items[1].qty != 1 || items[1].unit != 900 || items[1].total != 900 {
+		t.Errorf("remainder line item: want qty=1 unit=900 total=900, got %+v", items[1])
+	}
+	if items[0].qty+items[1].qty != 13 {
+		t.Errorf("want line item quantities to sum to 13 months, got %d", items[0].qty+items[1].qty)
+	}
+
+	const extID = "stripe_sess_tiered13"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	after := getSubscriptionData(t, e, wsID2)
+	afterPeriodEnd, err := time.Parse(time.RFC3339, after["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse after period_end: %v", err)
+	}
+	if want := beforePeriodEnd.AddDate(0, 13, 0); !afterPeriodEnd.Equal(want) {
+		t.Errorf("want period_end advanced by exactly 13 months (summed across both line items) to %v, got %v — a regression to lineItems[0].Quantity alone would advance by only 12", want, afterPeriodEnd)
+	}
+	if after["cycle"] != "monthly" {
+		t.Errorf("a plain (non switch_to_annual) tiered extend must not change cycle, got %v", after["cycle"])
+	}
+}
+
+// TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle
+// covers the Risks section's explicitly-called-out conflation: a plain
+// 12-month extend prices identically to switch-to-annual (one yearly block)
+// but must never touch cycle — only the switch_to_annual request path does.
+func TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_plain12_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f76"
+		wsID2 = "00000000-0000-0000-0000-000000000f77"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":12}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend 12 months: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.AmountCents != 9000 {
+		t.Errorf("plain 12-month extend: want amount_cents=9000 (same price as switch_to_annual), got %d", resp.Data.AmountCents)
+	}
+
+	const extID = "stripe_sess_plain12"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	after := getSubscriptionData(t, e, wsID2)
+	if after["cycle"] != "monthly" {
+		t.Errorf("plain 12-month extend must not change cycle even though it prices like a yearly block, got %v", after["cycle"])
+	}
+}
+
+// TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDirection
+// verifies item 4c: the pending-invoice guard needs no new logic to cover
+// both invoice variants, because both keep kind="extension" — a pending
+// plain extend blocks a switch-to-annual attempt and vice versa.
+func TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDirection(t *testing.T) {
+	pool := testPoolBilling(t)
+
+	t.Run("pending plain extend blocks a switch_to_annual attempt", func(t *testing.T) {
+		const (
+			user  = "integ_billing_pendingguard_a_user"
+			wsID1 = "00000000-0000-0000-0000-000000000f78"
+			wsID2 = "00000000-0000-0000-0000-000000000f79"
+		)
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+		t.Cleanup(func() {
+			cleanupBillingByOrganization(pool, wsID1)
+			cleanupBillingByOrganization(pool, wsID2)
+		})
+		seedBillingOrganization(pool, wsID1, user)
+		seedBillingOrganization(pool, wsID2, user)
+
+		mod := billing.NewModuleForTest(pool, stubRefReader{})
+		mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+			t.Fatalf("first provision: %v", err)
+		}
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+			t.Fatalf("second provision: %v", err)
+		}
+
+		e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+		w1 := httptest.NewRecorder()
+		e.ServeHTTP(w1, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+		if w1.Code != http.StatusOK {
+			t.Fatalf("first (plain) extend: want 200, got %d: %s", w1.Code, w1.Body)
+		}
+
+		w2 := httptest.NewRecorder()
+		e.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+		if w2.Code != http.StatusUnprocessableEntity {
+			t.Errorf("switch_to_annual while a plain extend is pending: want 422, got %d: %s", w2.Code, w2.Body)
+		}
+	})
+
+	t.Run("pending switch_to_annual blocks a plain extend attempt", func(t *testing.T) {
+		const (
+			user  = "integ_billing_pendingguard_b_user"
+			wsID1 = "00000000-0000-0000-0000-000000000f80"
+			wsID2 = "00000000-0000-0000-0000-000000000f81"
+		)
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+		t.Cleanup(func() {
+			cleanupBillingByOrganization(pool, wsID1)
+			cleanupBillingByOrganization(pool, wsID2)
+		})
+		seedBillingOrganization(pool, wsID1, user)
+		seedBillingOrganization(pool, wsID2, user)
+
+		mod := billing.NewModuleForTest(pool, stubRefReader{})
+		mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+			t.Fatalf("first provision: %v", err)
+		}
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+			t.Fatalf("second provision: %v", err)
+		}
+
+		e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+		w1 := httptest.NewRecorder()
+		e.ServeHTTP(w1, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+		if w1.Code != http.StatusOK {
+			t.Fatalf("first (switch_to_annual) extend: want 200, got %d: %s", w1.Code, w1.Body)
+		}
+
+		w2 := httptest.NewRecorder()
+		e.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+		if w2.Code != http.StatusUnprocessableEntity {
+			t.Errorf("plain extend while switch_to_annual is pending: want 422, got %d: %s", w2.Code, w2.Body)
+		}
+	})
+}
+
+// TestIntegration_GetSubscription_MaxExtendableMonths verifies that the
+// field the frontend gates the whole Extend UI on actually appears,
+// correctly, in a real response.
+func TestIntegration_GetSubscription_MaxExtendableMonths(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_maxextend_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f84"
+		wsID2 = "00000000-0000-0000-0000-000000000f85"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	data := getSubscriptionData(t, billing.NewModuleEngine(pool, user, wsID2, stubRefReader{}), wsID2)
+	got, ok := data["max_extendable_months"].(float64) // JSON numbers decode as float64 into map[string]any
+	if !ok {
+		t.Fatalf("want max_extendable_months present as a number, got %#v", data["max_extendable_months"])
+	}
+	// Not asserting the exact value: unlike TestMaxExtendableMonths (which
+	// uses fixed, deliberately leap-year-safe dates to prove the arithmetic
+	// exactly), this runs against the real current time, so the precise
+	// number legitimately varies by a month or two depending on which real
+	// calendar dates the test happens to run against — the calendar-month
+	// vs. fixed-730-day-duration drift the plan itself documents. This test
+	// only needs to confirm the field is wired end to end and in a sane
+	// range for a subscription that was just created.
+	if got < 20 || got > 24 {
+		t.Errorf("a brand new active subscription: want max_extendable_months in [20,24], got %v", got)
+	}
+}
+
 // --- skip trial, activate + invoice now ---
 
 func TestIntegration_ActivateTrialNow_HappyPath(t *testing.T) {

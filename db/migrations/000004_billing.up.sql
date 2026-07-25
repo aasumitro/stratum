@@ -63,6 +63,11 @@ CREATE TABLE billing.invoices (
                                     CHECK (status IN ('pending', 'paid', 'failed', 'void')),
     kind                TEXT        NOT NULL DEFAULT 'subscription'
                                     CHECK (kind IN ('subscription', 'extension')),
+    -- Only meaningful on an "extension" invoice — whether paying it also
+    -- converts the subscription's cycle to yearly (applied by
+    -- handleWebhook on payment confirmation, not when the invoice is
+    -- created; see service_subscription_billing.go).
+    switch_to_annual    BOOLEAN     NOT NULL DEFAULT false,
     provider_invoice_id TEXT,
     due_at              TIMESTAMPTZ,
     paid_at             TIMESTAMPTZ,

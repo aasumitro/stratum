@@ -2581,7 +2581,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Months to extend by",
+                        "description": "Months to extend by, or switch_to_annual",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -6904,14 +6904,14 @@ const docTemplate = `{
         },
         "extendSubscriptionRequest": {
             "type": "object",
-            "required": [
-                "months"
-            ],
             "properties": {
                 "months": {
                     "type": "integer",
                     "maximum": 24,
                     "minimum": 1
+                },
+                "switch_to_annual": {
+                    "type": "boolean"
                 }
             }
         },
@@ -7216,6 +7216,9 @@ const docTemplate = `{
                 },
                 "subtotal_cents": {
                     "type": "integer"
+                },
+                "switch_to_annual": {
+                    "type": "boolean"
                 },
                 "tax_cents": {
                     "type": "integer"
@@ -7766,6 +7769,10 @@ const docTemplate = `{
                 },
                 "id": {
                     "type": "string"
+                },
+                "max_extendable_months": {
+                    "description": "MaxExtendableMonths lets the frontend gate the Extend flow's counter,\n\"Switch to Annual\" option, and entry point without re-deriving the\n24-month lifetime cap from raw dates itself (see maxExtendableMonths\nin service_subscription_billing.go for why that's rejected). 0 for a\nsubscription with no current period (e.g. still trialing) — nothing\nto extend.",
+                    "type": "integer"
                 },
                 "period_end": {
                     "type": "string"

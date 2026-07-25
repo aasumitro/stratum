@@ -153,7 +153,7 @@ func (s *service) provisionSubscription(
 					taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryCode)
 				}
 				tax := calculateTax(composed, taxRate)
-				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency, "subscription")
+				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency, "subscription", false)
 				if invErr != nil {
 					return fmt.Errorf("billing.provisionSubscription: insert invoice: %w", invErr)
 				}
@@ -275,7 +275,7 @@ func (s *service) changePlanWithMetadata(
 			}
 			tax := calculateTax(composed, taxRate)
 			if inv, err := s.repo.insertInvoice(
-				ctx, s.querier(ctx), subjectID, updated.ID, composed, taxRate, tax, updated.Currency, "subscription",
+				ctx, s.querier(ctx), subjectID, updated.ID, composed, taxRate, tax, updated.Currency, "subscription", false,
 			); err == nil {
 				_ = s.insertPlanLineItem(ctx, inv, newPlanInfo)
 				s.applyInvoiceCharges(ctx, s.querier(ctx), updated.ID, inv.ID,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -21,17 +22,105 @@ import (
 // runway an extension purchase bought.
 const maxSubscriptionDuration = 2 * 365 * 24 * time.Hour
 
+// maxExtendableMonths answers "how many more months, if any, can this
+// subscription be extended by" — the single place that computes this, so
+// extendSubscription's reject-if-exceeds check and the frontend-facing
+// max_extendable_months field on the subscription GET response can never
+// disagree. A bounded loop over n = 0..24 (not a closed-form calculation):
+// AddDate's calendar-month semantics (28/30/31-day months) aren't cleanly
+// invertible into a formula, and the bound is tiny enough that a loop is
+// simpler and provably correct.
+func maxExtendableMonths(createdAt, periodEnd, _ time.Time) int {
+	maxAllowedEnd := createdAt.Add(maxSubscriptionDuration)
+	for n := 24; n >= 0; n-- {
+		if !periodEnd.AddDate(0, n, 0).After(maxAllowedEnd) {
+			return n
+		}
+	}
+	return 0
+}
+
+// computeExtensionSubtotal implements the tiered extension-pricing rule:
+// every full 12-month block bills at the plan's yearly price, and any
+// remainder bills at the monthly price (e.g. 13 months = 1 yearly block +
+// 1 month). months < 12 collapses to blocks == 0, i.e. today's flat
+// monthly × months calculation — the same formula handles both cases, no
+// separate branch needed.
+func computeExtensionSubtotal(planInfo *contracts.PlanInfo, currency string, months int) int64 {
+	blocks := months / 12
+	remainder := months % 12
+	return int64(blocks)*planInfo.Price(currency, cycleYearly) + int64(remainder)*planInfo.Price(currency, cycleMonthly)
+}
+
+// insertExtensionLineItems writes the invoice line item(s) for an extension
+// purchase, split so every line's unit_price_cents × quantity == its own
+// total_cents — the invoice PDF (pdf.LineItem, handler_invoice.go) shows
+// quantity/unit-price/amount as separate columns without recomputing them,
+// so a mismatch would look like a math error on a document the customer
+// reads. Every line's quantity is expressed in months, never blocks,
+// specifically so handleWebhook can recover the total extension length by
+// summing every one of the invoice's line items' quantities, instead of
+// assuming a single line item at a fixed index — see the matching comment
+// there.
+func (s *service) insertExtensionLineItems(
+	ctx context.Context, invoiceID string, planInfo *contracts.PlanInfo, currency string, months int,
+) error {
+	blocks, remainder := months/12, months%12
+	sortOrder := 0
+
+	if blocks > 0 {
+		yearlyPrice := planInfo.Price(currency, cycleYearly)
+		desc := fmt.Sprintf("%s plan — 12-month block", planInfo.Name)
+		if blocks > 1 {
+			desc = fmt.Sprintf("%s plan — %d × 12-month blocks", planInfo.Name, blocks)
+		}
+		// unit_price_cents is a monthly-equivalent display rate (yearlyPrice/12,
+		// floor-rounded) — total_cents stays the exact blocks*yearlyPrice
+		// regardless, so the actual charge is never affected by this rounding,
+		// only the displayed per-month figure (the same "billed annually at $X,
+		// ~$Y/mo" rounding any annual-pricing display already carries).
+		if err := s.repo.insertLineItem(
+			ctx, s.querier(ctx), invoiceID, desc, currency,
+			blocks*12, yearlyPrice/12, int64(blocks)*yearlyPrice, sortOrder,
+		); err != nil {
+			return err
+		}
+		sortOrder++
+	}
+
+	if remainder > 0 {
+		monthlyPrice := planInfo.Price(currency, cycleMonthly)
+		desc := fmt.Sprintf("%s plan — %d month extension", planInfo.Name, remainder)
+		if err := s.repo.insertLineItem(
+			ctx, s.querier(ctx), invoiceID, desc, currency,
+			remainder, monthlyPrice, int64(remainder)*monthlyPrice, sortOrder,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // extendSubscription buys `months` of additional runway on an active
-// subscription's current period, priced at the plan's monthly rate ×
-// months (a dedicated invoice, independent of the regular renewal cycle —
-// coupons/addon pricing deliberately don't apply here, since their
-// cadence/attachment model is built around regular cycle invoices, not ad
-// hoc extension purchases). Capped so the subscription's total lifetime
-// (from its original creation, never extendable past 2 years) is never
-// exceeded — rejected outright rather than silently clamped, so the caller
-// always knows exactly how much time an extension bought.
+// subscription's current period (a dedicated invoice, independent of the
+// regular renewal cycle — coupons/addon pricing deliberately don't apply
+// here, since their cadence/attachment model is built around regular cycle
+// invoices, not ad hoc extension purchases), priced by computeExtensionSubtotal.
+// Capped so the subscription's total lifetime (from its original creation,
+// never extendable past 2 years) is never exceeded — rejected outright
+// rather than silently clamped, so the caller always knows exactly how much
+// time an extension bought.
+//
+// switchToAnnual additionally converts the subscription's billing cycle to
+// yearly — but not synchronously here: this function only ever creates the
+// invoice (see the transaction below); the period/cycle mutation itself
+// happens later, asynchronously, in handleWebhook when the invoice is
+// actually paid (service_webhook.go). switchToAnnual is persisted onto the
+// invoice (invoices.switch_to_annual) precisely so that later, payment-time
+// code can read back what was requested here.
 func (s *service) extendSubscription(
-	ctx context.Context, subjectType, subjectID string, months int, _ string,
+	ctx context.Context, subjectType, subjectID string, months int, switchToAnnual bool, _ string,
 ) (inv *invoiceRecord, err error) {
 	defer func() {
 		if err == nil {
@@ -47,6 +136,8 @@ func (s *service) extendSubscription(
 			err = apperr.Validation("EXTENSION_ALREADY_PENDING", "an extension invoice is already pending payment")
 		case errors.Is(err, ErrExtensionExceedsMaxDuration):
 			err = apperr.Validation("EXTENSION_EXCEEDS_MAX_DURATION", err.Error())
+		case errors.Is(err, ErrAlreadyYearly):
+			err = apperr.Validation("SUBSCRIPTION_ALREADY_YEARLY", "subscription is already on the yearly cycle")
 		case errors.Is(err, ErrUnknownPlan):
 			err = apperr.Validation("UNKNOWN_PLAN", "unknown plan")
 		default:
@@ -65,13 +156,20 @@ func (s *service) extendSubscription(
 		return nil, ErrSubscriptionNotExtendable
 	}
 
+	if switchToAnnual {
+		if sub.Cycle != cycleMonthly {
+			return nil, ErrAlreadyYearly
+		}
+		months = 12
+	}
+
 	if isPending, _ := s.repo.hasPendingInvoiceOfKind(ctx, s.querier(ctx), sub.ID, "extension"); isPending {
 		return nil, ErrExtensionAlreadyPending
 	}
 
 	newPeriodEnd := sub.PeriodEnd.AddDate(0, months, 0)
-	maxAllowedEnd := sub.CreatedAt.Add(maxSubscriptionDuration)
-	if newPeriodEnd.After(maxAllowedEnd) {
+	if months > maxExtendableMonths(sub.CreatedAt, *sub.PeriodEnd, time.Now()) {
+		maxAllowedEnd := sub.CreatedAt.Add(maxSubscriptionDuration)
 		return nil, fmt.Errorf("billing.extendSubscription: %w: at most until %s", ErrExtensionExceedsMaxDuration, maxAllowedEnd.Format(time.RFC3339))
 	}
 
@@ -79,8 +177,7 @@ func (s *service) extendSubscription(
 	if err != nil {
 		return nil, ErrUnknownPlan
 	}
-	monthlyPrice := planInfo.Price(sub.Currency, cycleMonthly)
-	subtotal := monthlyPrice * int64(months)
+	subtotal := computeExtensionSubtotal(planInfo, sub.Currency, months)
 
 	taxRate := 0
 	if s.taxReader != nil {
@@ -98,15 +195,11 @@ func (s *service) extendSubscription(
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
-		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, subtotal, taxRate, tax, sub.Currency, "extension")
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, subtotal, taxRate, tax, sub.Currency, "extension", switchToAnnual)
 		if err != nil {
 			return err
 		}
-		desc := fmt.Sprintf("%s plan — %d month extension", planInfo.Name, months)
-		if err := s.repo.insertLineItem(
-			ctx, s.querier(ctx), inv.ID, desc, sub.Currency,
-			months, monthlyPrice, subtotal, 0,
-		); err != nil {
+		if err := s.insertExtensionLineItems(ctx, inv.ID, planInfo, sub.Currency, months); err != nil {
 			return err
 		}
 		return nil
@@ -193,7 +286,7 @@ func (s *service) activateTrialNow(
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
-		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription")
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
 		if err != nil {
 			return err
 		}
@@ -325,7 +418,7 @@ func (s *service) resumeSubscription(
 		err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 			ctx := db.WithQuerier(ctx, tx)
 			var err error
-			inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription")
+			inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
 			if err != nil {
 				return err
 			}

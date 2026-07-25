@@ -7,6 +7,7 @@ import {
   useHTTPActionPatch,
   useHTTPActionDelete,
 } from "@/lib/api/action"
+import { parseApiError } from "@/lib/api/error"
 import { queryKeys } from "@/lib/api/keys"
 import { API } from "@/lib/api/path"
 import { capture } from "@/lib/analytics"
@@ -167,7 +168,10 @@ export function useCancelSubscription(organizationId: string) {
           queryKey: queryKeys.billing.subscription(organizationId),
         })
       },
-      onError: () => toast.error(t("billing.subscription.cancelFailed")),
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.cancelFailed"))
+        ),
     },
   })
 }
@@ -184,7 +188,10 @@ export function useResumeSubscription(organizationId: string) {
           queryKey: queryKeys.billing.subscription(organizationId),
         })
       },
-      onError: () => toast.error(t("billing.subscription.resumeFailed")),
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.resumeFailed"))
+        ),
     },
   })
 }
@@ -192,11 +199,14 @@ export function useResumeSubscription(organizationId: string) {
 export function useExtendSubscription(organizationId: string) {
   const queryClient = useQueryClient()
   const { t } = useTranslation()
-  return useHTTPActionPost<Invoice, { months: number }>({
+  return useHTTPActionPost<
+    Invoice,
+    { months?: number; switch_to_annual?: boolean }
+  >({
     url: API.billing(organizationId, "extend"),
     options: {
       onSuccess: () => {
-        toast.success(t("billing.subscription.extended"))
+        toast.success(t("billing.extend.toastSuccess"))
         void queryClient.invalidateQueries({
           queryKey: queryKeys.billing.subscription(organizationId),
         })
@@ -207,7 +217,8 @@ export function useExtendSubscription(organizationId: string) {
           queryKey: queryKeys.billing.history(organizationId),
         })
       },
-      onError: () => toast.error(t("billing.subscription.extendFailed")),
+      onError: (error) =>
+        toast.error(parseApiError(error, t("billing.extend.toastFailed"))),
     },
   })
 }
@@ -230,7 +241,8 @@ export function useActivateTrialNow(organizationId: string) {
           queryKey: queryKeys.billing.history(organizationId),
         })
       },
-      onError: () => toast.error(t("billing.trial.activateFailed")),
+      onError: (error) =>
+        toast.error(parseApiError(error, t("billing.trial.activateFailed"))),
     },
   })
 }
@@ -264,7 +276,10 @@ export function useChangePlan(organizationId: string) {
           queryKey: queryKeys.billing.history(organizationId),
         })
       },
-      onError: () => toast.error(t("billing.subscription.planChangeFailed")),
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.planChangeFailed"))
+        ),
     },
   })
 }
@@ -303,7 +318,10 @@ export function useDowngradeSubscription(organizationId: string) {
           queryKey: queryKeys.billing.history(organizationId),
         })
       },
-      onError: () => toast.error(t("billing.subscription.downgradeFailed")),
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.downgradeFailed"))
+        ),
     },
   })
 }
@@ -345,7 +363,8 @@ export function useAttachAddon(organizationId: string) {
           ],
         })
       },
-      onError: () => toast.error(t("billing.addons.attachFailed")),
+      onError: (error) =>
+        toast.error(parseApiError(error, t("billing.addons.attachFailed"))),
     },
   })
 }
@@ -371,7 +390,8 @@ export function useDetachAddon(organizationId: string) {
           ],
         })
       },
-      onError: () => toast.error(t("billing.addons.detachFailed")),
+      onError: (error) =>
+        toast.error(parseApiError(error, t("billing.addons.detachFailed"))),
     },
   })
 }
@@ -388,7 +408,8 @@ export function useRedeemCoupon(organizationId: string) {
           queryKey: queryKeys.billing.subscription(organizationId),
         })
       },
-      onError: () => toast.error(t("billing.coupons.invalidCode")),
+      onError: (error) =>
+        toast.error(parseApiError(error, t("billing.coupons.invalidCode"))),
     },
   })
 }

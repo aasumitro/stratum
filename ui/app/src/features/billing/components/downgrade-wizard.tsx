@@ -12,12 +12,28 @@ import {
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
+  usePlans,
   useDowngradeSubscription,
   useInvoicePreview,
 } from "@/features/billing/hooks"
 import { useOrganizationMembers } from "@/features/organization/hooks"
-import type { BillingCycle, OverageResolution } from "@/types/billing"
+import { formatPrice } from "@/features/billing/utils"
+import type {
+  BillingCycle,
+  InvoicePreview,
+  OverageResolution,
+} from "@/types/billing"
 import type { Member } from "@/types/organization"
+import { InvoicePreviewNote } from "./invoice-preview-note"
+
+function formatDate(s?: string) {
+  if (!s) return "—"
+  return new Date(s).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}
 
 interface Props {
   organizationId: string
@@ -25,6 +41,10 @@ interface Props {
   onOpenChange: (open: boolean) => void
   targetPlan: string
   targetCycle: BillingCycle
+  currentPlan: string
+  currentCycle: BillingCycle
+  currentPeriodEnd?: string
+  currency: string
   onBackToPlans: () => void
 }
 
@@ -36,10 +56,19 @@ export function DowngradeWizard({
   onOpenChange,
   targetPlan,
   targetCycle,
+  currentPlan,
+  currentCycle,
+  currentPeriodEnd,
+  currency,
   onBackToPlans,
 }: Props) {
   const { t } = useTranslation()
   const [step, setStep] = useState<Step>("preview")
+  // Frozen at confirm time — see UpgradeWizard's identical field for why
+  // (the preview query's enabled condition goes false once step flips to
+  // "success", so a live read risks showing stale/refetched data instead).
+  const [confirmedPreview, setConfirmedPreview] =
+    useState<InvoicePreview | null>(null)
 
   // Selections
   const [selectedMembers, setSelectedMembers] = useState<string[]>([])
@@ -53,6 +82,14 @@ export function DowngradeWizard({
   // Real mutation
   const { mutate: downgrade, isPending: downgrading } =
     useDowngradeSubscription(organizationId)
+
+  const { data: plansData } = usePlans()
+  const plans = plansData?.data ?? []
+  const targetPlanInfo = plans.find((p) => p.id === targetPlan)
+  const currentPlanInfo = plans.find((p) => p.id === currentPlan)
+  const targetPrices =
+    targetPlanInfo?.prices[currency] ?? targetPlanInfo?.prices["USD"]
+  const cycleChanged = targetCycle !== currentCycle
 
   // fetch members for selection
   const { data: membersData } = useOrganizationMembers(organizationId, {
@@ -134,6 +171,7 @@ export function DowngradeWizard({
                 }
               : null
           )
+          setConfirmedPreview(preview ?? null)
           setStep("success")
         },
       }
@@ -148,6 +186,7 @@ export function DowngradeWizard({
       setSelectedMembers([])
       setSelectedFiles([])
       setResult(null)
+      setConfirmedPreview(null)
     }, 300)
   }
 
@@ -161,6 +200,34 @@ export function DowngradeWizard({
               {t("billing.downgrade.successDescription")}
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.downgrade.planLabel")}
+              </span>
+              <span className="font-medium">
+                {targetPlanInfo?.name ?? targetPlan}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.downgrade.cycleLabel")}
+              </span>
+              <span className="font-medium">
+                {t(`billing.plans.${targetCycle}`)}
+              </span>
+            </div>
+            {confirmedPreview?.new_period_end && (
+              <p className="pt-1 text-xs text-muted-foreground">
+                {t("billing.plans.noChargeToday")}{" "}
+                {t("billing.downgrade.successEffectiveOn", {
+                  date: formatDate(confirmedPreview.new_period_end),
+                })}
+              </p>
+            )}
+          </div>
+
           <div className="py-4 text-sm text-muted-foreground">
             {result &&
             (result.removed_member_auth_subs.length > 0 ||
@@ -210,6 +277,52 @@ export function DowngradeWizard({
               {t("billing.downgrade.reviewDescription")}
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.downgrade.planLabel")}
+              </span>
+              <span className="font-medium">
+                {currentPlanInfo?.name ?? currentPlan} →{" "}
+                {targetPlanInfo?.name ?? targetPlan}
+              </span>
+            </div>
+            {targetPrices && (
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">
+                  {t("billing.downgrade.newPrice")}
+                </span>
+                <span className="font-medium">
+                  {formatPrice(
+                    targetCycle === "monthly"
+                      ? targetPrices.monthly
+                      : targetPrices.yearly,
+                    currency,
+                    targetCycle,
+                    t
+                  )}
+                </span>
+              </div>
+            )}
+            {cycleChanged && (
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">
+                  {t("billing.downgrade.cycleLabel")}
+                </span>
+                <span className="font-medium">
+                  {t(`billing.plans.${currentCycle}`)} →{" "}
+                  {t(`billing.plans.${targetCycle}`)}
+                </span>
+              </div>
+            )}
+          </div>
+
+          <InvoicePreviewNote
+            preview={preview}
+            loading={previewLoading}
+            currentPeriodEnd={currentPeriodEnd}
+          />
 
           {previewLoading ? (
             <div className="py-4">
@@ -378,20 +491,55 @@ export function DowngradeWizard({
           </DialogDescription>
         </DialogHeader>
 
-        {previewLoading ? (
-          <div className="py-4">
-            <Skeleton className="h-20 w-full" />
+        <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">
+              {t("billing.downgrade.planLabel")}
+            </span>
+            <span className="font-medium">
+              {currentPlanInfo?.name ?? currentPlan} →{" "}
+              {targetPlanInfo?.name ?? targetPlan}
+            </span>
           </div>
-        ) : (
-          <div className="py-4 text-sm text-muted-foreground">
-            <p>
-              {t("billing.downgrade.previewInfo", {
-                plan: targetPlan,
-                cycle: targetCycle,
-              })}
-            </p>
-          </div>
-        )}
+          {targetPrices && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.downgrade.newPrice")}
+              </span>
+              <span className="font-medium">
+                {formatPrice(
+                  targetCycle === "monthly"
+                    ? targetPrices.monthly
+                    : targetPrices.yearly,
+                  currency,
+                  targetCycle,
+                  t
+                )}
+              </span>
+            </div>
+          )}
+          {cycleChanged && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.downgrade.cycleLabel")}
+              </span>
+              <span className="font-medium">
+                {t(`billing.plans.${currentCycle}`)} →{" "}
+                {t(`billing.plans.${targetCycle}`)}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <InvoicePreviewNote
+          preview={preview}
+          loading={previewLoading}
+          currentPeriodEnd={currentPeriodEnd}
+        />
+
+        <p className="text-sm text-muted-foreground">
+          {t("billing.downgrade.previewOverageWarning")}
+        </p>
 
         <DialogFooter>
           <Button variant="outline" onClick={onBackToPlans}>
