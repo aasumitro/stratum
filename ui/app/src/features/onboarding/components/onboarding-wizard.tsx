@@ -59,9 +59,9 @@ function StepIndicator({
 
 export function OnboardingWizard({ initialStep }: { initialStep: 1 | 2 | 3 }) {
   const { t } = useTranslation()
-  // Step 3 ("profile done, organization already exists") no longer has its
-  // own screen — the organization step now completes onboarding directly
-  // on success (1c), so it collapses onto step 2.
+  // Step 3 ("profile done, organization already exists") collapses onto step 2
+  // — the organization step completes onboarding directly
+  // on success (1c).
   const [step, setStep] = useState<Step>(initialStep === 3 ? 2 : initialStep)
 
   const STEPS = [

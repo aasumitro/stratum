@@ -32,7 +32,7 @@ Web's e2e suite runs separately, from `ui/app`:
 npm run test:e2e   # Playwright — auth + onboarding, needs infra + API running
 ```
 
-It logs in with the shared `TEST_ACCOUNT_EMAIL`/`PASSWORD` (repo-root `.env.local`) against real Supabase and the real backend, then intercepts the profile/organization lookups so the onboarding wizard's steps render deterministically without touching that account's actual state.
+It logs in with the owner-role test account (`TEST_ACCOUNT_OWNER_EMAIL`/`PASSWORD`, repo-root `.env.local`) against real Supabase and the real backend, then intercepts the profile/organization lookups so the onboarding wizard's steps render deterministically without touching that account's actual state. `TEST_ACCOUNT_ADMIN_EMAIL`/`PASSWORD` and `TEST_ACCOUNT_MEMBER_EMAIL`/`PASSWORD` (same org, different roles) also live in `.env.local` for manual cross-role checks — the automated e2e suite only uses the owner account.
 
 The full pre-merge sequence (what CI runs): `go vet ./...` → `gofmt -w .` → `golangci-lint run ./...` → `govulncheck ./...` → `go test ./... -race -count=1 -timeout 120s`.
 

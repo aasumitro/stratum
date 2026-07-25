@@ -8,20 +8,15 @@ import {
 } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
-import { IconBuilding, IconCopy } from "@tabler/icons-react"
+import { IconCopy } from "@tabler/icons-react"
 import { useAuth } from "@/components/auth-provider"
 import {
   useOrganization,
-  useOrganizations,
   useOrganizationMembers,
   useUnsuspendOrganization,
 } from "@/features/organization/hooks"
-import { useInvoices } from "@/features/billing/hooks"
-import { Badge } from "@/components/ui/badge"
+import { usePermissions } from "@/hooks/use-permissions"
 import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Separator } from "@/components/ui/separator"
-import { cn } from "@/lib/ui"
 
 // Routes accessible even when billing is blocked by a pending invoice.
 // Deliberately does NOT include the suspended case — a suspended
@@ -32,12 +27,6 @@ const BILLING_ALLOWED_SEGMENTS = new Set([
   "settings",
   "notifications",
 ])
-
-const STATUS_BADGE: Record<string, string> = {
-  active: "bg-emerald-500/10 text-emerald-600",
-  suspended: "bg-amber-500/10 text-amber-600",
-  deleted: "bg-destructive/10 text-destructive",
-}
 
 export function OrganizationLayout() {
   const { t } = useTranslation()
@@ -55,30 +44,30 @@ export function OrganizationLayout() {
 
   const {
     data: wsData,
-    isLoading: wsLoading,
     isError,
     error,
-  } = useOrganization(organizationId, { retry: false })
+  } = useOrganization(organizationId, {
+    retry: false,
+  })
 
   useEffect(() => {
-    if (!isError) return
+    // Signing out clears the session cookie and then queryClient.clear()s
+    // (see auth-provider.tsx), which forces this still-mounted query to
+    // refetch immediately — with no token, a beat before the /login
+    // navigation actually unmounts this page. That 401 is an artifact of
+    // logging out on purpose, not a real "access denied", so it's only
+    // worth surfacing while a session still exists.
+    if (!isError || !session) return
     const msg =
       (error as { error?: string })?.error ?? t("organization.accessDenied")
     localStorage.removeItem("active_organization_id")
     toast.error(msg)
     void navigate({ to: "/organizations" })
-  }, [isError, error, navigate, t])
+  }, [isError, error, navigate, t, session])
 
-  const { data: listData } = useOrganizations()
+  const { isOwner, hasPendingInvoice } = usePermissions()
   const organization = wsData?.data
-  const role = listData?.data?.find((w) => w.id === organizationId)?.role
-  const isOwner = role === "owner"
   const isSuspended = organization?.status === "suspended"
-
-  const { data: invoicesData } = useInvoices(organizationId, isOwner)
-  const hasPendingInvoice =
-    isOwner && (invoicesData?.data ?? []).some((i) => i.status === "pending")
-  const isBillingBlocked = hasPendingInvoice
 
   // Billing-caused suspension is the one that resolves itself by
   // payment (the "subscription expired" sentinel billing's auto-suspend
@@ -101,60 +90,16 @@ export function OrganizationLayout() {
   const subSegments = location.pathname.split("/").filter(Boolean).slice(2) // drop "organization" and organizationId
   const currentSegment = subSegments[0]
   useEffect(() => {
-    if (!isBillingBlocked || !currentSegment) return
+    if (!hasPendingInvoice || !currentSegment) return
     if (BILLING_ALLOWED_SEGMENTS.has(currentSegment)) return
     void navigate({
       to: "/organization/$organizationId/billing",
       params: { organizationId },
     })
-  }, [isBillingBlocked, currentSegment, navigate, organizationId])
+  }, [hasPendingInvoice, currentSegment, navigate, organizationId])
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      <div className="flex items-center gap-3">
-        <Link
-          to="/organization/$organizationId/members"
-          params={{ organizationId }}
-          className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted transition-colors hover:bg-muted/80"
-        >
-          <IconBuilding className="size-5 text-muted-foreground" />
-        </Link>
-        {wsLoading ? (
-          <div className="flex flex-col gap-1.5">
-            <Skeleton className="h-5 w-32" />
-            <Skeleton className="h-3.5 w-20" />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-0.5">
-            <div className="flex items-center gap-2">
-              <span className="text-base font-semibold">
-                {organization?.name}
-              </span>
-              {organization?.status && (
-                <span
-                  className={cn(
-                    "rounded-full px-2 py-0.5 text-xs font-medium capitalize",
-                    STATUS_BADGE[organization.status] ?? ""
-                  )}
-                >
-                  {organization.status}
-                </span>
-              )}
-              {role && (
-                <Badge variant="outline" className="text-xs capitalize">
-                  {role}
-                </Badge>
-              )}
-            </div>
-            <span className="text-sm text-muted-foreground">
-              {organization?.slug}
-            </span>
-          </div>
-        )}
-      </div>
-
-      <Separator />
-
       {/* Suspended lockout: shell stays, banner names who can help
           (member/admin) or the reason + fix (owner). Every page below
           stays reachable; UI-only mutation gating happens per-page. */}

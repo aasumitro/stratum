@@ -48,8 +48,6 @@ import { Route as ProtectedOrganizationOrganizationIdPlatformR3RouteImport } fro
 import { Route as ProtectedOrganizationOrganizationIdPlatformR2RouteImport } from './routes/_protected/organization/$organizationId/platform/r2'
 import { Route as ProtectedOrganizationOrganizationIdPlatformR1RouteImport } from './routes/_protected/organization/$organizationId/platform/r1'
 import { Route as ProtectedOrganizationOrganizationIdMembersInvitationsRouteImport } from './routes/_protected/organization/$organizationId/members/invitations'
-import { Route as ProtectedOrganizationOrganizationIdBillingInvoicesRouteImport } from './routes/_protected/organization/$organizationId/billing/invoices'
-import { Route as ProtectedOrganizationOrganizationIdBillingHistoryRouteImport } from './routes/_protected/organization/$organizationId/billing/history'
 
 const ResetPasswordRoute = ResetPasswordRouteImport.update({
   id: '/reset-password',
@@ -270,18 +268,6 @@ const ProtectedOrganizationOrganizationIdMembersInvitationsRoute =
     path: '/invitations',
     getParentRoute: () => ProtectedOrganizationOrganizationIdMembersRoute,
   } as any)
-const ProtectedOrganizationOrganizationIdBillingInvoicesRoute =
-  ProtectedOrganizationOrganizationIdBillingInvoicesRouteImport.update({
-    id: '/invoices',
-    path: '/invoices',
-    getParentRoute: () => ProtectedOrganizationOrganizationIdBillingRoute,
-  } as any)
-const ProtectedOrganizationOrganizationIdBillingHistoryRoute =
-  ProtectedOrganizationOrganizationIdBillingHistoryRouteImport.update({
-    id: '/history',
-    path: '/history',
-    getParentRoute: () => ProtectedOrganizationOrganizationIdBillingRoute,
-  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -309,8 +295,6 @@ export interface FileRoutesByFullPath {
   '/organization/$organizationId/settings': typeof ProtectedOrganizationOrganizationIdSettingsRouteWithChildren
   '/organization/$organizationId/webhooks': typeof ProtectedOrganizationOrganizationIdWebhooksRoute
   '/organization/$organizationId/': typeof ProtectedOrganizationOrganizationIdIndexRoute
-  '/organization/$organizationId/billing/history': typeof ProtectedOrganizationOrganizationIdBillingHistoryRoute
-  '/organization/$organizationId/billing/invoices': typeof ProtectedOrganizationOrganizationIdBillingInvoicesRoute
   '/organization/$organizationId/members/invitations': typeof ProtectedOrganizationOrganizationIdMembersInvitationsRoute
   '/organization/$organizationId/platform/r1': typeof ProtectedOrganizationOrganizationIdPlatformR1Route
   '/organization/$organizationId/platform/r2': typeof ProtectedOrganizationOrganizationIdPlatformR2Route
@@ -347,8 +331,6 @@ export interface FileRoutesByTo {
   '/organization/$organizationId/notifications': typeof ProtectedOrganizationOrganizationIdNotificationsRoute
   '/organization/$organizationId/webhooks': typeof ProtectedOrganizationOrganizationIdWebhooksRoute
   '/organization/$organizationId': typeof ProtectedOrganizationOrganizationIdIndexRoute
-  '/organization/$organizationId/billing/history': typeof ProtectedOrganizationOrganizationIdBillingHistoryRoute
-  '/organization/$organizationId/billing/invoices': typeof ProtectedOrganizationOrganizationIdBillingInvoicesRoute
   '/organization/$organizationId/members/invitations': typeof ProtectedOrganizationOrganizationIdMembersInvitationsRoute
   '/organization/$organizationId/platform/r1': typeof ProtectedOrganizationOrganizationIdPlatformR1Route
   '/organization/$organizationId/platform/r2': typeof ProtectedOrganizationOrganizationIdPlatformR2Route
@@ -391,8 +373,6 @@ export interface FileRoutesById {
   '/_protected/organization/$organizationId/settings': typeof ProtectedOrganizationOrganizationIdSettingsRouteWithChildren
   '/_protected/organization/$organizationId/webhooks': typeof ProtectedOrganizationOrganizationIdWebhooksRoute
   '/_protected/organization/$organizationId/': typeof ProtectedOrganizationOrganizationIdIndexRoute
-  '/_protected/organization/$organizationId/billing/history': typeof ProtectedOrganizationOrganizationIdBillingHistoryRoute
-  '/_protected/organization/$organizationId/billing/invoices': typeof ProtectedOrganizationOrganizationIdBillingInvoicesRoute
   '/_protected/organization/$organizationId/members/invitations': typeof ProtectedOrganizationOrganizationIdMembersInvitationsRoute
   '/_protected/organization/$organizationId/platform/r1': typeof ProtectedOrganizationOrganizationIdPlatformR1Route
   '/_protected/organization/$organizationId/platform/r2': typeof ProtectedOrganizationOrganizationIdPlatformR2Route
@@ -435,8 +415,6 @@ export interface FileRouteTypes {
     | '/organization/$organizationId/settings'
     | '/organization/$organizationId/webhooks'
     | '/organization/$organizationId/'
-    | '/organization/$organizationId/billing/history'
-    | '/organization/$organizationId/billing/invoices'
     | '/organization/$organizationId/members/invitations'
     | '/organization/$organizationId/platform/r1'
     | '/organization/$organizationId/platform/r2'
@@ -473,8 +451,6 @@ export interface FileRouteTypes {
     | '/organization/$organizationId/notifications'
     | '/organization/$organizationId/webhooks'
     | '/organization/$organizationId'
-    | '/organization/$organizationId/billing/history'
-    | '/organization/$organizationId/billing/invoices'
     | '/organization/$organizationId/members/invitations'
     | '/organization/$organizationId/platform/r1'
     | '/organization/$organizationId/platform/r2'
@@ -516,8 +492,6 @@ export interface FileRouteTypes {
     | '/_protected/organization/$organizationId/settings'
     | '/_protected/organization/$organizationId/webhooks'
     | '/_protected/organization/$organizationId/'
-    | '/_protected/organization/$organizationId/billing/history'
-    | '/_protected/organization/$organizationId/billing/invoices'
     | '/_protected/organization/$organizationId/members/invitations'
     | '/_protected/organization/$organizationId/platform/r1'
     | '/_protected/organization/$organizationId/platform/r2'
@@ -821,35 +795,15 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedOrganizationOrganizationIdMembersInvitationsRouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdMembersRoute
     }
-    '/_protected/organization/$organizationId/billing/invoices': {
-      id: '/_protected/organization/$organizationId/billing/invoices'
-      path: '/invoices'
-      fullPath: '/organization/$organizationId/billing/invoices'
-      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdBillingInvoicesRouteImport
-      parentRoute: typeof ProtectedOrganizationOrganizationIdBillingRoute
-    }
-    '/_protected/organization/$organizationId/billing/history': {
-      id: '/_protected/organization/$organizationId/billing/history'
-      path: '/history'
-      fullPath: '/organization/$organizationId/billing/history'
-      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdBillingHistoryRouteImport
-      parentRoute: typeof ProtectedOrganizationOrganizationIdBillingRoute
-    }
   }
 }
 
 interface ProtectedOrganizationOrganizationIdBillingRouteChildren {
-  ProtectedOrganizationOrganizationIdBillingHistoryRoute: typeof ProtectedOrganizationOrganizationIdBillingHistoryRoute
-  ProtectedOrganizationOrganizationIdBillingInvoicesRoute: typeof ProtectedOrganizationOrganizationIdBillingInvoicesRoute
   ProtectedOrganizationOrganizationIdBillingIndexRoute: typeof ProtectedOrganizationOrganizationIdBillingIndexRoute
 }
 
 const ProtectedOrganizationOrganizationIdBillingRouteChildren: ProtectedOrganizationOrganizationIdBillingRouteChildren =
   {
-    ProtectedOrganizationOrganizationIdBillingHistoryRoute:
-      ProtectedOrganizationOrganizationIdBillingHistoryRoute,
-    ProtectedOrganizationOrganizationIdBillingInvoicesRoute:
-      ProtectedOrganizationOrganizationIdBillingInvoicesRoute,
     ProtectedOrganizationOrganizationIdBillingIndexRoute:
       ProtectedOrganizationOrganizationIdBillingIndexRoute,
   }

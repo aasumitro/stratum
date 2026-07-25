@@ -10,6 +10,7 @@ const (
 	RoutingKeyInvoiceFailed             = "billing.invoice.failed"
 	RoutingKeySubscriptionCheck         = "billing.subscription.check"
 	RoutingKeySubscriptionResumed       = "billing.subscription.resumed"
+	RoutingKeySubscriptionExtended      = "billing.subscription.extended"
 	RoutingKeySubscriptionRemind        = "billing.subscription.remind"
 	RoutingKeySubscriptionAutoInvoice   = "billing.subscription.auto-invoice"
 	RoutingKeyInvoiceCreated            = "billing.invoice.created"
@@ -25,9 +26,7 @@ const (
 // DelayRoutingKeySubscriptionRemind -> dead-letters to
 // RoutingKeySubscriptionRemind). Deliberately distinct, shorter strings from
 // the final routing keys. Referenced from both the publish side
-// (billing/service.go) and the queue-declare side (internal/app/worker.go);
-// previously hardcoded independently in both, with nothing catching a
-// mismatch between them.
+// (billing/service.go) and the queue-declare side (internal/app/worker.go).
 const (
 	DelayRoutingKeySubscriptionCheck         = "subscription-check"
 	DelayRoutingKeySubscriptionRemind        = "subscription-remind"
@@ -78,6 +77,14 @@ type SubscriptionResumed struct {
 	SubscriptionID string    `json:"subscription_id"`
 	Plan           string    `json:"plan"`
 	ResumedAt      time.Time `json:"resumed_at"`
+}
+
+type SubscriptionExtended struct {
+	OrgID          string    `json:"org_id"`
+	SubscriptionID string    `json:"subscription_id"`
+	Plan           string    `json:"plan"`
+	Months         int       `json:"months"`
+	NewPeriodEnd   time.Time `json:"new_period_end"`
 }
 
 type InvoiceCreated struct {

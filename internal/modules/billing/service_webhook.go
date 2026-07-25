@@ -2,6 +2,8 @@ package billing
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
@@ -15,6 +17,7 @@ import (
 type webhookOutcome struct {
 	paid            *events.InvoicePaid
 	resumed         *events.SubscriptionResumed
+	extended        *events.SubscriptionExtended
 	failed          *events.InvoiceFailed
 	scheduleRenewal *subscriptionRecord
 }
@@ -57,6 +60,9 @@ func (s *service) processWebhook(ctx context.Context, provider, eventID, externa
 	if outcome.resumed != nil {
 		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", outcome.resumed.OrgID, *outcome.resumed)
 	}
+	if outcome.extended != nil {
+		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionExtended, "billing", outcome.extended.OrgID, *outcome.extended)
+	}
 	if outcome.failed != nil {
 		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceFailed, "billing", outcome.failed.OrgID, *outcome.failed)
 		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionPaymentRemind, "billing", outcome.failed.OrgID, *outcome.failed, 3*24*time.Hour)
@@ -88,13 +94,37 @@ func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatu
 
 	if normalizedStatus == statusPaid {
 		now := time.Now()
-		if err := s.repo.markInvoicePaid(ctx, s.querier(ctx), link.invoiceID, now); err != nil {
+
+		// Lock before the invoice's own paid/pending check so two concurrent
+		// deliveries for the same invoice (a provider retry, or two distinct
+		// event types reporting the same payment, each with its own event ID
+		// and so not caught by the eventID-based check above) serialize here
+		// instead of both reading "pending" and both applying its effects.
+		if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), link.subscriptionID); err != nil {
 			return nil, err
 		}
 
-		pl, _ := s.repo.findPaymentLinkByExternalID(ctx, s.querier(ctx), externalID)
+		applied, err := s.repo.markInvoicePaid(ctx, s.querier(ctx), link.invoiceID, now)
+		if err != nil {
+			return nil, err
+		}
+		if !applied {
+			// Already paid by an earlier, now-committed delivery — nothing left to do.
+			return outcome, nil
+		}
+
+		// Both calls run under s.querier(ctx) — the same DB transaction as
+		// every other write in this branch. Postgres aborts an entire
+		// transaction on the first failed statement, so a swallowed error here
+		// wouldn't actually let the transaction proceed. Propagate instead.
+		pl, err := s.repo.findPaymentLinkByExternalID(ctx, s.querier(ctx), externalID)
+		if err != nil {
+			return nil, fmt.Errorf("billing.handleWebhook: find payment link: %w", err)
+		}
 		if pl != nil {
-			_ = s.repo.insertPayment(ctx, s.querier(ctx), link.invoiceID, pl.AmountCents, pl.Currency, pl.Provider, pl.ExternalID, now)
+			if err := s.repo.insertPayment(ctx, s.querier(ctx), link.invoiceID, pl.AmountCents, pl.Currency, pl.Provider, pl.ExternalID, now); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: insert payment: %w", err)
+			}
 		}
 
 		paidEvt := events.InvoicePaid{OrgID: link.subjectID, InvoiceID: link.invoiceID, PaidAt: now}
@@ -104,23 +134,85 @@ func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatu
 		}
 		outcome.paid = &paidEvt
 
-		// Reactivate expired subscriptions on successful payment
+		inv, err := s.repo.findInvoiceByID(ctx, s.querier(ctx), link.invoiceID)
+		if err != nil {
+			return nil, err
+		}
+
+		// Reactivate expired subscriptions on successful payment. Below this
+		// point every write applies what the customer just paid for — a
+		// failure must fail (and roll back) the whole transaction rather
+		// than be swallowed, or the invoice ends up marked paid with the
+		// subscription silently never actually reactivated/extended.
 		sub, err := s.repo.findSubscriptionByID(ctx, s.querier(ctx), link.subscriptionID)
-		if err == nil && sub.Status == statusExpired {
+		if err != nil {
+			return nil, fmt.Errorf("billing.handleWebhook: find subscription: %w", err)
+		}
+		switch {
+		case sub.Status == statusExpired:
 			periodEnd := now.AddDate(0, 1, 0)
 			if sub.Cycle == cycleYearly {
 				periodEnd = now.AddDate(1, 0, 0)
 			}
-			_, _ = s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive)
-			_ = s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd)
-			_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
-				&sub.Plan, &sub.Plan, 0, sub.Currency, changedByWebhook, nil)
-			if s.orgSuspender != nil && sub.SubjectType == "organization" {
-				_ = s.orgSuspender.UnsuspendOrganization(ctx, sub.SubjectID)
+			if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: reactivate subscription: %w", err)
+			}
+			if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: update period on reactivation: %w", err)
+			}
+			if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
+				&sub.Plan, &sub.Plan, 0, sub.Currency, changedBySystem, nil); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: insert resume history: %w", err)
+			}
+			// Suspension state lives in the organization module (a separate
+			// schema/service, not this transaction) — a failure here is
+			// logged, not rolled back; the paid reactivation itself already
+			// committed correctly and shouldn't be undone over this.
+			if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
+				if err := s.orgSuspender.UnsuspendOrganization(ctx, sub.SubjectID); err != nil {
+					slog.Error("UnsuspendOrganization failed", "organization_id", sub.SubjectID, "error", err)
+				}
 			}
 			outcome.resumed = &events.SubscriptionResumed{OrgID: link.subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now}
 			outcome.scheduleRenewal = &subscriptionRecord{
 				ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
+			}
+		case sub.Status == statusActive && inv.Kind == "extension":
+			lineItems, err := s.repo.listLineItems(ctx, s.querier(ctx), inv.ID)
+			if err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: list extension invoice line items: %w", err)
+			}
+			// Summed across every line item's quantity, not read off a single
+			// fixed index — a tiered extension purchase splits into up to two
+			// line items (a 12-month-block line and a monthly-remainder line,
+			// see insertExtensionLineItems in service_subscription_billing.go),
+			// each carrying its own share of the total months in its Quantity.
+			months := 0
+			for _, li := range lineItems {
+				months += li.Quantity
+			}
+			if months == 0 {
+				months = 1
+			}
+			newPeriodEnd := sub.PeriodEnd.AddDate(0, months, 0)
+			if inv.SwitchToAnnual {
+				if err := s.repo.updateSubscriptionCycleAndPeriod(ctx, s.querier(ctx), sub.ID, cycleYearly, *sub.PeriodStart, newPeriodEnd); err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: apply extension period and cycle: %w", err)
+				}
+			} else if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, newPeriodEnd); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: apply extension period: %w", err)
+			}
+			if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "extend",
+				&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedByWebhook, nil); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: insert extend history: %w", err)
+			}
+
+			outcome.extended = &events.SubscriptionExtended{
+				OrgID: link.subjectID, SubscriptionID: sub.ID, Plan: sub.Plan,
+				Months: months, NewPeriodEnd: newPeriodEnd,
+			}
+			outcome.scheduleRenewal = &subscriptionRecord{
+				ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &newPeriodEnd,
 			}
 		}
 	}

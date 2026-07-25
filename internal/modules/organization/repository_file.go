@@ -278,3 +278,56 @@ func (r *repository) sumStorageBytes(ctx context.Context, q db.Querier, organiza
 	).Scan(&total)
 	return total, err
 }
+
+type fileRemovalCandidate struct {
+	ID        string
+	SizeBytes int64
+}
+
+func (r *repository) selectFilesForRemoval(ctx context.Context, q db.Querier, organizationID string, excludeFileIDs []string) ([]fileRemovalCandidate, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, size_bytes FROM organization.files 
+		WHERE organization_id = $1 AND deleted_at IS NULL AND NOT (id = ANY(COALESCE($2, '{}'::text[])))
+		ORDER BY created_at ASC`,
+		organizationID, excludeFileIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []fileRemovalCandidate
+	for rows.Next() {
+		var c fileRemovalCandidate
+		if err := rows.Scan(&c.ID, &c.SizeBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (r *repository) filterRemovableFiles(ctx context.Context, q db.Querier, organizationID string, fileIDs []string) ([]fileRemovalCandidate, error) {
+	if len(fileIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT id, size_bytes FROM organization.files 
+		WHERE organization_id = $1 AND deleted_at IS NULL AND id = ANY($2)`,
+		organizationID, fileIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []fileRemovalCandidate
+	for rows.Next() {
+		var c fileRemovalCandidate
+		if err := rows.Scan(&c.ID, &c.SizeBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

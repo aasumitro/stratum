@@ -1,6 +1,5 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { IconLoader2 } from "@tabler/icons-react"
 import {
   Dialog,
   DialogContent,
@@ -11,24 +10,13 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  usePlans,
-  useChangePlan,
-  useInvoicePreview,
-} from "@/features/billing/hooks"
+import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
 import { formatPrice } from "@/features/billing/utils"
-import { formatMoney } from "@/lib/format"
 import type { BillingCycle } from "@/types/billing"
 import { cn } from "@/lib/ui"
-
-function formatDate(s?: string) {
-  if (!s) return "—"
-  return new Date(s).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })
-}
+import { DowngradeWizard } from "./downgrade-wizard"
+import { UpgradeWizard } from "./upgrade-wizard"
+import { InvoicePreviewNote } from "./invoice-preview-note"
 
 interface Props {
   organizationId: string
@@ -60,10 +48,19 @@ export function PlanSelector({
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
   const { data, isLoading } = usePlans()
-  const { mutate: changePlan, isPending: changing } =
-    useChangePlan(organizationId)
+
+  const plans = (data?.data ?? [])
+    .filter((p) => p.active)
+    .sort((a, b) => a.sort_order - b.sort_order)
+  const selected = plans.find((p) => p.id === selectedPlan)
+  const current = plans.find((p) => p.id === currentPlan)
 
   const isChanging = selectedPlan !== currentPlan || cycle !== currentCycle
+  const isDowngrade =
+    selected && current && selected.sort_order < current.sort_order
+
+  const [showDowngradeWizard, setShowDowngradeWizard] = useState(false)
+  const [showUpgradeWizard, setShowUpgradeWizard] = useState(false)
   const { data: previewData, isFetching: previewLoading } = useInvoicePreview(
     organizationId,
     selectedPlan,
@@ -72,24 +69,65 @@ export function PlanSelector({
   )
   const preview = previewData?.data
 
-  const plans = (data?.data ?? [])
-    .filter((p) => p.active)
-    .sort((a, b) => a.sort_order - b.sort_order)
-  const selected = plans.find((p) => p.id === selectedPlan)
-
   function reset() {
     setSelectedPlan(currentPlan)
     setCycle(currentCycle)
+    setShowDowngradeWizard(false)
+    setShowUpgradeWizard(false)
+  }
+
+  // Every close path (X/escape, footer Cancel, a wizard's own Done/close)
+  // must go through this so PlanSelector's own state — which wizard step
+  // to show, the in-progress plan/cycle selection — never survives into
+  // the next time the modal is opened.
+  function handleOpenChange(v: boolean) {
+    if (!v) reset()
+    onOpenChange(v)
+  }
+
+  // Deliberately not re-checking isDowngrade/isChanging here: they're only
+  // meant to gate *entry* into a wizard (see where setShowDowngradeWizard/
+  // setShowUpgradeWizard(true) are called below). Once a wizard is open, a
+  // successful change updates currentPlan/currentCycle via query
+  // invalidation, which flips these on the very next render — re-checking
+  // them here would unmount the wizard out from under itself before its own
+  // success step ever gets a chance to render.
+  if (showDowngradeWizard) {
+    return (
+      <DowngradeWizard
+        organizationId={organizationId}
+        open={open}
+        onOpenChange={handleOpenChange}
+        targetPlan={selectedPlan}
+        targetCycle={cycle}
+        currentPlan={currentPlan}
+        currentCycle={currentCycle}
+        currentPeriodEnd={currentPeriodEnd}
+        currency={currency}
+        onBackToPlans={() => setShowDowngradeWizard(false)}
+      />
+    )
+  }
+
+  if (showUpgradeWizard) {
+    return (
+      <UpgradeWizard
+        organizationId={organizationId}
+        open={open}
+        onOpenChange={handleOpenChange}
+        targetPlan={selectedPlan}
+        targetCycle={cycle}
+        currentPlan={currentPlan}
+        currentCycle={currentCycle}
+        currentPeriodEnd={currentPeriodEnd}
+        currency={currency}
+        onBackToPlans={() => setShowUpgradeWizard(false)}
+      />
+    )
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) reset()
-        onOpenChange(v)
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("billing.plans.changePlanTitle")}</DialogTitle>
@@ -177,48 +215,28 @@ export function PlanSelector({
         )}
 
         {isChanging && selectedPlan !== "custom" && (
-          <div className="rounded-lg bg-muted p-3 text-sm">
-            {previewLoading || !preview ? (
-              <Skeleton className="h-8 w-full" />
-            ) : preview.new_period_end ? (
-              <p>
-                <b>{t("billing.plans.noChargeToday")}</b>{" "}
-                {t("billing.plans.prorationExplainer", {
-                  newDate: formatDate(preview.new_period_end),
-                  oldDate: formatDate(currentPeriodEnd),
-                })}
-              </p>
-            ) : (
-              <p>
-                {t("billing.plans.nextInvoiceTotal", {
-                  amount: formatMoney(preview.total_cents, preview.currency),
-                })}
-              </p>
-            )}
-          </div>
+          <InvoicePreviewNote
+            preview={preview}
+            loading={previewLoading}
+            currentPeriodEnd={currentPeriodEnd}
+          />
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             {t("common.cancel")}
           </Button>
           <Button
-            disabled={
-              !isChanging || selectedPlan === "custom" || changing || !selected
-            }
-            onClick={() =>
-              changePlan(
-                { plan: selectedPlan, cycle },
-                { onSuccess: () => onOpenChange(false) }
-              )
-            }
+            disabled={!isChanging || selectedPlan === "custom" || !selected}
+            onClick={() => {
+              if (isDowngrade) {
+                setShowDowngradeWizard(true)
+              } else {
+                setShowUpgradeWizard(true)
+              }
+            }}
           >
-            {changing && (
-              <IconLoader2 data-icon="inline-start" className="animate-spin" />
-            )}
-            {changing
-              ? t("billing.plans.selecting")
-              : t("billing.plans.confirmChange")}
+            {t("common.continue")}
           </Button>
         </DialogFooter>
       </DialogContent>

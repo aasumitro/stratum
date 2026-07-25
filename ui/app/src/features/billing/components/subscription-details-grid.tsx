@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { cn } from "@/lib/ui"
 import type { Subscription } from "@/types/billing"
@@ -22,61 +23,78 @@ function formatDate(s?: string) {
 interface Props {
   sub: Subscription
   daysLeft: number | null
+  children?: ReactNode
 }
 
-export function SubscriptionDetailsGrid({ sub, daysLeft }: Props) {
+export function SubscriptionDetailsGrid({ sub, daysLeft, children }: Props) {
   const { t } = useTranslation()
   return (
-    <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
-      <div>
-        <dt className="text-muted-foreground">
-          {t("billing.subscription.plan")}
-        </dt>
-        <dd className="mt-0.5 font-medium capitalize">{sub.plan}</dd>
-      </div>
-      <div>
-        <dt className="text-muted-foreground">
-          {t("billing.subscription.status")}
-        </dt>
-        <dd className="mt-0.5">
-          <span
-            className={cn(
-              "rounded-full px-2 py-0.5 text-xs font-medium capitalize",
-              STATUS_BADGE[sub.status] ?? ""
-            )}
-          >
-            {sub.status.replace("_", " ")}
-          </span>
-        </dd>
-      </div>
-      <div>
-        <dt className="text-muted-foreground">
-          {t("billing.subscription.cycle")}
-        </dt>
-        <dd className="mt-0.5 font-medium capitalize">{sub.cycle}</dd>
-      </div>
-      <div>
-        <dt className="text-muted-foreground">
-          {t("billing.subscription.periodStart")}
-        </dt>
-        <dd className="mt-0.5 font-medium">{formatDate(sub.period_start)}</dd>
-      </div>
-      <div>
-        <dt className="text-muted-foreground">
-          {t("billing.subscription.periodEnd")}
-        </dt>
-        <dd className="mt-0.5 font-medium">{formatDate(sub.period_end)}</dd>
-      </div>
-      {daysLeft !== null && (
-        <div>
-          <dt className="text-muted-foreground">
-            {t("billing.subscription.trialEnds")}
-          </dt>
-          <dd className="mt-0.5 font-medium text-sky-600">
-            {t("billing.subscription.trialDaysLeft", { days: daysLeft })}
-          </dd>
+    <div className="grid gap-6 lg:grid-cols-4">
+      <div className="lg:border-r lg:pr-6">
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-muted-foreground">
+              {t("billing.subscription.plan")}
+            </p>
+            <p className="text-2xl font-bold capitalize">{sub.plan}</p>
+          </div>
+          {daysLeft !== null && (
+            <div>
+              <p className="text-sm font-medium text-muted-foreground">
+                {t("billing.subscription.trialEnds")}
+              </p>
+              <p className="text-base font-medium text-sky-600">
+                {t("billing.subscription.trialDaysLeft", { days: daysLeft })}
+              </p>
+            </div>
+          )}
         </div>
-      )}
-    </dl>
+      </div>
+
+      <div className="lg:border-r lg:pr-6">
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">
+              {t("billing.subscription.status")}
+            </p>
+            <span
+              className={cn(
+                "inline-block rounded px-3 py-1 text-sm font-medium capitalize",
+                STATUS_BADGE[sub.status] ?? ""
+              )}
+            >
+              {sub.status.replace("_", " ")}
+            </span>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">
+              {t("billing.subscription.cycle")}
+            </p>
+            <p className="text-base font-medium capitalize">{sub.cycle}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="lg:border-r lg:pr-6">
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">
+              {t("billing.subscription.periodStart")}
+            </p>
+            <p className="text-sm font-medium">
+              {formatDate(sub.period_start)}
+            </p>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">
+              {t("billing.subscription.periodEnd")}
+            </p>
+            <p className="text-sm font-medium">{formatDate(sub.period_end)}</p>
+          </div>
+        </div>
+      </div>
+
+      {children}
+    </div>
   )
 }

@@ -55,8 +55,7 @@ func scopedPrices(prices map[string]contracts.PlanPrices, countryCode string) ma
 }
 
 // listPlans/listFeatures/listAddons serve GET /references/plans|features|addons
-// by delegating to the billing module, the catalog's schema owner — reference
-// no longer queries billing.* tables directly.
+// by delegating to the billing module, the catalog's schema owner.
 func (s *service) listPlans(ctx context.Context, countryCode string) ([]contracts.PlanInfo, error) {
 	if s.catalog == nil {
 		return nil, apperr.Internal("PLANS_FETCH_FAILED", "failed to list plans",

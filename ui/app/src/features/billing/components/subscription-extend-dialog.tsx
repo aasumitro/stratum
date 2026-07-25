@@ -1,5 +1,6 @@
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { IconLoader2 } from "@tabler/icons-react"
+import { IconLoader2, IconMinus, IconPlus } from "@tabler/icons-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -8,77 +9,522 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { Skeleton } from "@/components/ui/skeleton"
+import { usePlans, useExtendSubscription } from "@/features/billing/hooks"
+import { formatMoney } from "@/lib/format"
+import type { Invoice, Subscription } from "@/types/billing"
 
-interface Props {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  months: string
-  onMonthsChange: (months: string) => void
-  extending: boolean
-  onExtend: () => void
+function formatDate(d: Date) {
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
 }
 
+function addMonths(from: string | undefined, months: number): Date | null {
+  if (!from) return null
+  const d = new Date(from)
+  d.setMonth(d.getMonth() + months)
+  return d
+}
+
+// Mirrors computeExtensionSubtotal (service_subscription_billing.go): every
+// full 12-month block bills at the plan's yearly price, any remainder at
+// the monthly price. months < 12 collapses to blocks == 0, today's flat
+// calculation — same formula handles both, matching the backend exactly so
+// this pre-commit estimate never disagrees with what's actually charged.
+function computeExtensionSubtotal(
+  prices: { monthly: number; yearly: number } | undefined,
+  months: number
+): number {
+  if (!prices) return 0
+  const blocks = Math.floor(months / 12)
+  const remainder = months % 12
+  return blocks * prices.yearly + remainder * prices.monthly
+}
+
+interface Props {
+  organizationId: string
+  subscription: Subscription
+}
+
+type Step = "choose" | "review" | "success"
+type Mode = "months" | "annual"
+
 export function SubscriptionExtendDialog({
-  open,
-  onOpenChange,
-  months,
-  onMonthsChange,
-  extending,
-  onExtend,
+  organizationId,
+  subscription,
 }: Props) {
   const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [step, setStep] = useState<Step>("choose")
+  const [mode, setMode] = useState<Mode>("months")
+  const [months, setMonths] = useState(1)
+  const [result, setResult] = useState<Invoice | null>(null)
+
+  const { data: plansData, isLoading: plansLoading } = usePlans()
+  const { mutate: extend, isPending: extending } =
+    useExtendSubscription(organizationId)
+
+  const maxExtendable = subscription.max_extendable_months
+  const planInfo = (plansData?.data ?? []).find(
+    (p) => p.id === subscription.plan
+  )
+  const prices =
+    planInfo?.prices[subscription.currency] ?? planInfo?.prices["USD"]
+
+  // Every option this component offers is only reachable through here — no
+  // separate cap enforcement to keep in sync with the backend's own.
+  const monthsCap = Math.max(1, Math.min(24, maxExtendable))
+  const canSwitchToAnnual = subscription.cycle === "monthly"
+  const switchToAnnualEligible = canSwitchToAnnual && maxExtendable >= 12
+
+  const blocks = Math.floor(months / 12)
+  const remainder = months % 12
+  const monthsSubtotal = computeExtensionSubtotal(prices, months)
+  const flatMonthlyTotal = (prices?.monthly ?? 0) * months
+  const monthsSavings = flatMonthlyTotal - monthsSubtotal
+  const monthsSavingsPercent =
+    flatMonthlyTotal > 0
+      ? Math.round((monthsSavings / flatMonthlyTotal) * 100)
+      : 0
+
+  const annualSubtotal = prices?.yearly ?? 0
+  const annualFlatTotal = (prices?.monthly ?? 0) * 12
+  const annualSavings = annualFlatTotal - annualSubtotal
+  const annualSavingsPercent =
+    annualFlatTotal > 0
+      ? Math.round((annualSavings / annualFlatTotal) * 100)
+      : 0
+
+  const currentPeriodEnd = subscription.period_end
+    ? new Date(subscription.period_end)
+    : null
+  const newPeriodEndMonths = addMonths(subscription.period_end, months)
+  const newPeriodEndAnnual = addMonths(subscription.period_end, 12)
+  const newPeriodEnd =
+    mode === "annual" ? newPeriodEndAnnual : newPeriodEndMonths
+
+  function handleClose(v: boolean) {
+    if (!v) {
+      setOpen(false)
+      setTimeout(() => {
+        setStep("choose")
+        setMode("months")
+        setMonths(1)
+        setResult(null)
+      }, 300)
+      return
+    }
+    setOpen(v)
+  }
+
+  function handleConfirm() {
+    extend(mode === "annual" ? { switch_to_annual: true } : { months }, {
+      onSuccess: (data) => {
+        setResult(data.data ?? null)
+        setStep("success")
+      },
+    })
+  }
+
+  const trigger = (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={maxExtendable === 0}
+      onClick={() => setOpen(true)}
+    >
+      {t("billing.extend.trigger")}
+    </Button>
+  )
+
+  const successNewPeriodEnd = result?.switch_to_annual
+    ? newPeriodEndAnnual
+    : newPeriodEndMonths
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger render={<Button variant="outline" size="sm" />}>
-        {t("billing.subscription.extend")}
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{t("billing.subscription.extendTitle")}</DialogTitle>
-          <DialogDescription>
-            {t("billing.subscription.extendDescription")}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-1.5 py-2">
-          <label className="text-sm font-medium">
-            {t("billing.subscription.extendMonths")}
-          </label>
-          <Select
-            value={months}
-            onValueChange={(v) => onMonthsChange(v ?? "1")}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {[1, 3, 6, 12, 24].map((m) => (
-                <SelectItem key={m} value={String(m)}>
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <DialogFooter>
-          <Button disabled={extending} onClick={onExtend}>
-            {extending && (
-              <IconLoader2 data-icon="inline-start" className="animate-spin" />
+    <>
+      {maxExtendable === 0 ? (
+        <Tooltip>
+          <TooltipTrigger render={<span>{trigger}</span>} />
+          <TooltipContent>{t("billing.extend.capReachedNote")}</TooltipContent>
+        </Tooltip>
+      ) : (
+        trigger
+      )}
+
+      {step === "success" && (
+        <Dialog open={open} onOpenChange={handleClose}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{t("billing.extend.successTitle")}</DialogTitle>
+              <DialogDescription>
+                {result
+                  ? t("billing.extend.successDescription")
+                  : t("billing.extend.successDescriptionFallback")}
+              </DialogDescription>
+            </DialogHeader>
+
+            {result && (
+              <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">
+                    {t("billing.extend.amountDueLabel")}
+                  </span>
+                  <span className="font-medium">
+                    {formatMoney(result.amount_cents, result.currency)}
+                  </span>
+                </div>
+                {result.due_at && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      {t("billing.extend.dueDateLabel")}
+                    </span>
+                    <span className="font-medium">
+                      {formatDate(new Date(result.due_at))}
+                    </span>
+                  </div>
+                )}
+                {successNewPeriodEnd && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      {t("billing.extend.newRenewalLabel")}
+                    </span>
+                    <span className="font-medium">
+                      {formatDate(successNewPeriodEnd)}
+                    </span>
+                  </div>
+                )}
+                <p className="pt-1 text-xs text-muted-foreground">
+                  {result.switch_to_annual
+                    ? t("billing.extend.pendingPaymentAnnualNote")
+                    : t("billing.extend.pendingPaymentNote")}
+                </p>
+              </div>
             )}
-            {extending
-              ? t("billing.subscription.extending")
-              : t("billing.subscription.extendConfirm")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+
+            <DialogFooter>
+              <Button onClick={() => handleClose(false)}>
+                {t("common.done")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {step === "review" && (
+        <Dialog open={open} onOpenChange={handleClose}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{t("billing.extend.reviewTitle")}</DialogTitle>
+              <DialogDescription>
+                {t("billing.extend.reviewDescription")}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">
+                  {t("billing.extend.optionLabel")}
+                </span>
+                <span className="font-medium">
+                  {mode === "annual"
+                    ? t("billing.extend.optionSwitchAnnual")
+                    : t("billing.extend.optionExtend", { count: months })}
+                </span>
+              </div>
+              {currentPeriodEnd && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">
+                    {t("billing.extend.currentRenewalLabel")}
+                  </span>
+                  <span>{formatDate(currentPeriodEnd)}</span>
+                </div>
+              )}
+              {newPeriodEnd && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">
+                    {t("billing.extend.newRenewalLabel")}
+                  </span>
+                  <span className="font-medium text-primary">
+                    {formatDate(newPeriodEnd)}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border p-3 text-sm">
+              {plansLoading ? (
+                <Skeleton className="h-6 w-full" />
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      {t("billing.extend.amountLabel")}
+                    </span>
+                    <span className="font-semibold">
+                      {t("billing.extend.subtotal", {
+                        amount: formatMoney(
+                          mode === "annual" ? annualSubtotal : monthsSubtotal,
+                          subscription.currency
+                        ),
+                      })}{" "}
+                      <span className="font-normal text-muted-foreground">
+                        {t("billing.extend.plusTax")}
+                      </span>
+                    </span>
+                  </div>
+                  {mode === "months" && blocks >= 1 && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {remainder > 0
+                        ? t("billing.extend.tieredBreakdownWithRemainder", {
+                            blocks,
+                            remainder,
+                          })
+                        : t("billing.extend.tieredBreakdownBlocksOnly", {
+                            blocks,
+                          })}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+
+            <p className="text-sm text-muted-foreground">
+              {mode === "annual"
+                ? t("billing.extend.consequenceAnnual")
+                : newPeriodEndMonths
+                  ? t("billing.extend.consequenceMonths", {
+                      date: formatDate(newPeriodEndMonths),
+                    })
+                  : ""}
+            </p>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setStep("choose")}
+                disabled={extending}
+              >
+                {t("common.back")}
+              </Button>
+              <Button onClick={handleConfirm} disabled={extending}>
+                {extending && (
+                  <IconLoader2
+                    data-icon="inline-start"
+                    className="animate-spin"
+                  />
+                )}
+                {t("billing.extend.confirmExtend")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {step === "choose" && (
+        <Dialog open={open} onOpenChange={handleClose}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{t("billing.extend.chooseTitle")}</DialogTitle>
+              <DialogDescription>
+                {t("billing.extend.chooseDescription")}
+              </DialogDescription>
+            </DialogHeader>
+
+            {currentPeriodEnd && (
+              <div className="rounded-lg bg-muted px-3 py-2 text-sm">
+                <span className="text-muted-foreground">
+                  {t("billing.extend.currentRenewalLabel")}
+                </span>{" "}
+                <span className="font-medium">
+                  {formatDate(currentPeriodEnd)}
+                </span>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-4 py-2">
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium">
+                  {t("billing.extend.monthsLabel")}
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    aria-label={t("billing.extend.decreaseMonths")}
+                    disabled={months <= 1}
+                    onClick={() => setMonths((m) => Math.max(1, m - 1))}
+                  >
+                    <IconMinus className="size-3.5" />
+                  </Button>
+                  <span className="flex size-8 items-center justify-center rounded-md border text-sm">
+                    {months}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="size-8"
+                    aria-label={t("billing.extend.increaseMonths")}
+                    disabled={months >= monthsCap}
+                    onClick={() => setMonths((m) => Math.min(monthsCap, m + 1))}
+                  >
+                    <IconPlus className="size-3.5" />
+                  </Button>
+                </div>
+
+                {!plansLoading && newPeriodEndMonths && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("billing.extend.renewsOn", {
+                      date: formatDate(newPeriodEndMonths),
+                    })}{" "}
+                    ·{" "}
+                    {t("billing.extend.subtotal", {
+                      amount: formatMoney(
+                        monthsSubtotal,
+                        subscription.currency
+                      ),
+                    })}{" "}
+                    {t("billing.extend.plusTax")}
+                  </p>
+                )}
+
+                {blocks >= 1 && (
+                  <p className="text-xs text-muted-foreground">
+                    {remainder > 0
+                      ? t("billing.extend.tieredBreakdownWithRemainder", {
+                          blocks,
+                          remainder,
+                        })
+                      : t("billing.extend.tieredBreakdownBlocksOnly", {
+                          blocks,
+                        })}
+                  </p>
+                )}
+
+                {monthsSavings > 0 && (
+                  <p className="text-xs font-medium text-emerald-600 dark:text-emerald-500">
+                    {t("billing.extend.savingsNote", {
+                      amount: formatMoney(monthsSavings, subscription.currency),
+                      percent: monthsSavingsPercent,
+                    })}
+                  </p>
+                )}
+
+                {months === 12 && switchToAnnualEligible && (
+                  <div className="flex flex-col gap-1.5 rounded-md border border-dashed p-2.5">
+                    <p className="text-xs text-muted-foreground">
+                      {t("billing.extend.exactlyTwelveNudge")}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="sm"
+                      className="h-auto self-start p-0 text-xs"
+                      onClick={() => {
+                        setMode("annual")
+                        setStep("review")
+                      }}
+                    >
+                      {t("billing.extend.switchToAnnual")}
+                    </Button>
+                  </div>
+                )}
+
+                {blocks >= 1 && months !== 12 && switchToAnnualEligible && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("billing.extend.cycleStaysMonthly")}
+                  </p>
+                )}
+
+                {months >= monthsCap && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("billing.extend.maxReachedWarning")}
+                  </p>
+                )}
+              </div>
+
+              {canSwitchToAnnual &&
+                (switchToAnnualEligible ? (
+                  <div className="flex flex-col gap-2 rounded-md border p-3">
+                    <p className="text-sm font-medium">
+                      {t("billing.extend.switchToAnnualTitle")}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {t("billing.extend.switchToAnnualDescription")}
+                    </p>
+                    {newPeriodEndAnnual && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("billing.extend.renewsOn", {
+                          date: formatDate(newPeriodEndAnnual),
+                        })}{" "}
+                        ·{" "}
+                        {t("billing.extend.subtotal", {
+                          amount: formatMoney(
+                            annualSubtotal,
+                            subscription.currency
+                          ),
+                        })}{" "}
+                        {t("billing.extend.plusTax")}
+                      </p>
+                    )}
+                    {annualSavings > 0 && (
+                      <p className="text-xs font-medium text-emerald-600 dark:text-emerald-500">
+                        {t("billing.extend.savingsNote", {
+                          amount: formatMoney(
+                            annualSavings,
+                            subscription.currency
+                          ),
+                          percent: annualSavingsPercent,
+                        })}
+                      </p>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      {t("billing.extend.switchToAnnualCycleChangeNote")}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="self-start"
+                      onClick={() => {
+                        setMode("annual")
+                        setStep("review")
+                      }}
+                    >
+                      {t("billing.extend.switchToAnnual")}
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("billing.extend.switchToAnnualUnavailable")}
+                  </p>
+                ))}
+            </div>
+
+            <DialogFooter>
+              <Button
+                onClick={() => {
+                  setMode("months")
+                  setStep("review")
+                }}
+              >
+                {t("common.continue")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
   )
 }

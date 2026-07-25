@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/contracts/events"
 )
 
 // --- calculateTax ---
@@ -477,6 +478,138 @@ func TestResolveChangedBy(t *testing.T) {
 			gotName, gotKind := c.svc.resolveChangedBy(ctx, c.changedBy)
 			if gotName != c.wantName || gotKind != c.wantKind {
 				t.Errorf("resolveChangedBy(%q) = (%q, %q), want (%q, %q)", c.changedBy, gotName, gotKind, c.wantName, c.wantKind)
+			}
+		})
+	}
+}
+
+// --- staleSubscriptionCheck ---
+
+func TestStaleSubscriptionCheck(t *testing.T) {
+	periodEnd := time.Date(2027, 8, 23, 0, 0, 0, 0, time.UTC)
+	trialEnd := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	otherEnd := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		sub   *subscriptionRecord
+		check events.SubscriptionCheck
+		want  bool
+	}{
+		{
+			"active sub, ExpectedEnd matches current period_end: not stale",
+			&subscriptionRecord{PeriodEnd: &periodEnd},
+			events.SubscriptionCheck{ExpectedEnd: periodEnd},
+			false,
+		},
+		{
+			"active sub, ExpectedEnd doesn't match (period_end moved since scheduling): stale",
+			&subscriptionRecord{PeriodEnd: &periodEnd},
+			events.SubscriptionCheck{ExpectedEnd: otherEnd},
+			true,
+		},
+		{
+			"trialing sub, ExpectedEnd matches current trial_end: not stale",
+			&subscriptionRecord{TrialEnd: &trialEnd},
+			events.SubscriptionCheck{ExpectedEnd: trialEnd, IsTrial: true},
+			false,
+		},
+		{
+			"trialing sub, ExpectedEnd doesn't match trial_end: stale",
+			&subscriptionRecord{TrialEnd: &trialEnd},
+			events.SubscriptionCheck{ExpectedEnd: otherEnd, IsTrial: true},
+			true,
+		},
+		{
+			"IsTrial but sub has no trial_end (e.g. converted to active since scheduling): stale",
+			&subscriptionRecord{PeriodEnd: &periodEnd, TrialEnd: nil},
+			events.SubscriptionCheck{ExpectedEnd: trialEnd, IsTrial: true},
+			true,
+		},
+		{
+			"not IsTrial but sub has no period_end (e.g. still trialing since scheduling): stale",
+			&subscriptionRecord{PeriodEnd: nil, TrialEnd: &trialEnd},
+			events.SubscriptionCheck{ExpectedEnd: periodEnd, IsTrial: false},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := staleSubscriptionCheck(c.sub, c.check); got != c.want {
+				t.Errorf("staleSubscriptionCheck() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// --- maxExtendableMonths ---
+
+func TestMaxExtendableMonths(t *testing.T) {
+	// 2025-01-01: the 24-month window from here (Feb 2025 + Feb 2026) crosses
+	// no leap day, so 24 calendar months == exactly 730 fixed days and lines
+	// up cleanly with RV-001's worked examples. A leap-year anchor (e.g.
+	// 2024-01-01) makes 24 calendar months span 731 days — one more than the
+	// fixed-duration cap — which is exactly the calendar-vs-fixed-duration
+	// drift the plan's own Decision #11 warns about, not a bug in the
+	// function; picking a non-leap-spanning anchor avoids exercising that
+	// drift in a test that's meant to check round numbers.
+	createdAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := createdAt // unused by the calculation (anchored to createdAt, not now) but always passed, matching prorate's convention of taking now explicitly rather than calling time.Now() internally.
+
+	cases := []struct {
+		name           string
+		monthsElapsed  int // periodEnd = createdAt + monthsElapsed
+		wantExtendable int
+	}{
+		// RV-001's own worked examples, used as literal test cases.
+		{"1 month elapsed leaves 23 extendable", 1, 23},
+		{"13 months elapsed leaves 11 extendable", 13, 11},
+		// Boundaries.
+		{"0 months elapsed (brand new sub) leaves the full 24", 0, 24},
+		{"24 months elapsed (already at cap) leaves 0", 24, 0},
+		{"23 months elapsed leaves exactly 1", 23, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			periodEnd := createdAt.AddDate(0, c.monthsElapsed, 0)
+			if got := maxExtendableMonths(createdAt, periodEnd, now); got != c.wantExtendable {
+				t.Errorf("maxExtendableMonths() = %d, want %d", got, c.wantExtendable)
+			}
+		})
+	}
+
+	t.Run("never returns more than the 24-month bound regardless of how far in the past periodEnd is", func(t *testing.T) {
+		periodEnd := createdAt.AddDate(0, -100, 0) // pathological: periodEnd long before createdAt
+		if got := maxExtendableMonths(createdAt, periodEnd, now); got > 24 {
+			t.Errorf("maxExtendableMonths() = %d, want <= 24", got)
+		}
+	})
+}
+
+// --- computeExtensionSubtotal ---
+
+func TestComputeExtensionSubtotal(t *testing.T) {
+	planInfo := &contracts.PlanInfo{
+		Prices: map[string]contracts.PlanPrices{
+			"USD": {Monthly: 9_00, Yearly: 90_00}, // $9/mo, $90/yr (2 months free)
+		},
+	}
+
+	cases := []struct {
+		name   string
+		months int
+		want   int64
+	}{
+		{"months < 12 stays flat monthly x months (today's existing behavior)", 1, 9_00},
+		{"months < 12, multiple months", 6, 54_00},
+		{"exactly 12 months bills one yearly block, not 12x monthly", 12, 90_00},
+		{"13 months = 1 yearly block + 1 month remainder", 13, 90_00 + 9_00},
+		{"24 months = 2 yearly blocks, no remainder", 24, 2 * 90_00},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := computeExtensionSubtotal(planInfo, "USD", c.months); got != c.want {
+				t.Errorf("computeExtensionSubtotal(%d) = %d, want %d", c.months, got, c.want)
 			}
 		})
 	}

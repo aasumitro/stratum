@@ -43,6 +43,12 @@ func (m *Module) SetOrganizationReader(r contracts.OrganizationReader) {
 	m.svc.orgReader = r
 }
 
+// SetOrganizationCommander wires the organization commander used by
+// downgradeSubscription's overage resolution. Optional.
+func (m *Module) SetOrganizationCommander(c contracts.OrganizationCommander) {
+	m.svc.orgCommander = c
+}
+
 // GetPlanByID implements contracts.CatalogReader.
 func (m *Module) GetPlanByID(ctx context.Context, id string) (*contracts.PlanInfo, error) {
 	return m.svc.planCatalog(ctx, id)
@@ -142,6 +148,7 @@ func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 //
 //	GET    /organizations/:organizationID/billing
 //	PATCH  /organizations/:organizationID/billing/plan
+//	POST   /organizations/:organizationID/billing/downgrade
 //	POST   /organizations/:organizationID/billing/cancel
 //	POST   /organizations/:organizationID/billing/resume
 //	POST   /organizations/:organizationID/billing/extend
@@ -193,6 +200,7 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billing.GET("/coupons", h.listEligibleCoupons)
 
 		billing.PATCH("/plan", ownerOnly, deps.MFA, h.changePlan)
+		billing.POST("/downgrade", ownerOnly, deps.MFA, h.downgradeSubscription)
 		billing.POST("/cancel", ownerOnly, h.cancelSubscription)
 		billing.POST("/usage", ownerOnly, h.recordUsage)
 		billing.POST("/coupons/redeem", ownerOnly, h.redeemCoupon)

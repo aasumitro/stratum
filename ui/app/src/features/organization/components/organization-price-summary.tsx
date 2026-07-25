@@ -1,4 +1,4 @@
-import { useStore } from "@tanstack/react-form"
+import { useSelector } from "@tanstack/react-store"
 import { useTranslation } from "react-i18next"
 import { formatMoney } from "@/lib/format"
 import { formatPrice } from "@/features/billing/utils"
@@ -29,11 +29,11 @@ export function OrganizationPriceSummary({
   const { t } = useTranslation()
   const { form, plans } = formState
 
-  const plan = useStore(form.store, (s) => s.values.plan)
-  const cycle = useStore(form.store, (s) => s.values.cycle) as BillingCycle
-  const countryCode = useStore(form.store, (s) => s.values.country_code)
-  const addons = useStore(form.store, (s) => s.values.addons)
-  const couponCode = useStore(form.store, (s) => s.values.coupon_code)
+  const plan = useSelector(form.store, (s) => s.values.plan)
+  const cycle = useSelector(form.store, (s) => s.values.cycle) as BillingCycle
+  const countryCode = useSelector(form.store, (s) => s.values.country_code)
+  const addons = useSelector(form.store, (s) => s.values.addons)
+  const couponCode = useSelector(form.store, (s) => s.values.coupon_code)
 
   const selectedPlan = plans.find((p) => p.id === plan)
   const [currency, planPrices] = Object.entries(

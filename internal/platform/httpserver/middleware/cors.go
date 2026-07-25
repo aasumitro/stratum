@@ -21,10 +21,7 @@ type CORSConfig struct {
 // With AllowedOrigins empty, every origin is reflected back and granted
 // credentialed access — acceptable only in development, where it's local
 // ergonomics (e.g. the SSE cookie-auth fallback working across dev ports).
-// Outside development an empty allowlist is a startup error, not a silent
-// allow-all: previously CORS_ORIGINS had no default, so a production
-// deploy that forgot to set it would silently accept credentialed
-// cross-origin requests from any site.
+// Outside development an empty allowlist is a startup error.
 func NewCORSMiddleware(cfg CORSConfig) (gin.HandlerFunc, error) {
 	if len(cfg.AllowedOrigins) == 0 && !cfg.IsDevelopment {
 		return nil, errors.New("middleware.NewCORSMiddleware: CORS_ORIGINS must be set outside development")

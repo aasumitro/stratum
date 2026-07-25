@@ -10,9 +10,7 @@ interface BillingStatus {
 }
 
 /**
- * Single source for billing-blocked state — previously recomputed with its
- * own useInvoices call in SidebarOrganizationNav, OrganizationBanner, and
- * OrganizationLayout independently.
+ * Single source for billing-blocked state.
  */
 export function useBillingStatus(): BillingStatus {
   const { organizationId, organization, role } = useActiveOrganization()
@@ -24,7 +22,10 @@ export function useBillingStatus(): BillingStatus {
     !!organizationId && isOwner
   )
   const hasPendingInvoice =
-    isOwner && (invoicesData?.data ?? []).some((i) => i.status === "pending")
+    isOwner &&
+    (invoicesData?.data ?? []).some(
+      (i) => i.status === "pending" && i.kind !== "extension"
+    )
 
   return {
     isOwner,

@@ -32,7 +32,9 @@ func (s *service) syncStorageUsage(ctx context.Context, organizationID string) {
 	if s.billingWriter == nil {
 		return
 	}
-	ctx = context.WithoutCancel(ctx)
+	// See syncMemberUsage in service_member.go for why the querier must be
+	// cleared before this context crosses into a background goroutine.
+	ctx = db.WithoutQuerier(context.WithoutCancel(ctx))
 	go func() {
 		total, err := s.repo.sumStorageBytes(ctx, s.pool, organizationID)
 		if err != nil {

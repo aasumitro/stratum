@@ -71,6 +71,27 @@ definitions:
         description: '"metered" | "boolean" | "static" | "config"'
         type: string
     type: object
+  OverageResolution:
+    properties:
+      auto_selected_file_ids:
+        description: subset of RemovedFileIDs
+        items:
+          type: string
+        type: array
+      auto_selected_member_subs:
+        description: subset of RemovedMemberAuthSubs
+        items:
+          type: string
+        type: array
+      removed_file_ids:
+        items:
+          type: string
+        type: array
+      removed_member_auth_subs:
+        items:
+          type: string
+        type: array
+    type: object
   Payload:
     properties:
       data: {}
@@ -199,6 +220,22 @@ definitions:
     required:
     - file_ids
     type: object
+  cancelSubscriptionRequest:
+    properties:
+      details:
+        maxLength: 500
+        type: string
+      reason:
+        enum:
+        - too_expensive
+        - missing_features
+        - switching_provider
+        - no_longer_needed
+        - other
+        type: string
+    required:
+    - reason
+    type: object
   changePlanRequest:
     properties:
       cycle:
@@ -213,9 +250,16 @@ definitions:
           operator adds through Studio's catalog composition UI that isn't one
           of the 3 originally-seeded slugs.
         type: string
+      terms_agreed:
+        description: |-
+          TermsAgreed must be true — binding:"required" on a bool rejects both a
+          missing field and an explicit false, since the validator treats false
+          as the zero value.
+        type: boolean
     required:
     - cycle
     - plan
+    - terms_agreed
     type: object
   countryRecord:
     properties:
@@ -375,6 +419,34 @@ definitions:
     required:
     - token
     type: object
+  downgradeSubscriptionRequest:
+    properties:
+      cycle:
+        enum:
+        - monthly
+        - yearly
+        type: string
+      plan:
+        type: string
+      preferred_file_ids:
+        items:
+          type: string
+        type: array
+      preferred_member_auth_subs:
+        items:
+          type: string
+        type: array
+    required:
+    - cycle
+    - plan
+    type: object
+  downgradeSubscriptionResponse:
+    properties:
+      overage:
+        $ref: '#/definitions/OverageResolution'
+      subscription:
+        $ref: '#/definitions/subscriptionRecord'
+    type: object
   entitlementRecord:
     properties:
       addon_delta:
@@ -411,8 +483,8 @@ definitions:
         maximum: 24
         minimum: 1
         type: integer
-    required:
-    - months
+      switch_to_annual:
+        type: boolean
     type: object
   fileRecord:
     properties:
@@ -579,6 +651,12 @@ definitions:
           NewPeriodEnd is only set when plan/cycle differ from the subscription's
           current plan/cycle — a hypothetical-change preview, not the steady-state one.
         type: string
+      overage:
+        allOf:
+        - $ref: '#/definitions/overagePreview'
+        description: |-
+          Overage is only populated when the hypothetical plan is a downgrade and
+          the organization's current usage exceeds the new plan's limits.
       plan:
         type: string
       plan_line_cents:
@@ -600,6 +678,8 @@ definitions:
         type: string
       invoice_number:
         type: string
+      kind:
+        type: string
       paid_at:
         type: string
       provider_invoice_id:
@@ -610,6 +690,8 @@ definitions:
         type: string
       subtotal_cents:
         type: integer
+      switch_to_annual:
+        type: boolean
       tax_cents:
         type: integer
       tax_rate_bps:
@@ -711,6 +793,17 @@ definitions:
       updated_at:
         type: string
     type: object
+  metricOverage:
+    properties:
+      allowed:
+        type: integer
+      auto_select_removals:
+        items:
+          type: string
+        type: array
+      current:
+        type: integer
+    type: object
   moveFileRequest:
     properties:
       folder_id:
@@ -800,6 +893,13 @@ definitions:
         type: string
       updated_at:
         type: string
+    type: object
+  overagePreview:
+    properties:
+      members:
+        $ref: '#/definitions/metricOverage'
+      storage:
+        $ref: '#/definitions/metricOverage'
     type: object
   pagination:
     properties:
@@ -958,6 +1058,15 @@ definitions:
         type: string
       id:
         type: string
+      max_extendable_months:
+        description: |-
+          MaxExtendableMonths lets the frontend gate the Extend flow's counter,
+          "Switch to Annual" option, and entry point without re-deriving the
+          24-month lifetime cap from raw dates itself (see maxExtendableMonths
+          in service_subscription_billing.go for why that's rejected). 0 for a
+          subscription with no current period (e.g. still trialing) — nothing
+          to extend.
+        type: integer
       period_end:
         type: string
       period_start:
@@ -2528,6 +2637,8 @@ paths:
       - billing
   /organizations/{organizationID}/billing/cancel:
     post:
+      consumes:
+      - application/json
       description: Owner only.
       parameters:
       - description: Organization ID
@@ -2535,6 +2646,12 @@ paths:
         name: organizationID
         required: true
         type: string
+      - description: Cancellation reason
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/cancelSubscriptionRequest'
       produces:
       - application/json
       responses:
@@ -2553,6 +2670,10 @@ paths:
             $ref: '#/definitions/Payload'
         "403":
           description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
           schema:
             $ref: '#/definitions/Payload'
       security:
@@ -2628,6 +2749,52 @@ paths:
       summary: Redeem a coupon
       tags:
       - billing
+  /organizations/{organizationID}/billing/downgrade:
+    post:
+      consumes:
+      - application/json
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Downgrade details
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/downgradeSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/downgradeSubscriptionResponse'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Downgrade the subscription plan and resolve overage
+      tags:
+      - billing
   /organizations/{organizationID}/billing/extend:
     post:
       consumes:
@@ -2639,7 +2806,7 @@ paths:
         name: organizationID
         required: true
         type: string
-      - description: Months to extend by
+      - description: Months to extend by, or switch_to_annual
         in: body
         name: body
         required: true

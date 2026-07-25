@@ -27,11 +27,9 @@ export interface Plan {
   description: string
   prices: Record<string, PlanPrices>
   limits: Record<string, number>
-  // Nullable even though the API always sends [] now (fixed 2026-07-11 —
-  // was nil-slice-serializes-to-null for any plan with zero boolean/static
-  // features, e.g. "solo", crashing plan.features.slice()/.map() call
-  // sites). Kept nullable in the type so a future regression fails
-  // typecheck instead of production.
+  // Kept nullable in the type so a future regression in API serialization
+  // (e.g. nil-slice-serializes-to-null for plans with zero features) fails
+  // typecheck instead of production, even though the API typically sends [].
   features: string[] | null
   sort_order: number
   // Raw config_value JSON for this plan's type="config" features

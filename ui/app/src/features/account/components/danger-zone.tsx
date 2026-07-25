@@ -1,8 +1,5 @@
 import { useTranslation } from "react-i18next"
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ExportSection } from "@/features/account/components/export-section"
 import { DeleteSection } from "@/features/account/components/delete-section"

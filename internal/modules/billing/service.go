@@ -30,6 +30,11 @@ const (
 	cycleMonthly = "monthly"
 	cycleYearly  = "yearly"
 
+	// subjectTypeOrganization is the only subjectType this codebase's
+	// subject-polymorphic subscription model currently exercises — the
+	// field exists for a future non-organization subject, not used yet.
+	subjectTypeOrganization = "organization"
+
 	cadenceForever  = "forever"
 	cadenceOnce     = "once"
 	cadenceRepeated = "repeated"
@@ -60,7 +65,9 @@ var (
 	ErrAddonNotFound               = errors.New("addon not found")
 	ErrUnknownPlan                 = errors.New("unknown plan")
 	ErrSubscriptionNotExtendable   = errors.New("subscription is not in an extendable state")
+	ErrExtensionAlreadyPending     = errors.New("an extension invoice is already pending payment")
 	ErrExtensionExceedsMaxDuration = errors.New("extension would exceed the maximum subscription duration")
+	ErrAlreadyYearly               = errors.New("subscription is already on the yearly cycle")
 	ErrSubscriptionNotTrialing     = errors.New("subscription is not currently trialing")
 	ErrSubscriptionNotResumable    = errors.New("subscription is not in a resumable state")
 )
@@ -81,10 +88,11 @@ type service struct {
 	pool         *pgxpool.Pool
 	pub          messaging.EventPublisher
 	provider     ProviderConfig
-	taxReader    contracts.CountryTaxReader // optional; nil means tax rate defaults to 0
-	orgSuspender contracts.OrganizationSuspender
-	orgReader    contracts.OrganizationReader // optional; nil = every org owner treated as first-time (gets a trial)
 	userReader   contracts.UserReader
+	orgReader    contracts.OrganizationReader
+	orgCommander contracts.OrganizationCommander
+	taxReader    contracts.CountryTaxReader
+	orgSuspender contracts.OrganizationSuspender
 }
 
 // findPlanByID/listPlansRecords/listFeaturesRecords/listAddonsRecords/findAddonByID

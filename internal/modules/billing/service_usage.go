@@ -19,7 +19,7 @@ func (s *service) recordUsage(ctx context.Context, organizationID, metric string
 		}
 	}()
 
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (s *service) getUsage(ctx context.Context, _, subjectID string) ([]usageRec
 }
 
 func (s *service) checkUsageLimit(ctx context.Context, organizationID, metric string) (current int64, limit int, err error) {
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -119,7 +119,7 @@ func (s *service) checkUsageLimit(ctx context.Context, organizationID, metric st
 // here the way checkUsageLimit folds in addon limit deltas. Revisit if a
 // future addon is meant to grant a boolean/static feature.
 func (s *service) checkFeatureAccess(ctx context.Context, organizationID, feature string) error {
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return err
 	}
@@ -164,7 +164,7 @@ func (s *service) resolveEntitlements(ctx context.Context, organizationID string
 		err = apperr.Internal("FEATURES_FETCH_FAILED", "failed to get features", err)
 	}()
 
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return nil, err
 	}

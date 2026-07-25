@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -76,6 +77,28 @@ func (s *service) provisionSubscription(
 			}
 		}
 
+		// Seed the owner's own seat so "members" usage starts accurate
+		// instead of missing: checkUsageLimit fails open to current=0 when
+		// no billing.usage row exists yet, which would let the very first
+		// invite/add past the plan's limit regardless of the owner already
+		// occupying one seat. Only on first provisioning (isNew) — a
+		// redelivery must not reset usage that's grown since the original
+		// commit. periodStart/periodEnd mirror recordUsage's own derivation
+		// so a later syncMemberUsage call upserts this same row.
+		if isNew {
+			periodStart := sub.CreatedAt
+			periodEnd := sub.CreatedAt.AddDate(0, 1, 0)
+			if sub.PeriodStart != nil {
+				periodStart = *sub.PeriodStart
+			}
+			if sub.PeriodEnd != nil {
+				periodEnd = *sub.PeriodEnd
+			}
+			if err := s.repo.upsertUsage(ctx, s.querier(ctx), subjectID, "members", 1, periodStart, periodEnd); err != nil {
+				return err
+			}
+		}
+
 		// Attach the cart's addons/coupon before any invoice is composed
 		// below — both organization.createOrganization's up-front
 		// validation already confirmed these are valid, so this is pure
@@ -115,7 +138,7 @@ func (s *service) provisionSubscription(
 					trialStarted = &events.TrialStarted{OrgID: subjectID, Plan: plan, TrialEnd: *sub.TrialEnd}
 				}
 			}
-			_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
+			_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
 				nil, &plan, subtotal, currency, createdBy, nil)
 		}
 
@@ -130,7 +153,7 @@ func (s *service) provisionSubscription(
 					taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryCode)
 				}
 				tax := calculateTax(composed, taxRate)
-				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency)
+				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency, "subscription", false)
 				if invErr != nil {
 					return fmt.Errorf("billing.provisionSubscription: insert invoice: %w", invErr)
 				}
@@ -178,14 +201,15 @@ func (s *service) getSubscription(ctx context.Context, subjectType, subjectID st
 	return sub, nil
 }
 
-func (s *service) changePlan(
-	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string,
-) (sub *subscriptionRecord, err error) {
+func (s *service) changePlanWithMetadata(
+	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string, metadata []byte,
+) (historyID string, sub *subscriptionRecord, err error) {
 	defer func() {
 		if err == nil {
 			return
 		}
 		sub = nil
+		historyID = ""
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			err = apperr.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found", err)
@@ -198,17 +222,17 @@ func (s *service) changePlan(
 
 	newPlanInfo, err := s.planCatalog(ctx, plan)
 	if err != nil {
-		return nil, ErrUnknownPlan
+		return "", nil, ErrUnknownPlan
 	}
 
 	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, fmt.Errorf("%w: current plan", ErrUnknownPlan)
+		return "", nil, fmt.Errorf("billing.changePlan: %w: current plan", ErrUnknownPlan)
 	}
 
 	action := "upgrade"
@@ -227,17 +251,20 @@ func (s *service) changePlan(
 		updated, err = s.repo.updateSubscriptionPlan(ctx, s.querier(ctx), sub.ID, plan, cycle)
 	}
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
-		new(sub.Plan), &plan, 0, sub.Currency, changedBy, nil)
+	historyID, err = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, action,
+		new(sub.Plan), &plan, 0, sub.Currency, changedBy, metadata)
+	if err != nil {
+		return "", nil, err
+	}
 
 	// Void any pending invoices from the previous plan and issue a fresh one
 	// for the new plan + cycle so the user pays the correct amount.
 	if hasPending, _ := s.repo.hasPendingInvoice(ctx, s.querier(ctx), updated.ID); hasPending {
 		if err = s.repo.voidPendingInvoicesAndLinks(ctx, s.querier(ctx), updated.ID); err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		composed, addonLines, couponCode, discountCents := s.composeInvoiceAmount(
 			ctx, s.querier(ctx), updated.ID, newPlanInfo, updated.Currency, cycle)
@@ -248,7 +275,7 @@ func (s *service) changePlan(
 			}
 			tax := calculateTax(composed, taxRate)
 			if inv, err := s.repo.insertInvoice(
-				ctx, s.querier(ctx), subjectID, updated.ID, composed, taxRate, tax, updated.Currency,
+				ctx, s.querier(ctx), subjectID, updated.ID, composed, taxRate, tax, updated.Currency, "subscription", false,
 			); err == nil {
 				_ = s.insertPlanLineItem(ctx, inv, newPlanInfo)
 				s.applyInvoiceCharges(ctx, s.querier(ctx), updated.ID, inv.ID,
@@ -264,11 +291,11 @@ func (s *service) changePlan(
 			Plan:           updated.Plan,
 			ActivatedAt:    updated.UpdatedAt,
 		})
-	return updated, nil
+	return historyID, updated, nil
 }
 
 func (s *service) cancelSubscription(
-	ctx context.Context, subjectType, subjectID, cancelledBy string,
+	ctx context.Context, subjectType, subjectID, cancelledBy, reason, details string,
 ) (sub *subscriptionRecord, err error) {
 	defer func() {
 		if err == nil {
@@ -299,8 +326,12 @@ func (s *service) cancelSubscription(
 		return nil, err
 	}
 
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
-		&sub.Plan, nil, 0, sub.Currency, cancelledBy, nil)
+	metadata, _ := json.Marshal(struct {
+		Reason  string `json:"reason"`
+		Details string `json:"details,omitempty"`
+	}{Reason: reason, Details: details})
+	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
+		&sub.Plan, nil, 0, sub.Currency, cancelledBy, metadata)
 
 	s.publishAfterCommit(ctx, events.RoutingKeySubscriptionCancelled, subjectID,
 		events.SubscriptionCancelled{
@@ -336,10 +367,10 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 		return err
 	}
 
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
+	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
 		nil, 0, sub.Currency, changedBySystem, nil)
 
-	if s.orgSuspender != nil && sub.SubjectType == "organization" {
+	if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
 		_ = s.orgSuspender.SuspendOrganization(ctx, sub.SubjectID, "subscription expired")
 	}
 
@@ -352,7 +383,7 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 // cancelOnDeletion cancels the organization subscription when the organization is deleted.
 // No event is published — the organization is already gone.
 func (s *service) cancelOnDeletion(ctx context.Context, organizationID string) error {
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), "organization", organizationID)
+	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -365,7 +396,7 @@ func (s *service) cancelOnDeletion(ctx context.Context, organizationID string) e
 	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusCancelled); err != nil {
 		return err
 	}
-	_ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
+	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
 		&sub.Plan, nil, 0, sub.Currency, changedBySystem, nil)
 	return nil
 }

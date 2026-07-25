@@ -99,12 +99,11 @@ func TestIntegration_AnonymousAuthFailureAuditEvent(t *testing.T) {
 	}
 }
 
-// TestIntegration_Writer_Stop_FlushesSynchronously regression-tests that
+// TestIntegration_Writer_Stop_FlushesSynchronously tests that
 // Stop() actually blocks until the writer's final batch has been flushed —
-// previously it only closed the channel and returned immediately, so a
-// caller relying on the documented "waits for the flush to complete"
+// so a caller relying on the documented "waits for the flush to complete"
 // behavior (e.g. shutdown code closing the DB pool right after Stop
-// returns) could race the flush against the pool going away. No
+// returns) will not race the flush against the pool going away. No
 // time.Sleep here — if Stop() doesn't truly block on the flush, this event
 // won't exist yet when the test queries for it immediately after.
 func TestIntegration_Writer_Stop_FlushesSynchronously(t *testing.T) {
@@ -289,11 +288,9 @@ func TestIntegration_ListByOrganizationCursor_Filter(t *testing.T) {
 	}
 }
 
-// TestIntegration_ListByOrganization_Filter regression-tests that the
+// TestIntegration_ListByOrganization_Filter tests that the
 // page-based listing (handler_audit.go's non-cursor branch) actually
-// narrows by actor/action — ListByOrganization previously had no filter
-// parameter at all, so the page-mode audit log silently ignored every
-// chip filter while cursor mode and CSV export both applied them correctly.
+// narrows by actor/action.
 func TestIntegration_ListByOrganization_Filter(t *testing.T) {
 	pool := testPool(t)
 	orgID := "page_filter_test_org_" + t.Name()
@@ -513,10 +510,7 @@ func TestIntegration_ListByActorCursor_AcrossOrganizations(t *testing.T) {
 	}
 }
 
-// TestIntegration_ListByActorCursor_DateRange covers the from/to bound the
-// personal audit page's list endpoint now shares with ExportByActor — until
-// this was added, GET /me/audit-log ignored from/to entirely (only the CSV
-// export honored them), so the visible table's date pickers did nothing.
+// TestIntegration_ListByActorCursor_DateRange covers the from/to bounds.
 func TestIntegration_ListByActorCursor_DateRange(t *testing.T) {
 	pool := testPool(t)
 	actor := "cursor_range_actor_test_" + t.Name()

@@ -1,17 +1,19 @@
 import type { Page } from "@playwright/test"
 
 /**
- * Signs in with the shared dev test account (TEST_ACCOUNT_EMAIL/PASSWORD
- * from the repo-root .env.local). This is a real Supabase + backend login,
- * not a mock, so it needs local infra and the API server running.
+ * Signs in with the shared dev test account (TEST_ACCOUNT_OWNER_EMAIL/PASSWORD
+ * from the repo-root .env.local — the owner-role account; ADMIN/MEMBER
+ * counterparts also exist for manual cross-role checks but aren't used by
+ * these tests). This is a real Supabase + backend login, not a mock, so it
+ * needs local infra and the API server running.
  */
 export async function loginAsTestAccount(page: Page) {
-  const email = process.env.TEST_ACCOUNT_EMAIL
-  const password = process.env.TEST_ACCOUNT_PASSWORD
+  const email = process.env.TEST_ACCOUNT_OWNER_EMAIL
+  const password = process.env.TEST_ACCOUNT_OWNER_PASSWORD
   if (!email || !password) {
     throw new Error(
-      "TEST_ACCOUNT_EMAIL/TEST_ACCOUNT_PASSWORD are not set. Add them to the " +
-        "repo-root .env.local (SEE: Docs)."
+      "TEST_ACCOUNT_OWNER_EMAIL/TEST_ACCOUNT_OWNER_PASSWORD are not set. Add them " +
+        "to the repo-root .env.local (SEE: Docs)."
     )
   }
 

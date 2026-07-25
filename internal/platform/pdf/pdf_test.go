@@ -21,8 +21,12 @@ func TestFormatMoney(t *testing.T) {
 		{100, "USD", "$1.00"},
 		{5, "USD", "$0.05"},
 		{0, "USD", "$0.00"},
-		{50000, currencyIDR, "Rp50000"},
-		{999, "EUR", "$9.99"}, // unknown currency falls back to the dollar format
+		{50000, currencyIDR, "Rp50.000"},
+		{299000, currencyIDR, "Rp299.000"},
+		{1234567, currencyIDR, "Rp1.234.567"},
+		{500, currencyIDR, "Rp500"},
+		{-10000, currencyIDR, "Rp-10.000"}, // discount line items are negative
+		{999, "EUR", "$9.99"},              // unknown currency falls back to the dollar format
 	}
 	for _, c := range cases {
 		if got := FormatMoney(c.amount, c.currency); got != c.want {

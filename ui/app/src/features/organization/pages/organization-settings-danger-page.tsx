@@ -1,12 +1,9 @@
 import { useParams } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
-import {
-  useOrganizations,
-  useOrganization,
-} from "@/features/organization/hooks"
+import { useOrganization } from "@/features/organization/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { OrganizationDangerZone } from "@/features/organization/components/organization-danger-zone"
 import { AccessDeniedExplainer } from "@/components/shared/permission-guard"
-import type { OrganizationRole } from "@/types/organization"
 
 export function OrganizationSettingsDangerPage() {
   const { t } = useTranslation()
@@ -14,13 +11,8 @@ export function OrganizationSettingsDangerPage() {
     organizationId: string
   }
 
-  const { data: listData } = useOrganizations()
   const { data: wsData } = useOrganization(organizationId)
-
-  const role = listData?.data?.find((w) => w.id === organizationId)?.role as
-    | OrganizationRole
-    | undefined
-  const isOwner = role === "owner"
+  const { isOwner } = usePermissions()
   const organization = wsData?.data
 
   if (isOwner && organization) {

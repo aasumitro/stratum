@@ -218,8 +218,7 @@ func (r *repository) deleteAllForUser(ctx context.Context, q db.Querier, authSub
 }
 
 // markRead is scoped to auth_sub so a caller can only mark their own
-// notifications read — the id alone was previously sufficient, letting any
-// authenticated user flip the read state of any notification by guessing an id.
+// notifications read.
 func (r *repository) markRead(ctx context.Context, q db.Querier, authSub, id string) error {
 	_, err := q.Exec(ctx, `
 		UPDATE notification.messages

@@ -21,3 +21,16 @@ export async function downloadFile(
   document.body.removeChild(a)
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
 }
+
+// Fetches an authenticated binary response as a blob: URL, for opening in a
+// browser-native viewer (e.g. window.open) instead of forcing a save —
+// authenticated endpoints can't just be window.open()'d directly like a
+// public URL, they need the bearer token the shared `api` instance attaches.
+export async function fetchBlobUrl(
+  url: string,
+  mimeType: string
+): Promise<string> {
+  const res = await api.get(url, { responseType: "arraybuffer", timeout: 0 })
+  const blob = new Blob([res.data as ArrayBuffer], { type: mimeType })
+  return URL.createObjectURL(blob)
+}

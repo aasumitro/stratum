@@ -26,16 +26,16 @@ export function PdfButton({ invoiceId, organizationId }: Props) {
   return (
     <Button
       size="sm"
-      variant="ghost"
+      variant="outline"
       disabled={isPending}
       onClick={() => mutate()}
-      title={t("billing.invoices.downloadPdf")}
     >
       {isPending ? (
-        <IconLoader2 className="size-4 animate-spin" />
+        <IconLoader2 data-icon="inline-start" className="animate-spin" />
       ) : (
-        <IconFileDownload className="size-4" />
+        <IconFileDownload data-icon="inline-start" />
       )}
+      {t("billing.invoices.downloadPdf")}
     </Button>
   )
 }

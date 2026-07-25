@@ -157,9 +157,7 @@ func (r *repository) updateSubscriptionPlanAndPeriod(
 }
 
 // countSubscriptionsBySubjectIDs counts subscriptions belonging to any of
-// the given organization subject IDs — replaces the cross-schema JOIN +
-// implicit UUID->TEXT cast countSubscriptionsByOwner used to need, with a
-// plain lookup against the existing idx_subscriptions_subject index. The
+// the given organization subject IDs. The
 // caller resolves owned organization IDs via
 // contracts.OrganizationReader.ListOwnedOrganizationIDs first.
 func (r *repository) countSubscriptionsBySubjectIDs(ctx context.Context, q db.Querier, subjectIDs []string) (int, error) {
@@ -184,6 +182,23 @@ func (r *repository) updateSubscriptionPeriod(
 		SET period_start = $2, period_end = $3, updated_at = now()
 		WHERE id = $1`,
 		id, periodStart, periodEnd,
+	)
+	return err
+}
+
+// updateSubscriptionCycleAndPeriod mirrors updateSubscriptionPeriod but also
+// sets cycle, atomically in the same statement — used by the extend
+// switch-to-annual path so the cycle conversion and the period extension it
+// pays for always land together.
+func (r *repository) updateSubscriptionCycleAndPeriod(
+	ctx context.Context, q db.Querier,
+	id, cycle string, periodStart, periodEnd time.Time,
+) error {
+	_, err := q.Exec(ctx, `
+		UPDATE billing.subscriptions
+		SET cycle = $2, period_start = $3, period_end = $4, updated_at = now()
+		WHERE id = $1`,
+		id, cycle, periodStart, periodEnd,
 	)
 	return err
 }

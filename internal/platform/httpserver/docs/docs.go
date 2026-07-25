@@ -2298,6 +2298,9 @@ const docTemplate = `{
                     }
                 ],
                 "description": "Owner only.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2312,6 +2315,15 @@ const docTemplate = `{
                         "name": "organizationID",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Cancellation reason",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/cancelSubscriptionRequest"
+                        }
                     }
                 ],
                 "responses": {
@@ -2341,6 +2353,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "validation failed",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -2460,6 +2478,82 @@ const docTemplate = `{
                 }
             }
         },
+        "/organizations/{organizationID}/billing/downgrade": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Downgrade the subscription plan and resolve overage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Downgrade details",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/downgradeSubscriptionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/downgradeSubscriptionResponse"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
         "/organizations/{organizationID}/billing/extend": {
             "post": {
                 "security": [
@@ -2487,7 +2581,7 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Months to extend by",
+                        "description": "Months to extend by, or switch_to_annual",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -6251,6 +6345,37 @@ const docTemplate = `{
                 }
             }
         },
+        "OverageResolution": {
+            "type": "object",
+            "properties": {
+                "auto_selected_file_ids": {
+                    "description": "subset of RemovedFileIDs",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "auto_selected_member_subs": {
+                    "description": "subset of RemovedMemberAuthSubs",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "removed_file_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "removed_member_auth_subs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "Payload": {
             "type": "object",
             "properties": {
@@ -6431,11 +6556,34 @@ const docTemplate = `{
                 }
             }
         },
+        "cancelSubscriptionRequest": {
+            "type": "object",
+            "required": [
+                "reason"
+            ],
+            "properties": {
+                "details": {
+                    "type": "string",
+                    "maxLength": 500
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": [
+                        "too_expensive",
+                        "missing_features",
+                        "switching_provider",
+                        "no_longer_needed",
+                        "other"
+                    ]
+                }
+            }
+        },
         "changePlanRequest": {
             "type": "object",
             "required": [
                 "cycle",
-                "plan"
+                "plan",
+                "terms_agreed"
             ],
             "properties": {
                 "cycle": {
@@ -6448,6 +6596,10 @@ const docTemplate = `{
                 "plan": {
                     "description": "Plan is validated dynamically against billing.plans via the catalog\nlookup in changePlan — no oneof here: a static enum would reject any plan an\noperator adds through Studio's catalog composition UI that isn't one\nof the 3 originally-seeded slugs.",
                     "type": "string"
+                },
+                "terms_agreed": {
+                    "description": "TermsAgreed must be true — binding:\"required\" on a bool rejects both a\nmissing field and an explicit false, since the validator treats false\nas the zero value.",
+                    "type": "boolean"
                 }
             }
         },
@@ -6667,6 +6819,48 @@ const docTemplate = `{
                 }
             }
         },
+        "downgradeSubscriptionRequest": {
+            "type": "object",
+            "required": [
+                "cycle",
+                "plan"
+            ],
+            "properties": {
+                "cycle": {
+                    "type": "string",
+                    "enum": [
+                        "monthly",
+                        "yearly"
+                    ]
+                },
+                "plan": {
+                    "type": "string"
+                },
+                "preferred_file_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "preferred_member_auth_subs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "downgradeSubscriptionResponse": {
+            "type": "object",
+            "properties": {
+                "overage": {
+                    "$ref": "#/definitions/OverageResolution"
+                },
+                "subscription": {
+                    "$ref": "#/definitions/subscriptionRecord"
+                }
+            }
+        },
         "entitlementRecord": {
             "type": "object",
             "properties": {
@@ -6710,14 +6904,14 @@ const docTemplate = `{
         },
         "extendSubscriptionRequest": {
             "type": "object",
-            "required": [
-                "months"
-            ],
             "properties": {
                 "months": {
                     "type": "integer",
                     "maximum": 24,
                     "minimum": 1
+                },
+                "switch_to_annual": {
+                    "type": "boolean"
                 }
             }
         },
@@ -6965,6 +7159,14 @@ const docTemplate = `{
                     "description": "NewPeriodEnd is only set when plan/cycle differ from the subscription's\ncurrent plan/cycle — a hypothetical-change preview, not the steady-state one.",
                     "type": "string"
                 },
+                "overage": {
+                    "description": "Overage is only populated when the hypothetical plan is a downgrade and\nthe organization's current usage exceeds the new plan's limits.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/overagePreview"
+                        }
+                    ]
+                },
                 "plan": {
                     "type": "string"
                 },
@@ -6997,6 +7199,9 @@ const docTemplate = `{
                 "invoice_number": {
                     "type": "string"
                 },
+                "kind": {
+                    "type": "string"
+                },
                 "paid_at": {
                     "type": "string"
                 },
@@ -7011,6 +7216,9 @@ const docTemplate = `{
                 },
                 "subtotal_cents": {
                     "type": "integer"
+                },
+                "switch_to_annual": {
+                    "type": "boolean"
                 },
                 "tax_cents": {
                     "type": "integer"
@@ -7167,6 +7375,23 @@ const docTemplate = `{
                 }
             }
         },
+        "metricOverage": {
+            "type": "object",
+            "properties": {
+                "allowed": {
+                    "type": "integer"
+                },
+                "auto_select_removals": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "current": {
+                    "type": "integer"
+                }
+            }
+        },
         "moveFileRequest": {
             "type": "object",
             "properties": {
@@ -7293,6 +7518,17 @@ const docTemplate = `{
                 },
                 "updated_at": {
                     "type": "string"
+                }
+            }
+        },
+        "overagePreview": {
+            "type": "object",
+            "properties": {
+                "members": {
+                    "$ref": "#/definitions/metricOverage"
+                },
+                "storage": {
+                    "$ref": "#/definitions/metricOverage"
                 }
             }
         },
@@ -7533,6 +7769,10 @@ const docTemplate = `{
                 },
                 "id": {
                     "type": "string"
+                },
+                "max_extendable_months": {
+                    "description": "MaxExtendableMonths lets the frontend gate the Extend flow's counter,\n\"Switch to Annual\" option, and entry point without re-deriving the\n24-month lifetime cap from raw dates itself (see maxExtendableMonths\nin service_subscription_billing.go for why that's rejected). 0 for a\nsubscription with no current period (e.g. still trialing) — nothing\nto extend.",
+                    "type": "integer"
                 },
                 "period_end": {
                     "type": "string"

@@ -24,7 +24,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { LockedTag } from "@/components/shared/permission-guard"
 import { useActiveOrganization } from "@/hooks/use-active-organization"
 import { usePermissions } from "@/hooks/use-permissions"
 
@@ -35,23 +34,28 @@ interface NavItem {
   icon: typeof IconHome
   /** true when the current role can actually use this page (not just see it) */
   allowed: boolean
-  lockedTag?: string
   /** does a pending-invoice/suspended organization block this item too? */
   billingBlockable: boolean
 }
 
 /**
- * All 6 org nav items always render for every role — locked, never
- * hidden. Role-locked items get a lock icon + role tag + tooltip;
- * billing-blocked items (Members/Files/Webhooks only) get an amber dot
- * instead. The nav still links through on a locked item — per-page
- * PermissionGuard/403 explainers land as each destination page is rebuilt.
+ * 4 of 6 org nav items hide entirely for a role that can't use them at all
+ * (Files/Webhooks/Audit Log/Billing); Members/Settings always render
+ * since every role has baseline view access to both.
+ * Billing-blocked items (Members/Files/Webhooks) get an amber dot instead — a separate,
+ * org-state axis, independent of role.
  */
 export function SidebarOrganizationNav() {
   const { t } = useTranslation()
   const { location } = useRouterState()
   const { organizationId, organization } = useActiveOrganization()
-  const { isOwner, isAdminUp, isBillingBlocked } = usePermissions()
+  const {
+    isBillingBlocked,
+    canAccessFiles,
+    canAccessWebhooks,
+    canAccessAuditLog,
+    canViewBilling,
+  } = usePermissions()
 
   if (!organizationId) {
     return (
@@ -140,8 +144,7 @@ export function SidebarOrganizationNav() {
       label: t("organization.tabs.files"),
       to: `${base}/files`,
       icon: IconFolder,
-      allowed: isAdminUp,
-      lockedTag: t("nav.adminTag"),
+      allowed: canAccessFiles,
       billingBlockable: true,
     },
   ]
@@ -152,8 +155,7 @@ export function SidebarOrganizationNav() {
       label: t("organization.tabs.webhooks"),
       to: `${base}/webhooks`,
       icon: IconWebhook,
-      allowed: isOwner,
-      lockedTag: t("nav.ownerTag"),
+      allowed: canAccessWebhooks,
       billingBlockable: true,
     },
     {
@@ -161,8 +163,7 @@ export function SidebarOrganizationNav() {
       label: t("organization.tabs.auditLog"),
       to: `${base}/audit-log`,
       icon: IconHistory,
-      allowed: isAdminUp,
-      lockedTag: t("nav.adminTag"),
+      allowed: canAccessAuditLog,
       billingBlockable: false,
     },
     {
@@ -170,8 +171,7 @@ export function SidebarOrganizationNav() {
       label: t("organization.tabs.billing"),
       to: `${base}/billing`,
       icon: IconCreditCard,
-      allowed: isOwner,
-      lockedTag: t("nav.ownerTag"),
+      allowed: canViewBilling,
       billingBlockable: false,
     },
     {
@@ -199,17 +199,6 @@ export function SidebarOrganizationNav() {
         >
           <item.icon />
           <span>{item.label}</span>
-          {!item.allowed && item.lockedTag && (
-            <LockedTag
-              className="ml-auto group-data-[collapsible=icon]:hidden"
-              label={item.lockedTag}
-              tooltip={
-                item.key === "billing" || item.key === "webhooks"
-                  ? t("nav.ownerOnlyTooltip")
-                  : t("nav.adminRequiredTooltip")
-              }
-            />
-          )}
           {item.allowed && showBillingDot && (
             <Tooltip>
               <TooltipTrigger
@@ -261,17 +250,6 @@ export function SidebarOrganizationNav() {
                   >
                     <item.icon />
                     <span>{item.label}</span>
-                    {!item.allowed && item.lockedTag && (
-                      <LockedTag
-                        className="ml-auto group-data-[collapsible=icon]:hidden"
-                        label={item.lockedTag}
-                        tooltip={
-                          item.key === "billing" || item.key === "webhooks"
-                            ? t("nav.ownerOnlyTooltip")
-                            : t("nav.adminRequiredTooltip")
-                        }
-                      />
-                    )}
                     {item.allowed && showBillingDot && (
                       <Tooltip>
                         <TooltipTrigger
@@ -298,7 +276,9 @@ export function SidebarOrganizationNav() {
           {organization?.name ?? t("nav.organizations")}
         </SidebarGroupLabel>
         <SidebarGroupContent>
-          <SidebarMenu>{GENERAL_NAV.map(renderNavItem)}</SidebarMenu>
+          <SidebarMenu>
+            {GENERAL_NAV.filter((item) => item.allowed).map(renderNavItem)}
+          </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>
 
@@ -307,7 +287,9 @@ export function SidebarOrganizationNav() {
           {t("nav.groups.manage")}
         </SidebarGroupLabel>
         <SidebarGroupContent>
-          <SidebarMenu>{MANAGE_NAV.map(renderNavItem)}</SidebarMenu>
+          <SidebarMenu>
+            {MANAGE_NAV.filter((item) => item.allowed).map(renderNavItem)}
+          </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>
     </>

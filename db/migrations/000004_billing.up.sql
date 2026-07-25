@@ -53,7 +53,7 @@ CREATE INDEX idx_subscriptions_subject ON billing.subscriptions (subject_type, s
 CREATE TABLE billing.invoices (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     subscription_id     UUID        NOT NULL REFERENCES billing.subscriptions(id),
-    invoice_number      TEXT        UNIQUE,
+    invoice_number      TEXT,
     amount_cents        BIGINT      NOT NULL CHECK (amount_cents > 0),
     subtotal_cents      BIGINT,
     tax_rate_bps        INT         NOT NULL DEFAULT 0,
@@ -61,6 +61,13 @@ CREATE TABLE billing.invoices (
     currency            TEXT        NOT NULL DEFAULT 'USD',
     status              TEXT        NOT NULL DEFAULT 'pending'
                                     CHECK (status IN ('pending', 'paid', 'failed', 'void')),
+    kind                TEXT        NOT NULL DEFAULT 'subscription'
+                                    CHECK (kind IN ('subscription', 'extension')),
+    -- Only meaningful on an "extension" invoice — whether paying it also
+    -- converts the subscription's cycle to yearly (applied by
+    -- handleWebhook on payment confirmation, not when the invoice is
+    -- created; see service_subscription_billing.go).
+    switch_to_annual    BOOLEAN     NOT NULL DEFAULT false,
     provider_invoice_id TEXT,
     due_at              TIMESTAMPTZ,
     paid_at             TIMESTAMPTZ,
@@ -69,6 +76,12 @@ CREATE TABLE billing.invoices (
 );
 CREATE INDEX idx_invoices_subscription ON billing.invoices (subscription_id);
 CREATE INDEX idx_invoices_status       ON billing.invoices (status);
+-- invoice_number is only unique per subscription (i.e. per organization —
+-- one subscription row exists for the lifetime of an org), not globally:
+-- it's generated from a per-organization counter (billing.invoice_sequences),
+-- so two different organizations' Nth invoice can legitimately share the
+-- same formatted number (most commonly, both orgs' very first invoice).
+CREATE UNIQUE INDEX idx_invoices_subscription_number ON billing.invoices (subscription_id, invoice_number);
 
 CREATE TABLE billing.invoice_sequences (
     organization_id UUID     NOT NULL,
@@ -313,15 +326,15 @@ INSERT INTO billing.plans (id, name, description, prices, sort_order) VALUES
 INSERT INTO billing.plan_features (plan_id, feature_id, limit_value, config_value) VALUES
     ('solo',  'members', 1, NULL),
     ('solo',  'storage', 250 * 1024 * 1024, NULL),
-    ('solo',  'api_rate_limit', NULL, '{"requests_per_minute": 200}'),
-    ('solo',  'audit_retention_days', NULL, '{"days": 7}'),
+    ('solo',  'api_rate_limit', NULL, '{"requests_per_minute": 120}'),
+    ('solo',  'audit_retention_days', NULL, '{"days": 30}'),
     ('growth', 'members', 15, NULL),
     ('growth', 'storage', 1024 * 1024 * 1024, NULL),
     ('growth', 'priority_support', NULL, NULL),
     ('growth', 'advanced_analytics', NULL, NULL),
     ('growth', 'webhooks', NULL, NULL),
-    ('growth', 'api_rate_limit', NULL, '{"requests_per_minute": 1200}'),
-    ('growth', 'audit_retention_days', NULL, '{"days": 30}'),
+    ('growth', 'api_rate_limit', NULL, '{"requests_per_minute": 720}'),
+    ('growth', 'audit_retention_days', NULL, '{"days": 90}'),
     ('custom', 'members', -1, NULL),
     ('custom', 'storage', -1, NULL),
     ('custom', 'priority_support', NULL, NULL),
@@ -333,7 +346,22 @@ INSERT INTO billing.plan_features (plan_id, feature_id, limit_value, config_valu
     ('custom', 'sso', NULL, NULL),
     ('custom', 'custom_domain', NULL, NULL),
     ('custom', 'api_rate_limit', NULL, '{"requests_per_minute": -1}'),
-    ('custom', 'audit_retention_days', NULL, '{"days": -1}');
+    ('custom', 'audit_retention_days', NULL, '{"days": -1}'),
+    -- The rest of the catalog (unlimited counts for the two metered
+    -- features, presence-only for the booleans) — solo/growth are
+    -- unchanged, custom is the top tier so it grants everything else.
+    ('custom', 'workspaces', -1, NULL),
+    ('custom', 'teams', -1, NULL),
+    ('custom', 'roles_permissions', NULL, NULL),
+    ('custom', 'api_access', NULL, NULL),
+    ('custom', 'personal_access_tokens', NULL, NULL),
+    ('custom', 'integrations', NULL, NULL),
+    ('custom', 'audit_logs', NULL, NULL),
+    ('custom', 'two_factor_policy', NULL, NULL),
+    ('custom', 'ip_allowlist', NULL, NULL),
+    ('custom', 'custom_branding', NULL, NULL),
+    ('custom', 'export_data', NULL, NULL),
+    ('custom', 'compliance_reports', NULL, NULL);
 
 -- Unit-based addons.
 -- Quantity is stored in subscription_addons.

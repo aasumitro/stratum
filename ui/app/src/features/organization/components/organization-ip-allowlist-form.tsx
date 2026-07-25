@@ -38,7 +38,7 @@ function validateCIDR(entry: string): boolean {
   return ipv4.test(entry) || ipv6.test(entry)
 }
 
-// CIDR chips (was a raw textarea) with the lock-yourself-out guard.
+// CIDR chips with the lock-yourself-out guard.
 // The backend is the only place that can actually know the caller's real
 // client IP (deliberately no third-party IP-detection call added here),
 // so the guard surfaces as a blocking dialog on the 422 the save returns,

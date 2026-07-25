@@ -59,18 +59,18 @@ function groupByDate(items: Notification[]) {
 }
 
 // Deep-link target for a notification's row action, by category. Billing
-// failures route straight to Invoices ("Fix →"); everything
-// else lands on the module's home for that organization. Invites are a
-// special case — the recipient isn't a member of that organization yet, so
-// its own pages are off-limits; the picker page is where the accept/decline
-// card actually lives.
+// failures route straight to Billing ("Fix →"), where invoices live;
+// everything else lands on the module's home for that organization.
+// Invites are a special case — the recipient isn't a member of that
+// organization yet, so its own pages are off-limits; the picker page is
+// where the accept/decline card actually lives.
 function actionPathFor(n: Notification): string | undefined {
   if (n.channel === "invite") return "/organizations"
   if (!n.organization_id) return undefined
   const category = CHANNEL_CATEGORY[n.channel]
   switch (category) {
     case "billing":
-      return `/organization/${n.organization_id}/billing/invoices`
+      return `/organization/${n.organization_id}/billing`
     case "members":
       return `/organization/${n.organization_id}/members`
     case "organization":

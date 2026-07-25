@@ -28,8 +28,8 @@ func testPoolReference(t *testing.T) *pgxpool.Pool {
 
 // --- contracts.CountryTaxReader: GetCountryTaxRate ---
 //
-// Catalog method tests (ListPlans/GetPlanByID/ListFeatures/ListAddons) moved
-// to billing/repository_test.go — billing owns that data now, see
+// Catalog method tests (ListPlans/GetPlanByID/ListFeatures/ListAddons)
+// are in billing/repository_test.go — billing owns that data, see
 // billing/repository.go's "catalog" section.
 
 func TestIntegration_GetCountryTaxRate_US(t *testing.T) {

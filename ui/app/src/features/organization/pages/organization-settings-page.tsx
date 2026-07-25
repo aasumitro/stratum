@@ -1,8 +1,9 @@
-import { Outlet, useParams, Link, useRouterState } from "@tanstack/react-router"
+import { Outlet, useParams } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
-import { cn } from "@/lib/ui"
+import { usePermissions } from "@/hooks/use-permissions"
+import { RouteTabs } from "@/components/shared/route-tabs"
 
-// 4 tabs, now real routes (was client `Tabs` state) so any tab is
+// 4 tabs, implemented as real routes so any tab is
 // deep-linkable/shareable/back-button-safe, mirroring the pattern Billing
 // already uses: General (name/slug/logo/timezone/locale) · Branding
 // (placeholder) · Security (IP allowlist — split out from the old "Locale"
@@ -14,41 +15,23 @@ export function OrganizationSettingsPage() {
   const { organizationId } = useParams({ strict: false }) as {
     organizationId: string
   }
-  const { location } = useRouterState()
+  const { isOwner } = usePermissions()
 
   const base = `/organization/${organizationId}/settings`
   const TABS = [
     { label: t("organization.settings.tabs.general"), suffix: "" },
     { label: t("organization.settings.tabs.branding"), suffix: "/branding" },
     { label: t("organization.settings.tabs.security"), suffix: "/security" },
-    { label: t("organization.settings.tabs.danger"), suffix: "/danger" },
-  ] as const
+    ...(isOwner
+      ? [{ label: t("organization.settings.tabs.danger"), suffix: "/danger" }]
+      : []),
+  ]
 
   return (
     <div className="max-w-2xl">
-      <nav className="mb-6 flex flex-wrap gap-1">
-        {TABS.map((tab) => {
-          const href = `${base}${tab.suffix}`
-          const isActive =
-            tab.suffix === ""
-              ? location.pathname === base || location.pathname === `${base}/`
-              : location.pathname === href
-          return (
-            <Link
-              key={tab.suffix || "general"}
-              to={href as string}
-              className={cn(
-                "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-                isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              )}
-            >
-              {tab.label}
-            </Link>
-          )
-        })}
-      </nav>
+      <div className="mb-6">
+        <RouteTabs base={base} tabs={TABS} />
+      </div>
       <Outlet />
     </div>
   )

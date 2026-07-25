@@ -33,7 +33,7 @@ func testPoolBilling(t *testing.T) *pgxpool.Pool {
 }
 
 // encodeOrganizationCreatedEvent builds a minimal OrganizationCreated event
-// body. Plan/Cycle are required at the API boundary now (see
+// body. Plan/Cycle are required at the API boundary (see
 // createOrganizationRequest) and cycle is DB CHECK-constrained to
 // 'monthly'/'yearly' — an empty cycle here would fail the INSERT before
 // provisionSubscription even reaches catalog/invoice logic, so both are set
@@ -179,6 +179,22 @@ func getSubscriptionID(pool *pgxpool.Pool, orgID string) string {
 		`SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID,
 	).Scan(&id)
 	return id
+}
+
+// getSubscriptionExpectedEnd returns the subscription's current trial_end (if
+// trialing) or period_end — the value HandleSubscriptionRemind/AutoInvoice's
+// staleness guard compares a delayed SubscriptionCheck's ExpectedEnd against.
+// Tests simulating a delayed check firing "on time" must pass this, not an
+// arbitrary offset, or the guard treats the check as stale and no-ops.
+func getSubscriptionExpectedEnd(pool *pgxpool.Pool, subID string) (end time.Time, isTrial bool) {
+	var periodEnd, trialEnd *time.Time
+	pool.QueryRow(context.Background(),
+		`SELECT period_end, trial_end FROM billing.subscriptions WHERE id = $1`, subID,
+	).Scan(&periodEnd, &trialEnd)
+	if trialEnd != nil {
+		return *trialEnd, true
+	}
+	return *periodEnd, false
 }
 
 // seedBillingOrganization inserts a minimal organization.organizations row so that
@@ -346,8 +362,8 @@ func TestIntegration_GetPlanByID_Known(t *testing.T) {
 	if err := json.Unmarshal(raw, &rateLimit); err != nil {
 		t.Fatalf("unmarshal api_rate_limit config_value: %v", err)
 	}
-	if rateLimit.RequestsPerMinute != 200 {
-		t.Errorf("want requests_per_minute=200 for solo, got %d", rateLimit.RequestsPerMinute)
+	if rateLimit.RequestsPerMinute != 120 {
+		t.Errorf("want requests_per_minute=120 for solo, got %d", rateLimit.RequestsPerMinute)
 	}
 }
 

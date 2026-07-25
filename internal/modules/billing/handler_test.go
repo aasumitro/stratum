@@ -17,7 +17,7 @@ import (
 
 // changePlanRequest.Plan has no format/enum validation at the binding layer
 // — a static oneof would reject valid catalog plans added through Studio —
-// "unknown plan" is a service-layer, catalog-backed check now
+// "unknown plan" is a service-layer, catalog-backed check
 // (TestIntegration_ChangePlan_UnknownPlan). This test covers the binding
 // layer's remaining job: cycle is still required/enum-validated.
 func TestChangePlan_MissingCycle(t *testing.T) {
@@ -36,8 +36,25 @@ func TestChangePlan_MissingPlan(t *testing.T) {
 	}
 }
 
-// createPaymentLink no longer takes currency from request body — it's resolved from the subscription.
-// Tests for invalid/missing currency are no longer applicable.
+func TestChangePlan_MissingTermsAgreed(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngine().ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, "/billing/plan",
+		`{"plan":"growth","cycle":"monthly"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestChangePlan_TermsAgreedFalse(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngine().ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, "/billing/plan",
+		`{"plan":"growth","cycle":"monthly","terms_agreed":false}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+// createPaymentLink resolves currency from the subscription.
 
 // --- webhook payload tests (empty secret = skip verification) ---
 
@@ -132,9 +149,108 @@ func TestCancelSubscription_OwnerAllowed(t *testing.T) {
 	defer func() { recover() }()
 	w := httptest.NewRecorder()
 	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
-		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", ""))
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{"reason":"too_expensive"}`))
 	if w.Code == http.StatusForbidden {
 		t.Errorf("owner should not get 403")
+	}
+}
+
+func TestCancelSubscription_MissingReason(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestCancelSubscription_InvalidReason(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{"reason":"not_a_real_reason"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestCancelSubscription_DetailsTooLong(t *testing.T) {
+	w := httptest.NewRecorder()
+	longDetails := strings.Repeat("a", 501)
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel",
+			`{"reason":"other","details":"`+longDetails+`"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+// Every enum value the frontend can send must bind successfully — a
+// mismatch between the frontend's option list and this binding tag would
+// otherwise go undetected until a real client sends the value.
+func TestCancelSubscription_AllValidReasons(t *testing.T) {
+	for _, reason := range []string{
+		"too_expensive", "missing_features", "switching_provider",
+		"no_longer_needed", "other",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			defer func() { recover() }()
+			w := httptest.NewRecorder()
+			billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+				httpserver.JSONTestRequest(http.MethodPost, "/billing/cancel", `{"reason":"`+reason+`"}`))
+			if w.Code == http.StatusUnprocessableEntity {
+				t.Errorf("reason %q should bind successfully, got 422: %s", reason, w.Body)
+			}
+		})
+	}
+}
+
+// --- extend subscription tests ---
+
+// months is required_without=switch_to_annual — neither present must still
+// fail at the binding layer, not fall through to the service as months=0.
+func TestExtendSubscription_MissingMonthsAndSwitchToAnnual(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestExtendSubscription_MonthsOutOfRange(t *testing.T) {
+	for _, months := range []string{"0", "25"} {
+		t.Run(months, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+				httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{"months":`+months+`}`))
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Errorf("want 422, got %d", w.Code)
+			}
+		})
+	}
+}
+
+// switch_to_annual:true must bind successfully even with months entirely
+// absent — the binding layer's job is only to waive months' required_without
+// requirement; forcing months to 12 is a service-layer concern
+// (TestIntegration_ExtendSubscription_SwitchToAnnual).
+func TestExtendSubscription_SwitchToAnnualWithoutMonths(t *testing.T) {
+	defer func() { recover() }()
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{"switch_to_annual":true}`))
+	if w.Code == http.StatusUnprocessableEntity {
+		t.Errorf("switch_to_annual without months should bind successfully, got 422: %s", w.Body)
+	}
+}
+
+func TestExtendSubscription_PlainMonthsValid(t *testing.T) {
+	defer func() { recover() }()
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/extend", `{"months":6}`))
+	if w.Code == http.StatusUnprocessableEntity {
+		t.Errorf("months=6 should bind successfully, got 422: %s", w.Body)
 	}
 }
 
@@ -161,7 +277,7 @@ func TestResumeSubscription_OwnerAllowed(t *testing.T) {
 
 // --- regenerate payment link tests ---
 
-// regeneratePaymentLink no longer takes currency from request body — resolved from subscription.
+// regeneratePaymentLink resolves currency from the subscription.
 
 // --- usage tests ---
 
@@ -264,9 +380,7 @@ func rbacOwnerOnlyCases() []struct {
 }
 
 // rbacMemberVisibleCases: every billing tab's GET is viewable by any member,
-// not just the owner. These used to be blanket owner-only, which silently
-// broke the read-only member/admin view for everything except the bare
-// subscription status check.
+// not just the owner.
 func rbacMemberVisibleCases() []struct {
 	method string
 	path   string

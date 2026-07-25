@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// TEST_ACCOUNT_EMAIL/PASSWORD live in the repo-root .env.local
-// rather than ui/app's own .env — Vite never loads that file,
+// TEST_ACCOUNT_{OWNER,ADMIN,MEMBER}_EMAIL/PASSWORD live in the repo-root
+// .env.local rather than ui/app's own .env — Vite never loads that file,
 // so pull it in here for the Node-side test runner.
 const rootEnvPath = path.resolve(__dirname, "../../.env.local")
 if (fs.existsSync(rootEnvPath)) {

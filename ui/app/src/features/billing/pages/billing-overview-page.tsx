@@ -1,13 +1,13 @@
 import { useParams } from "@tanstack/react-router"
 import { SubscriptionCard } from "@/features/billing/components/subscription-card"
 import { UsageMeters } from "@/features/billing/components/usage-meters"
-import { FeaturesSection } from "@/features/billing/components/features-section"
+import { InvoicesTable } from "@/features/billing/components/invoices-table"
 import { AddonsSection } from "@/features/billing/components/addons-section"
 
-// The Plan tab — everything about the org's current plan (status, usage,
-// entitlements, add-ons) on one page, none of it a paginated table, so no
-// sub-tabs. Coupon redemption stays in the Pay dialog, the only place a
-// coupon is actually applied against a real charge.
+// The whole of billing on one page
+// — status, usage, invoice history, and add-ons, none of it needing a
+// paginated route of its own. Coupon redemption stays in the Pay dialog,
+// the only place a coupon is actually applied against a real charge.
 export function BillingOverviewPage() {
   const { organizationId } = useParams({ strict: false }) as {
     organizationId: string
@@ -15,8 +15,10 @@ export function BillingOverviewPage() {
   return (
     <div className="flex flex-col gap-4">
       <SubscriptionCard organizationId={organizationId} />
-      <UsageMeters organizationId={organizationId} />
-      <FeaturesSection organizationId={organizationId} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <UsageMeters organizationId={organizationId} />
+        <InvoicesTable organizationId={organizationId} />
+      </div>
       <AddonsSection organizationId={organizationId} />
     </div>
   )

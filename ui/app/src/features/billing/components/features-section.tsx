@@ -1,7 +1,7 @@
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { IconCheck, IconLock } from "@tabler/icons-react"
-import { Link } from "@tanstack/react-router"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { IconArrowRight } from "@tabler/icons-react"
+import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   useBillingFeatures,
@@ -9,6 +9,7 @@ import {
   useFeatures,
   useBillingSubscription,
 } from "@/features/billing/hooks"
+import { PlanFeaturesSheet, type TierGroup } from "./plan-features-sheet"
 
 interface Props {
   organizationId: string
@@ -16,6 +17,7 @@ interface Props {
 
 export function FeaturesSection({ organizationId }: Props) {
   const { t } = useTranslation()
+  const [showSheet, setShowSheet] = useState(false)
   const { data: featData, isLoading: featLoading } =
     useBillingFeatures(organizationId)
   const { data: subData } = useBillingSubscription(organizationId)
@@ -29,86 +31,77 @@ export function FeaturesSection({ organizationId }: Props) {
     (catalogData?.data ?? []).map((f) => [f.id, f.name])
   )
 
-  // collect all features from higher-tier plans (by sort_order) to show as locked
-  const lockedFeatureIds: string[] = []
+  // Attribute each locked feature to the lowest-tier plan above the current
+  // one that grants it — the closest upgrade a user could make to get it —
+  // instead of flattening every higher tier's features into one list.
+  const tierGroups: TierGroup[] = []
   if (plansData?.data && currentPlan) {
-    for (const plan of plansData.data) {
-      if (plan.sort_order <= currentPlan.sort_order) continue
-      for (const f of plan.features ?? []) {
-        if (!grantedIds.has(f) && !lockedFeatureIds.includes(f)) {
-          lockedFeatureIds.push(f)
-        }
-      }
+    const higherTiers = [...plansData.data]
+      .filter((p) => p.sort_order > currentPlan.sort_order)
+      .sort((a, b) => a.sort_order - b.sort_order)
+
+    const attributed = new Set<string>()
+    for (const plan of higherTiers) {
+      // A plan's own feature set is boolean/static ids (plan.features) plus
+      // config ids (keys of plan.config_values).
+      const planFeatureIds = [
+        ...(plan.features ?? []),
+        ...Object.keys(plan.config_values ?? {}),
+      ]
+      const featureIds = planFeatureIds.filter(
+        (f) => !grantedIds.has(f) && !attributed.has(f)
+      )
+      featureIds.forEach((f) => attributed.add(f))
+      if (featureIds.length) tierGroups.push({ plan, featureIds })
     }
   }
 
   if (featLoading) {
     return (
-      <Card>
-        <CardHeader>
-          <Skeleton className="h-5 w-32" />
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-4 w-48" />
-          ))}
-        </CardContent>
-      </Card>
+      <div className="space-y-1">
+        <Skeleton className="h-4 w-24" />
+        <Skeleton className="h-6 w-20" />
+        <Skeleton className="mt-2 h-4 w-24" />
+      </div>
     )
   }
 
-  const billingPath = `/organization/${organizationId}/billing`
   // Metered entitlements render in UsageMeters (with the plan/addon split)
   // — showing them here too would duplicate the same bars.
   const presence = entitlements.filter(
     (e) => e.type === "boolean" || e.type === "static"
   )
   const config = entitlements.filter((e) => e.type === "config")
+  const includedCount = presence.length + config.length
+  const lockedCount = tierGroups.reduce((n, g) => n + g.featureIds.length, 0)
 
-  if (!presence.length && !config.length && !lockedFeatureIds.length)
-    return null
+  if (!includedCount && !lockedCount) return null
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("billing.features.title")}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ul className="flex flex-col gap-3">
-          {presence.map((e) => (
-            <li key={e.feature_id} className="flex items-center gap-2 text-sm">
-              <IconCheck className="size-4 shrink-0 text-emerald-500" />
-              <span>{e.name}</span>
-            </li>
-          ))}
-          {config.map((e) => (
-            <li key={e.feature_id} className="flex items-center gap-2 text-sm">
-              <IconCheck className="size-4 shrink-0 text-emerald-500" />
-              <span>{e.name}</span>
-              <span className="text-xs text-muted-foreground">
-                {typeof e.config_value === "object"
-                  ? JSON.stringify(e.config_value)
-                  : String(e.config_value)}
-              </span>
-            </li>
-          ))}
-          {lockedFeatureIds.map((f) => (
-            <li
-              key={f}
-              className="flex items-center gap-2 text-sm text-muted-foreground"
-            >
-              <IconLock className="size-4 shrink-0" />
-              <span>{featureNames.get(f) ?? f}</span>
-              <Link
-                to={billingPath}
-                className="ml-auto text-xs text-primary hover:underline"
-              >
-                {t("billing.features.upgrade")}
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </CardContent>
-    </Card>
+    <div className="space-y-1">
+      <p className="text-sm font-medium text-muted-foreground">
+        {t("billing.features.title")}
+      </p>
+      <p className="text-lg font-semibold">
+        {t("billing.features.includedCount", { count: includedCount })}
+      </p>
+      <Button
+        variant="link"
+        className="mt-2 h-auto w-fit gap-1 p-0 text-xs"
+        onClick={() => setShowSheet(true)}
+      >
+        {t("billing.features.viewAll")}
+        <IconArrowRight className="size-3" />
+      </Button>
+      <PlanFeaturesSheet
+        organizationId={organizationId}
+        open={showSheet}
+        onOpenChange={setShowSheet}
+        presence={presence}
+        config={config}
+        tierGroups={tierGroups}
+        featureNames={featureNames}
+      />
+    </div>
   )
 }

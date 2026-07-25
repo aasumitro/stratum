@@ -3,18 +3,23 @@ package billing_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
@@ -28,7 +33,7 @@ func (stubRefReader) GetCountryTaxRate(_ context.Context, _ string) (int, error)
 
 // encodeOrganizationCreatedEventFor builds an event body for a specific
 // createdBy subject, with plan="solo"/cycle="monthly" — plan and cycle are
-// required at the API boundary now, so no test exercising ordinary
+// required at the API boundary, so no test exercising ordinary
 // provisioning should send an empty one.
 func encodeOrganizationCreatedEventFor(organizationID, createdBy string) []byte {
 	return encodeOrganizationCreatedEventWithPlan(organizationID, createdBy, "solo", "monthly")
@@ -72,13 +77,15 @@ func encodeOrganizationCreatedEventWithCart(
 }
 
 // encodeSubscriptionCheckEvent builds a SubscriptionCheck event body.
-func encodeSubscriptionCheckEvent(subID, subjectID string, expectedEnd time.Time) []byte {
+// isTrial is variadic (default false) so the two HandleSubscriptionCheck
+// callers, which don't care about it, don't need updating.
+func encodeSubscriptionCheckEvent(subID, subjectID string, expectedEnd time.Time, isTrial ...bool) []byte {
 	env := events.Envelope{
 		ID: "check-" + subID, Type: events.RoutingKeySubscriptionCheck,
 		Source: "billing", Time: time.Now(), OrgID: subjectID,
 		Data: events.SubscriptionCheck{
 			SubscriptionID: subID, SubjectType: "organization",
-			SubjectID: subjectID, ExpectedEnd: expectedEnd,
+			SubjectID: subjectID, ExpectedEnd: expectedEnd, IsTrial: len(isTrial) > 0 && isTrial[0],
 		},
 	}
 	b, _ := json.Marshal(env)
@@ -237,7 +244,7 @@ func TestIntegration_CancelSubscription_Active(t *testing.T) {
 
 	e := billing.NewModuleEngine(pool, user, orgID)
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -262,12 +269,131 @@ func TestIntegration_CancelSubscription_AlreadyCancelled(t *testing.T) {
 	}
 
 	e := billing.NewModuleEngine(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 	if w.Code == http.StatusOK {
 		t.Errorf("double cancel should fail, got 200")
+	}
+}
+
+// TestIntegration_CancelSubscription_RecordsReasonInHistory posts a real
+// request through the full handler->service->DB stack and asserts the
+// reason actually lands in subscription_history.metadata — not a mocked
+// network layer, and not just that the handler accepted the shape.
+func TestIntegration_CancelSubscription_RecordsReasonInHistory(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancelreason_user"
+		orgID = "00000000-0000-0000-0000-000000000d13"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"missing_features"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='cancel' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var got struct {
+		Reason  string `json:"reason"`
+		Details string `json:"details"`
+	}
+	if err := json.Unmarshal(metadataRaw, &got); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if got.Reason != "missing_features" {
+		t.Errorf("subscription_history metadata: want reason=missing_features, got %q", got.Reason)
+	}
+	if got.Details != "" {
+		t.Errorf("subscription_history metadata: want empty details, got %q", got.Details)
+	}
+}
+
+// TestIntegration_CancelSubscription_OtherReasonWithDetails covers the
+// "other" escape hatch, where details carries the actual free-text reason —
+// and also proves details is stored regardless of which reason was picked
+// (an owner picking a named reason may still add context; not gated to
+// "other" only).
+func TestIntegration_CancelSubscription_OtherReasonWithDetails(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancelother_user"
+		orgID = "00000000-0000-0000-0000-000000000d14"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel",
+		`{"reason":"other","details":"Moving to a self-hosted alternative"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='cancel' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var got struct {
+		Reason  string `json:"reason"`
+		Details string `json:"details"`
+	}
+	if err := json.Unmarshal(metadataRaw, &got); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if got.Reason != "other" || got.Details != "Moving to a self-hosted alternative" {
+		t.Errorf("subscription_history metadata: want reason=other with details, got %+v", got)
+	}
+}
+
+// TestIntegration_CancelSubscription_InvalidReasonRejected mimics a
+// malformed/bad-faith client sending a reason outside the closed enum
+// through the full stack — must be rejected at binding, before the
+// subscription is touched at all.
+func TestIntegration_CancelSubscription_InvalidReasonRejected(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancelinvalid_user"
+		orgID = "00000000-0000-0000-0000-000000000d15"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"just_because"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("invalid reason: want 422, got %d: %s", w.Code, w.Body)
+	}
+
+	data := getSubscriptionData(t, e, orgID)
+	if data["status"] == "cancelled" {
+		t.Error("invalid reason must not cancel the subscription")
 	}
 }
 
@@ -277,9 +403,6 @@ func TestIntegration_CancelSubscription_AlreadyCancelled(t *testing.T) {
 // *trialing* subscription (provisionSubscription always trials a user's
 // first-ever organization) — must resume back into "trialing", not "active",
 // since the trial window is still open and no invoice was ever created.
-// Previously this test asserted status=="active" here, which was actually
-// asserting the bug: the trial banner disappearing after cancel+resume
-// because resumeSubscription unconditionally forced status to "active".
 func TestIntegration_ResumeSubscription_Cancelled(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -294,7 +417,7 @@ func TestIntegration_ResumeSubscription_Cancelled(t *testing.T) {
 	}
 
 	e := billing.NewModuleEngine(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
@@ -333,7 +456,7 @@ func TestIntegration_ResumeSubscription_CancelledAfterTrialExpired(t *testing.T)
 	pool.Exec(t.Context(), `UPDATE billing.subscriptions SET trial_end = now() - interval '1 day' WHERE id = $1`, subID)
 
 	e := billing.NewModuleEngine(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
@@ -390,7 +513,7 @@ func TestIntegration_ChangePlan_UpgradeSoloToGrowth(t *testing.T) {
 
 	e := billing.NewModuleEngine(pool, user, orgID, stubRefReader{})
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("changePlan: want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -398,6 +521,53 @@ func TestIntegration_ChangePlan_UpgradeSoloToGrowth(t *testing.T) {
 	data := getSubscriptionData(t, e, orgID)
 	if data["plan"] != "growth" {
 		t.Errorf("after upgrade: want plan=growth, got %v", data["plan"])
+	}
+}
+
+// TestIntegration_ChangePlan_RecordsTermsAgreedInHistory posts a real
+// request through the full handler->service->DB stack and asserts
+// terms_agreed/agreed_at actually land in subscription_history.metadata —
+// not a mocked network layer, and not just that the handler accepted the
+// shape.
+func TestIntegration_ChangePlan_RecordsTermsAgreedInHistory(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_upgradeterms_user"
+		orgID = "00000000-0000-0000-0000-000000000d16"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	beforeRequest := time.Now()
+	e := billing.NewModuleEngine(pool, user, orgID, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("changePlan: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='upgrade' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var got struct {
+		TermsAgreed bool      `json:"terms_agreed"`
+		AgreedAt    time.Time `json:"agreed_at"`
+	}
+	if err := json.Unmarshal(metadataRaw, &got); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if !got.TermsAgreed {
+		t.Error("subscription_history metadata: want terms_agreed=true")
+	}
+	if got.AgreedAt.Before(beforeRequest) {
+		t.Errorf("subscription_history metadata: agreed_at %v is before the request was made (%v)", got.AgreedAt, beforeRequest)
 	}
 }
 
@@ -420,7 +590,7 @@ func TestIntegration_ChangePlan_UnknownPlan(t *testing.T) {
 	// validation shortcut anymore — changePlanRequest.Plan has no oneof —
 	// this now exercises changePlan's own refReader.GetPlanByID lookup,
 	// which is the real, dynamic catalog check).
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"enterprise","cycle":"monthly"}`))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"enterprise","cycle":"monthly","terms_agreed":true}`))
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Errorf("unknown plan should return 422, got %d: %s", w.Code, w.Body)
 	}
@@ -759,6 +929,155 @@ func TestIntegration_Webhook_PaidReactivatesExpiredSubscription(t *testing.T) {
 	}
 }
 
+// TestIntegration_Webhook_ReactivationRollsBackOnHistoryFailure regression-tests
+// that a failure applying the reactivation branch's writes (after the invoice
+// is already marked paid, within the same transaction) rolls back the whole
+// delivery — same contract as TestIntegration_Webhook_TransientFailureRollsBackMarker,
+// but for a failure past the payment-record step, in the reactivation writes
+// themselves. Without rollback here, the invoice would end up paid while the
+// subscription silently never actually reactivated.
+func TestIntegration_Webhook_ReactivationRollsBackOnHistoryFailure(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_reactivate_fail_user"
+		orgID = "00000000-0000-0000-0000-000000000f34"
+		extID = "stripe_sess_f34"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'expired' WHERE subject_type = 'organization' AND subject_id = $1`, orgID)
+
+	subID := getSubscriptionID(pool, orgID)
+	invID := seedInvoice(pool, subID, "USD", 900)
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
+
+	if _, err := pool.Exec(t.Context(), `
+		CREATE OR REPLACE FUNCTION billing.__test_reject_resume_history() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.action = 'resume' THEN
+				RAISE EXCEPTION 'simulated failure applying reactivation';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		CREATE TRIGGER __test_reject_resume_history BEFORE INSERT ON billing.subscription_history
+		FOR EACH ROW EXECUTE FUNCTION billing.__test_reject_resume_history()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS __test_reject_resume_history ON billing.subscription_history`)
+		pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS billing.__test_reject_resume_history()`)
+	})
+
+	payload := `{"type":"checkout.session.completed","data":{"object":{"id":"` + extID + `","payment_status":"paid"}}}`
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 (rolled back), got %d: %s", w.Code, w.Body)
+	}
+
+	var invStatus, subStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+	if invStatus != "pending" {
+		t.Errorf("want invoice still pending (rolled back), got %q", invStatus)
+	}
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus)
+	if subStatus != "expired" {
+		t.Errorf("want subscription still expired (rolled back, not silently half-applied), got %q", subStatus)
+	}
+}
+
+// TestIntegration_Webhook_ExtensionRollsBackOnHistoryFailure is
+// TestIntegration_Webhook_ReactivationRollsBackOnHistoryFailure's counterpart
+// for the extension branch: a failure applying the extension's writes must
+// roll back the whole delivery, not leave a paid invoice whose extension
+// silently never applied.
+func TestIntegration_Webhook_ExtensionRollsBackOnHistoryFailure(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_extend_fail_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f61"
+		wsID2 = "00000000-0000-0000-0000-000000000f62"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	// wsID1 absorbs this user's one-per-user trial; wsID2 provisions active.
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	const extID = "stripe_sess_extend_fail"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	beforePeriodEnd := getSubscriptionData(t, e, wsID2)["period_end"]
+
+	if _, err := pool.Exec(t.Context(), `
+		CREATE OR REPLACE FUNCTION billing.__test_reject_extend_history() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.action = 'extend' THEN
+				RAISE EXCEPTION 'simulated failure applying extension';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		CREATE TRIGGER __test_reject_extend_history BEFORE INSERT ON billing.subscription_history
+		FOR EACH ROW EXECUTE FUNCTION billing.__test_reject_extend_history()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS __test_reject_extend_history ON billing.subscription_history`)
+		pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS billing.__test_reject_extend_history()`)
+	})
+
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 (rolled back), got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	var invStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, resp.Data.ID).Scan(&invStatus)
+	if invStatus != "pending" {
+		t.Errorf("want invoice still pending (rolled back), got %q", invStatus)
+	}
+	dataAfter := getSubscriptionData(t, e, wsID2)
+	if dataAfter["period_end"] != beforePeriodEnd {
+		t.Error("want period_end unchanged (rolled back, not silently half-applied)")
+	}
+}
+
 // --- Payment link flow ---
 
 func TestIntegration_CreatePaymentLink_InvoiceNotFound(t *testing.T) {
@@ -839,7 +1158,8 @@ func TestIntegration_HandleSubscriptionRemind_ActiveSub(t *testing.T) {
 		`SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID,
 	).Scan(&subID)
 
-	body := encodeSubscriptionCheckEvent(subID, orgID, time.Now().Add(3*24*time.Hour))
+	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 	if err := mod.Worker.HandleSubscriptionRemind(t.Context(), body); err != nil {
 		t.Errorf("HandleSubscriptionRemind active sub: want nil, got %v", err)
 	}
@@ -864,7 +1184,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_InsertsInvoice(t *testing.T) 
 		`SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID,
 	).Scan(&subID)
 
-	body := encodeSubscriptionCheckEvent(subID, orgID, time.Now().Add(3*24*time.Hour))
+	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 	// createPaymentLink will fail with empty ProviderConfig — ignore the error
 	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
 
@@ -875,6 +1196,41 @@ func TestIntegration_HandleSubscriptionAutoInvoice_InsertsInvoice(t *testing.T) 
 	).Scan(&invoiceCount)
 	if invoiceCount == 0 {
 		t.Error("HandleSubscriptionAutoInvoice: invoice row must be inserted before payment link creation")
+	}
+}
+
+// TestIntegration_HandleSubscriptionAutoInvoice_StaleExpectedEnd_SkipsInvoice
+// regression-tests the guard for delayed auto-invoice checks.
+// A delayed auto-invoice check scheduled against a period_end that has since
+// changed (e.g. the subscription was extended after this message was queued)
+// must not generate a premature renewal invoice for the stale date.
+func TestIntegration_HandleSubscriptionAutoInvoice_StaleExpectedEnd_SkipsInvoice(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_autoinv_stale_user"
+		orgID = "00000000-0000-0000-0000-000000000a12"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+
+	// A stale ExpectedEnd — doesn't match the subscription's real current end
+	// (simulates a message scheduled before the period was later changed).
+	body := encodeSubscriptionCheckEvent(subID, orgID, time.Now().Add(365*24*time.Hour))
+	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err != nil {
+		t.Errorf("HandleSubscriptionAutoInvoice stale check: want nil error, got %v", err)
+	}
+
+	var invoiceCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, subID,
+	).Scan(&invoiceCount)
+	if invoiceCount != 0 {
+		t.Errorf("want no invoice generated for a stale ExpectedEnd, got %d", invoiceCount)
 	}
 }
 
@@ -899,7 +1255,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ZeroPricePlan_SkipsInvoice(t 
 	}
 	subID := getSubscriptionID(pool, orgID)
 
-	body := encodeSubscriptionCheckEvent(subID, orgID, time.Now().Add(3*24*time.Hour))
+	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err != nil {
 		t.Fatalf("HandleSubscriptionAutoInvoice: want nil error for a zero-priced plan, got %v", err)
 	}
@@ -933,7 +1290,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_RetriesPaymentLinkOnRedeliver
 		t.Fatalf("provision: %v", err)
 	}
 	subID := getSubscriptionID(pool, orgID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, time.Now().Add(3*24*time.Hour))
+	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 
 	// First delivery: invoice is created, payment link fails (empty ProviderConfig).
 	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err == nil {
@@ -1004,6 +1362,47 @@ func TestIntegration_Webhook_Failed_MarksPastDue(t *testing.T) {
 }
 
 // --- checkUsageLimit exceeded ---
+
+// TestIntegration_ProvisionSubscription_SeedsMemberUsage regression-tests
+// that provisioning must seed billing.usage with the owner's own seat
+// (members=1) synchronously, in the same transaction as the subscription
+// insert — not leave it to the async syncMemberUsage sync that only runs
+// after a *subsequent* member is added. Otherwise, checkUsageLimit
+// would hit its ErrNoRows fail-open path and report current=0 for a brand-new
+// organization, letting the first invite/add on a 1-seat plan through
+// despite the owner already occupying that one seat.
+func TestIntegration_ProvisionSubscription_SeedsMemberUsage(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_seed_usage_user"
+		orgID = "00000000-0000-0000-0000-000000000f39"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	// No manual usage seeding here — this is the first org for this user
+	// (trialing, per provisionSubscription's count==0 branch), the exact
+	// shape of the originally-reported bug. The seed must land inside
+	// provisionSubscription itself.
+	current, limit, err := mod.CheckUsageLimit(t.Context(), orgID, "members")
+	if err != nil {
+		t.Fatalf("CheckUsageLimit: %v", err)
+	}
+	if current != 1 {
+		t.Errorf("want current=1 (the owner's own seat) immediately after provisioning, got %d", current)
+	}
+	// solo plan's members limit is 1 (seed data) — current >= limit means
+	// organization.addMember/createInvitation's existing enforcement check
+	// now correctly rejects a first add/invite instead of letting it
+	// through against a stale current=0.
+	if limit >= 0 && current < int64(limit) {
+		t.Errorf("want current (%d) >= limit (%d) — a first add should now be correctly blocked", current, limit)
+	}
+}
 
 func TestIntegration_CheckUsageLimit_ExceededPath(t *testing.T) {
 	pool := testPoolBilling(t)
@@ -1212,6 +1611,20 @@ func TestIntegration_HandleOrganizationDeleted_CancelsSubscription(t *testing.T)
 	if status != "cancelled" {
 		t.Errorf("after organization deleted: want status=cancelled, got %q", status)
 	}
+
+	// cancelOnDeletion is a distinct method from the owner-facing
+	// cancelSubscription and must stay reason-less — there's no owner
+	// interaction to capture one from. Confirms it's untouched by the new
+	// reason/details plumbing, not just assumed unaffected.
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='cancel' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	if string(metadataRaw) != "{}" {
+		t.Errorf("cancelOnDeletion history metadata: want empty {}, got %s", metadataRaw)
+	}
 }
 
 func TestIntegration_CreatePaymentLink_InvoiceAlreadyPaid(t *testing.T) {
@@ -1280,7 +1693,8 @@ func TestIntegration_RedeemCoupon_HappyPath_DiscountAppliesOnNextInvoice(t *test
 	}
 
 	// Trigger a renewal auto-invoice — solo plan is $9/mo (900 cents, seed data).
-	body := encodeSubscriptionCheckEvent(subID, orgID, time.Now().Add(3*24*time.Hour))
+	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body) // payment link creation fails with empty ProviderConfig, ignore
 
 	var invID string
@@ -1474,7 +1888,8 @@ func TestIntegration_AttachDetachAddon_ReflectsInListAndInvoice(t *testing.T) {
 	}
 
 	// Renewal invoice should include the addon's price on top of the plan price.
-	body := encodeSubscriptionCheckEvent(subID, orgID, time.Now().Add(3*24*time.Hour))
+	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
 
 	// The addon's price comes straight from billing.addons (composeInvoiceAmount
@@ -1562,6 +1977,70 @@ func TestIntegration_HandleOrganizationCreated_UsesEventPlan(t *testing.T) {
 	}
 }
 
+// TestIntegration_HandleOrganizationCreated_InvoiceNumberDoesNotCollideAcrossOrgs
+// regression-tests that invoice_number is generated from a per-organization
+// counter (billing.invoice_sequences), so two *different* organizations each
+// provisioning straight to active (no trial — see the wsID1/wsID2 pattern used
+// elsewhere in this file) independently compute seq=1 for their own first
+// invoice. The constraint is scoped to (subscription_id, invoice_number),
+// so both must succeed with the identical formatted number.
+func TestIntegration_HandleOrganizationCreated_InvoiceNumberDoesNotCollideAcrossOrgs(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		userA = "integ_billing_invnum_a"
+		wsA1  = "00000000-0000-0000-0000-000000000f35"
+		wsA2  = "00000000-0000-0000-0000-000000000f36"
+		userB = "integ_billing_invnum_b"
+		wsB1  = "00000000-0000-0000-0000-000000000f37"
+		wsB2  = "00000000-0000-0000-0000-000000000f38"
+	)
+	for _, id := range []string{wsA1, wsA2, wsB1, wsB2} {
+		cleanupBillingByOrganization(pool, id)
+	}
+	t.Cleanup(func() {
+		for _, id := range []string{wsA1, wsA2, wsB1, wsB2} {
+			cleanupBillingByOrganization(pool, id)
+		}
+	})
+	for _, id := range []string{wsA1, wsA2} {
+		seedBillingOrganization(pool, id, userA)
+	}
+	for _, id := range []string{wsB1, wsB2} {
+		seedBillingOrganization(pool, id, userB)
+	}
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	// wsA1/wsB1 each absorb their own user's one-per-user trial; wsA2/wsB2
+	// each provision straight to active — both computing seq=1 independently.
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsA1, userA)); err != nil {
+		t.Fatalf("provision wsA1: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsA2, userA)); err != nil {
+		t.Fatalf("provision wsA2 (org A's active org — the one that generates seq=1): %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsB1, userB)); err != nil {
+		t.Fatalf("provision wsB1: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsB2, userB)); err != nil {
+		t.Fatalf("provision wsB2 (org B's active org — must NOT collide with org A's seq=1): %v", err)
+	}
+
+	var numA, numB string
+	pool.QueryRow(t.Context(),
+		`SELECT invoice_number FROM billing.invoices WHERE subscription_id = (SELECT id FROM billing.subscriptions WHERE subject_id = $1)`, wsA2,
+	).Scan(&numA)
+	pool.QueryRow(t.Context(),
+		`SELECT invoice_number FROM billing.invoices WHERE subscription_id = (SELECT id FROM billing.subscriptions WHERE subject_id = $1)`, wsB2,
+	).Scan(&numB)
+	if numA == "" || numB == "" {
+		t.Fatalf("want both orgs to have an invoice_number, got A=%q B=%q", numA, numB)
+	}
+	if numA != numB {
+		t.Errorf("want both orgs' first invoice to independently compute the same formatted number (proving the scope is per-subscription, not incidentally different) — got A=%q B=%q", numA, numB)
+	}
+}
+
 // Plan and cycle are required at the API boundary (organization.
 // createOrganizationRequest) — no defaulting happens downstream anymore. An
 // empty plan/cycle reaching the worker (a malformed or pre-contract event)
@@ -1627,10 +2106,16 @@ func TestIntegration_ExtendSubscription_HappyPath(t *testing.T) {
 		t.Fatalf("second provision: %v", err)
 	}
 
-	beforePeriodEnd := new(string)
-	pool.QueryRow(t.Context(), `SELECT period_end FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, wsID2).Scan(beforePeriodEnd)
+	// NewWebhookModuleEngine (not NewModuleEngine) — this test needs the
+	// public /webhooks/stripe route to simulate the paid callback below.
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
 
-	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+	// Captured through the same JSON API path used for the post-extend
+	// comparisons below (not a raw SQL scan) so both sides are the same
+	// serialized format — timestamptz text and the API's JSON time encoding
+	// don't match byte-for-byte even for the same instant.
+	beforePeriodEnd := getSubscriptionData(t, e, wsID2)["period_end"]
+
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
 	if w.Code != http.StatusOK {
@@ -1639,17 +2124,53 @@ func TestIntegration_ExtendSubscription_HappyPath(t *testing.T) {
 
 	var resp struct {
 		Data struct {
-			AmountCents int64 `json:"amount_cents"`
+			ID          string `json:"id"`
+			Kind        string `json:"kind"`
+			AmountCents int64  `json:"amount_cents"`
 		} `json:"data"`
 	}
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Data.AmountCents != 900 { // solo plan: $9/mo monthly price (seed data)
 		t.Errorf("extend invoice: want amount_cents=900 (1 month at solo's $9/mo), got %d", resp.Data.AmountCents)
 	}
+	if resp.Data.Kind != "extension" {
+		t.Errorf("extend invoice: want kind='extension', got %q", resp.Data.Kind)
+	}
 
+	// period_end must stay put until the extension invoice is actually paid.
 	data := getSubscriptionData(t, e, wsID2)
-	if data["period_end"] == *beforePeriodEnd {
-		t.Error("want period_end to move forward after extension")
+	if data["period_end"] != beforePeriodEnd {
+		t.Error("want period_end unchanged before payment")
+	}
+
+	// A second extend while the first invoice is still pending must be rejected.
+	w2 := httptest.NewRecorder()
+	e.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+	if w2.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("extend second call: want 422, got %d: %s", w2.Code, w2.Body)
+	}
+
+	// extendSubscription's own payment-link creation hits the real Stripe API
+	// and fails in this environment (no credentials configured) — seed one
+	// directly instead, same as every other webhook-path test in this file
+	// (e.g. TestIntegration_StripeWebhook_MarksInvoicePaid). No event "id" in
+	// the payload — same as every other webhook test here — since a fixed
+	// event ID would collide with billing.webhook_events across repeated test
+	// runs (cleanupBillingByOrganization only prunes rows whose event_id is
+	// prefixed by this org's own payment-link external_id).
+	const extID = "stripe_sess_extend_happy"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	dataAfter := getSubscriptionData(t, e, wsID2)
+	if dataAfter["period_end"] == beforePeriodEnd {
+		t.Error("want period_end to move forward after paid webhook")
 	}
 
 	var historyCount int
@@ -1658,6 +2179,70 @@ func TestIntegration_ExtendSubscription_HappyPath(t *testing.T) {
 	).Scan(&historyCount)
 	if historyCount != 1 {
 		t.Errorf("want 1 'extend' history row, got %d", historyCount)
+	}
+}
+
+func TestIntegration_ExtendSubscription_PaidWebhookWhenExpired(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_extend_expired"
+		wsID1 = "00000000-0000-0000-0000-000000000f21"
+		wsID2 = "00000000-0000-0000-0000-000000000f22"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend: want 200, got %d", w.Code)
+	}
+
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	pool.Exec(t.Context(), `UPDATE billing.subscriptions SET status = 'expired' WHERE subject_id = $1`, wsID2)
+
+	const extID = "stripe_sess_extend_expired"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	// No event "id" — see the matching comment in TestIntegration_ExtendSubscription_HappyPath.
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d", wWeb.Code)
+	}
+
+	dataAfter := getSubscriptionData(t, e, wsID2)
+	if dataAfter["status"] != "active" {
+		t.Errorf("want status=active after paid webhook on expired sub, got %v", dataAfter["status"])
+	}
+
+	var historyCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = (SELECT id FROM billing.subscriptions WHERE subject_id = $1) AND action = 'resume'`, wsID2,
+	).Scan(&historyCount)
+	if historyCount != 1 {
+		t.Errorf("want 1 'resume' history row, got %d", historyCount)
 	}
 }
 
@@ -1694,12 +2279,12 @@ func TestIntegration_ExtendSubscription_AtomicOnMidSequenceFailure(t *testing.T)
 	}
 
 	// Trigger simulates a failure on the transaction's last write
-	// (insertHistory) to prove the earlier writes (invoice, line item,
-	// period update) in the same transaction roll back with it.
+	// (insertInvoiceLineItems) to prove the earlier writes (invoice)
+	// in the same transaction roll back with it.
 	if _, err := pool.Exec(t.Context(), `
-		CREATE OR REPLACE FUNCTION billing.__test_reject_sentinel_history() RETURNS trigger AS $$
+		CREATE OR REPLACE FUNCTION billing.__test_reject_sentinel_line_items() RETURNS trigger AS $$
 		BEGIN
-			IF NEW.changed_by = 'SENTINEL_FAIL_TRIGGER' THEN
+			IF NEW.invoice_id IN (SELECT id FROM billing.invoices WHERE status = 'pending') THEN
 				RAISE EXCEPTION 'simulated mid-sequence failure';
 			END IF;
 			RETURN NEW;
@@ -1708,13 +2293,13 @@ func TestIntegration_ExtendSubscription_AtomicOnMidSequenceFailure(t *testing.T)
 		t.Fatalf("create trigger function: %v", err)
 	}
 	if _, err := pool.Exec(t.Context(), `
-		CREATE TRIGGER __test_reject_sentinel_history BEFORE INSERT ON billing.subscription_history
-		FOR EACH ROW EXECUTE FUNCTION billing.__test_reject_sentinel_history()`); err != nil {
+		CREATE TRIGGER __test_reject_sentinel_line_items BEFORE INSERT ON billing.invoice_line_items
+		FOR EACH ROW EXECUTE FUNCTION billing.__test_reject_sentinel_line_items()`); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS __test_reject_sentinel_history ON billing.subscription_history`)
-		pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS billing.__test_reject_sentinel_history()`)
+		pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS __test_reject_sentinel_line_items ON billing.invoice_line_items`)
+		pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS billing.__test_reject_sentinel_line_items()`)
 	})
 
 	// wsID2 (not the first organization owned by user) is provisioned
@@ -1818,6 +2403,480 @@ func TestIntegration_ExtendSubscription_Trialing_Rejected(t *testing.T) {
 	}
 }
 
+// --- switch to annual + tiered pricing ---
+
+// TestIntegration_ExtendSubscription_SwitchToAnnual_HappyPath verifies the
+// full async round trip for the switch-to-annual flow: switch_to_annual is
+// persisted on the invoice at request time, has no effect until the invoice
+// is actually paid, and only the webhook's payment-confirmation path (not
+// extendSubscription itself) ever touches cycle.
+func TestIntegration_ExtendSubscription_SwitchToAnnual_HappyPath(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_switchannual_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f70"
+		wsID2 = "00000000-0000-0000-0000-000000000f71"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+
+	before := getSubscriptionData(t, e, wsID2)
+	if before["cycle"] != "monthly" {
+		t.Fatalf("precondition: want cycle=monthly, got %v", before["cycle"])
+	}
+	beforePeriodEnd, err := time.Parse(time.RFC3339, before["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse before period_end: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend switch_to_annual: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			Kind        string `json:"kind"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.AmountCents != 9000 { // solo plan: $90/yr (seed data) — one yearly block, not 12x monthly
+		t.Errorf("switch_to_annual invoice: want amount_cents=9000, got %d", resp.Data.AmountCents)
+	}
+
+	// cycle (and period) must not move until the invoice is actually paid —
+	// the whole point of moving the branch out of extendSubscription.
+	mid := getSubscriptionData(t, e, wsID2)
+	if mid["cycle"] != "monthly" {
+		t.Errorf("want cycle unchanged before payment, got %v", mid["cycle"])
+	}
+	if mid["period_end"] != before["period_end"] {
+		t.Error("want period_end unchanged before payment")
+	}
+
+	const extID = "stripe_sess_switch_annual_happy"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	after := getSubscriptionData(t, e, wsID2)
+	if after["cycle"] != "yearly" {
+		t.Errorf("want cycle=yearly after paid webhook, got %v", after["cycle"])
+	}
+	afterPeriodEnd, err := time.Parse(time.RFC3339, after["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse after period_end: %v", err)
+	}
+	if want := beforePeriodEnd.AddDate(0, 12, 0); !afterPeriodEnd.Equal(want) {
+		t.Errorf("want period_end advanced by exactly 12 months to %v, got %v", want, afterPeriodEnd)
+	}
+}
+
+// TestIntegration_ExtendSubscription_SwitchToAnnual_RejectedWhenAlreadyYearly
+// covers Decision #10's zero-trust requirement: rejected server-side
+// regardless of what the UI would have shown, not just hidden client-side.
+func TestIntegration_ExtendSubscription_SwitchToAnnual_RejectedWhenAlreadyYearly(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_switchannual_yearly_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f72"
+		wsID2 = "00000000-0000-0000-0000-000000000f73"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+		encodeOrganizationCreatedEventWithPlan(wsID2, user, "solo", "yearly")); err != nil {
+		t.Fatalf("second provision (yearly): %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("switch_to_annual on already-yearly sub: want 422, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// TestIntegration_ExtendSubscription_UnpaidSwitchToAnnual_LeavesCycleUntouched
+// confirms an abandoned switch-to-annual invoice (created, never paid) has
+// no effect at all — the cycle write only happens in handleWebhook.
+func TestIntegration_ExtendSubscription_UnpaidSwitchToAnnual_LeavesCycleUntouched(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_switchannual_unpaid_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f82"
+		wsID2 = "00000000-0000-0000-0000-000000000f83"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend switch_to_annual: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	data := getSubscriptionData(t, e, wsID2)
+	if data["cycle"] != "monthly" {
+		t.Errorf("want cycle unchanged for an unpaid switch_to_annual invoice, got %v", data["cycle"])
+	}
+
+	var historyCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = (SELECT id FROM billing.subscriptions WHERE subject_id = $1) AND action = 'extend'`, wsID2,
+	).Scan(&historyCount)
+	if historyCount != 0 {
+		t.Errorf("want no 'extend' history row before payment, got %d", historyCount)
+	}
+}
+
+// TestIntegration_ExtendSubscription_TieredPricing_13Months is the
+// strongest regression test for the review-caught line-item fix: it fails
+// if handleWebhook regresses to reading only lineItems[0].Quantity (which
+// would apply 12 months, the block line item's quantity, not the correct
+// 13) instead of summing every line item's quantity.
+func TestIntegration_ExtendSubscription_TieredPricing_13Months(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_tiered13_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f74"
+		wsID2 = "00000000-0000-0000-0000-000000000f75"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+	before := getSubscriptionData(t, e, wsID2)
+	beforePeriodEnd, err := time.Parse(time.RFC3339, before["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse before period_end: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":13}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend 13 months: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.AmountCents != 9900 { // 1 yearly block ($90) + 1 month ($9) = $99
+		t.Errorf("13-month extend: want amount_cents=9900 (1 yearly block + 1 month), got %d", resp.Data.AmountCents)
+	}
+
+	// Two line items, each internally consistent (unit_price * quantity ==
+	// total_cents) — the review-caught invoice-PDF correctness fix.
+	rows, err := pool.Query(t.Context(),
+		`SELECT quantity, unit_price_cents, total_cents FROM billing.invoice_line_items WHERE invoice_id = $1 ORDER BY sort_order`, resp.Data.ID)
+	if err != nil {
+		t.Fatalf("query line items: %v", err)
+	}
+	defer rows.Close()
+	type li struct{ qty, unit, total int64 }
+	var items []li
+	for rows.Next() {
+		var it li
+		if err := rows.Scan(&it.qty, &it.unit, &it.total); err != nil {
+			t.Fatalf("scan line item: %v", err)
+		}
+		items = append(items, it)
+	}
+	if len(items) != 2 {
+		t.Fatalf("want 2 line items for a 13-month tiered extension, got %d: %+v", len(items), items)
+	}
+	if items[0].qty != 12 || items[0].total != 9000 || items[0].unit*items[0].qty != items[0].total {
+		t.Errorf("block line item: want qty=12 total=9000 unit*qty==total, got %+v", items[0])
+	}
+	if items[1].qty != 1 || items[1].unit != 900 || items[1].total != 900 {
+		t.Errorf("remainder line item: want qty=1 unit=900 total=900, got %+v", items[1])
+	}
+	if items[0].qty+items[1].qty != 13 {
+		t.Errorf("want line item quantities to sum to 13 months, got %d", items[0].qty+items[1].qty)
+	}
+
+	const extID = "stripe_sess_tiered13"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	after := getSubscriptionData(t, e, wsID2)
+	afterPeriodEnd, err := time.Parse(time.RFC3339, after["period_end"].(string))
+	if err != nil {
+		t.Fatalf("parse after period_end: %v", err)
+	}
+	if want := beforePeriodEnd.AddDate(0, 13, 0); !afterPeriodEnd.Equal(want) {
+		t.Errorf("want period_end advanced by exactly 13 months (summed across both line items) to %v, got %v — a regression to lineItems[0].Quantity alone would advance by only 12", want, afterPeriodEnd)
+	}
+	if after["cycle"] != "monthly" {
+		t.Errorf("a plain (non switch_to_annual) tiered extend must not change cycle, got %v", after["cycle"])
+	}
+}
+
+// TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle
+// covers the Risks section's explicitly-called-out conflation: a plain
+// 12-month extend prices identically to switch-to-annual (one yearly block)
+// but must never touch cycle — only the switch_to_annual request path does.
+func TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_plain12_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f76"
+		wsID2 = "00000000-0000-0000-0000-000000000f77"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":12}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend 12 months: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.AmountCents != 9000 {
+		t.Errorf("plain 12-month extend: want amount_cents=9000 (same price as switch_to_annual), got %d", resp.Data.AmountCents)
+	}
+
+	const extID = "stripe_sess_plain12"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	wWeb := httptest.NewRecorder()
+	e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if wWeb.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", wWeb.Code, wWeb.Body)
+	}
+
+	after := getSubscriptionData(t, e, wsID2)
+	if after["cycle"] != "monthly" {
+		t.Errorf("plain 12-month extend must not change cycle even though it prices like a yearly block, got %v", after["cycle"])
+	}
+}
+
+// TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDirection
+// verifies item 4c: the pending-invoice guard needs no new logic to cover
+// both invoice variants, because both keep kind="extension" — a pending
+// plain extend blocks a switch-to-annual attempt and vice versa.
+func TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDirection(t *testing.T) {
+	pool := testPoolBilling(t)
+
+	t.Run("pending plain extend blocks a switch_to_annual attempt", func(t *testing.T) {
+		const (
+			user  = "integ_billing_pendingguard_a_user"
+			wsID1 = "00000000-0000-0000-0000-000000000f78"
+			wsID2 = "00000000-0000-0000-0000-000000000f79"
+		)
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+		t.Cleanup(func() {
+			cleanupBillingByOrganization(pool, wsID1)
+			cleanupBillingByOrganization(pool, wsID2)
+		})
+		seedBillingOrganization(pool, wsID1, user)
+		seedBillingOrganization(pool, wsID2, user)
+
+		mod := billing.NewModuleForTest(pool, stubRefReader{})
+		mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+			t.Fatalf("first provision: %v", err)
+		}
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+			t.Fatalf("second provision: %v", err)
+		}
+
+		e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+		w1 := httptest.NewRecorder()
+		e.ServeHTTP(w1, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+		if w1.Code != http.StatusOK {
+			t.Fatalf("first (plain) extend: want 200, got %d: %s", w1.Code, w1.Body)
+		}
+
+		w2 := httptest.NewRecorder()
+		e.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+		if w2.Code != http.StatusUnprocessableEntity {
+			t.Errorf("switch_to_annual while a plain extend is pending: want 422, got %d: %s", w2.Code, w2.Body)
+		}
+	})
+
+	t.Run("pending switch_to_annual blocks a plain extend attempt", func(t *testing.T) {
+		const (
+			user  = "integ_billing_pendingguard_b_user"
+			wsID1 = "00000000-0000-0000-0000-000000000f80"
+			wsID2 = "00000000-0000-0000-0000-000000000f81"
+		)
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+		t.Cleanup(func() {
+			cleanupBillingByOrganization(pool, wsID1)
+			cleanupBillingByOrganization(pool, wsID2)
+		})
+		seedBillingOrganization(pool, wsID1, user)
+		seedBillingOrganization(pool, wsID2, user)
+
+		mod := billing.NewModuleForTest(pool, stubRefReader{})
+		mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+			t.Fatalf("first provision: %v", err)
+		}
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+			t.Fatalf("second provision: %v", err)
+		}
+
+		e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+		w1 := httptest.NewRecorder()
+		e.ServeHTTP(w1, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"switch_to_annual":true}`))
+		if w1.Code != http.StatusOK {
+			t.Fatalf("first (switch_to_annual) extend: want 200, got %d: %s", w1.Code, w1.Body)
+		}
+
+		w2 := httptest.NewRecorder()
+		e.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+		if w2.Code != http.StatusUnprocessableEntity {
+			t.Errorf("plain extend while switch_to_annual is pending: want 422, got %d: %s", w2.Code, w2.Body)
+		}
+	})
+}
+
+// TestIntegration_GetSubscription_MaxExtendableMonths verifies that the
+// field the frontend gates the whole Extend UI on actually appears,
+// correctly, in a real response.
+func TestIntegration_GetSubscription_MaxExtendableMonths(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_maxextend_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f84"
+		wsID2 = "00000000-0000-0000-0000-000000000f85"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	data := getSubscriptionData(t, billing.NewModuleEngine(pool, user, wsID2, stubRefReader{}), wsID2)
+	got, ok := data["max_extendable_months"].(float64) // JSON numbers decode as float64 into map[string]any
+	if !ok {
+		t.Fatalf("want max_extendable_months present as a number, got %#v", data["max_extendable_months"])
+	}
+	// Not asserting the exact value: unlike TestMaxExtendableMonths (which
+	// uses fixed, deliberately leap-year-safe dates to prove the arithmetic
+	// exactly), this runs against the real current time, so the precise
+	// number legitimately varies by a month or two depending on which real
+	// calendar dates the test happens to run against — the calendar-month
+	// vs. fixed-730-day-duration drift the plan itself documents. This test
+	// only needs to confirm the field is wired end to end and in a sane
+	// range for a subscription that was just created.
+	if got < 20 || got > 24 {
+		t.Errorf("a brand new active subscription: want max_extendable_months in [20,24], got %v", got)
+	}
+}
+
 // --- skip trial, activate + invoice now ---
 
 func TestIntegration_ActivateTrialNow_HappyPath(t *testing.T) {
@@ -1879,7 +2938,7 @@ func TestIntegration_ActivateTrialNow_NotTrialing_Rejected(t *testing.T) {
 	// Already-active (via cancel+resume-after-trial-expired trick is
 	// overkill here) — simplest: cancel while trialing, which flips status
 	// to "cancelled", also not "trialing".
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", ""))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/activate", ""))
@@ -2000,6 +3059,417 @@ func TestIntegration_PreviewInvoice_HypotheticalPlanChange_SetsNewPeriodEnd(t *t
 	}
 }
 
+func TestIntegration_PreviewInvoice_Downgrade_IncludesOverage(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_preview_down_user"
+		user2 = "integ_billing_preview_down_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f34"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	// Upgrade to growth so we can downgrade
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: user})
+		c.Next()
+	}
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{
+			ID: wsID1, Slug: "test-ws", Name: "Test WS",
+			Status: "active", OwnerID: user,
+		})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	// Add owner and second member to organization schema so ResolveDowngradeOverage finds them
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`, wsID1, user, user2)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	// Also record usage in billing schema so listCurrentUsage returns 2
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	// Manually change plan to growth to test downgrade
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d: %s", wUpdate.Code, wUpdate.Body)
+	}
+
+	// Preview downgrade to solo
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodGet, billingURL(wsID1)+"/preview?plan=solo&cycle=monthly", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview downgrade: %d: %s", w.Code, w.Body)
+	}
+
+	var resp struct {
+		Data struct {
+			Plan    string `json:"plan"`
+			Overage *struct {
+				Members struct {
+					Current            int      `json:"current"`
+					Allowed            int      `json:"allowed"`
+					AutoSelectRemovals []string `json:"auto_select_removals"`
+				} `json:"members"`
+				Storage struct {
+					Current            int      `json:"current"`
+					Allowed            int      `json:"allowed"`
+					AutoSelectRemovals []string `json:"auto_select_removals"`
+				} `json:"storage"`
+			} `json:"overage"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.Data.Plan != "solo" {
+		t.Errorf("preview downgrade: want plan=solo, got %q", resp.Data.Plan)
+	}
+	if resp.Data.Overage == nil {
+		t.Fatal("preview downgrade: want overage populated, got nil")
+	}
+
+	if resp.Data.Overage.Members.Current != 2 {
+		t.Errorf("overage current members: want 2, got %d", resp.Data.Overage.Members.Current)
+	}
+	if resp.Data.Overage.Members.Allowed != 1 {
+		t.Errorf("overage allowed members: want 1, got %d", resp.Data.Overage.Members.Allowed)
+	}
+	if len(resp.Data.Overage.Members.AutoSelectRemovals) != 1 {
+		t.Errorf("overage autoselect members: want 1, got %d", len(resp.Data.Overage.Members.AutoSelectRemovals))
+	}
+}
+
+func TestIntegration_DowngradeSubscription_ManualSelection(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_man_user"
+		user2 = "integ_billing_down_man_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f35"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`, wsID1, user, user2)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	wDown := httptest.NewRecorder()
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly","preferred_member_auth_subs":["`+user2+`"]}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade: %d: %s", wDown.Code, wDown.Body)
+	}
+
+	// Verify member was actually removed
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("manual downgrade: want 1 member left, got %d", count)
+	}
+
+	// Verify the response body itself carries the overage summary — this is
+	// what the frontend's success screen renders; the audit trail below is a
+	// separate write of the same data, not the only place it should exist.
+	var resp struct {
+		Data struct {
+			Overage contracts.OverageResolution `json:"overage"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(wDown.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal downgrade response: %v", err)
+	}
+	if !slices.Contains(resp.Data.Overage.RemovedMemberAuthSubs, user2) {
+		t.Errorf("response overage: want %s in RemovedMemberAuthSubs, got %v", user2, resp.Data.Overage.RemovedMemberAuthSubs)
+	}
+	if slices.Contains(resp.Data.Overage.AutoSelectedMemberSubs, user2) {
+		t.Errorf("response overage: %s was a manual pick, should not be in AutoSelectedMemberSubs, got %v", user2, resp.Data.Overage.AutoSelectedMemberSubs)
+	}
+
+	// Verify the audit trail: the downgrade's subscription_history row must
+	// record user2 as removed and NOT as auto-selected, since it was the
+	// owner's manual pick — this is the record support/the owner would
+	// read after the fact to know what happened and why.
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='downgrade' ORDER BY changed_at DESC LIMIT 1`,
+		wsID1).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var overage contracts.OverageResolution
+	if err := json.Unmarshal(metadataRaw, &overage); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if !slices.Contains(overage.RemovedMemberAuthSubs, user2) {
+		t.Errorf("subscription_history metadata: want %s in RemovedMemberAuthSubs, got %v", user2, overage.RemovedMemberAuthSubs)
+	}
+	if slices.Contains(overage.AutoSelectedMemberSubs, user2) {
+		t.Errorf("subscription_history metadata: %s was a manual pick, should not be in AutoSelectedMemberSubs, got %v", user2, overage.AutoSelectedMemberSubs)
+	}
+}
+
+func TestIntegration_DowngradeSubscription_AutoFill(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_auto_user"
+		user2 = "integ_billing_down_auto_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f36"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`, wsID1, user, user2)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	wDown := httptest.NewRecorder()
+	// No manual selections sent, it should trigger auto-fill
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade: %d: %s", wDown.Code, wDown.Body)
+	}
+
+	// Verify member was actually removed
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("auto-fill downgrade: want 1 member left, got %d", count)
+	}
+}
+
+func TestIntegration_DowngradeSubscription_ResumeOnRetry(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_retry_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f37"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	// Already on solo
+	wDown := httptest.NewRecorder()
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade retry: %d: %s", wDown.Code, wDown.Body)
+	}
+}
+
+// TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavailable
+// is the genuine version of the risk the downgrade reordering was designed to
+// mitigate — its sibling test above only exercises the trivial "already on
+// target plan" branch by calling downgrade once when there was never
+// anything to resolve. This test actually interrupts a real downgrade
+// between the plan change and the overage resolution (by leaving
+// orgCommander unset for the first call, simulating that dependency being
+// unavailable — the same effect a real failure inside
+// ResolveDowngradeOverage would have, since either way the method returns
+// before resolving anything), confirms the org lands in the "benign
+// grandfathered" state the ordering promised (cheaper plan, still
+// over limit, nothing removed), then retries and confirms the resume
+// branch actually finishes the job the first attempt couldn't.
+func TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavailable(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_retry2_user"
+		user2 = "integ_billing_down_retry2_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f41"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	// Deliberately not calling SetOrganizationCommander yet — the first
+	// downgrade call below must go through with orgCommander nil.
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	if _, err := pool.Exec(t.Context(),
+		`INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now()), ($1, $3, 'member', now())`,
+		wsID1, user, user2); err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	// First attempt: orgCommander is nil, so the plan change goes through
+	// but overage resolution can't run — this is the interrupted state.
+	wDown1 := httptest.NewRecorder()
+	e.ServeHTTP(wDown1, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown1.Code != http.StatusOK {
+		t.Fatalf("first downgrade attempt: %d: %s", wDown1.Code, wDown1.Body)
+	}
+
+	var planAfterFirst string
+	if err := pool.QueryRow(t.Context(), `SELECT plan FROM billing.subscriptions WHERE subject_id=$1`, wsID1).Scan(&planAfterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if planAfterFirst != "solo" {
+		t.Fatalf("plan change should have gone through despite resolution being unavailable: got %q, want solo", planAfterFirst)
+	}
+	var countAfterFirst int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&countAfterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if countAfterFirst != 2 {
+		t.Fatalf("member should NOT have been removed yet (resolution was unavailable): got %d members, want 2", countAfterFirst)
+	}
+
+	// "Recovery": the dependency the first attempt was missing is now
+	// available. Retry the identical request.
+	mod.SetOrganizationCommander(orgMod)
+
+	wDown2 := httptest.NewRecorder()
+	e.ServeHTTP(wDown2, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown2.Code != http.StatusOK {
+		t.Fatalf("retry downgrade: %d: %s", wDown2.Code, wDown2.Body)
+	}
+
+	var countAfterRetry int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&countAfterRetry); err != nil {
+		t.Fatal(err)
+	}
+	if countAfterRetry != 1 {
+		t.Errorf("retry should have finished resolving the overage the first attempt couldn't: got %d members, want 1", countAfterRetry)
+	}
+}
+
 func TestIntegration_ListEligibleCoupons_FiltersByTargetAndValidity(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -2057,3 +3527,401 @@ func TestIntegration_ListEligibleCoupons_FiltersByTargetAndValidity(t *testing.T
 }
 
 func percentOff(v int16) *int16 { return new(v) }
+
+func TestIntegration_Webhook_Extension_Concurrency(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_concur"
+		wsID0 = "00000000-0000-0000-0000-000000000f59"
+		wsID1 = "00000000-0000-0000-0000-000000000f60"
+	)
+	cleanupBillingByOrganization(pool, wsID0)
+	cleanupBillingByOrganization(pool, wsID1)
+	// This test's whole point is 10 distinct event IDs landing concurrently,
+	// so (unlike every other webhook test here) it can't just omit the event
+	// ID to dodge billing.webhook_events' cross-run idempotency marker.
+	// cleanupBillingByOrganization can't reach these rows either (it only
+	// prunes event_ids prefixed by this org's own payment-link external_id)
+	// so they'd otherwise survive forever and silently no-op every rerun via
+	// markWebhookProcessed's ON CONFLICT DO NOTHING — clean them up directly.
+	pool.Exec(t.Context(), `DELETE FROM billing.webhook_events WHERE provider = 'stripe' AND event_id LIKE 'evt_concur_%'`)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID0)
+		cleanupBillingByOrganization(pool, wsID1)
+		pool.Exec(context.Background(), `DELETE FROM billing.webhook_events WHERE provider = 'stripe' AND event_id LIKE 'evt_concur_%'`)
+	})
+	seedBillingOrganization(pool, wsID0, user)
+	seedBillingOrganization(pool, wsID1, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	// wsID0 takes this user's one-per-user trial; wsID1 (this test's subject)
+	// provisions straight to "active" — extension only applies to active
+	// subscriptions, same pattern as TestIntegration_ExtendSubscription_HappyPath.
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID0, user))
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID1)
+	w1 := httptest.NewRecorder()
+	e.ServeHTTP(w1, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/extend", `{"months":1}`))
+	var resp1 struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w1.Body).Decode(&resp1)
+
+	const extID = "stripe_sess_concur"
+	seedPaymentLink(pool, resp1.Data.ID, extID, "stripe", "USD", resp1.Data.AmountCents)
+
+	// blast the webhook concurrently — same invoice, 10 distinct event IDs,
+	// simulating redelivery under different event IDs (e.g. a provider
+	// retry, or two distinct event types reporting the same underlying
+	// payment) rather than the same event ID twice, which the eventID-based
+	// marker in processWebhook would already dedupe trivially. This exercises
+	// markInvoicePaid's own pending->paid guard (service_webhook.go) instead.
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			payload := fmt.Sprintf(`{"id":"evt_concur_%d","type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, i, extID)
+			wWeb := httptest.NewRecorder()
+			e.ServeHTTP(wWeb, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+		}(i)
+	}
+	wg.Wait()
+
+	var historyCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = (SELECT id FROM billing.subscriptions WHERE subject_id = $1) AND action = 'extend'`, wsID1,
+	).Scan(&historyCount)
+	if historyCount != 1 {
+		t.Errorf("want exactly 1 'extend' history row despite concurrent webhook deliveries, got %d", historyCount)
+	}
+}
+
+func TestIntegration_DowngradeSubscription_AddonLimit(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_addon_user"
+		user2 = "integ_billing_down_addon_user2"
+		user3 = "integ_billing_down_addon_user3"
+		user4 = "integ_billing_down_addon_user4"
+		wsID1 = "00000000-0000-0000-0000-000000000f38"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, wsID1)
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+
+	// Upgrade to growth first
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	// Add 3 more members, so 4 total. (Growth allows 15, so this is well within limit).
+	_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'member', now()), ($1, $3, 'member', now()), ($1, $4, 'member', now())`, wsID1, user2, user3, user4)
+	if err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	// Record usage = 4 members
+	wUsage := httptest.NewRecorder()
+	e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":4}`))
+	if wUsage.Code != http.StatusNoContent {
+		t.Fatalf("record usage: %d", wUsage.Code)
+	}
+
+	// Attach addon +2 extra seats
+	_, err = pool.Exec(t.Context(), `INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity) VALUES ($1, 'extra-seat', 2)`, subID)
+	if err != nil {
+		t.Fatalf("attach addon: %v", err)
+	}
+
+	// Preview downgrade to solo
+	wPrev := httptest.NewRecorder()
+	e.ServeHTTP(wPrev, httpserver.JSONTestRequest(http.MethodGet, billingURL(wsID1)+"/preview?plan=solo&cycle=monthly", ""))
+	if wPrev.Code != http.StatusOK {
+		t.Fatalf("preview downgrade: %d: %s", wPrev.Code, wPrev.Body)
+	}
+	var prevResp struct {
+		Data struct {
+			Overage struct {
+				Members struct {
+					Current int `json:"current"`
+					Allowed int `json:"allowed"`
+				} `json:"members"`
+			} `json:"overage"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(wPrev.Body.Bytes(), &prevResp); err != nil {
+		t.Fatalf("parse preview: %v", err)
+	}
+
+	// solo base member limit is 1. +2 addon = 3.
+	// We have 4 members, so allowed should be 3.
+	if prevResp.Data.Overage.Members.Allowed != 3 {
+		t.Errorf("preview allowed members: want 3, got %d", prevResp.Data.Overage.Members.Allowed)
+	}
+
+	wDown := httptest.NewRecorder()
+	// No manual selections sent, it should trigger auto-fill, removing 4 - 3 = 1 member
+	e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+	if wDown.Code != http.StatusOK {
+		t.Fatalf("downgrade: %d: %s", wDown.Code, wDown.Body)
+	}
+
+	// Verify members left
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	// solo limit (1) + addon (2) = 3 members allowed
+	if count != 3 {
+		t.Errorf("auto-fill downgrade with addon: want 3 members left, got %d", count)
+	}
+}
+
+// TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember uses
+// the real middleware.NewRLSTxMiddleware, not the noopMW every other test in
+// this file substitutes for it — that substitution is exactly why the
+// prod-only crash this test guards against went undetected: NewRLSTxMiddleware
+// is what stashes a request-scoped *pgx.Tx into the request context
+// (db.WithQuerier), and only a downgrade that actually removes a member
+// exercises the organization module's fire-and-forget syncMemberUsage, which
+// calls back into billing.RecordUsage via a context.WithoutCancel-derived
+// context. Before the WithoutQuerier fix, that context still carried the
+// caller's in-flight transaction, so the background goroutine and the
+// request's own goroutine both drove the same *pgx.Conn concurrently —
+// observed live as "fatal error: concurrent map writes" in pgx's internal
+// statement cache. -race (part of this suite's standard run) is the actual
+// regression guard; this test's job is just to exercise the real code path
+// that a fatal error can't be recovered from or asserted on directly.
+func TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_rls_user"
+		user2 = "integ_billing_down_rls_user2"
+		wsID1 = "00000000-0000-0000-0000-000000000f39"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+	orgMod.SetBillingReader(mod)
+	orgMod.SetBillingWriter(mod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{
+		Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW,
+		RLS: middleware.NewRLSTxMiddleware(pool), MFA: noopMW,
+	})
+
+	// The owner's own membership row — resolveDowngradeOverage's "never
+	// remove the owner" exclusion only has something to exclude if this
+	// exists; HandleOrganizationCreated above only provisions the billing
+	// subscription, not the organization-side membership row a real
+	// POST /organizations would create.
+	if _, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'owner', now())`, wsID1, user); err != nil {
+		t.Fatalf("insert owner membership: %v", err)
+	}
+
+	// Repeat the upgrade→add-member→downgrade-and-remove cycle several times
+	// in one process: a data race is timing-dependent and a single
+	// iteration isn't guaranteed to hit the exact interleaving even when
+	// the bug is present, so more attempts (under -race's happens-before
+	// instrumentation, which persists across iterations within one process)
+	// give it more chances to be caught if this ever regresses.
+	for i := range 15 {
+		wUpdate := httptest.NewRecorder()
+		e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+		if wUpdate.Code != http.StatusOK {
+			t.Fatalf("iteration %d: upgrade: %d", i, wUpdate.Code)
+		}
+
+		_, err := pool.Exec(t.Context(), `INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES ($1, $2, 'member', now())`, wsID1, user2)
+		if err != nil {
+			t.Fatalf("iteration %d: insert member: %v", i, err)
+		}
+		wUsage := httptest.NewRecorder()
+		e.ServeHTTP(wUsage, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/usage", `{"metric":"members","value":2}`))
+		if wUsage.Code != http.StatusNoContent {
+			t.Fatalf("iteration %d: record usage: %d", i, wUsage.Code)
+		}
+
+		// Auto-fill downgrade to solo (limit 1): the owner and user2 are
+		// both present, so this must actually remove user2, which is what
+		// fires syncMemberUsage's fire-and-forget call back into
+		// billing.RecordUsage through the real request-scoped transaction
+		// this test's RLS middleware opened.
+		wDown := httptest.NewRecorder()
+		e.ServeHTTP(wDown, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+		if wDown.Code != http.StatusOK {
+			t.Fatalf("iteration %d: downgrade: %d: %s", i, wDown.Code, wDown.Body)
+		}
+
+		var count int
+		if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("iteration %d: want 1 member left (owner only), got %d", i, count)
+		}
+
+		// The background usage sync races the test's own assertions by
+		// design (that's the point) — poll briefly rather than asserting
+		// immediately, so this doesn't flake on a slow CI runner.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			var usage int64
+			uErr := pool.QueryRow(t.Context(),
+				`SELECT value FROM billing.usage WHERE organization_id=$1 AND metric='members'`, wsID1).Scan(&usage)
+			if uErr == nil && usage == 1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("iteration %d: usage sync after downgrade never converged to 1 (last err=%v, value=%d)", i, uErr, usage)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+}
+
+// TestIntegration_DowngradeSubscription_ConcurrentDoubleSubmit verifies the
+// per-organization lock requirement (lockSubscriptionForUpdate's
+// SELECT ... FOR UPDATE, held for the real RLS transaction's lifetime):
+// two concurrent downgrade requests for the same org must serialize, not
+// double-remove members or otherwise race. Uses the real RLS middleware
+// (see TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember's
+// comment for why every other test in this file substituting noopMW matters
+// here too — a noop RLS means no real transaction, and no real transaction
+// means the row lock is a no-op).
+func TestIntegration_DowngradeSubscription_ConcurrentDoubleSubmit(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_down_concurrent_user"
+		user2 = "integ_billing_down_concurrent_user2"
+		user3 = "integ_billing_down_concurrent_user3"
+		wsID1 = "00000000-0000-0000-0000-000000000f40"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
+	seedBillingOrganization(pool, wsID1, user)
+
+	orgMod := organization.New(pool, messaging.NoopPublisher{})
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(orgMod)
+	mod.SetOrganizationCommander(orgMod)
+	orgMod.SetBillingReader(mod)
+	orgMod.SetBillingWriter(mod)
+
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := gin.New()
+	authMW := func(c *gin.Context) { c.Set("auth.claims", middleware.Claims{Subject: user}); c.Next() }
+	orgMW := func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: wsID1, Status: "active", OwnerID: user})
+		c.Set("organization.role", contracts.RoleOwner)
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{
+		Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW,
+		RLS: middleware.NewRLSTxMiddleware(pool), MFA: noopMW,
+	})
+
+	if _, err := pool.Exec(t.Context(),
+		`INSERT INTO organization.memberships (organization_id, auth_sub, role, joined_at) VALUES
+		 ($1, $2, 'owner', now()), ($1, $3, 'member', now()), ($1, $4, 'member', now())`,
+		wsID1, user, user2, user3); err != nil {
+		t.Fatalf("insert members: %v", err)
+	}
+
+	wUpdate := httptest.NewRecorder()
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if wUpdate.Code != http.StatusOK {
+		t.Fatalf("upgrade: %d", wUpdate.Code)
+	}
+
+	// Fire two identical auto-fill downgrade requests for the same org at
+	// once. Whichever acquires the row lock first changes the plan and
+	// removes both extra members; the other blocks on the lock, then (once
+	// it proceeds) finds the subscription already on the target plan and
+	// takes the resume-on-retry branch — both must return 200, and members
+	// must be removed exactly once, not twice or zero times.
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID1)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+			codes[i] = w.Code
+		}(i)
+	}
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Errorf("concurrent request %d: status = %d, want 200", i, code)
+		}
+	}
+
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE organization_id=$1`, wsID1).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("want exactly 1 member left (owner only) after both requests settle, got %d — a race would show up as 0 (double-removed, second delete matching nothing is harmless) or the members never actually removed", count)
+	}
+
+	var plan string
+	if err := pool.QueryRow(t.Context(), `SELECT plan FROM billing.subscriptions WHERE subject_id=$1`, wsID1).Scan(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan != "solo" {
+		t.Errorf("want plan solo after both requests settle, got %q", plan)
+	}
+}

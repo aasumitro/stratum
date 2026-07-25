@@ -26,6 +26,22 @@ func QuerierFromContext(ctx context.Context, fallback Querier) Querier {
 	return fallback
 }
 
+// WithoutQuerier clears any Querier stashed in ctx by WithQuerier. Use it
+// before deriving a context for a goroutine that will outlive (or run
+// concurrently with) the caller — e.g. a fire-and-forget background op
+// started with context.WithoutCancel, which preserves every value on the
+// parent context, including a transaction that only the caller's own
+// goroutine may safely use. A *pgx.Tx is not safe for concurrent use from
+// multiple goroutines; leaving it reachable via QuerierFromContext lets a
+// background goroutine grab the same in-flight transaction the request
+// handler is still using, corrupting pgx's per-connection statement cache.
+// Storing a literal nil clears the value: a later type assertion against a
+// nil `any` always fails, so QuerierFromContext correctly falls back to the
+// pool instead of picking up a stale or already-nil Querier.
+func WithoutQuerier(ctx context.Context) context.Context {
+	return context.WithValue(ctx, querierKey{}, nil)
+}
+
 // Querier is satisfied by both *pgxpool.Pool and pgx.Tx. Repository methods
 // accept a Querier instead of a concrete pool, so the same repository code
 // runs whether it's called standalone or inside WithTx — this is what lets

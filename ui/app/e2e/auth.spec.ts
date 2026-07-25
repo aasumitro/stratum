@@ -79,8 +79,8 @@ test("real login with the shared test account leaves /login", async ({
   page,
 }) => {
   test.skip(
-    !process.env.TEST_ACCOUNT_EMAIL,
-    "TEST_ACCOUNT_EMAIL not set — see .env.local"
+    !process.env.TEST_ACCOUNT_OWNER_EMAIL,
+    "TEST_ACCOUNT_OWNER_EMAIL not set — see .env.local"
   )
   // Exercises the real Supabase + backend round trip, not a mock — proves
   // the login page actually authenticates against live infra.

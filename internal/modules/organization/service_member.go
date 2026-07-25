@@ -7,11 +7,11 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
 // listMembers stitches membership rows with profile data (email/full_name/
-// avatar_url) resolved in one batch call, replacing what used to be a
-// cross-schema JOIN into account.users. A missing userReader (or a lookup
+// avatar_url) resolved in one batch call. A missing userReader (or a lookup
 // failure) fails open — members are returned with profile fields omitted
 // rather than the whole list erroring out, same nil-safe convention as
 // every other optional cross-module dependency in this codebase.
@@ -115,7 +115,14 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 	if s.billingWriter == nil {
 		return
 	}
-	ctx = context.WithoutCancel(ctx)
+	// Clear any transaction stashed in ctx before it crosses into this
+	// goroutine — context.WithoutCancel keeps every value on the parent
+	// context, and a transaction is only safe for the caller's own
+	// goroutine to use. Without this, RecordUsage below (a cross-module
+	// call back into billing) can pick up the caller's still-in-flight
+	// transaction via QuerierFromContext and use it concurrently with the
+	// caller, corrupting pgx's per-connection statement cache.
+	ctx = db.WithoutQuerier(context.WithoutCancel(ctx))
 	go func() {
 		count, err := s.repo.countActiveMembers(ctx, s.pool, organizationID)
 		if err != nil {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
-import { useForm, useStore } from "@tanstack/react-form"
+import { useForm } from "@tanstack/react-form"
+import { useSelector } from "@tanstack/react-store"
 import { useTranslation } from "react-i18next"
 import { useHTTPActionPost } from "@/lib/api/action"
 import { API } from "@/lib/api/path"
@@ -12,10 +13,7 @@ import type { Organization } from "@/types/organization"
  * Shared form logic for creating an organization — used by
  * create-organization-form.tsx, the Details -> Plan -> Review wizard
  * rendered both in onboarding and in the post-onboarding "create another
- * organization" dialog. Previously these were two independent
- * implementations; only the onboarding one got a plan picker, and both
- * hardcoded country_code to "US" regardless of which countries are
- * actually active. Centralizing here so both surfaces stay in sync.
+ * organization" dialog. Centralizing here so both surfaces stay in sync.
  *
  * Every organization creation goes through Details -> Plan -> Review,
  * first organization or not — plan and cycle are required by the API (no
@@ -100,7 +98,7 @@ export function useOrganizationCreateForm(
   // which wouldn't re-render this hook's own component when the field
   // changes) — the plan list must refetch scoped to whichever country the
   // user has picked so far in Details.
-  const countryCode = useStore(form.store, (s) => s.values.country_code)
+  const countryCode = useSelector(form.store, (s) => s.values.country_code)
   const { data: plansData, isLoading: plansLoading } = usePlans(countryCode)
   // "custom" is sales-assisted (see PlanSelector's contact-us treatment on
   // the billing page) — not a self-serve choice at org-creation time.

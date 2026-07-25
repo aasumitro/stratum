@@ -357,7 +357,7 @@ func (s *service) supabaseAdminRequest(ctx context.Context, op, method, path str
 		return nil, fmt.Errorf("%s: http: %w", op, err)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%s: status %d", op, resp.StatusCode)
 	}
 	return resp, nil

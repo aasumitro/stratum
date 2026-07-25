@@ -3,7 +3,7 @@ import { loginAsTestAccount } from "./helpers/login"
 
 // The onboarding step shown depends on the signed-in account's real profile
 // state (has a name? has an organization?) — which we don't control and
-// don't want to mutate on the shared TEST_ACCOUNT_EMAIL account. So we log
+// don't want to mutate on the shared TEST_ACCOUNT_OWNER_EMAIL account. So we log
 // in for real (proving auth actually works) and then intercept just the
 // two endpoints the /onboarding loader uses to decide the step, forcing a
 // known state deterministically without touching backend data.
@@ -83,8 +83,8 @@ test("profile step renders for an account with no profile yet", async ({
   page,
 }) => {
   test.skip(
-    !process.env.TEST_ACCOUNT_EMAIL,
-    "TEST_ACCOUNT_EMAIL not set — see .env.local"
+    !process.env.TEST_ACCOUNT_OWNER_EMAIL,
+    "TEST_ACCOUNT_OWNER_EMAIL not set — see .env.local"
   )
   await loginAsTestAccount(page)
   await mockProfile(page, null)
@@ -102,8 +102,8 @@ test("organization step renders for a profiled account with no org", async ({
   page,
 }) => {
   test.skip(
-    !process.env.TEST_ACCOUNT_EMAIL,
-    "TEST_ACCOUNT_EMAIL not set — see .env.local"
+    !process.env.TEST_ACCOUNT_OWNER_EMAIL,
+    "TEST_ACCOUNT_OWNER_EMAIL not set — see .env.local"
   )
   await loginAsTestAccount(page)
   await mockProfile(page, {

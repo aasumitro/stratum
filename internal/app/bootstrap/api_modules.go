@@ -18,8 +18,7 @@ import (
 )
 
 // APIModules holds every domain module the API serves, already
-// cross-wired (the SetXxx calls that were previously 15 order-sensitive
-// lines inline in RunAPI), plus the middleware built directly from those
+// cross-wired, plus the middleware built directly from those
 // modules (auth, organization resolution, RLS, MFA gate) — as opposed to
 // generic HTTP middleware (CORS, rate limiting), which belongs to the
 // router instead.
@@ -71,6 +70,7 @@ func NewAPIModules(ctx context.Context, infra *Infra, storageClient *storage.Cli
 	organizationMod.SetUserReader(accountMod)
 	billingMod.SetUserReader(accountMod)
 	billingMod.SetOrganizationReader(organizationMod)
+	billingMod.SetOrganizationCommander(organizationMod)
 	organizationMod.SetCatalogReader(billingMod)
 	refMod.SetCatalogReader(billingMod)
 	accountMod.SetOrganizationWriter(organizationMod)
