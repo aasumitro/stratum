@@ -2,11 +2,11 @@ import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   useBillingSubscription,
   useResumeSubscription,
-  useActivateTrialNow,
 } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { PlanSelector } from "./plan-selector"
@@ -14,11 +14,22 @@ import { SubscriptionStatusBanner } from "./subscription-status-banner"
 import { SubscriptionExtendDialog } from "./subscription-extend-dialog"
 import { SubscriptionCancelDialog } from "./subscription-cancel-dialog"
 import { SubscriptionDetailsGrid } from "./subscription-details-grid"
+import { SubscriptionHistorySection } from "./subscription-history-section"
+import { FeaturesSection } from "./features-section"
 
 function trialDaysLeft(trialEnd?: string) {
   if (!trialEnd) return null
   const days = Math.ceil((new Date(trialEnd).getTime() - Date.now()) / 86400000)
   return days > 0 ? days : null
+}
+
+function formatDate(s?: string) {
+  if (!s) return "—"
+  return new Date(s).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
 }
 
 interface Props {
@@ -36,8 +47,6 @@ export function SubscriptionCard({ organizationId }: Props) {
 
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
-  const { mutate: activateNow, isPending: activating } =
-    useActivateTrialNow(organizationId)
 
   if (isLoading) {
     return (
@@ -90,15 +99,14 @@ export function SubscriptionCard({ organizationId }: Props) {
         daysLeft={daysLeft}
         resuming={resuming}
         onResume={() => resume()}
-        activating={activating}
-        onActivateNow={() => activateNow()}
-        onUpgrade={() => setShowSelector(true)}
       />
 
-      <Card>
+      <Card className="[--card-spacing:--spacing(8)]">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-2">
-            <CardTitle>{t("billing.subscription.title")}</CardTitle>
+            <CardTitle className="text-2xl font-bold">
+              {t("billing.subscription.title")}
+            </CardTitle>
             <div className="flex flex-wrap items-center gap-2">
               {isOwner ? (
                 <Button
@@ -130,8 +138,27 @@ export function SubscriptionCard({ organizationId }: Props) {
             </div>
           </div>
         </CardHeader>
-        <CardContent>
-          <SubscriptionDetailsGrid sub={sub} daysLeft={daysLeft} />
+        <CardContent className="flex flex-col gap-6">
+          <SubscriptionDetailsGrid sub={sub} daysLeft={daysLeft}>
+            <FeaturesSection organizationId={organizationId} />
+          </SubscriptionDetailsGrid>
+          <Separator />
+          <div className="flex flex-col gap-8 md:flex-row">
+            <SubscriptionHistorySection
+              organizationId={organizationId}
+              isOwner={!!isOwner}
+            />
+            <div className="flex-1 space-y-2">
+              <p className="text-sm font-medium text-muted-foreground">
+                {t("billing.subscription.latestActivity")}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {t("billing.subscription.activeSince", {
+                  date: formatDate(sub.period_start),
+                })}
+              </p>
+            </div>
+          </div>
         </CardContent>
       </Card>
 

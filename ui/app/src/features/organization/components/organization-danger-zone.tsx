@@ -48,9 +48,7 @@ interface Props {
 
 // Danger zone card: transfer ownership (atomic, checkbox-gated),
 // suspend/unsuspend (self-service, reversible), delete (30-day soft
-// delete, type-slug-to-confirm, consequences enumerated) — was previously
-// just a delete-only card; transfer lived only in the members table, and
-// suspend had no owner-facing UI at all.
+// delete, type-slug-to-confirm, consequences enumerated).
 export function OrganizationDangerZone({
   organizationId,
   slug,

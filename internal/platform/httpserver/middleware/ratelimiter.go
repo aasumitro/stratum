@@ -32,10 +32,10 @@ const (
 // RateLimitCatalog supplies the dependencies needed to derive an
 // organization-scoped request's rate limit from its subscription's plan via
 // the billing catalog's api_rate_limit feature (billing.plan_features,
-// type='config') — replacing what used to be a hardcoded plan-slug table.
+// type='config').
 // All three fields are used together; pass a zero-value RateLimitCatalog
 // (or omit the variadic argument entirely) to skip catalog-based limiting
-// and always fall back to defaultLimit, as before this existed.
+// and always fall back to defaultLimit.
 type RateLimitCatalog struct {
 	Billing contracts.BillingReader
 	Catalog contracts.CatalogReader

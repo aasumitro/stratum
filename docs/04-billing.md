@@ -11,7 +11,11 @@ active ⇄ past_due
 
 When someone creates their **first** organization, it gets a 7-day trial with no invoice. Every **subsequent** organization they own goes straight to `active` with an invoice created on the spot. The creator must choose a plan and billing cycle at creation time (both validated against the live catalog), and can optionally add addons and a coupon code to the same request — all validated up front and, for a 2nd+ org, already priced into that first invoice. Joining an existing organization never involves a plan choice.
 
-Owners can **change plan** (with proration), **cancel** (access continues until period end), **resume**, **extend** (buy 1–24 more months, capped at a 2-year total lifetime), and **activate** (skip the rest of a trial and start paying immediately). One subtlety worth knowing: resuming a subscription that was cancelled *while still in its trial* correctly returns it to `trialing`, not `active`.
+Owners can **change plan** (with proration), **cancel** (access continues until period end, with a required reason), **resume**, **extend** (buy 1–24 more months, capped at a 2-year total lifetime), and **activate** (skip the rest of a trial and invoice a full cycle now — the subscription becomes active immediately, but that invoice still has to be paid like any other). One subtlety worth knowing: resuming a subscription that was cancelled *while still in its trial* correctly returns it to `trialing`, not `active`.
+
+Downgrading to a plan below current usage doesn't silently grandfather the organization over its new limit: the owner picks specific members/files to remove as part of the same request, with deterministic auto-fill (newest-joined members, oldest files) covering anything left unselected — a capacity add-on already attached to the subscription is accounted for, and the owner can never be removed. What actually got removed, and how much of it was auto-selected vs. owner-chosen, is recorded and returned in the response.
+
+Extending is priced in tiered blocks, not flat months: every full 12-month block bills at the plan's yearly rate, with any leftover months at the monthly rate. Extending by exactly 12 months can instead switch the subscription's billing cycle to yearly going forward ("Switch to Annual") for the same price as a plain 12-month extend.
 
 ## The catalog
 

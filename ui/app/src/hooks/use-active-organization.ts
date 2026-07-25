@@ -11,9 +11,7 @@ interface ActiveOrganization {
 
 /**
  * Single source for "what organization is the current route in, and what is
- * the caller's role in it" — replaces the pathname-regex + localStorage
- * re-derivation that used to be duplicated across AppHeader,
- * SidebarOrganizationNav, OrganizationBanner, and OrganizationLayout.
+ * the caller's role in it".
  */
 export function useActiveOrganization(): ActiveOrganization {
   const { organizationId } = useParams({ strict: false }) as {

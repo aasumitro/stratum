@@ -33,7 +33,7 @@ func (stubRefReader) GetCountryTaxRate(_ context.Context, _ string) (int, error)
 
 // encodeOrganizationCreatedEventFor builds an event body for a specific
 // createdBy subject, with plan="solo"/cycle="monthly" — plan and cycle are
-// required at the API boundary now, so no test exercising ordinary
+// required at the API boundary, so no test exercising ordinary
 // provisioning should send an empty one.
 func encodeOrganizationCreatedEventFor(organizationID, createdBy string) []byte {
 	return encodeOrganizationCreatedEventWithPlan(organizationID, createdBy, "solo", "monthly")
@@ -403,9 +403,6 @@ func TestIntegration_CancelSubscription_InvalidReasonRejected(t *testing.T) {
 // *trialing* subscription (provisionSubscription always trials a user's
 // first-ever organization) — must resume back into "trialing", not "active",
 // since the trial window is still open and no invoice was ever created.
-// Previously this test asserted status=="active" here, which was actually
-// asserting the bug: the trial banner disappearing after cancel+resume
-// because resumeSubscription unconditionally forced status to "active".
 func TestIntegration_ResumeSubscription_Cancelled(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (

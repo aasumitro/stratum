@@ -19,7 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 
-// Members/Invitations as real routes (was client `useState` tab),
+// Members/Invitations as real routes,
 // mirroring the pattern Billing already validated: deep-linkable,
 // shareable, back-button-correct.
 export function MembersPage() {

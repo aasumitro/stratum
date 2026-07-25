@@ -17,7 +17,7 @@ interface RouteTabsProps {
 // Billing, Members). Renders Link, not @/components/ui/tabs.tsx's Tabs —
 // that primitive is client-state controlled (Base UI value/onValueChange),
 // which would make every tab lose deep-linking/back-button support.
-// overflow-x-auto replaces the per-page flex-wrap so a long tab row scrolls
+// overflow-x-auto allows a long tab row to scroll
 // instead of wrapping to a second line on narrow viewports.
 export function RouteTabs({ base, tabs }: RouteTabsProps) {
   const { location } = useRouterState()

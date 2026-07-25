@@ -32,7 +32,7 @@ MFA enrolment happens against Supabase directly, never through this API.
 
 ## Billing — `/organizations/:id/billing`
 Every `GET` is member-visible; every mutation is owner-only.
-`GET /` · `PATCH /plan` (MFA) · `POST /cancel` · `POST /resume` · `POST /extend` (MFA) · `POST /activate` (MFA) · `GET /history` · `GET /invoices` · `GET /invoices/:id/pdf?lang=` · `POST /invoices/:id/pay` · `POST /invoices/:id/pay/regenerate` · `GET /payment-links` · `GET /payments` · `GET /usage` · `POST /usage` · `GET /features` · `GET /preview?plan=&cycle=` · `GET /coupons` · `POST /coupons/redeem` · `GET /addons` · `POST /addons` (MFA) · `DELETE /addons/:id` (MFA).
+`GET /` · `PATCH /plan` (MFA) · `POST /downgrade` (MFA) · `POST /cancel` · `POST /resume` · `POST /extend` (MFA) · `POST /activate` (MFA) · `GET /history` · `GET /invoices` · `GET /invoices/:id/pdf?lang=` · `POST /invoices/:id/pay` · `POST /invoices/:id/pay/regenerate` · `GET /payment-links` · `GET /payments` · `GET /usage` · `POST /usage` · `GET /features` · `GET /preview?plan=&cycle=` · `GET /coupons` · `POST /coupons/redeem` · `GET /addons` · `POST /addons` (MFA) · `DELETE /addons/:id` (MFA).
 
 `GET /billing/coupons/eligible` (no organization in the path) — same eligibility check as `GET /coupons`, for the create-organization cart before an org exists.
 

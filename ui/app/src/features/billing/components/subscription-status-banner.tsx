@@ -2,17 +2,7 @@ import { useTranslation } from "react-i18next"
 import { Link } from "@tanstack/react-router"
 import { IconLoader2 } from "@tabler/icons-react"
 import { Button } from "@/components/ui/button"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
+import { ActivateTrialDialog } from "./activate-trial-dialog"
 import type { Subscription } from "@/types/billing"
 
 function formatDate(s?: string) {
@@ -31,9 +21,6 @@ interface Props {
   daysLeft: number | null
   resuming: boolean
   onResume: () => void
-  activating: boolean
-  onActivateNow: () => void
-  onUpgrade: () => void
 }
 
 // Every subscription state gets one banner + one action.
@@ -44,9 +31,6 @@ export function SubscriptionStatusBanner({
   daysLeft,
   resuming,
   onResume,
-  activating,
-  onActivateNow,
-  onUpgrade,
 }: Props) {
   const { t } = useTranslation()
 
@@ -63,7 +47,7 @@ export function SubscriptionStatusBanner({
         </div>
         {isOwner && (
           <Link
-            to="/organization/$organizationId/billing/invoices"
+            to="/organization/$organizationId/billing"
             params={{ organizationId }}
             className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
           >
@@ -138,47 +122,14 @@ export function SubscriptionStatusBanner({
             {t("billing.trial.description")}
           </p>
         </div>
-        <div className="flex gap-2">
-          {isOwner && (
-            <AlertDialog>
-              <AlertDialogTrigger
-                render={<Button size="sm" variant="outline" />}
-              >
-                {t("billing.trial.activateNow")}
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>
-                    {t("billing.trial.activateNowTitle")}
-                  </AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {t("billing.trial.activateNowDescription")}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                  <AlertDialogAction
-                    disabled={activating}
-                    onClick={onActivateNow}
-                  >
-                    {activating && (
-                      <IconLoader2
-                        data-icon="inline-start"
-                        className="animate-spin"
-                      />
-                    )}
-                    {activating
-                      ? t("billing.trial.activating")
-                      : t("billing.trial.activateNow")}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-          <Button size="sm" onClick={onUpgrade}>
-            {t("billing.trial.upgradeCta")}
-          </Button>
-        </div>
+        {isOwner && (
+          <div className="flex gap-2">
+            {/* Choosing a different plan already lives in the Subscription
+                card's own "Change plan" button just below — a second entry
+                point here would just duplicate it. */}
+            <ActivateTrialDialog organizationId={organizationId} />
+          </div>
+        )}
       </div>
     )
   }

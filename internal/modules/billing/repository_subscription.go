@@ -157,9 +157,7 @@ func (r *repository) updateSubscriptionPlanAndPeriod(
 }
 
 // countSubscriptionsBySubjectIDs counts subscriptions belonging to any of
-// the given organization subject IDs — replaces the cross-schema JOIN +
-// implicit UUID->TEXT cast countSubscriptionsByOwner used to need, with a
-// plain lookup against the existing idx_subscriptions_subject index. The
+// the given organization subject IDs. The
 // caller resolves owned organization IDs via
 // contracts.OrganizationReader.ListOwnedOrganizationIDs first.
 func (r *repository) countSubscriptionsBySubjectIDs(ctx context.Context, q db.Querier, subjectIDs []string) (int, error) {

@@ -69,8 +69,7 @@ export function DataTable<T>({
   // ≤768px read-only mode — below the `md` breakpoint this
   // renders as stacked label/value cards instead of a horizontally-cramped
   // table, dropping any column marked `hideOnMobile` (mutating actions)
-  // entirely rather than rendering an inert control. One shared primitive
-  // fix cascades to every page built on DataTable, no per-page work needed.
+  // entirely rather than rendering an inert control.
   const mobileColumns = columns.filter((col) => !col.hideOnMobile)
 
   return (

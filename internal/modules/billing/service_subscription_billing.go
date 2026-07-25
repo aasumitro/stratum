@@ -231,9 +231,7 @@ func (s *service) extendSubscription(
 // and start a paid period immediately: invoices the current plan (full
 // cycle price, addons/coupons included via composeInvoiceAmount, same as
 // any other invoice-creation site) and converts the subscription to active
-// with a fresh period starting now. Previously the only way to reach a
-// paid, invoiced state was waiting for the automatic 3-day-before-trial-end
-// auto-invoice or trial expiry — there was no way to opt in early.
+// with a fresh period starting now.
 func (s *service) activateTrialNow(
 	ctx context.Context, subjectType, subjectID, activatedBy string,
 ) (inv *invoiceRecord, err error) {

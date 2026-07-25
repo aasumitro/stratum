@@ -93,9 +93,8 @@ func SetupInfra(ctx context.Context, cfg *config.Config) (*Infra, error) {
 }
 
 // Close releases every connection SetupInfra opened, in reverse order
-// (mq, redis, postgres, otel) — mirrors the LIFO order the four
-// individual `defer func() { _ = shutdownX() }` calls this replaces used
-// to run in. Errors are discarded, matching that prior behavior: shutdown
+// (mq, redis, postgres, otel).
+// Errors are discarded: shutdown
 // is best-effort by convention throughout this codebase.
 func (i *Infra) Close(ctx context.Context) {
 	_ = i.mqShutdown()

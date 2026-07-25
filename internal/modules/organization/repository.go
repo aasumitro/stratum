@@ -163,8 +163,7 @@ func (r *repository) countActiveOwnedOrganizations(ctx context.Context, q db.Que
 }
 
 // listOwnedOrganizationIDs returns the IDs of every organization a user
-// owns, regardless of status — used by billing's trial-eligibility check,
-// matching the cross-schema JOIN it replaces (no status filter).
+// owns, regardless of status — used by billing's trial-eligibility check.
 func (r *repository) listOwnedOrganizationIDs(ctx context.Context, q db.Querier, authSub string) ([]string, error) {
 	rows, err := q.Query(ctx, `SELECT id FROM organization.organizations WHERE owner_id = $1`, authSub)
 	if err != nil {

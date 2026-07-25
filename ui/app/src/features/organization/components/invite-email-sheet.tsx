@@ -38,9 +38,7 @@ function parseEmails(raw: string): { valid: string[]; invalid: string[] } {
   return { valid, invalid }
 }
 
-// "By email" / "By code" tabs in a single Invite dialog — invite-code
-// management used to live as its own separate page tab; it's now reachable
-// from here instead.
+// "By email" / "By code" tabs in a single Invite dialog.
 export function InviteEmailSheet({
   organizationId,
   open,

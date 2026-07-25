@@ -842,7 +842,7 @@
     }
   },
   "billing": {
-    "invoicesOwnerOnlyRedirect": "Invoices and history are only visible to organization owners.",
+    "invoicesOwnerOnlyNote": "Invoices and history are only visible to organization owners.",
     "payment": {
       "successTitle": "Payment successful!",
       "successDescription": "Thank you for your payment. This tab will close shortly.",
@@ -850,11 +850,6 @@
       "cancelDescription": "No charge was made. You can close this tab and try again.",
       "viewBilling": "View billing",
       "goToOrganizations": "Go to organizations"
-    },
-    "nav": {
-      "subscription": "Plan",
-      "invoices": "Invoices",
-      "history": "Plan history"
     },
     "subscription": {
       "title": "Subscription",
@@ -877,7 +872,9 @@
       "planChanged": "Plan changed",
       "planChangeFailed": "Failed to change plan",
       "downgradeSuccess": "Plan downgraded",
-      "downgradeFailed": "Failed to downgrade plan"
+      "downgradeFailed": "Failed to downgrade plan",
+      "latestActivity": "Latest activity",
+      "activeSince": "Active since {{date}}"
     },
     "extend": {
       "trigger": "Extend",
@@ -914,11 +911,11 @@
       "confirmExtend": "Confirm",
       "successTitle": "Extension invoice created",
       "successDescription": "Nothing changes yet — pay the invoice below to apply it.",
-      "successDescriptionFallback": "Invoice created — pay it from the Invoices tab to add the extra time.",
+      "successDescriptionFallback": "Invoice created — pay it below to add the extra time.",
       "amountDueLabel": "Amount due",
       "dueDateLabel": "Due date",
-      "pendingPaymentNote": "Your subscription extends to the new renewal date once this invoice is paid, from the Invoices tab.",
-      "pendingPaymentAnnualNote": "Your billing cycle switches to yearly and your subscription extends once this invoice is paid, from the Invoices tab.",
+      "pendingPaymentNote": "Your subscription extends to the new renewal date once this invoice is paid, below.",
+      "pendingPaymentAnnualNote": "Your billing cycle switches to yearly and your subscription extends once this invoice is paid, below.",
       "toastSuccess": "Extension invoice created — pay it to add the extra time",
       "toastFailed": "Failed to extend subscription"
     },
@@ -1032,6 +1029,8 @@
       "payFailed": "Failed to open payment link",
       "downloadPdf": "Download PDF",
       "pdfFailed": "Failed to download PDF",
+      "previewPdf": "Preview PDF",
+      "previewFailed": "Failed to preview PDF",
       "regenerate": "Regenerate",
       "regenerating": "Regenerating…",
       "regenerateFailed": "Failed to regenerate payment link",
@@ -1045,12 +1044,14 @@
       "unlimited": "Unlimited",
       "metric": {
         "members": "Members",
-        "storage_bytes": "Storage"
+        "storage": "Storage"
       },
-      "planAddonSplit": "{{plan}} plan + {{addon}} addon"
+      "planAddonSplit": "{{plan}} plan + {{addon}} addon",
+      "percentUsed": "{{percent}}% used"
     },
     "history": {
       "title": "Plan history",
+      "description": "Every change made to this subscription, oldest to newest.",
       "actionCol": "Action",
       "fromCol": "From",
       "toCol": "To",
@@ -1058,7 +1059,21 @@
       "noHistory": "No subscription history yet.",
       "changeCol": "Change",
       "amountCol": "Amount",
-      "byCol": "By"
+      "byCol": "By",
+      "summaryChange": "{{name}} changed the plan: {{fromPlan}} → {{toPlan}} · {{timeAgo}}",
+      "summaryStart": "{{name}} started the {{toPlan}} plan · {{timeAgo}}",
+      "summaryCancel": "{{name}} cancelled the plan · {{timeAgo}}",
+      "summaryResume": "{{name}} resumed the plan · {{timeAgo}}",
+      "summaryExpire": "{{name}} let the plan expire · {{timeAgo}}",
+      "summaryExtend": "{{name}} extended the plan · {{timeAgo}}",
+      "viewFull": "View full history",
+      "logChange": "Changed the plan: {{fromPlan}} → {{toPlan}}",
+      "logStart": "Started the {{toPlan}} plan",
+      "logCancel": "Cancelled the plan",
+      "logResume": "Resumed the plan",
+      "logExpire": "Plan expired",
+      "logExtend": "Extended the plan",
+      "loadMore": "Load more events"
     },
     "payments": {
       "title": "Payments",
@@ -1071,9 +1086,14 @@
     },
     "features": {
       "title": "Plan features",
+      "description": "Everything included with your plan, and what unlocks if you upgrade.",
       "noFeatures": "No feature data available.",
       "upgrade": "Upgrade",
-      "lockedTitle": "Upgrade to unlock"
+      "lockedTitle": "Upgrade to unlock",
+      "viewAll": "View features",
+      "includedCount": "{{count}} included",
+      "includedTitle": "Included in your plan",
+      "unlockWith": "Unlock with {{plan}}"
     },
     "ownerOnly": "Owner access only",
     "ownerOnlyDesc": "Billing information is only visible to the organization owner.",
@@ -1086,6 +1106,9 @@
       "activateNowTitle": "Skip the rest of your trial?",
       "activateNowDescription": "You'll be invoiced immediately for a full billing period on your current plan, and your subscription becomes active right away instead of waiting for the trial to end.",
       "activating": "Activating…",
+      "activateSuccessTitle": "Subscription activated",
+      "activateSuccessDescription": "Your subscription is active now — pay the invoice below to keep it that way.",
+      "activatePendingPaymentNote": "Your subscription is already active, but stays that way only once this invoice is paid, below.",
       "activated": "Subscription activated — check Invoices to pay",
       "activateFailed": "Failed to activate subscription"
     },

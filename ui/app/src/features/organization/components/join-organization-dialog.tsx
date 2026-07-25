@@ -81,9 +81,8 @@ export function JoinOrganizationDialog({ open, onOpenChange }: Props) {
   }
 
   const org = checkedCode && preview?.data ? preview.data : null
-  // Preview now rejects a code that resolves to an organization the caller
-  // already belongs to (JOIN_ALREADY_MEMBER) instead of letting the check
-  // step succeed and only failing on confirm — surface that state here
+  // Preview rejects a code that resolves to an organization the caller
+  // already belongs to (JOIN_ALREADY_MEMBER). Surface that state here
   // instead of the generic error text so the dialog can offer "go to
   // organization" instead of a dead-end confirm button.
   const alreadyMemberOrgId =

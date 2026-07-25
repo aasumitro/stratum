@@ -33,7 +33,7 @@ func testPoolBilling(t *testing.T) *pgxpool.Pool {
 }
 
 // encodeOrganizationCreatedEvent builds a minimal OrganizationCreated event
-// body. Plan/Cycle are required at the API boundary now (see
+// body. Plan/Cycle are required at the API boundary (see
 // createOrganizationRequest) and cycle is DB CHECK-constrained to
 // 'monthly'/'yearly' — an empty cycle here would fail the INSERT before
 // provisionSubscription even reaches catalog/invoice logic, so both are set

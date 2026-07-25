@@ -36,7 +36,7 @@ func NewModuleForTest(pool *pgxpool.Pool) *Module {
 
 // NewModuleEngine creates a full gin.Engine backed by a real DB module. The
 // catalog routes (plans/features/addons) are backed by a real, self-wired
-// billing.Module against the same pool — reference no longer owns that data
+// billing.Module against the same pool
 // (see billing/repository.go's "catalog" section), so exercising these HTTP
 // endpoints end to end needs a real catalog source, not a hand-rolled stub.
 func NewModuleEngine(pool *pgxpool.Pool) *gin.Engine {

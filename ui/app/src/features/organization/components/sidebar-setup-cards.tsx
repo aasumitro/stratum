@@ -93,7 +93,13 @@ export function SidebarSetupCards({
 
   const trialCard = subscription?.status === "trialing" &&
     trialDays !== null && (
-      <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-700 dark:text-blue-400">
+      // The sidebar's background is a fixed dark color regardless of the
+      // page's light/dark theme (--sidebar in index.css doesn't flip with
+      // .dark the way the page background does), so this can't rely on a
+      // `dark:` variant tied to that page-level toggle — it needs the
+      // dark-appropriate text color unconditionally, or it goes unreadable
+      // in light mode.
+      <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
         {t("dashboard.trialDaysLeft", { count: trialDays })}
       </div>
     )

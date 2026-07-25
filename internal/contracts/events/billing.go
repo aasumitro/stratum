@@ -26,9 +26,7 @@ const (
 // DelayRoutingKeySubscriptionRemind -> dead-letters to
 // RoutingKeySubscriptionRemind). Deliberately distinct, shorter strings from
 // the final routing keys. Referenced from both the publish side
-// (billing/service.go) and the queue-declare side (internal/app/worker.go);
-// previously hardcoded independently in both, with nothing catching a
-// mismatch between them.
+// (billing/service.go) and the queue-declare side (internal/app/worker.go).
 const (
 	DelayRoutingKeySubscriptionCheck         = "subscription-check"
 	DelayRoutingKeySubscriptionRemind        = "subscription-remind"

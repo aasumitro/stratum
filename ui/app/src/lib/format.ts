@@ -6,6 +6,10 @@ export function slugify(value: string): string {
     .slice(0, 63)
 }
 
+export function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
 export function initials(name: string): string {
   return name
     .split(" ")

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next"
 import { usePermissions } from "@/hooks/use-permissions"
 import { RouteTabs } from "@/components/shared/route-tabs"
 
-// 4 tabs, now real routes (was client `Tabs` state) so any tab is
+// 4 tabs, implemented as real routes so any tab is
 // deep-linkable/shareable/back-button-safe, mirroring the pattern Billing
 // already uses: General (name/slug/logo/timezone/locale) · Branding
 // (placeholder) · Security (IP allowlist — split out from the old "Locale"

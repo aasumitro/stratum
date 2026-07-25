@@ -12,10 +12,7 @@ import type { Organization } from "@/types/organization"
  * Shared form logic for creating an organization — used by
  * create-organization-form.tsx, the Details -> Plan -> Review wizard
  * rendered both in onboarding and in the post-onboarding "create another
- * organization" dialog. Previously these were two independent
- * implementations; only the onboarding one got a plan picker, and both
- * hardcoded country_code to "US" regardless of which countries are
- * actually active. Centralizing here so both surfaces stay in sync.
+ * organization" dialog. Centralizing here so both surfaces stay in sync.
  *
  * Every organization creation goes through Details -> Plan -> Review,
  * first organization or not — plan and cycle are required by the API (no

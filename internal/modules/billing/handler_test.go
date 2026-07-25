@@ -17,7 +17,7 @@ import (
 
 // changePlanRequest.Plan has no format/enum validation at the binding layer
 // — a static oneof would reject valid catalog plans added through Studio —
-// "unknown plan" is a service-layer, catalog-backed check now
+// "unknown plan" is a service-layer, catalog-backed check
 // (TestIntegration_ChangePlan_UnknownPlan). This test covers the binding
 // layer's remaining job: cycle is still required/enum-validated.
 func TestChangePlan_MissingCycle(t *testing.T) {
@@ -54,8 +54,7 @@ func TestChangePlan_TermsAgreedFalse(t *testing.T) {
 	}
 }
 
-// createPaymentLink no longer takes currency from request body — it's resolved from the subscription.
-// Tests for invalid/missing currency are no longer applicable.
+// createPaymentLink resolves currency from the subscription.
 
 // --- webhook payload tests (empty secret = skip verification) ---
 
@@ -278,7 +277,7 @@ func TestResumeSubscription_OwnerAllowed(t *testing.T) {
 
 // --- regenerate payment link tests ---
 
-// regeneratePaymentLink no longer takes currency from request body — resolved from subscription.
+// regeneratePaymentLink resolves currency from the subscription.
 
 // --- usage tests ---
 
@@ -381,9 +380,7 @@ func rbacOwnerOnlyCases() []struct {
 }
 
 // rbacMemberVisibleCases: every billing tab's GET is viewable by any member,
-// not just the owner. These used to be blanket owner-only, which silently
-// broke the read-only member/admin view for everything except the bare
-// subscription status check.
+// not just the owner.
 func rbacMemberVisibleCases() []struct {
 	method string
 	path   string

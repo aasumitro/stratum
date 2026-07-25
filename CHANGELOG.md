@@ -6,6 +6,48 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-25
+
+### Added
+
+- Self-service subscription plan changes: upgrade, downgrade (with overage
+  handling), cancel, and extend flows, each with a dedicated wizard/dialog
+  and proration preview
+- Extend pricing: 12+ month extensions bill yearly-price blocks plus a
+  monthly-price remainder, cap unchanged at 2 years
+- `kind: "extension"` on invoices to distinguish extension invoices from
+  normal subscription and renewal invoices
+- Centralized permission matrix as the single source of truth for
+  role-based permissions
+- Shared `RouteTabs` component for Settings, Billing, and Members
+  sub-navigation, with horizontal scrolling for overflow
+
+### Changed
+
+- Defer subscription `period_end` updates until the extension invoice is
+  confirmed paid via webhook
+- Per-subscription invoice-number uniqueness (`UNIQUE(subscription_id,
+  invoice_number)`) replacing the previous global constraint
+- `usePermissions()` now reads from the shared permission matrix;
+  navigation hides inaccessible items instead of rendering them disabled
+- Import Members and Invite Member consolidated into a single dropdown
+  action
+
+### Fixed
+
+- Idempotent paid-webhook handling; roll back the full transaction if
+  applying payment fails instead of leaving invoices partially updated
+- Stale delayed renewal reminder/auto-invoice jobs are ignored after a
+  subscription period changes
+- Duplicate extension requests rejected while one is already pending;
+  expired subscriptions reactivate correctly once a pending extension is
+  paid
+- Member usage initialized at provisioning so the organization owner
+  occupies the first seat immediately
+- Organization layout checks pending invoices directly instead of
+  duplicated billing-block logic; non-owners are redirected from
+  owner-only Billing pages
+
 ## [0.1.0] - 2026-07-23
 
 Initial release. See `README.md` for what Stratum is and `docs/` for

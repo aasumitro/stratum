@@ -53,11 +53,11 @@ export function usePayments(organizationId: string) {
   })
 }
 
-export function useBillingHistory(organizationId: string) {
+export function useBillingHistory(organizationId: string, enabled = true) {
   return useHTTPQuery<SubscriptionHistory[]>({
     queryKey: queryKeys.billing.history(organizationId),
     url: API.billing(organizationId, "history"),
-    options: { retry: false },
+    options: { retry: false, enabled },
   })
 }
 

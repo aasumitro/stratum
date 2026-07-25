@@ -842,7 +842,7 @@
     }
   },
   "billing": {
-    "invoicesOwnerOnlyRedirect": "Faktur dan riwayat hanya dapat dilihat oleh pemilik organisasi.",
+    "invoicesOwnerOnlyNote": "Faktur dan riwayat hanya dapat dilihat oleh pemilik organisasi.",
     "payment": {
       "successTitle": "Pembayaran berhasil!",
       "successDescription": "Terima kasih atas pembayaran Anda. Tab ini akan segera ditutup.",
@@ -850,11 +850,6 @@
       "cancelDescription": "Tidak ada tagihan yang diproses. Anda dapat menutup tab ini dan mencoba lagi.",
       "viewBilling": "Lihat tagihan",
       "goToOrganizations": "Ke daftar organisasi"
-    },
-    "nav": {
-      "subscription": "Paket",
-      "invoices": "Faktur",
-      "history": "Riwayat paket"
     },
     "subscription": {
       "title": "Langganan",
@@ -877,7 +872,9 @@
       "planChanged": "Paket diubah",
       "planChangeFailed": "Gagal mengubah paket",
       "downgradeSuccess": "Paket diturunkan",
-      "downgradeFailed": "Gagal menurunkan paket"
+      "downgradeFailed": "Gagal menurunkan paket",
+      "latestActivity": "Aktivitas terbaru",
+      "activeSince": "Aktif sejak {{date}}"
     },
     "extend": {
       "trigger": "Perpanjang",
@@ -914,11 +911,11 @@
       "confirmExtend": "Konfirmasi",
       "successTitle": "Faktur perpanjangan dibuat",
       "successDescription": "Belum ada perubahan — bayar faktur di bawah untuk menerapkannya.",
-      "successDescriptionFallback": "Faktur dibuat — bayar dari tab Faktur untuk menambah waktu.",
+      "successDescriptionFallback": "Faktur dibuat — bayar di bawah untuk menambah waktu.",
       "amountDueLabel": "Jumlah tagihan",
       "dueDateLabel": "Jatuh tempo",
-      "pendingPaymentNote": "Langganan Anda diperpanjang ke tanggal perpanjangan baru setelah faktur ini dibayar, dari tab Faktur.",
-      "pendingPaymentAnnualNote": "Siklus penagihan Anda beralih ke tahunan dan langganan Anda diperpanjang setelah faktur ini dibayar, dari tab Faktur.",
+      "pendingPaymentNote": "Langganan Anda diperpanjang ke tanggal perpanjangan baru setelah faktur ini dibayar, di bawah.",
+      "pendingPaymentAnnualNote": "Siklus penagihan Anda beralih ke tahunan dan langganan Anda diperpanjang setelah faktur ini dibayar, di bawah.",
       "toastSuccess": "Faktur perpanjangan dibuat — bayar untuk menambah waktu",
       "toastFailed": "Gagal memperpanjang langganan"
     },
@@ -1032,6 +1029,8 @@
       "payFailed": "Gagal membuka tautan pembayaran",
       "downloadPdf": "Unduh PDF",
       "pdfFailed": "Gagal mengunduh PDF",
+      "previewPdf": "Pratinjau PDF",
+      "previewFailed": "Gagal memuat pratinjau PDF",
       "regenerate": "Buat ulang",
       "regenerating": "Memproses…",
       "regenerateFailed": "Gagal membuat ulang tautan pembayaran",
@@ -1045,12 +1044,14 @@
       "unlimited": "Tanpa batas",
       "metric": {
         "members": "Anggota",
-        "storage_bytes": "Penyimpanan"
+        "storage": "Penyimpanan"
       },
-      "planAddonSplit": "{{plan}} paket + {{addon}} add-on"
+      "planAddonSplit": "{{plan}} paket + {{addon}} add-on",
+      "percentUsed": "{{percent}}% terpakai"
     },
     "history": {
       "title": "Riwayat paket",
+      "description": "Setiap perubahan pada langganan ini, dari yang terlama hingga terbaru.",
       "actionCol": "Aksi",
       "fromCol": "Dari",
       "toCol": "Ke",
@@ -1058,7 +1059,21 @@
       "noHistory": "Belum ada riwayat langganan.",
       "changeCol": "Perubahan",
       "amountCol": "Jumlah",
-      "byCol": "Oleh"
+      "byCol": "Oleh",
+      "summaryChange": "{{name}} mengubah paket: {{fromPlan}} → {{toPlan}} · {{timeAgo}}",
+      "summaryStart": "{{name}} memulai paket {{toPlan}} · {{timeAgo}}",
+      "summaryCancel": "{{name}} membatalkan paket · {{timeAgo}}",
+      "summaryResume": "{{name}} melanjutkan paket · {{timeAgo}}",
+      "summaryExpire": "{{name}} membiarkan paket kedaluwarsa · {{timeAgo}}",
+      "summaryExtend": "{{name}} memperpanjang paket · {{timeAgo}}",
+      "viewFull": "Lihat riwayat lengkap",
+      "logChange": "Mengubah paket: {{fromPlan}} → {{toPlan}}",
+      "logStart": "Memulai paket {{toPlan}}",
+      "logCancel": "Membatalkan paket",
+      "logResume": "Melanjutkan paket",
+      "logExpire": "Paket kedaluwarsa",
+      "logExtend": "Memperpanjang paket",
+      "loadMore": "Muat acara lainnya"
     },
     "payments": {
       "title": "Pembayaran",
@@ -1071,9 +1086,14 @@
     },
     "features": {
       "title": "Fitur paket",
+      "description": "Semua yang termasuk dalam paket Anda, dan yang terbuka jika Anda upgrade.",
       "noFeatures": "Tidak ada data fitur.",
       "upgrade": "Upgrade",
-      "lockedTitle": "Upgrade untuk membuka"
+      "lockedTitle": "Upgrade untuk membuka",
+      "viewAll": "Lihat fitur",
+      "includedCount": "{{count}} termasuk",
+      "includedTitle": "Termasuk dalam paket Anda",
+      "unlockWith": "Buka dengan {{plan}}"
     },
     "ownerOnly": "Hanya untuk pemilik",
     "ownerOnlyDesc": "Informasi penagihan hanya dapat dilihat oleh pemilik organisasi.",
@@ -1086,6 +1106,9 @@
       "activateNowTitle": "Lewati sisa masa uji coba?",
       "activateNowDescription": "Anda akan langsung ditagih untuk satu periode penagihan penuh sesuai paket Anda saat ini, dan langganan Anda langsung aktif tanpa menunggu masa uji coba berakhir.",
       "activating": "Mengaktifkan…",
+      "activateSuccessTitle": "Langganan diaktifkan",
+      "activateSuccessDescription": "Langganan Anda sudah aktif sekarang — bayar faktur di bawah untuk mempertahankannya.",
+      "activatePendingPaymentNote": "Langganan Anda sudah aktif, tetapi tetap begitu hanya setelah faktur ini dibayar, di bawah.",
       "activated": "Langganan diaktifkan — periksa Faktur untuk membayar",
       "activateFailed": "Gagal mengaktifkan langganan"
     },

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -324,10 +325,33 @@ func fillColor(p *gopdf.GoPdf, c rgbColor)      { p.SetFillColor(c.r, c.g, c.b) 
 func FormatMoney(amountMinor int64, currency string) string {
 	switch currency {
 	case "IDR":
-		return fmt.Sprintf("Rp%d", amountMinor)
+		return "Rp" + groupThousands(amountMinor)
 	default:
 		return fmt.Sprintf("$%d.%02d", amountMinor/100, amountMinor%100)
 	}
+}
+
+// groupThousands inserts "." as a thousands separator (e.g. 299000 ->
+// "299.000") — IDR has no minor unit here, so the raw integer needs the
+// same grouping the frontend already applies via
+// Number.prototype.toLocaleString("id-ID") for the same amount_cents value.
+func groupThousands(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var out []byte
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, '.')
+		}
+		out = append(out, c)
+	}
+	if neg {
+		return "-" + string(out)
+	}
+	return string(out)
 }
 
 func formatPercent(bps int) string {

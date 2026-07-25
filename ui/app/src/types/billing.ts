@@ -22,13 +22,13 @@ export type HistoryAction =
   | "cancel"
   | "resume"
   | "expire"
+  | "extend"
 
 export interface Subscription {
   id: string
   subject_type: string
   subject_id: string
-  // Real FK to billing.plans(id) — no longer a fixed 3-value enum, see
-  // CATALOG.md's catalog rework.
+  // Real FK to billing.plans(id).
   plan: string
   status: SubscriptionStatus
   cycle: BillingCycle
@@ -122,8 +122,7 @@ export interface UsageMetric {
 }
 
 // Entitlement is the resolved per-feature view returned by
-// GET /organizations/:id/billing/features — replaces what used to be a
-// thin string[] of feature ids. limit/current/remaining only apply to
+// GET /organizations/:id/billing/features. limit/current/remaining only apply to
 // type="metered" (limit=-1 means unlimited); config_value only applies to
 // type="config".
 export interface Entitlement {

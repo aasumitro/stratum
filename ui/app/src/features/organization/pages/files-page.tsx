@@ -41,8 +41,7 @@ export interface UploadItem {
 }
 
 // Folder tree + breadcrumb, bulk-select action bar, per-row upload
-// progress with cancel, drag-drop-anywhere, 30-day trash. Was a flat,
-// single-folder file list with a bare single-file input before this pass.
+// progress with cancel, drag-drop-anywhere, 30-day trash.
 export function FilesPage() {
   const { t } = useTranslation()
   const { organizationId } = useParams({ strict: false }) as {

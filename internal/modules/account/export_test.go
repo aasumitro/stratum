@@ -51,8 +51,7 @@ func NewModuleForTestWithAdminAndRedis(pool *pgxpool.Pool, adminURL, serviceRole
 // (GDPR data-export) need a real cross-module read against whatever they
 // seed into organization.organizations, not a hand-rolled stub. Carries a
 // verified email claim derived from authSub, matching what a real Supabase
-// JWT would have, so POST /me (which now sources email from the claim, not
-// the request body) succeeds — use NewModuleEngineWithEmail instead when a
+// JWT would have, so POST /me succeeds — use NewModuleEngineWithEmail instead when a
 // test asserts the resulting email's exact value.
 func NewModuleEngine(pool *pgxpool.Pool, authSub string) *gin.Engine {
 	return NewModuleEngineWithEmail(pool, authSub, authSub+"@test.local")

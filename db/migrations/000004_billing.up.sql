@@ -326,15 +326,15 @@ INSERT INTO billing.plans (id, name, description, prices, sort_order) VALUES
 INSERT INTO billing.plan_features (plan_id, feature_id, limit_value, config_value) VALUES
     ('solo',  'members', 1, NULL),
     ('solo',  'storage', 250 * 1024 * 1024, NULL),
-    ('solo',  'api_rate_limit', NULL, '{"requests_per_minute": 200}'),
-    ('solo',  'audit_retention_days', NULL, '{"days": 7}'),
+    ('solo',  'api_rate_limit', NULL, '{"requests_per_minute": 120}'),
+    ('solo',  'audit_retention_days', NULL, '{"days": 30}'),
     ('growth', 'members', 15, NULL),
     ('growth', 'storage', 1024 * 1024 * 1024, NULL),
     ('growth', 'priority_support', NULL, NULL),
     ('growth', 'advanced_analytics', NULL, NULL),
     ('growth', 'webhooks', NULL, NULL),
-    ('growth', 'api_rate_limit', NULL, '{"requests_per_minute": 1200}'),
-    ('growth', 'audit_retention_days', NULL, '{"days": 30}'),
+    ('growth', 'api_rate_limit', NULL, '{"requests_per_minute": 720}'),
+    ('growth', 'audit_retention_days', NULL, '{"days": 90}'),
     ('custom', 'members', -1, NULL),
     ('custom', 'storage', -1, NULL),
     ('custom', 'priority_support', NULL, NULL),
@@ -346,7 +346,22 @@ INSERT INTO billing.plan_features (plan_id, feature_id, limit_value, config_valu
     ('custom', 'sso', NULL, NULL),
     ('custom', 'custom_domain', NULL, NULL),
     ('custom', 'api_rate_limit', NULL, '{"requests_per_minute": -1}'),
-    ('custom', 'audit_retention_days', NULL, '{"days": -1}');
+    ('custom', 'audit_retention_days', NULL, '{"days": -1}'),
+    -- The rest of the catalog (unlimited counts for the two metered
+    -- features, presence-only for the booleans) — solo/growth are
+    -- unchanged, custom is the top tier so it grants everything else.
+    ('custom', 'workspaces', -1, NULL),
+    ('custom', 'teams', -1, NULL),
+    ('custom', 'roles_permissions', NULL, NULL),
+    ('custom', 'api_access', NULL, NULL),
+    ('custom', 'personal_access_tokens', NULL, NULL),
+    ('custom', 'integrations', NULL, NULL),
+    ('custom', 'audit_logs', NULL, NULL),
+    ('custom', 'two_factor_policy', NULL, NULL),
+    ('custom', 'ip_allowlist', NULL, NULL),
+    ('custom', 'custom_branding', NULL, NULL),
+    ('custom', 'export_data', NULL, NULL),
+    ('custom', 'compliance_reports', NULL, NULL);
 
 -- Unit-based addons.
 -- Quantity is stored in subscription_addons.

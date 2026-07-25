@@ -200,9 +200,8 @@ func (w *Writer) flush(batch []event) {
 }
 
 // Stop closes the channel and blocks until run has drained it and flushed
-// the final batch — previously this only closed the channel and returned
-// immediately, so a caller relying on the doc's promise (e.g. shutdown code
-// closing the DB pool right after) could race the final flush against the
+// the final batch — so a caller relying on the doc's promise (e.g. shutdown code
+// closing the DB pool right after) will not race the final flush against the
 // pool going away.
 func (w *Writer) Stop() {
 	close(w.ch)

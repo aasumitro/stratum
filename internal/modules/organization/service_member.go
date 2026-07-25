@@ -11,8 +11,7 @@ import (
 )
 
 // listMembers stitches membership rows with profile data (email/full_name/
-// avatar_url) resolved in one batch call, replacing what used to be a
-// cross-schema JOIN into account.users. A missing userReader (or a lookup
+// avatar_url) resolved in one batch call. A missing userReader (or a lookup
 // failure) fails open — members are returned with profile fields omitted
 // rather than the whole list erroring out, same nil-safe convention as
 // every other optional cross-module dependency in this codebase.

@@ -353,10 +353,7 @@ type lineItemSpec struct {
 // plan price + attached addon charges - any live coupon discount, clamped
 // to >= 0. Centralizes what every invoice-creation call site
 // (provisionSubscription, changePlan, resumeSubscription,
-// HandleSubscriptionAutoInvoice) previously computed as a bare
-// planInfo.Price(currency, cycle) — coupons and addons both need to adjust
-// that same number, so this is the one place both apply, instead of
-// threading two more concerns into 4 call sites separately.
+// HandleSubscriptionAutoInvoice) computes.
 func (s *service) composeInvoiceAmount(
 	ctx context.Context, q db.Querier, subscriptionID string,
 	planInfo *contracts.PlanInfo, currency, cycle string,
