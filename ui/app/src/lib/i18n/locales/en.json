@@ -936,6 +936,22 @@
       "successTitle": "Subscription cancelled",
       "successDescription": "Your access continues until {{date}}. You can resume anytime before then."
     },
+    "upgrade": {
+      "changesTitle": "What changes",
+      "changesDescription": "Review what's different before confirming.",
+      "newFeatures": "Included with {{plan}}",
+      "noNewFeatures": "No new features — you already have everything this plan includes.",
+      "cycleChangeTitle": "Billing cycle",
+      "cycleChangeFrom": "Switching from {{from}} to {{to}} billing.",
+      "newPrice": "New price: {{price}}",
+      "featuresUnchanged": "Your features and limits stay exactly the same.",
+      "reviewTitle": "Confirm plan change",
+      "reviewDescription": "Review the pricing before confirming.",
+      "termsAgreed": "I agree to the billing terms for this change.",
+      "confirmUpgrade": "Confirm change",
+      "successTitle": "Plan changed",
+      "successDescription": "Your subscription is now on {{plan}}."
+    },
     "plans": {
       "title": "Choose a plan",
       "monthly": "Monthly",
@@ -944,7 +960,6 @@
       "perYear": "/yr",
       "currentPlan": "Current plan",
       "selectPlan": "Select",
-      "selecting": "Selecting…",
       "changed": "Plan updated",
       "changeFailed": "Failed to update plan",
       "customPricing": "Custom pricing",
@@ -954,8 +969,7 @@
       "changePlanDescription": "Proration converts remaining value to time — no charge or refund today.",
       "noChargeToday": "No charge today.",
       "prorationExplainer": "Your remaining value converts to time: new period end {{newDate}} (was {{oldDate}}).",
-      "nextInvoiceTotal": "Next invoice total: {{amount}}",
-      "confirmChange": "Confirm change"
+      "nextInvoiceTotal": "Next invoice total: {{amount}}"
     },
     "invoices": {
       "title": "Invoices",

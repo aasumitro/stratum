@@ -6582,7 +6582,8 @@ const docTemplate = `{
             "type": "object",
             "required": [
                 "cycle",
-                "plan"
+                "plan",
+                "terms_agreed"
             ],
             "properties": {
                 "cycle": {
@@ -6595,6 +6596,10 @@ const docTemplate = `{
                 "plan": {
                     "description": "Plan is validated dynamically against billing.plans via the catalog\nlookup in changePlan — no oneof here: a static enum would reject any plan an\noperator adds through Studio's catalog composition UI that isn't one\nof the 3 originally-seeded slugs.",
                     "type": "string"
+                },
+                "terms_agreed": {
+                    "description": "TermsAgreed must be true — binding:\"required\" on a bool rejects both a\nmissing field and an explicit false, since the validator treats false\nas the zero value.",
+                    "type": "boolean"
                 }
             }
         },

@@ -1,7 +1,9 @@
 package billing
 
 import (
+	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -67,6 +69,15 @@ type changePlanRequest struct {
 	// of the 3 originally-seeded slugs.
 	Plan  string `json:"plan"  binding:"required"`
 	Cycle string `json:"cycle" binding:"required,oneof=monthly yearly"`
+	// TermsAgreed must be true — binding:"required" on a bool rejects both a
+	// missing field and an explicit false, since the validator treats false
+	// as the zero value.
+	TermsAgreed bool `json:"terms_agreed" binding:"required"`
+}
+
+type changePlanMetadata struct {
+	TermsAgreed bool      `json:"terms_agreed"`
+	AgreedAt    time.Time `json:"agreed_at"`
 }
 
 // changePlan godoc
@@ -99,9 +110,13 @@ func (h *handler) changePlan(c *gin.Context) {
 		return
 	}
 
-	sub, err := h.svc.changePlan(
+	metadata, _ := json.Marshal(changePlanMetadata{
+		TermsAgreed: req.TermsAgreed,
+		AgreedAt:    time.Now().UTC(),
+	})
+	_, sub, err := h.svc.changePlanWithMetadata(
 		c.Request.Context(), subjectTypeOrganization,
-		ws.ID, req.Plan, req.Cycle, reqctx.Subject(c))
+		ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), metadata)
 	if err != nil {
 		response.FromError(c, err)
 		return

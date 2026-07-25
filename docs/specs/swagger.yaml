@@ -250,9 +250,16 @@ definitions:
           operator adds through Studio's catalog composition UI that isn't one
           of the 3 originally-seeded slugs.
         type: string
+      terms_agreed:
+        description: |-
+          TermsAgreed must be true — binding:"required" on a bool rejects both a
+          missing field and an explicit false, since the validator treats false
+          as the zero value.
+        type: boolean
     required:
     - cycle
     - plan
+    - terms_agreed
     type: object
   countryRecord:
     properties:

@@ -238,7 +238,10 @@ export function useActivateTrialNow(organizationId: string) {
 export function useChangePlan(organizationId: string) {
   const queryClient = useQueryClient()
   const { t } = useTranslation()
-  return useHTTPActionPatch<void, { plan: string; cycle: string }>({
+  return useHTTPActionPatch<
+    void,
+    { plan: string; cycle: string; terms_agreed: boolean }
+  >({
     url: API.billing(organizationId, "plan"),
     options: {
       onSuccess: (_data, vars) => {

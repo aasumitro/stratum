@@ -201,12 +201,13 @@ test("downgrade with overage shows disclosure and candidates", async ({
     }
   )
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let downgradeRequestPayload: any = null
+  const captured: {
+    payload: { plan?: string; preferred_member_auth_subs?: string[] } | null
+  } = { payload: null }
   await page.route(
     "**/v1/organizations/org-1/billing/downgrade",
     async (route) => {
-      downgradeRequestPayload = route.request().postDataJSON()
+      captured.payload = route.request().postDataJSON()
       return route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -249,9 +250,9 @@ test("downgrade with overage shows disclosure and candidates", async ({
   await page.getByRole("button", { name: /confirm downgrade/i }).click()
 
   // Verify request sent empty arrays for manual picks, as we didn't interact
-  expect(downgradeRequestPayload).not.toBeNull()
-  expect(downgradeRequestPayload?.plan).toBe("solo")
-  expect(downgradeRequestPayload?.preferred_member_auth_subs).toEqual([])
+  expect(captured.payload).not.toBeNull()
+  expect(captured.payload?.plan).toBe("solo")
+  expect(captured.payload?.preferred_member_auth_subs).toEqual([])
 
   // Verify success screen distinguishing removed items
   await expect(

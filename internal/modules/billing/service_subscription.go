@@ -201,13 +201,6 @@ func (s *service) getSubscription(ctx context.Context, subjectType, subjectID st
 	return sub, nil
 }
 
-func (s *service) changePlan(
-	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string,
-) (sub *subscriptionRecord, err error) {
-	_, sub, err = s.changePlanWithMetadata(ctx, subjectType, subjectID, plan, cycle, changedBy, nil)
-	return sub, err
-}
-
 func (s *service) changePlanWithMetadata(
 	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string, metadata []byte,
 ) (historyID string, sub *subscriptionRecord, err error) {

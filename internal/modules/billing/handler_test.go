@@ -36,6 +36,24 @@ func TestChangePlan_MissingPlan(t *testing.T) {
 	}
 }
 
+func TestChangePlan_MissingTermsAgreed(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngine().ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, "/billing/plan",
+		`{"plan":"growth","cycle":"monthly"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
+func TestChangePlan_TermsAgreedFalse(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngine().ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, "/billing/plan",
+		`{"plan":"growth","cycle":"monthly","terms_agreed":false}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422, got %d", w.Code)
+	}
+}
+
 // createPaymentLink no longer takes currency from request body — it's resolved from the subscription.
 // Tests for invalid/missing currency are no longer applicable.
 

@@ -127,7 +127,7 @@ func TestResolveDowngradeOverage(t *testing.T) {
 		}
 	})
 
-	// From PLAN-007's own edge cases: "if there aren't enough removable
+	// Edge case: if there aren't enough removable
 	// members/files to fully close the gap, the downgrade still proceeds,
 	// leaving the org over-limit on that dimension." Never actually
 	// exercised until now — setupOrgWithMembers gives exactly 3 removable

@@ -936,6 +936,22 @@
       "successTitle": "Langganan dibatalkan",
       "successDescription": "Akses Anda berlanjut hingga {{date}}. Anda dapat melanjutkan kapan saja sebelum itu."
     },
+    "upgrade": {
+      "changesTitle": "Apa yang berubah",
+      "changesDescription": "Tinjau apa yang berbeda sebelum mengonfirmasi.",
+      "newFeatures": "Termasuk dalam {{plan}}",
+      "noNewFeatures": "Tidak ada fitur baru — Anda sudah memiliki semua yang disertakan paket ini.",
+      "cycleChangeTitle": "Siklus penagihan",
+      "cycleChangeFrom": "Beralih dari penagihan {{from}} ke {{to}}.",
+      "newPrice": "Harga baru: {{price}}",
+      "featuresUnchanged": "Fitur dan batas Anda tetap sama persis.",
+      "reviewTitle": "Konfirmasi perubahan paket",
+      "reviewDescription": "Tinjau harga sebelum mengonfirmasi.",
+      "termsAgreed": "Saya setuju dengan ketentuan penagihan untuk perubahan ini.",
+      "confirmUpgrade": "Konfirmasi perubahan",
+      "successTitle": "Paket diubah",
+      "successDescription": "Langganan Anda sekarang menggunakan {{plan}}."
+    },
     "plans": {
       "title": "Pilih paket",
       "monthly": "Bulanan",
@@ -944,7 +960,6 @@
       "perYear": "/thn",
       "currentPlan": "Paket saat ini",
       "selectPlan": "Pilih",
-      "selecting": "Memilih…",
       "changed": "Paket diperbarui",
       "changeFailed": "Gagal memperbarui paket",
       "customPricing": "Harga kustom",
@@ -954,8 +969,7 @@
       "changePlanDescription": "Prorata mengonversi sisa nilai menjadi waktu — tidak ada biaya atau pengembalian dana hari ini.",
       "noChargeToday": "Tidak ada biaya hari ini.",
       "prorationExplainer": "Sisa nilai Anda dikonversi menjadi waktu: akhir periode baru {{newDate}} (sebelumnya {{oldDate}}).",
-      "nextInvoiceTotal": "Total faktur berikutnya: {{amount}}",
-      "confirmChange": "Konfirmasi perubahan"
+      "nextInvoiceTotal": "Total faktur berikutnya: {{amount}}"
     },
     "invoices": {
       "title": "Tagihan",

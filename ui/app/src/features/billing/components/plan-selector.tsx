@@ -1,6 +1,5 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { IconLoader2 } from "@tabler/icons-react"
 import {
   Dialog,
   DialogContent,
@@ -11,16 +10,13 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  usePlans,
-  useChangePlan,
-  useInvoicePreview,
-} from "@/features/billing/hooks"
+import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
 import { formatPrice } from "@/features/billing/utils"
 import { formatMoney } from "@/lib/format"
 import type { BillingCycle } from "@/types/billing"
 import { cn } from "@/lib/ui"
 import { DowngradeWizard } from "./downgrade-wizard"
+import { UpgradeWizard } from "./upgrade-wizard"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -61,8 +57,6 @@ export function PlanSelector({
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
   const { data, isLoading } = usePlans()
-  const { mutate: changePlan, isPending: changing } =
-    useChangePlan(organizationId)
 
   const plans = (data?.data ?? [])
     .filter((p) => p.active)
@@ -75,6 +69,7 @@ export function PlanSelector({
     selected && current && selected.sort_order < current.sort_order
 
   const [showDowngradeWizard, setShowDowngradeWizard] = useState(false)
+  const [showUpgradeWizard, setShowUpgradeWizard] = useState(false)
   const { data: previewData, isFetching: previewLoading } = useInvoicePreview(
     organizationId,
     selectedPlan,
@@ -87,15 +82,16 @@ export function PlanSelector({
     setSelectedPlan(currentPlan)
     setCycle(currentCycle)
     setShowDowngradeWizard(false)
+    setShowUpgradeWizard(false)
   }
 
-  // Deliberately not re-checking isDowngrade here: it's only meant to gate
-  // *entry* into the wizard (see the isDowngrade check where
-  // setShowDowngradeWizard(true) is called below). Once the wizard is open,
-  // a successful downgrade changes currentPlan to match selectedPlan via
-  // query invalidation, which flips isDowngrade to false on the very next
-  // render — re-checking it here would unmount the wizard out from under
-  // itself before its own success step ever gets a chance to render.
+  // Deliberately not re-checking isDowngrade/isChanging here: they're only
+  // meant to gate *entry* into a wizard (see where setShowDowngradeWizard/
+  // setShowUpgradeWizard(true) are called below). Once a wizard is open, a
+  // successful change updates currentPlan/currentCycle via query
+  // invalidation, which flips these on the very next render — re-checking
+  // them here would unmount the wizard out from under itself before its own
+  // success step ever gets a chance to render.
   if (showDowngradeWizard) {
     return (
       <DowngradeWizard
@@ -105,6 +101,23 @@ export function PlanSelector({
         targetPlan={selectedPlan}
         targetCycle={cycle}
         onBackToPlans={() => setShowDowngradeWizard(false)}
+      />
+    )
+  }
+
+  if (showUpgradeWizard) {
+    return (
+      <UpgradeWizard
+        organizationId={organizationId}
+        open={open}
+        onOpenChange={onOpenChange}
+        targetPlan={selectedPlan}
+        targetCycle={cycle}
+        currentPlan={currentPlan}
+        currentCycle={currentCycle}
+        currentPeriodEnd={currentPeriodEnd}
+        currency={currency}
+        onBackToPlans={() => setShowUpgradeWizard(false)}
       />
     )
   }
@@ -230,28 +243,16 @@ export function PlanSelector({
             {t("common.cancel")}
           </Button>
           <Button
-            disabled={
-              !isChanging || selectedPlan === "custom" || changing || !selected
-            }
+            disabled={!isChanging || selectedPlan === "custom" || !selected}
             onClick={() => {
               if (isDowngrade) {
                 setShowDowngradeWizard(true)
               } else {
-                changePlan(
-                  { plan: selectedPlan, cycle },
-                  { onSuccess: () => onOpenChange(false) }
-                )
+                setShowUpgradeWizard(true)
               }
             }}
           >
-            {changing && (
-              <IconLoader2 data-icon="inline-start" className="animate-spin" />
-            )}
-            {changing
-              ? t("billing.plans.selecting")
-              : isDowngrade
-                ? t("common.continue")
-                : t("billing.plans.confirmChange")}
+            {t("common.continue")}
           </Button>
         </DialogFooter>
       </DialogContent>

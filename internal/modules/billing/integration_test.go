@@ -516,7 +516,7 @@ func TestIntegration_ChangePlan_UpgradeSoloToGrowth(t *testing.T) {
 
 	e := billing.NewModuleEngine(pool, user, orgID, stubRefReader{})
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("changePlan: want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -524,6 +524,53 @@ func TestIntegration_ChangePlan_UpgradeSoloToGrowth(t *testing.T) {
 	data := getSubscriptionData(t, e, orgID)
 	if data["plan"] != "growth" {
 		t.Errorf("after upgrade: want plan=growth, got %v", data["plan"])
+	}
+}
+
+// TestIntegration_ChangePlan_RecordsTermsAgreedInHistory posts a real
+// request through the full handler->service->DB stack and asserts
+// terms_agreed/agreed_at actually land in subscription_history.metadata —
+// not a mocked network layer, and not just that the handler accepted the
+// shape.
+func TestIntegration_ChangePlan_RecordsTermsAgreedInHistory(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_upgradeterms_user"
+		orgID = "00000000-0000-0000-0000-000000000d16"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	beforeRequest := time.Now()
+	e := billing.NewModuleEngine(pool, user, orgID, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("changePlan: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var metadataRaw []byte
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata FROM billing.subscription_history WHERE subscription_id=(SELECT id FROM billing.subscriptions WHERE subject_id=$1) AND action='upgrade' ORDER BY changed_at DESC LIMIT 1`,
+		orgID).Scan(&metadataRaw); err != nil {
+		t.Fatalf("query subscription_history: %v", err)
+	}
+	var got struct {
+		TermsAgreed bool      `json:"terms_agreed"`
+		AgreedAt    time.Time `json:"agreed_at"`
+	}
+	if err := json.Unmarshal(metadataRaw, &got); err != nil {
+		t.Fatalf("unmarshal subscription_history metadata: %v", err)
+	}
+	if !got.TermsAgreed {
+		t.Error("subscription_history metadata: want terms_agreed=true")
+	}
+	if got.AgreedAt.Before(beforeRequest) {
+		t.Errorf("subscription_history metadata: agreed_at %v is before the request was made (%v)", got.AgreedAt, beforeRequest)
 	}
 }
 
@@ -546,7 +593,7 @@ func TestIntegration_ChangePlan_UnknownPlan(t *testing.T) {
 	// validation shortcut anymore — changePlanRequest.Plan has no oneof —
 	// this now exercises changePlan's own refReader.GetPlanByID lookup,
 	// which is the real, dynamic catalog check).
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"enterprise","cycle":"monthly"}`))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"enterprise","cycle":"monthly","terms_agreed":true}`))
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Errorf("unknown plan should return 422, got %d: %s", w.Code, w.Body)
 	}
@@ -2595,7 +2642,7 @@ func TestIntegration_PreviewInvoice_Downgrade_IncludesOverage(t *testing.T) {
 
 	// Manually change plan to growth to test downgrade
 	wUpdate := httptest.NewRecorder()
-	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if wUpdate.Code != http.StatusOK {
 		t.Fatalf("upgrade: %d: %s", wUpdate.Code, wUpdate.Body)
 	}
@@ -2688,7 +2735,7 @@ func TestIntegration_DowngradeSubscription_ManualSelection(t *testing.T) {
 	}
 
 	wUpdate := httptest.NewRecorder()
-	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if wUpdate.Code != http.StatusOK {
 		t.Fatalf("upgrade: %d", wUpdate.Code)
 	}
@@ -2790,7 +2837,7 @@ func TestIntegration_DowngradeSubscription_AutoFill(t *testing.T) {
 	}
 
 	wUpdate := httptest.NewRecorder()
-	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if wUpdate.Code != http.StatusOK {
 		t.Fatalf("upgrade: %d", wUpdate.Code)
 	}
@@ -2850,7 +2897,7 @@ func TestIntegration_DowngradeSubscription_ResumeOnRetry(t *testing.T) {
 }
 
 // TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavailable
-// is the genuine version of the risk PLAN-007's reordering was designed to
+// is the genuine version of the risk the downgrade reordering was designed to
 // mitigate — its sibling test above only exercises the trivial "already on
 // target plan" branch by calling downgrade once when there was never
 // anything to resolve. This test actually interrupts a real downgrade
@@ -2859,7 +2906,7 @@ func TestIntegration_DowngradeSubscription_ResumeOnRetry(t *testing.T) {
 // unavailable — the same effect a real failure inside
 // ResolveDowngradeOverage would have, since either way the method returns
 // before resolving anything), confirms the org lands in the "benign
-// grandfathered" state PLAN-007's ordering promised (cheaper plan, still
+// grandfathered" state the ordering promised (cheaper plan, still
 // over limit, nothing removed), then retries and confirms the resume
 // branch actually finishes the job the first attempt couldn't.
 func TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavailable(t *testing.T) {
@@ -2905,7 +2952,7 @@ func TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavaila
 	}
 
 	wUpdate := httptest.NewRecorder()
-	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if wUpdate.Code != http.StatusOK {
 		t.Fatalf("upgrade: %d", wUpdate.Code)
 	}
@@ -3120,7 +3167,7 @@ func TestIntegration_DowngradeSubscription_AddonLimit(t *testing.T) {
 
 	// Upgrade to growth first
 	wUpdate := httptest.NewRecorder()
-	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if wUpdate.Code != http.StatusOK {
 		t.Fatalf("upgrade: %d", wUpdate.Code)
 	}
@@ -3255,7 +3302,7 @@ func TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember(t *test
 	// give it more chances to be caught if this ever regresses.
 	for i := range 15 {
 		wUpdate := httptest.NewRecorder()
-		e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+		e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 		if wUpdate.Code != http.StatusOK {
 			t.Fatalf("iteration %d: upgrade: %d", i, wUpdate.Code)
 		}
@@ -3361,7 +3408,7 @@ func TestIntegration_DowngradeSubscription_ConcurrentDoubleSubmit(t *testing.T) 
 	}
 
 	wUpdate := httptest.NewRecorder()
-	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly"}`))
+	e.ServeHTTP(wUpdate, httpserver.JSONTestRequest(http.MethodPatch, billingURL(wsID1)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if wUpdate.Code != http.StatusOK {
 		t.Fatalf("upgrade: %d", wUpdate.Code)
 	}
