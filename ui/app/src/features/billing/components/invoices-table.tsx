@@ -236,10 +236,10 @@ export function InvoicesTable({ organizationId }: Props) {
                         return (
                           <div
                             key={p.id}
-                            className="grid grid-cols-2 gap-4 p-4"
+                            className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2"
                           >
                             <div>
-                              <p className="text-xs font-medium uppercase text-muted-foreground">
+                              <p className="text-xs font-medium text-muted-foreground uppercase">
                                 {t("billing.payments.referenceCol")}
                               </p>
                               <p className="mt-1 font-mono text-sm">
@@ -247,7 +247,7 @@ export function InvoicesTable({ organizationId }: Props) {
                               </p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase text-muted-foreground">
+                              <p className="text-xs font-medium text-muted-foreground uppercase">
                                 {t("billing.payments.providerCol")}
                               </p>
                               <p className="mt-1 text-sm capitalize">
@@ -255,7 +255,7 @@ export function InvoicesTable({ organizationId }: Props) {
                               </p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase text-muted-foreground">
+                              <p className="text-xs font-medium text-muted-foreground uppercase">
                                 {t("billing.payments.amountCol")}
                               </p>
                               <p className="mt-1 text-sm font-medium">
@@ -263,7 +263,7 @@ export function InvoicesTable({ organizationId }: Props) {
                               </p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase text-muted-foreground">
+                              <p className="text-xs font-medium text-muted-foreground uppercase">
                                 {t("billing.payments.statusCol")}
                               </p>
                               <p className="mt-1">
@@ -279,7 +279,7 @@ export function InvoicesTable({ organizationId }: Props) {
                               </p>
                             </div>
                             <div>
-                              <p className="text-xs font-medium uppercase text-muted-foreground">
+                              <p className="text-xs font-medium text-muted-foreground uppercase">
                                 {t("billing.payments.dateCol")}
                               </p>
                               <p className="mt-1 text-sm">
@@ -287,7 +287,7 @@ export function InvoicesTable({ organizationId }: Props) {
                               </p>
                             </div>
                             {isLast && isActive && (
-                              <div className="flex items-end gap-1">
+                              <div className="col-span-full flex items-center justify-end gap-1">
                                 <PreviewButton
                                   invoiceId={inv.id}
                                   organizationId={organizationId}

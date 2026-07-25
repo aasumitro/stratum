@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { useStore } from "@tanstack/react-form"
+import { useSelector } from "@tanstack/react-store"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -29,9 +29,9 @@ export function OrganizationCartFields({ formState }: Props) {
   const { form } = formState
   const [addonDialogOpen, setAddonDialogOpen] = useState(false)
 
-  const countryCode = useStore(form.store, (s) => s.values.country_code)
-  const cycle = useStore(form.store, (s) => s.values.cycle) as BillingCycle
-  const selectedAddons = useStore(form.store, (s) => s.values.addons)
+  const countryCode = useSelector(form.store, (s) => s.values.country_code)
+  const cycle = useSelector(form.store, (s) => s.values.cycle) as BillingCycle
+  const selectedAddons = useSelector(form.store, (s) => s.values.addons)
 
   const { data: addonsCatalogData } = useAddonsCatalog(countryCode)
   const addonsById = new Map(

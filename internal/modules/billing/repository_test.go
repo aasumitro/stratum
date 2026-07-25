@@ -362,8 +362,8 @@ func TestIntegration_GetPlanByID_Known(t *testing.T) {
 	if err := json.Unmarshal(raw, &rateLimit); err != nil {
 		t.Fatalf("unmarshal api_rate_limit config_value: %v", err)
 	}
-	if rateLimit.RequestsPerMinute != 200 {
-		t.Errorf("want requests_per_minute=200 for solo, got %d", rateLimit.RequestsPerMinute)
+	if rateLimit.RequestsPerMinute != 120 {
+		t.Errorf("want requests_per_minute=120 for solo, got %d", rateLimit.RequestsPerMinute)
 	}
 }
 

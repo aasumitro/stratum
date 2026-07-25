@@ -53,16 +53,28 @@ export function SubscriptionHistorySection({ organizationId, isOwner }: Props) {
       })
       break
     case "cancel":
-      summary = t("billing.history.summaryCancel", { name, timeAgo: timeAgoLabel })
+      summary = t("billing.history.summaryCancel", {
+        name,
+        timeAgo: timeAgoLabel,
+      })
       break
     case "resume":
-      summary = t("billing.history.summaryResume", { name, timeAgo: timeAgoLabel })
+      summary = t("billing.history.summaryResume", {
+        name,
+        timeAgo: timeAgoLabel,
+      })
       break
     case "expire":
-      summary = t("billing.history.summaryExpire", { name, timeAgo: timeAgoLabel })
+      summary = t("billing.history.summaryExpire", {
+        name,
+        timeAgo: timeAgoLabel,
+      })
       break
     case "extend":
-      summary = t("billing.history.summaryExtend", { name, timeAgo: timeAgoLabel })
+      summary = t("billing.history.summaryExtend", {
+        name,
+        timeAgo: timeAgoLabel,
+      })
       break
   }
 

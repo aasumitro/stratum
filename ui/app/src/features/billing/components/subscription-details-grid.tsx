@@ -81,7 +81,9 @@ export function SubscriptionDetailsGrid({ sub, daysLeft, children }: Props) {
             <p className="text-sm font-medium text-muted-foreground">
               {t("billing.subscription.periodStart")}
             </p>
-            <p className="text-sm font-medium">{formatDate(sub.period_start)}</p>
+            <p className="text-sm font-medium">
+              {formatDate(sub.period_start)}
+            </p>
           </div>
           <div>
             <p className="text-sm font-medium text-muted-foreground">
