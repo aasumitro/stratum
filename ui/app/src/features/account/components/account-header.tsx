@@ -115,7 +115,7 @@ export function AccountHeader() {
                   }}
                   className="inline-flex items-center gap-1 rounded font-mono transition-colors hover:text-foreground"
                 >
-                  {accountId}
+                  {accountId.slice(0, 8)}...
                   <IconCopy
                     className="size-3"
                     aria-label={t("account.copyAccountId")}

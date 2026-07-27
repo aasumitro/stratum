@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { IconLoader2 } from "@tabler/icons-react"
 import {
@@ -32,6 +32,7 @@ export function RotateSecretDialog({
   const [secret, setSecret] = useState<string | null>(null)
   const [stored, setStored] = useState(false)
   const { mutate: rotate, isPending } = useRotateWebhookSecret(organizationId)
+  const cancelRef = useRef<HTMLButtonElement>(null)
 
   function handleClose() {
     setSecret(null)
@@ -41,7 +42,7 @@ export function RotateSecretDialog({
 
   return (
     <Dialog open={!!webhookId} onOpenChange={(v) => !v && handleClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" initialFocus={cancelRef}>
         <DialogHeader>
           <DialogTitle>{t("organization.webhooks.rotateTitle")}</DialogTitle>
           <DialogDescription>
@@ -83,7 +84,7 @@ export function RotateSecretDialog({
             </Button>
           ) : (
             <>
-              <Button variant="outline" onClick={handleClose}>
+              <Button ref={cancelRef} variant="outline" onClick={handleClose}>
                 {t("common.cancel")}
               </Button>
               <Button

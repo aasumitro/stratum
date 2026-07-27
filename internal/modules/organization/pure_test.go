@@ -47,6 +47,12 @@ func TestIPLocksOutCaller(t *testing.T) {
 		{"malformed CIDR entries are skipped, valid ones still apply", "10.0.0.42", []string{"garbage", "10.0.0.0/8"}, false},
 		{"IPv6 CIDR match", "2001:db8::1", []string{"2001:db8::/32"}, false},
 		{"IPv6 caller outside allowlist", "2001:db8::1", []string{"2001:db9::/32"}, true},
+		// Regression: this check shares its per-entry matching with the
+		// request-time allowlist gate (middleware.IPEntryMatches) — an
+		// IPv4-mapped IPv6 caller must resolve the same way in both places,
+		// or an owner could save a change this check calls safe and then
+		// get locked out anyway.
+		{"IPv4-mapped IPv6 caller matches bare IPv4 entry", "::ffff:203.0.113.5", []string{"203.0.113.5"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

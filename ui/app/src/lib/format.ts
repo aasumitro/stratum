@@ -45,3 +45,33 @@ export function formatBytes(bytes: number): string {
   const value = bytes / Math.pow(1024, i)
   return `${value % 1 === 0 ? value : value.toFixed(1)} ${units[i]}`
 }
+
+const OS_PATTERNS: [RegExp, string][] = [
+  [/iphone|ipad/i, "iOS"],
+  [/android/i, "Android"],
+  [/mac os x/i, "macOS"],
+  [/windows/i, "Windows"],
+  [/linux/i, "Linux"],
+]
+
+const BROWSER_PATTERNS: [RegExp, string][] = [
+  [/edg\//i, "Edge"],
+  [/chrome\//i, "Chrome"],
+  [/firefox\//i, "Firefox"],
+  [/safari\//i, "Safari"],
+]
+
+// Raw user-agent strings are long and near-identical across a device's own
+// sessions/requests — reduce to "Browser · OS" for scanability, falling
+// back to the raw string (truncated by the caller) when nothing matches.
+export function describeDevice(userAgent: string): {
+  label: string
+  isMobile: boolean
+} {
+  const os = OS_PATTERNS.find(([re]) => re.test(userAgent))?.[1]
+  const browser = BROWSER_PATTERNS.find(([re]) => re.test(userAgent))?.[1]
+  const isMobile = os === "iOS" || os === "Android"
+  if (browser && os) return { label: `${browser} · ${os}`, isMobile }
+  if (os) return { label: os, isMobile }
+  return { label: userAgent || "—", isMobile }
+}

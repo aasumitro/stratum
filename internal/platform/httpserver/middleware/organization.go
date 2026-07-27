@@ -20,8 +20,12 @@ const organizationContextKey = "organization.organization"
 // active-only check it exists to clear). Matched by suffix, not full path,
 // since the route's mount prefix differs between the real app (/api/v1)
 // and this module's own test harness (/api).
-func isSuspensionExempt(route string) bool {
-	return strings.HasSuffix(route, "/unsuspend")
+func isSuspensionExempt(c *gin.Context) bool {
+	if c.Request.Method == http.MethodGet {
+		return true
+	}
+	route := c.FullPath()
+	return strings.HasSuffix(route, "/unsuspend") || strings.Contains(route, "/billing") || (c.Request.Method == http.MethodDelete && strings.HasSuffix(route, "/:organizationID"))
 }
 
 func organizationIDExtractor(c *gin.Context) string {
@@ -48,7 +52,7 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 			return
 		}
 
-		if ws.Status != "active" && !isSuspensionExempt(c.FullPath()) {
+		if ws.Status != "active" && !isSuspensionExempt(c) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "organization is not active"})
 			return
 		}
@@ -84,14 +88,26 @@ func ipAllowed(clientIP string, allowedIPs []string) bool {
 		return false
 	}
 	for _, entry := range allowedIPs {
-		if entry == clientIP {
-			return true
-		}
-		if _, network, err := net.ParseCIDR(entry); err == nil && network.Contains(ip) {
+		if IPEntryMatches(ip, entry) {
 			return true
 		}
 	}
 	return false
+}
+
+// IPEntryMatches reports whether ip is covered by a single allowlist entry —
+// a CIDR block or a bare IP. Bare-IP entries are compared with net.IP.Equal
+// rather than raw string equality, so equivalent representations of the same
+// address (e.g. an IPv4-mapped IPv6 form) still match. Exported because it's
+// the one place this comparison is defined — the organization module's
+// pre-save "would this lock me out" check calls it too, so the two can never
+// disagree about what "matches" means.
+func IPEntryMatches(ip net.IP, entry string) bool {
+	if _, network, err := net.ParseCIDR(entry); err == nil {
+		return network.Contains(ip)
+	}
+	entryIP := net.ParseIP(entry)
+	return entryIP != nil && entryIP.Equal(ip)
 }
 
 // OrganizationFromContext retrieves the OrganizationInfo injected by NewOrganizationMiddleware.

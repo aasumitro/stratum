@@ -3,12 +3,9 @@ import { useTranslation } from "react-i18next"
 import {
   IconBuilding,
   IconCreditCard,
-  IconUsers,
   IconSettings2,
   IconHome,
-  IconWebhook,
   IconFolder,
-  IconHistory,
   IconCodeVariableMinus,
 } from "@tabler/icons-react"
 import {
@@ -39,23 +36,19 @@ interface NavItem {
 }
 
 /**
- * 4 of 6 org nav items hide entirely for a role that can't use them at all
- * (Files/Webhooks/Audit Log/Billing); Members/Settings always render
- * since every role has baseline view access to both.
- * Billing-blocked items (Members/Files/Webhooks) get an amber dot instead — a separate,
- * org-state axis, independent of role.
+ * 3-item flat nav (Files/Billing/Settings) — Members, Webhooks, and Audit
+ * Log no longer have their own rows; they're anchor sections on Settings.
+ * Files hides entirely for a role that can't use it at all (ADR-0017);
+ * Billing/Settings always render since every role has baseline access.
+ * Billing-blocked items (Files, and Settings as an aggregate — Members
+ * and/or Webhooks inside it may be blocked) get an amber dot instead — a
+ * separate, org-state axis, independent of role.
  */
 export function SidebarOrganizationNav() {
   const { t } = useTranslation()
   const { location } = useRouterState()
   const { organizationId, organization } = useActiveOrganization()
-  const {
-    isBillingBlocked,
-    canAccessFiles,
-    canAccessWebhooks,
-    canAccessAuditLog,
-    canViewBilling,
-  } = usePermissions()
+  const { isBillingBlocked, canAccessFiles, canViewBilling } = usePermissions()
 
   if (!organizationId) {
     return (
@@ -129,16 +122,10 @@ export function SidebarOrganizationNav() {
     /* DONT TOUCH THIS*/
   }
 
-  // Regrouped: day-to-day items (General) vs. ownership/config items (Manage).
-  const GENERAL_NAV: NavItem[] = [
-    {
-      key: "members",
-      label: t("organization.tabs.members"),
-      to: `${base}/members`,
-      icon: IconUsers,
-      allowed: true,
-      billingBlockable: true,
-    },
+  // Flat list — Settings is billingBlockable as an *aggregate* signal (the
+  // Members/Webhooks sections it now contains carry their own dots), not
+  // because Settings itself is ever a blocked/inaccessible segment.
+  const ORG_NAV: NavItem[] = [
     {
       key: "files",
       label: t("organization.tabs.files"),
@@ -146,25 +133,6 @@ export function SidebarOrganizationNav() {
       icon: IconFolder,
       allowed: canAccessFiles,
       billingBlockable: true,
-    },
-  ]
-
-  const MANAGE_NAV: NavItem[] = [
-    {
-      key: "webhooks",
-      label: t("organization.tabs.webhooks"),
-      to: `${base}/webhooks`,
-      icon: IconWebhook,
-      allowed: canAccessWebhooks,
-      billingBlockable: true,
-    },
-    {
-      key: "auditLog",
-      label: t("organization.tabs.auditLog"),
-      to: `${base}/audit-log`,
-      icon: IconHistory,
-      allowed: canAccessAuditLog,
-      billingBlockable: false,
     },
     {
       key: "billing",
@@ -180,7 +148,7 @@ export function SidebarOrganizationNav() {
       to: `${base}/settings`,
       icon: IconSettings2,
       allowed: true,
-      billingBlockable: false,
+      billingBlockable: true,
     },
   ]
 
@@ -277,18 +245,7 @@ export function SidebarOrganizationNav() {
         </SidebarGroupLabel>
         <SidebarGroupContent>
           <SidebarMenu>
-            {GENERAL_NAV.filter((item) => item.allowed).map(renderNavItem)}
-          </SidebarMenu>
-        </SidebarGroupContent>
-      </SidebarGroup>
-
-      <SidebarGroup>
-        <SidebarGroupLabel className="group-data-[collapsible=icon]:hidden">
-          {t("nav.groups.manage")}
-        </SidebarGroupLabel>
-        <SidebarGroupContent>
-          <SidebarMenu>
-            {MANAGE_NAV.filter((item) => item.allowed).map(renderNavItem)}
+            {ORG_NAV.filter((item) => item.allowed).map(renderNavItem)}
           </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>

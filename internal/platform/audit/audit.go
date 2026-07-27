@@ -402,10 +402,19 @@ func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizat
 	query = filter.apply(query, args)
 
 	if cursor != "" {
-		query += fmt.Sprintf(" AND id < $%d", args.Add(cursor))
+		parts := strings.SplitN(cursor, "_", 2)
+		if len(parts) == 2 {
+			ts, err := time.Parse(time.RFC3339Nano, parts[0])
+			if err != nil {
+				return nil, "", fmt.Errorf("invalid cursor timestamp: %w", err)
+			}
+			query += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d::uuid)", args.Add(ts), args.Add(parts[1]))
+		} else {
+			return nil, "", fmt.Errorf("invalid cursor format")
+		}
 	}
 
-	query += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", args.Add(limit))
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", args.Add(limit))
 
 	rows, err := pool.Query(ctx, query, args.Values()...)
 	if err != nil {
@@ -430,7 +439,7 @@ func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizat
 
 	nextCursor := ""
 	if len(out) == limit {
-		nextCursor = out[len(out)-1].ID
+		nextCursor = fmt.Sprintf("%s_%s", out[len(out)-1].CreatedAt.Format(time.RFC3339Nano), out[len(out)-1].ID)
 	}
 	return out, nextCursor, nil
 }

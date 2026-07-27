@@ -88,21 +88,28 @@ export function InviteCodeSection({
       )}
 
       {organization?.invite_code && (
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">
-            {t("organization.inviteCode.expiresJoinsAsMember")}
-          </span>
-          <Switch
-            checked={organization.invite_code_enabled}
-            onCheckedChange={(v) => toggle({ enabled: v })}
-            disabled={toggling}
-            aria-label={t("organization.inviteCode.title")}
-          />
-          <span className="text-xs text-muted-foreground">
-            {organization.invite_code_enabled
-              ? t("organization.inviteCode.active")
-              : t("organization.inviteCode.disabled")}
-          </span>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">
+              {t("organization.inviteCode.expiresJoinsAsMember")}
+            </span>
+            <Switch
+              checked={organization.invite_code_enabled}
+              onCheckedChange={(v) => toggle({ enabled: v })}
+              disabled={toggling}
+              aria-label={t("organization.inviteCode.title")}
+            />
+            <span className="text-xs text-muted-foreground">
+              {organization.invite_code_enabled
+                ? t("organization.inviteCode.active")
+                : t("organization.inviteCode.disabled")}
+            </span>
+          </div>
+          {bare && (
+            <p className="text-[13px] text-muted-foreground mt-3 leading-relaxed">
+              {t("organization.inviteCode.description")}
+            </p>
+          )}
         </div>
       )}
     </div>

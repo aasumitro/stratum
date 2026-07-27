@@ -13,6 +13,7 @@ import { API } from "@/lib/api/path"
 import { api } from "@/lib/api/axios"
 import type { HTTPResponse } from "@/lib/api/response"
 import { capture } from "@/lib/analytics"
+import { useBillingFeatures } from "@/features/billing/hooks"
 import type {
   Organization,
   OrganizationView,
@@ -103,11 +104,11 @@ export function useAuditLog(
   organizationId: string,
   filter: AuditLogFilter = {},
   cursor?: string,
-  limit = 20,
+  limit = 25,
   enabled = true
 ) {
   const params = auditLogParams(filter, { limit: String(limit) })
-  if (cursor !== undefined) params.set("cursor", cursor)
+  params.set("cursor", cursor ?? "")
   return useHTTPQuery<AuditEvent[]>({
     queryKey: [
       ...queryKeys.organizations.auditLog(organizationId),
@@ -279,7 +280,6 @@ export function useRevokeInvitation(organizationId: string) {
     url: (invId) => API.organizations(organizationId, "invitations", invId),
     options: {
       onSuccess: () => {
-        toast.success(t("organization.invitations.revoked"))
         void queryClient.invalidateQueries({
           queryKey: queryKeys.organizations.invitations(organizationId),
         })
@@ -489,6 +489,44 @@ export function useWebhooks(organizationId: string, enabled = true) {
   })
 }
 
+const WEBHOOKS_FEATURE_ID = "webhooks"
+
+export type WebhooksContentState = "loading" | "locked" | "empty" | "available"
+
+/**
+ * Resolves which of Webhooks' three content states applies for this org —
+ * shared by the Settings preview and the full webhooks panel so both agree
+ * on the same state at the same moment. Precedence: loading beats locked
+ * beats empty beats available.
+ */
+export function useWebhooksContentState(
+  organizationId: string,
+  canAccessWebhooks: boolean
+) {
+  const { data: featuresData, isLoading: featuresLoading } =
+    useBillingFeatures(organizationId)
+  const { data: webhooksData, isLoading: webhooksLoading } = useWebhooks(
+    organizationId,
+    canAccessWebhooks
+  )
+
+  const hasWebhooksFeature = (featuresData?.data ?? []).some(
+    (f) => f.feature_id === WEBHOOKS_FEATURE_ID
+  )
+  const endpoints = webhooksData?.data ?? []
+  const isLoading = featuresLoading || (canAccessWebhooks && webhooksLoading)
+
+  const state: WebhooksContentState = isLoading
+    ? "loading"
+    : !hasWebhooksFeature
+      ? "locked"
+      : endpoints.length === 0
+        ? "empty"
+        : "available"
+
+  return { state, hasWebhooksFeature, endpoints }
+}
+
 export interface WebhookDeliveryFilter {
   status?: string
   event_type?: string
@@ -604,12 +642,16 @@ export function useSendWebhookTestEvent(organizationId: string) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.organizations.webhooks(organizationId),
         })
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.organizations.webhookDeliveries(
-            organizationId,
-            webhookId
-          ),
-        })
+        const deliveriesKey = queryKeys.organizations.webhookDeliveries(
+          organizationId,
+          webhookId
+        )
+        void queryClient.invalidateQueries({ queryKey: deliveriesKey })
+        // Test events are dispatched asynchronously. Refetch again shortly after
+        // to ensure the newly created delivery appears in the UI.
+        setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: deliveriesKey })
+        }, 1000)
       },
     },
   })
@@ -631,12 +673,15 @@ export function useRetryDelivery(organizationId: string, webhookId: string) {
     options: {
       onSuccess: () => {
         toast.success(t("organization.webhooks.retried"))
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.organizations.webhookDeliveries(
-            organizationId,
-            webhookId
-          ),
-        })
+        const deliveriesKey = queryKeys.organizations.webhookDeliveries(
+          organizationId,
+          webhookId
+        )
+        void queryClient.invalidateQueries({ queryKey: deliveriesKey })
+        // Retries are processed asynchronously. Refetch again shortly after.
+        setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: deliveriesKey })
+        }, 1000)
       },
     },
   })
@@ -659,16 +704,17 @@ export function useRetryAllFailedDeliveries(
     options: {
       onSuccess: (res) => {
         toast.success(
-          t("organization.webhooks.retriedAll", {
-            count: res.data?.retried ?? 0,
-          })
+          t("organization.webhooks.retriedAll", { count: res.data?.retried ?? 0 })
         )
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.organizations.webhookDeliveries(
-            organizationId,
-            webhookId
-          ),
-        })
+        const deliveriesKey = queryKeys.organizations.webhookDeliveries(
+          organizationId,
+          webhookId
+        )
+        void queryClient.invalidateQueries({ queryKey: deliveriesKey })
+        // Bulk retries are processed asynchronously. Refetch again shortly after.
+        setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: deliveriesKey })
+        }, 1000)
       },
     },
   })

@@ -4,7 +4,7 @@ export const Route = createFileRoute(
   "/_protected/organization/$organizationId/"
 )({
   beforeLoad: ({ params }) => {
-    throw redirect({ to: "/organization/$organizationId/members", params })
+    throw redirect({ to: "/organization/$organizationId/settings", params })
   },
   component: () => null,
 })

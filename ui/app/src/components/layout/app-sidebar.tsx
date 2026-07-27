@@ -38,7 +38,7 @@ export function AppSidebar() {
           // Static branding once inside an org — the breadcrumb instance
           // (app-header.tsx) is the sole functional switcher here.
           <Link
-            to="/organization/$organizationId/members"
+            to="/organization/$organizationId/settings"
             params={{ organizationId }}
             className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm font-semibold text-sidebar-foreground group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2"
           >

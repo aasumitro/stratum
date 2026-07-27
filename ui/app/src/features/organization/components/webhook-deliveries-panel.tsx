@@ -1,3 +1,4 @@
+import type { ReactNode, ElementType } from "react"
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
@@ -6,7 +7,13 @@ import {
   IconRefresh,
   IconLoader2,
   IconCopy,
+  IconX,
+  IconId,
+  IconClock,
+  IconHistory,
+  IconCode,
 } from "@tabler/icons-react"
+import { cn } from "@/lib/ui"
 import {
   Select,
   SelectContent,
@@ -14,12 +21,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { DataTable, type DataTableColumn } from "@/components/shared/data-table"
 import { DataTablePagination } from "@/components/shared/pagination"
 import { FilterBar, type FilterChip } from "@/components/shared/filter-bar"
-import { SideDrawer } from "@/components/shared/side-drawer"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { useCursorAccumulator } from "@/lib/api/use-cursor-accumulator"
 import {
@@ -47,6 +52,26 @@ function buildCurl(
     `  -H 'X-Stratum-Signature: t=<unix_ts>,v1=<hmac_sha256>'`,
     `  -d '${body}'`,
   ].join(" \\\n")
+}
+
+function DetailField({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: ElementType
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="flex gap-3">
+      <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-muted-foreground">{label}</p>
+        <div className="mt-0.5 text-sm">{children}</div>
+      </div>
+    </div>
+  )
 }
 
 interface Props {
@@ -225,93 +250,157 @@ export function WebhookDeliveriesPanel({ organizationId, endpoint }: Props) {
         loadMoreLabel={t("common.loadMore")}
       />
 
-      <SideDrawer
-        open={!!detail}
-        onOpenChange={(open) => !open && setDetail(null)}
-        title={t("organization.webhooks.deliveryDetail")}
-        description={detail?.event_type}
-        footer={
-          detail && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => copyCurl(detail)}
-            >
-              <IconCopy data-icon="inline-start" />
-              {t("organization.webhooks.copyCurl")}
-            </Button>
-          )
-        }
+      {detail && (
+        <button
+          type="button"
+          aria-label={t("common.close")}
+          className="absolute inset-0 z-10 bg-black/20"
+          onClick={() => setDetail(null)}
+        />
+      )}
+      <div
+        className={cn(
+          "absolute inset-y-0 right-0 z-20 flex w-full flex-col border-l bg-popover transition-transform duration-200 sm:w-1/2",
+          detail ? "translate-x-0 shadow-xl" : "translate-x-full shadow-none"
+        )}
       >
         {detail && (
-          <div className="flex flex-col gap-4 py-2 text-sm">
-            <div>
-              <p className="text-xs font-semibold text-muted-foreground">
-                {t("organization.webhooks.attemptsTimeline")}
-              </p>
-              <div className="mt-1 flex flex-col gap-1">
-                {(detail.attempts_log ?? []).map((a) => (
-                  <div
-                    key={a.attempt}
-                    className="flex items-center justify-between rounded-md border px-2 py-1 text-xs"
-                  >
-                    <span>
-                      #{a.attempt} · {new Date(a.attempted_at).toLocaleString()}
-                    </span>
-                    <span
-                      className={
-                        a.error ? "text-destructive" : "text-emerald-600"
-                      }
-                    >
-                      {a.error ?? `HTTP ${a.status_code}`}
-                      {a.latency_ms != null && ` · ${a.latency_ms}ms`}
-                    </span>
+          <>
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b px-4 py-3">
+              <div className="min-w-0">
+                <p className="font-heading text-sm font-medium">
+                  {t("organization.webhooks.deliveryDetail")}
+                </p>
+                <div className="mt-1.5">
+                  <StatusBadge
+                    status={
+                      detail.status === "delivered"
+                        ? "active"
+                        : detail.status === "pending"
+                          ? "pending"
+                          : "failed"
+                    }
+                    label={detail.event_type}
+                  />
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t("common.close")}
+                onClick={() => setDetail(null)}
+              >
+                <IconX className="size-4" />
+              </Button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 py-4">
+              <div className="flex flex-col gap-4">
+                <DetailField
+                  icon={IconId}
+                  label={t("organization.webhooks.eventId")}
+                >
+                  <span className="font-mono text-xs break-all text-muted-foreground">
+                    {detail.event_id}
+                  </span>
+                </DetailField>
+
+                <DetailField
+                  icon={IconClock}
+                  label={t("organization.webhooks.createdAt")}
+                >
+                  {new Date(detail.created_at).toLocaleString()}
+                </DetailField>
+
+                <DetailField
+                  icon={IconHistory}
+                  label={t("organization.webhooks.attemptsTimeline")}
+                >
+                  <div className="mt-1 flex flex-col gap-1">
+                    {(detail.attempts_log ?? []).map((a) => (
+                      <div
+                        key={a.attempt}
+                        className="flex items-center justify-between rounded-md border px-2 py-1.5 text-[11px]"
+                      >
+                        <span className="font-medium">
+                          #{a.attempt} ·{" "}
+                          <span className="font-normal text-muted-foreground">
+                            {new Date(a.attempted_at).toLocaleString()}
+                          </span>
+                        </span>
+                        <span
+                          className={
+                            a.error
+                              ? "text-destructive"
+                              : "font-medium text-emerald-600"
+                          }
+                        >
+                          {a.error ?? `HTTP ${a.status_code}`}
+                          {a.latency_ms != null && ` · ${a.latency_ms}ms`}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </DetailField>
+
+                <DetailField
+                  icon={IconCode}
+                  label={t("organization.webhooks.payload")}
+                >
+                  <div className="mt-2 flex flex-col gap-4">
+                    <div className="flex flex-col gap-1.5">
+                      <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                        {t("organization.webhooks.tabHeaders")}
+                      </p>
+                      <pre className="overflow-x-auto rounded-lg bg-muted p-2 font-mono text-[11px]">
+                        {`Content-Type: application/json\nX-Stratum-Event: ${detail.event_type}\nX-Stratum-Signature: t=<unix_ts>,v1=<hmac_sha256>`}
+                      </pre>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                        {t("organization.webhooks.tabRequest")}
+                      </p>
+                      <pre className="overflow-x-auto rounded-lg bg-muted p-2 font-mono text-[11px]">
+                        {JSON.stringify(
+                          { id: detail.event_id, type: detail.event_type },
+                          null,
+                          2
+                        )}
+                      </pre>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <p className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                        {t("organization.webhooks.tabResponse")}
+                      </p>
+                      {detail.response_status_code != null ||
+                      detail.response_body ? (
+                        <pre className="overflow-x-auto rounded-lg bg-muted p-2 font-mono text-[11px]">
+                          {`HTTP ${detail.response_status_code ?? "—"}\n\n${detail.response_body ?? ""}`}
+                        </pre>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          {t("organization.webhooks.noResponse")}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </DetailField>
               </div>
             </div>
-
-            <Tabs defaultValue="request">
-              <TabsList className="w-full">
-                <TabsTrigger value="request">
-                  {t("organization.webhooks.tabRequest")}
-                </TabsTrigger>
-                <TabsTrigger value="headers">
-                  {t("organization.webhooks.tabHeaders")}
-                </TabsTrigger>
-                <TabsTrigger value="response">
-                  {t("organization.webhooks.tabResponse")}
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="request">
-                <pre className="overflow-x-auto rounded-lg bg-muted p-2 font-mono text-[11px]">
-                  {JSON.stringify(
-                    { id: detail.event_id, type: detail.event_type },
-                    null,
-                    2
-                  )}
-                </pre>
-              </TabsContent>
-              <TabsContent value="headers">
-                <pre className="overflow-x-auto rounded-lg bg-muted p-2 font-mono text-[11px]">
-                  {`Content-Type: application/json\nX-Stratum-Event: ${detail.event_type}\nX-Stratum-Signature: t=<unix_ts>,v1=<hmac_sha256>`}
-                </pre>
-              </TabsContent>
-              <TabsContent value="response">
-                {detail.response_status_code != null || detail.response_body ? (
-                  <pre className="overflow-x-auto rounded-lg bg-muted p-2 font-mono text-[11px]">
-                    {`HTTP ${detail.response_status_code ?? "—"}\n\n${detail.response_body ?? ""}`}
-                  </pre>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    {t("organization.webhooks.noResponse")}
-                  </p>
-                )}
-              </TabsContent>
-            </Tabs>
-          </div>
+            <div className="flex shrink-0 justify-end border-t px-4 py-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => copyCurl(detail)}
+              >
+                <IconCopy data-icon="inline-start" />
+                {t("organization.webhooks.copyCurl")}
+              </Button>
+            </div>
+          </>
         )}
-      </SideDrawer>
+      </div>
     </div>
   )
 }

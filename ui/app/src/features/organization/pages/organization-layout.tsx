@@ -173,7 +173,12 @@ export function OrganizationLayout() {
         </div>
       )}
 
-      <Outlet />
+      {/* Keyed by organizationId: switching organizations — including
+          editing the URL directly — only changes this param, it doesn't
+          remount the route. Without a key, any local state in a page below
+          here (an open dialog, a pending mutation, a selected id) survives
+          the switch and can end up acting against the new organization. */}
+      <Outlet key={organizationId} />
     </div>
   )
 }

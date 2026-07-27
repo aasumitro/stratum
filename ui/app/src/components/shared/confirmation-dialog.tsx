@@ -1,4 +1,4 @@
-import { useState, type ReactElement, type ReactNode } from "react"
+import { useRef, useState, type ReactElement, type ReactNode } from "react"
 import { IconLoader2 } from "@tabler/icons-react"
 import {
   AlertDialog,
@@ -29,7 +29,7 @@ interface ConfirmationDialogProps {
   consequences?: string[]
   /** if set, the confirm button stays locked until the user types this exact string */
   confirmPhrase?: string
-  confirmPhraseLabel?: string
+  confirmPhraseLabel?: ReactNode
   confirmLabel: string
   cancelLabel?: string
   destructive?: boolean
@@ -64,6 +64,7 @@ export function ConfirmationDialog({
 }: ConfirmationDialogProps) {
   const [typed, setTyped] = useState("")
   const locked = !!confirmPhrase && typed !== confirmPhrase
+  const cancelRef = useRef<HTMLButtonElement>(null)
 
   return (
     <AlertDialog
@@ -76,7 +77,7 @@ export function ConfirmationDialog({
       <AlertDialogTrigger render={render} nativeButton={nativeButton}>
         {children}
       </AlertDialogTrigger>
-      <AlertDialogContent>
+      <AlertDialogContent initialFocus={cancelRef}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
@@ -106,7 +107,7 @@ export function ConfirmationDialog({
         )}
 
         <AlertDialogFooter>
-          <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
+          <AlertDialogCancel ref={cancelRef}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction
             variant={destructive ? "destructive" : "default"}
             disabled={locked || pending}

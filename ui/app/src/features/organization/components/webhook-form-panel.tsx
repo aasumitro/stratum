@@ -1,11 +1,10 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { IconLoader2 } from "@tabler/icons-react"
+import { IconLoader2, IconX } from "@tabler/icons-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { SideDrawer } from "@/components/shared/side-drawer"
 import { UnsavedChangesGuard } from "@/components/shared/unsaved-changes-guard"
 import {
   useCreateWebhook,
@@ -27,7 +26,7 @@ interface Props {
 // Per-event subscriptions. subscribedEvents.length === 0 means "all
 // events" (empty = allow all, same convention as the IP allowlist) — the
 // checkbox list is only shown once the caller opts out of "all events".
-export function WebhookFormSheet({
+export function WebhookFormPanel({
   organizationId,
   open,
   onOpenChange,
@@ -57,7 +56,7 @@ export function WebhookFormSheet({
     )
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault()
     if (!url.trim()) return
     const events = allEvents ? [] : subscribedEvents
@@ -101,17 +100,32 @@ export function WebhookFormSheet({
   return (
     <>
       <UnsavedChangesGuard isDirty={isDirty} />
-      <SideDrawer
-        open={open}
-        onOpenChange={handleClose}
-        title={
-          editing
-            ? t("organization.webhooks.editTitle")
-            : t("organization.webhooks.addTitle")
-        }
-        description={t("organization.webhooks.formDescription")}
-      >
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4 py-4">
+      <div className="flex h-full flex-col">
+        <div className="flex shrink-0 items-start justify-between border-b px-4 py-4">
+          <div className="min-w-0 flex-1">
+            <h3 className="font-heading text-lg font-medium">
+              {editing
+                ? t("organization.webhooks.editTitle")
+                : t("organization.webhooks.addTitle")}
+            </h3>
+            {editing && (
+              <p className="mt-1 text-xs text-muted-foreground break-all">
+                {editing.id}
+              </p>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("common.close")}
+            onClick={handleClose}
+          >
+            <IconX className="size-4" />
+          </Button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          <form id="webhook-form" onSubmit={handleSubmit} className="flex flex-col gap-6">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="wh-url">
               {t("organization.webhooks.urlLabel")}
@@ -241,8 +255,9 @@ export function WebhookFormSheet({
               {secret ? t("common.done") : t("common.cancel")}
             </Button>
           </div>
-        </form>
-      </SideDrawer>
+          </form>
+        </div>
+      </div>
     </>
   )
 }

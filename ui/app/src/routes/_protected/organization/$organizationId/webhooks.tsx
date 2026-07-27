@@ -1,8 +1,14 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { WebhooksPage } from "@/features/organization/pages/webhooks-page"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
 export const Route = createFileRoute(
   "/_protected/organization/$organizationId/webhooks"
 )({
-  component: WebhooksPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: "/organization/$organizationId/settings",
+      params,
+      search: { panel: "webhooks" },
+    })
+  },
+  component: () => null,
 })

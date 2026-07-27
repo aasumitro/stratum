@@ -8,7 +8,10 @@ import {
   useOrganizationFiles,
   useWebhooks,
 } from "@/features/organization/hooks"
-import { useBillingSubscription } from "@/features/billing/hooks"
+import {
+  useBillingFeatures,
+  useBillingSubscription,
+} from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { cn } from "@/lib/ui"
 
@@ -31,6 +34,19 @@ export function SidebarSetupCards({
   const { t } = useTranslation()
   const perms = usePermissions()
   const { data: subscriptionData } = useBillingSubscription(organizationId)
+  const { data: featuresData } = useBillingFeatures(organizationId)
+  const membersFeature = (featuresData?.data ?? []).find(
+    (f) => f.feature_id === "members"
+  )
+  // -1 is the "unlimited" sentinel (Custom plan); `limit` already includes
+  // purchased add-on seats, same rule as the Settings page Members gate.
+  const isMemberSeatLocked =
+    membersFeature?.limit != null &&
+    membersFeature.limit !== -1 &&
+    membersFeature.limit <= 1
+  const hasWebhooksFeature = (featuresData?.data ?? []).some(
+    (f) => f.feature_id === "webhooks"
+  )
   const { data: membersData } = useOrganizationMembers(organizationId)
   const { data: webhooksData } = useWebhooks(
     organizationId,
@@ -61,12 +77,16 @@ export function SidebarSetupCards({
   const checklist = [
     { key: "create", done: true, labelKey: "dashboard.checklist.create" },
     { key: "profile", done: true, labelKey: "dashboard.checklist.profile" },
-    {
-      key: "invite",
-      done: memberCount > 1,
-      labelKey: "dashboard.checklist.invite",
-      href: `/organization/${organizationId}/members`,
-    },
+    ...(!isMemberSeatLocked
+      ? [
+          {
+            key: "invite",
+            done: memberCount > 1,
+            labelKey: "dashboard.checklist.invite",
+            href: `/organization/${organizationId}/members`,
+          },
+        ]
+      : []),
     ...(perms.canAccessFiles
       ? [
           {
@@ -77,7 +97,7 @@ export function SidebarSetupCards({
           },
         ]
       : []),
-    ...(perms.canAccessWebhooks
+    ...(perms.canAccessWebhooks && hasWebhooksFeature
       ? [
           {
             key: "webhook",

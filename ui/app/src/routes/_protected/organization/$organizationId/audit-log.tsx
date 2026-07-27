@@ -1,26 +1,17 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { AuditLogPage } from "@/features/organization/pages/audit-log-page"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-// URL-synced filter chips — shareable links.
-export interface AuditLogSearch {
-  actor?: string
-  action?: string
-  resource?: string
-  range?: "7d" | "30d" | "90d" | "all"
-}
-
+// Legacy filtered audit-log links (`/audit-log?actor=X&range=30d`) keep
+// working — the old actor/action/resource/range params pass through
+// unchanged into Settings' own search schema, which now owns them.
 export const Route = createFileRoute(
   "/_protected/organization/$organizationId/audit-log"
 )({
-  validateSearch: (search: Record<string, unknown>): AuditLogSearch => ({
-    actor: typeof search.actor === "string" ? search.actor : undefined,
-    action: typeof search.action === "string" ? search.action : undefined,
-    resource: typeof search.resource === "string" ? search.resource : undefined,
-    range: (["7d", "30d", "90d", "all"] as const).includes(
-      search.range as never
-    )
-      ? (search.range as AuditLogSearch["range"])
-      : undefined,
-  }),
-  component: AuditLogPage,
+  beforeLoad: ({ params, search }) => {
+    throw redirect({
+      to: "/organization/$organizationId/settings",
+      params,
+      search: { ...(search as Record<string, unknown>), panel: "audit-log" },
+    })
+  },
+  component: () => null,
 })

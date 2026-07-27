@@ -106,9 +106,12 @@ export function NotificationList({
     data,
     cursor
   )
-  const items = category
-    ? allItems.filter((n) => CHANNEL_CATEGORY[n.channel] === category)
-    : allItems
+  const items = useMemo(() => {
+    const safeItems = allItems || []
+    return category
+      ? safeItems.filter((n) => CHANNEL_CATEGORY[n.channel] === category)
+      : safeItems
+  }, [allItems, category])
   const groups = useMemo(() => groupByDate(items), [items])
   const { mutate: markRead } = useMarkNotificationRead(organizationId)
 

@@ -270,7 +270,7 @@ func TestOrganizationMiddleware_OrganizationNotActive(t *testing.T) {
 	ws := &contracts.OrganizationInfo{ID: "ws-01", Status: "suspended"}
 	e := makeOrganizationEngine(stubWsReader{ws: ws})
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/organizations/ws-01/test", nil))
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/organizations/ws-01/test", nil))
 	if w.Code != http.StatusForbidden {
 		t.Errorf("want 403, got %d", w.Code)
 	}

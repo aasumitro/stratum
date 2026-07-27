@@ -1,8 +1,14 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { OrganizationSettingsDangerPage } from "@/features/organization/pages/organization-settings-danger-page"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
 export const Route = createFileRoute(
   "/_protected/organization/$organizationId/settings/danger"
 )({
-  component: OrganizationSettingsDangerPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: "/organization/$organizationId/settings",
+      params,
+      hash: "danger",
+    })
+  },
+  component: () => null,
 })

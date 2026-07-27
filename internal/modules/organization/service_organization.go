@@ -10,6 +10,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/logger"
 )
 
@@ -32,7 +33,7 @@ type addonSelection struct {
 	Quantity int
 }
 
-// ErrIPAllowlistLocksOutCaller: saving this CIDR list would reject
+// ErrIPAllowlistLocksOutCaller - saving this CIDR list would reject
 // the caller's own current IP on the very next request.
 var ErrIPAllowlistLocksOutCaller = errors.New("this allowlist would lock out your own IP address")
 
@@ -217,7 +218,10 @@ func (s *service) updateSettings(
 // anyone out. callerIP that fails to parse (shouldn't happen — Gin's
 // ClientIP() always returns a valid address) is treated as locked-out, the
 // safe default: reject the save rather than risk silently letting an
-// unparseable IP through a CIDR check.
+// unparseable IP through a CIDR check. Per-entry matching delegates to
+// middleware.IPEntryMatches — the same comparison the request-time allowlist
+// gate uses, so this pre-save check can never approve a save that the gate
+// would then reject.
 func ipLocksOutCaller(callerIP string, allowedIPs []string) bool {
 	if len(allowedIPs) == 0 {
 		return false
@@ -226,16 +230,8 @@ func ipLocksOutCaller(callerIP string, allowedIPs []string) bool {
 	if ip == nil {
 		return true
 	}
-	for _, cidr := range allowedIPs {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			// A bare IP (no /suffix) is also a valid allowlist entry.
-			if entryIP := net.ParseIP(cidr); entryIP != nil && entryIP.Equal(ip) {
-				return false
-			}
-			continue
-		}
-		if network.Contains(ip) {
+	for _, entry := range allowedIPs {
+		if middleware.IPEntryMatches(ip, entry) {
 			return false
 		}
 	}

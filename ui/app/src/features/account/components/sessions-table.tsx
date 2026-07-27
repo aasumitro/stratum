@@ -5,38 +5,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { DataTablePagination } from "@/components/shared/pagination"
 import { useCursorAccumulator } from "@/lib/api/use-cursor-accumulator"
 import { useSessions } from "@/features/account/hooks"
-import { timeAgo } from "@/lib/format"
+import { timeAgo, describeDevice } from "@/lib/format"
 import type { LoginEvent } from "@/types/account"
-
-const OS_PATTERNS: [RegExp, string][] = [
-  [/iphone|ipad/i, "iOS"],
-  [/android/i, "Android"],
-  [/mac os x/i, "macOS"],
-  [/windows/i, "Windows"],
-  [/linux/i, "Linux"],
-]
-
-const BROWSER_PATTERNS: [RegExp, string][] = [
-  [/edg\//i, "Edge"],
-  [/chrome\//i, "Chrome"],
-  [/firefox\//i, "Firefox"],
-  [/safari\//i, "Safari"],
-]
-
-// The raw user-agent string is long and near-identical across a device's own
-// sessions — reduce it to "Browser · OS" for scanability, falling back to
-// the raw string (truncated by the cell) when nothing matches.
-function describeDevice(userAgent: string): {
-  label: string
-  isMobile: boolean
-} {
-  const os = OS_PATTERNS.find(([re]) => re.test(userAgent))?.[1]
-  const browser = BROWSER_PATTERNS.find(([re]) => re.test(userAgent))?.[1]
-  const isMobile = os === "iOS" || os === "Android"
-  if (browser && os) return { label: `${browser} · ${os}`, isMobile }
-  if (os) return { label: os, isMobile }
-  return { label: userAgent || "—", isMobile }
-}
 
 export function SessionsTable() {
   const { t } = useTranslation()

@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { useTranslation } from "react-i18next"
-import { IconTrash, IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react"
+import { useTranslation, Trans } from "react-i18next"
+import { IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react"
 import {
   Card,
   CardContent,
@@ -83,7 +83,7 @@ export function OrganizationDangerZone({
   const isSuspended = status === "suspended"
 
   return (
-    <Card className="border-destructive/30">
+    <Card className="border-destructive">
       <CardHeader>
         <CardTitle className="text-destructive">
           {t("organization.danger.title")}
@@ -111,7 +111,7 @@ export function OrganizationDangerZone({
             >
               {t("organization.danger.transferAction")}
             </DialogTrigger>
-            <DialogContent className="sm:max-w-sm">
+            <DialogContent className="sm:max-w-[460px]">
               <DialogHeader>
                 <DialogTitle>
                   {t("organization.danger.transferAction")}
@@ -128,12 +128,20 @@ export function OrganizationDangerZone({
                   value={transferTarget}
                   onValueChange={(v) => setTransferTarget(v ?? "")}
                 >
-                  <SelectTrigger id="transfer-target">
+                  <SelectTrigger id="transfer-target" className="w-full">
                     <SelectValue
-                      placeholder={t(
-                        "organization.danger.transferSelectPlaceholder"
-                      )}
-                    />
+                      placeholder={t("organization.danger.transferSelectPlaceholder")}
+                    >
+                      {transferTarget &&
+                        (() => {
+                          const selected = admins.find(
+                            (a) => a.auth_sub === transferTarget
+                          )
+                          return selected
+                            ? selected.full_name || selected.email
+                            : undefined
+                        })()}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {admins.map((m) => (
@@ -250,9 +258,13 @@ export function OrganizationDangerZone({
               }),
             ]}
             confirmPhrase={slug}
-            confirmPhraseLabel={t("organization.danger.deleteTypeToConfirm", {
-              slug,
-            })}
+            confirmPhraseLabel={
+              <Trans
+                i18nKey="organization.danger.deleteTypeToConfirm"
+                values={{ slug }}
+                components={{ b: <strong className="font-semibold text-foreground" /> }}
+              />
+            }
             confirmLabel={t("organization.danger.deleteConfirm")}
             pending={deleting}
             onConfirm={() =>
@@ -261,7 +273,6 @@ export function OrganizationDangerZone({
               })
             }
           >
-            <IconTrash data-icon="inline-start" />
             {t("organization.danger.deleteOrganization")}
           </ConfirmationDialog>
         </div>

@@ -1,4 +1,10 @@
 import path from "path"
+import { EventEmitter } from "events"
+
+// Suppress MaxListenersExceededWarning in Vite dev server
+// (e.g. from TanStack Router + Tailwind plugins adding close listeners)
+EventEmitter.defaultMaxListeners = 20
+
 import { tanstackRouter } from "@tanstack/router-plugin/vite"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
