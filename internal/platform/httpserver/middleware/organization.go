@@ -14,13 +14,19 @@ const organizationContextKey = "organization.organization"
 
 // isSuspensionExempt reports whether route must stay reachable even while
 // an organization is suspended — otherwise a suspended organization could
-// never be reversed. Currently just unsuspend; found via a live-DB
-// integration test run where self-suspend followed by self-unsuspend
-// deadlocked (the unsuspend request itself was being rejected by this same
-// active-only check it exists to clear). Matched by suffix, not full path,
-// since the route's mount prefix differs between the real app (/api/v1)
-// and this module's own test harness (/api).
-func isSuspensionExempt(c *gin.Context) bool {
+// never be reversed, and its read-only shell (members, files, etc.) would
+// be unnavigable instead of just blocked from new writes. Only applies to
+// "suspended": a "deleted" organization gets none of these exemptions, it
+// stays fully inaccessible. GET was found via a live-DB integration test
+// run where self-suspend followed by self-unsuspend deadlocked (the
+// unsuspend request itself was being rejected by this same active-only
+// check it exists to clear). Matched by suffix, not full path, since the
+// route's mount prefix differs between the real app (/api/v1) and this
+// module's own test harness (/api).
+func isSuspensionExempt(c *gin.Context, status string) bool {
+	if status != "suspended" {
+		return false
+	}
 	if c.Request.Method == http.MethodGet {
 		return true
 	}
@@ -52,7 +58,7 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 			return
 		}
 
-		if ws.Status != "active" && !isSuspensionExempt(c) {
+		if ws.Status != "active" && !isSuspensionExempt(c, ws.Status) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "organization is not active"})
 			return
 		}

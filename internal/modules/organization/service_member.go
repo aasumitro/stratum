@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
@@ -124,6 +125,11 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 	// caller, corrupting pgx's per-connection statement cache.
 	ctx = db.WithoutQuerier(context.WithoutCancel(ctx))
 	go func() {
+		// Bounds the background write so a congested DB connection or a
+		// hanging cross-module billing call can't leak this goroutine
+		// indefinitely — context.WithoutCancel alone has no deadline.
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
 		count, err := s.repo.countActiveMembers(ctx, s.pool, organizationID)
 		if err != nil {
 			return

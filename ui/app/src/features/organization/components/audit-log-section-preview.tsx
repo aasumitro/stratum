@@ -73,8 +73,8 @@ export function AuditLogSectionPreview({
               {event.resource}
             </span>
             <div className="flex-1" />
-            
-            <div className="flex items-center gap-4 shrink-0">
+
+            <div className="flex shrink-0 items-center gap-4">
               {event.ip && (
                 <span className="hidden font-mono text-xs text-muted-foreground sm:block">
                   {event.ip}

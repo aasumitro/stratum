@@ -130,7 +130,9 @@ export function OrganizationDangerZone({
                 >
                   <SelectTrigger id="transfer-target" className="w-full">
                     <SelectValue
-                      placeholder={t("organization.danger.transferSelectPlaceholder")}
+                      placeholder={t(
+                        "organization.danger.transferSelectPlaceholder"
+                      )}
                     >
                       {transferTarget &&
                         (() => {
@@ -262,7 +264,9 @@ export function OrganizationDangerZone({
               <Trans
                 i18nKey="organization.danger.deleteTypeToConfirm"
                 values={{ slug }}
-                components={{ b: <strong className="font-semibold text-foreground" /> }}
+                components={{
+                  b: <strong className="font-semibold text-foreground" />,
+                }}
               />
             }
             confirmLabel={t("organization.danger.deleteConfirm")}

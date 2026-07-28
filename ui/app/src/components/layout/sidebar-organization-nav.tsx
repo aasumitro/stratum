@@ -36,9 +36,8 @@ interface NavItem {
 }
 
 /**
- * 3-item flat nav (Files/Billing/Settings) — Members, Webhooks, and Audit
- * Log no longer have their own rows; they're anchor sections on Settings.
- * Files hides entirely for a role that can't use it at all (ADR-0017);
+ * 3-item flat nav (Files/Billing/Settings).
+ * Files hides entirely for a role that can't use it at all;
  * Billing/Settings always render since every role has baseline access.
  * Billing-blocked items (Files, and Settings as an aggregate — Members
  * and/or Webhooks inside it may be blocked) get an amber dot instead — a
@@ -97,22 +96,6 @@ export function SidebarOrganizationNav() {
       key: "r3",
       label: "Reserve3",
       to: `${base}/platform/r3`,
-      icon: IconCodeVariableMinus,
-      allowed: true,
-      billingBlockable: true,
-    },
-    {
-      key: "r4",
-      label: "Reserve4",
-      to: `${base}/platform/r4`,
-      icon: IconCodeVariableMinus,
-      allowed: true,
-      billingBlockable: true,
-    },
-    {
-      key: "r5",
-      label: "Reserve5",
-      to: `${base}/platform/r5`,
       icon: IconCodeVariableMinus,
       allowed: true,
       billingBlockable: true,

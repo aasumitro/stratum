@@ -1,5 +1,10 @@
 import type { ReactNode } from "react"
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog"
 import { cn } from "@/lib/ui"
 
 interface OverlayPanelProps {
@@ -65,7 +70,10 @@ export function OverlayPanel({
           {headerContent}
         </div>
         <div
-          className={cn("min-h-0 flex-1 overflow-y-auto", bodyClassName ?? "p-6")}
+          className={cn(
+            "min-h-0 flex-1 overflow-y-auto",
+            bodyClassName ?? "p-6"
+          )}
         >
           {children}
         </div>

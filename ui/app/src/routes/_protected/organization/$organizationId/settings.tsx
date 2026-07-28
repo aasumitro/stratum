@@ -2,10 +2,9 @@ import { createFileRoute } from "@tanstack/react-router"
 import { OrganizationSettingsPage } from "@/features/organization/pages/organization-settings-page"
 
 // `panel` drives which "View All" OverlayPanel is open (Webhooks, Audit
-// Log). `actor`/`action`/`resource`/`range` are Audit Log's filters, moved
-// here from the retired `/audit-log` route's own search schema — same
-// param names, so filtered/exported audit-log links stay shareable. All
-// URL-synced so state is refresh-safe/back-button-safe.
+// Log). `actor`/`action`/`resource`/`range` are Audit Log's filters, kept
+// URL-synced so state is refresh-safe/back-button-safe, and filtered
+// links stay shareable.
 export interface SettingsSearch {
   panel?: "webhooks" | "audit-log"
   webhookId?: string

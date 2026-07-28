@@ -517,16 +517,28 @@ func (s *service) exportAuditLog(ctx context.Context, authSub string, from, to *
 // recordLoginEvent inserts a login event, rate-gated to once per 30 minutes
 // per user to avoid a DB write on every single authenticated request. The
 // same gated window also refreshes mfa_enabled from Supabase — see
-// syncMFAStatusOnLogin.
+// syncMFAStatusOnLogin. Fails closed on a Redis error (skips the write
+// entirely) rather than treating an unreadable gate as "not gated yet" —
+// this hook runs on every authenticated request, so failing open during a
+// Redis outage would turn a brief blip into a DB insert storm plus one
+// Supabase Admin API call per request.
 func (s *service) recordLoginEvent(ctx context.Context, authSub, ip, ua string) {
 	if s.revokedNS == nil {
 		return
 	}
 	gateKey := "login_gate:" + authSub
-	if exists, _ := s.revokedNS.Exists(ctx, gateKey); exists {
+	exists, err := s.revokedNS.Exists(ctx, gateKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "account.recordLoginEvent: rate-gate check failed, skipping to avoid DB/API spam", "error", err)
 		return
 	}
-	_ = s.revokedNS.Set(ctx, gateKey, 1, 30*time.Minute)
+	if exists {
+		return
+	}
+	if err := s.revokedNS.Set(ctx, gateKey, 1, 30*time.Minute); err != nil {
+		slog.ErrorContext(ctx, "account.recordLoginEvent: rate-gate set failed, skipping to avoid DB/API spam", "error", err)
+		return
+	}
 	_ = s.repo.insertLoginEvent(ctx, s.pool, authSub, ip, ua)
 	s.syncMFAStatusOnLogin(ctx, authSub)
 }

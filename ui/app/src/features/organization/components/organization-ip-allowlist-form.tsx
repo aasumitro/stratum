@@ -73,7 +73,7 @@ export function OrganizationIPAllowlistForm({
       )
       return
     }
-    
+
     updateSettings(
       {
         timezone: organization?.timezone ?? "",
@@ -181,7 +181,7 @@ export function OrganizationIPAllowlistForm({
                   disabled={isAddDisabled}
                 >
                   {isPending ? (
-                    <IconLoader2 className="animate-spin size-4" />
+                    <IconLoader2 className="size-4 animate-spin" />
                   ) : (
                     t("common.add")
                   )}

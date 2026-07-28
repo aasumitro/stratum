@@ -34,7 +34,7 @@ import {
 } from "@/features/organization/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { WebhookFormPanel } from "@/features/organization/components/webhook-form-panel"
-import { RotateSecretDialog } from "@/features/organization/components/rotate-secret-dialog"
+import { RotateSecretPanel } from "@/features/organization/components/rotate-secret-panel"
 import { WebhookDeliveriesPanel } from "@/features/organization/components/webhook-deliveries-panel"
 import { WebhookSparkline } from "@/features/organization/components/webhook-sparkline"
 import { healthTone } from "@/features/organization/utils/webhook-health"
@@ -80,16 +80,18 @@ export function WebhooksPanel({
 
   const viewDetail = endpoints.find((e) => e.id === webhookId) || null
 
-  // Base UI's outside-press dismiss for a nested Dialog/AlertDialog doesn't
-  // stop the triggering click from also reaching whatever is underneath it
+  // Base UI's outside-press dismiss for a nested Popover doesn't stop the
+  // triggering click from also reaching whatever is underneath it
   // (confirmed in @base-ui/react's useDismiss source — no stopPropagation
-  // before it closes). Rotate Secret and Delete are both real nested modals
-  // opened on top of this already-open panel, so a stray outside click could
-  // both dismiss them *and* fire a button behind them (e.g. Back, Edit).
-  // Disabling pointer events on this panel's own content while either is
-  // open is a hard CSS guarantee against that, independent of the library's
-  // internal dismiss timing.
-  const nestedModalOpen = !!rotating || !!deleteTarget
+  // before it closes). Delete is a real nested modal opened on top of this
+  // already-open panel, so a stray outside click could both dismiss it
+  // *and* fire a button behind it (e.g. Back, Edit). Disabling pointer
+  // events on this panel's own content while it's open is a hard CSS
+  // guarantee against that, independent of the library's internal dismiss
+  // timing. Rotate Secret doesn't need this — it's the same slide-over
+  // pattern as the add/edit form, blocked by its own backdrop button
+  // instead of a Base UI dismiss handler.
+  const nestedModalOpen = !!deleteTarget
 
   function handleTestEvent(id: string) {
     sendTestEvent(id, {
@@ -119,12 +121,6 @@ export function WebhooksPanel({
         }}
       >
         <div className="flex h-full min-h-0 flex-1 overflow-hidden">
-          <RotateSecretDialog
-            organizationId={organizationId}
-            webhookId={rotating}
-            onOpenChange={(v) => !v && setRotating(null)}
-          />
-
           <div
             className={cn(
               "flex h-full w-full flex-col overflow-y-auto",
@@ -391,21 +387,22 @@ export function WebhooksPanel({
             )}
           </div>
 
-          {/* Slide-over panel for Form */}
-          {(addOpen || editing) && (
+          {/* Slide-over panel for Form / Rotate Secret */}
+          {(addOpen || editing || rotating) && (
             <button
               type="button"
               className="absolute inset-0 z-10 bg-black/20"
               onClick={() => {
                 setAddOpen(false)
                 setEditing(undefined)
+                setRotating(null)
               }}
             />
           )}
           <div
             className={cn(
               "absolute inset-y-0 right-0 z-20 flex w-full flex-col border-l bg-popover transition-transform duration-200 sm:w-[32rem]",
-              addOpen || editing
+              addOpen || editing || rotating
                 ? "translate-x-0 shadow-xl"
                 : "translate-x-full shadow-none"
             )}
@@ -421,6 +418,13 @@ export function WebhooksPanel({
                   }
                 }}
                 editing={editing}
+              />
+            )}
+            {rotating && (
+              <RotateSecretPanel
+                organizationId={organizationId}
+                webhookId={rotating}
+                onOpenChange={(v) => !v && setRotating(null)}
               />
             )}
           </div>

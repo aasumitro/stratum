@@ -48,6 +48,12 @@ func createStripeCheckoutSession(
 	form.Set("line_items[0][price_data][unit_amount]", fmt.Sprintf("%d", amountCents))
 	form.Set("line_items[0][quantity]", "1")
 	form.Set("metadata[invoice_id]", invoiceID)
+	// Checkout Session metadata is a separate namespace from the PaymentIntent
+	// Stripe creates underneath it for mode=payment — it is NOT copied over
+	// automatically. payment_intent.payment_failed webhooks carry the
+	// PaymentIntent as their data object, so without this, that event type
+	// has no way to resolve back to invoiceID at all (see handleStripeWebhook).
+	form.Set("payment_intent_data[metadata][invoice_id]", invoiceID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"https://api.stripe.com/v1/checkout/sessions",

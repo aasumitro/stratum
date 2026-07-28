@@ -43,32 +43,34 @@ export function SettingsSection({
     >
       <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-6 px-2 md:grid-cols-[minmax(0,280px)_1fr] md:gap-12 md:px-4 lg:px-6">
         <div className="flex flex-col gap-4">
-        <div>
-          <h2
-            id={`${id}-heading`}
-            className="flex items-center gap-2 font-heading text-base font-medium"
-          >
-            {title}
-            {titleBadge}
-          </h2>
-          {description && (
-            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+          <div>
+            <h2
+              id={`${id}-heading`}
+              className="flex items-center gap-2 font-heading text-base font-medium"
+            >
+              {title}
+              {titleBadge}
+            </h2>
+            {description && (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {description}
+              </p>
+            )}
+          </div>
+          {actions && (
+            <div className="flex flex-col items-start gap-2">{actions}</div>
+          )}
+          {docLinks}
+        </div>
+        <div className="min-w-0">
+          {isLoading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : isError ? (
+            <ErrorState message={errorMessage} onRetry={onRetry} />
+          ) : (
+            children
           )}
         </div>
-        {actions && (
-          <div className="flex flex-col items-start gap-2">{actions}</div>
-        )}
-        {docLinks}
-      </div>
-      <div className="min-w-0">
-        {isLoading ? (
-          <Skeleton className="h-32 w-full" />
-        ) : isError ? (
-          <ErrorState message={errorMessage} onRetry={onRetry} />
-        ) : (
-          children
-        )}
-      </div>
       </div>
     </section>
   )

@@ -929,6 +929,133 @@ func TestIntegration_Webhook_PaidReactivatesExpiredSubscription(t *testing.T) {
 	}
 }
 
+// TestIntegration_Webhook_PaidRenewalRollsOverActivePeriod guards against a
+// regression where a routine renewal invoice (HandleSubscriptionAutoInvoice
+// creates one 3 days before period_end) paid on time — i.e. while the
+// subscription is still "active", the normal case — never advanced
+// period_end at all: the reactivation branch only fired for an
+// already-"expired" subscription, so expireIfDue would suspend the
+// organization on schedule regardless of the on-time payment. Also asserts
+// the new period extends from the *old* period_end, not from "now" — the
+// invoice is paid up to 3 days early, and rolling from "now" would shave
+// those days off the customer's paid term.
+func TestIntegration_Webhook_PaidRenewalRollsOverActivePeriod(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_renew_user"
+		orgID = "00000000-0000-0000-0000-000000000f06"
+		extID = "stripe_sess_f06"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, orgID)
+	// New organizations provision on a trial by default (see
+	// TestIntegration_Webhook_PaidRenewalConvertsTrialToActive for that
+	// path) — force plain "active" here to cover the other branch.
+	// Simulate paying 3 days early: period_end is still 3 days out, well
+	// before "now" — the bug was rolling from "now" instead of this value.
+	oldPeriodEnd := time.Now().Add(3 * 24 * time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'active', trial_end = NULL, period_end = $1 WHERE id = $2`,
+		oldPeriodEnd, subID); err != nil {
+		t.Fatalf("seed period_end: %v", err)
+	}
+
+	invID := seedInvoice(pool, subID, "USD", 900) // default kind = 'subscription', matching the real renewal invoice
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
+
+	payload := `{"type":"checkout.session.completed","data":{"object":{"id":"` + extID + `","payment_status":"paid"}}}`
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var status string
+	var newPeriodEnd time.Time
+	pool.QueryRow(t.Context(), `SELECT status, period_end FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &newPeriodEnd)
+	if status != "active" {
+		t.Errorf("after paid renewal: want status=active, got %q", status)
+	}
+	want := oldPeriodEnd.AddDate(0, 1, 0)
+	if !newPeriodEnd.Equal(want) {
+		t.Errorf("period_end: want %v (old period_end + 1 month), got %v", want, newPeriodEnd)
+	}
+
+	var historyCount int
+	pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'renew'`, subID,
+	).Scan(&historyCount)
+	if historyCount != 1 {
+		t.Errorf("want 1 'renew' history row, got %d", historyCount)
+	}
+}
+
+// TestIntegration_Webhook_PaidRenewalConvertsTrialToActive covers the other
+// half of the same fix: a trialing subscription's renewal invoice (created
+// 3 days before trial_end, same as any other renewal) paid on time must
+// convert the subscription to active with trial_end cleared — otherwise
+// expireIfDue's trial_end check would still fire at the original (now past)
+// trial_end date and undo the renewal on its very next run.
+func TestIntegration_Webhook_PaidRenewalConvertsTrialToActive(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_renew_trial_user"
+		orgID = "00000000-0000-0000-0000-000000000f07"
+		extID = "stripe_sess_f07"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, orgID)
+	// New organizations already provision as "trialing" (see setup above) —
+	// only need to pin trial_end/period_end to a known, still-future value.
+	oldPeriodEnd := time.Now().Add(3 * 24 * time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET trial_end = $1, period_end = $1 WHERE id = $2`,
+		oldPeriodEnd, subID); err != nil {
+		t.Fatalf("seed trial_end: %v", err)
+	}
+
+	invID := seedInvoice(pool, subID, "USD", 900)
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
+
+	payload := `{"type":"checkout.session.completed","data":{"object":{"id":"` + extID + `","payment_status":"paid"}}}`
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var status string
+	var newPeriodEnd time.Time
+	var trialEnd *time.Time
+	pool.QueryRow(t.Context(), `SELECT status, period_end, trial_end FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &newPeriodEnd, &trialEnd)
+	if status != "active" {
+		t.Errorf("after paid trial renewal: want status=active, got %q", status)
+	}
+	if trialEnd != nil {
+		t.Errorf("trial_end must be cleared on conversion, got %v", *trialEnd)
+	}
+	want := oldPeriodEnd.AddDate(0, 1, 0)
+	if !newPeriodEnd.Equal(want) {
+		t.Errorf("period_end: want %v (old trial_end + 1 month), got %v", want, newPeriodEnd)
+	}
+}
+
 // TestIntegration_Webhook_ReactivationRollsBackOnHistoryFailure regression-tests
 // that a failure applying the reactivation branch's writes (after the invoice
 // is already marked paid, within the same transaction) rolls back the whole
@@ -1358,6 +1485,56 @@ func TestIntegration_Webhook_Failed_MarksPastDue(t *testing.T) {
 	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus)
 	if subStatus != "past_due" {
 		t.Errorf("subscription: want status=past_due after FAILED webhook, got %q", subStatus)
+	}
+}
+
+// TestIntegration_StripeWebhook_PaymentIntentFailed_ResolvesByInvoiceMetadata
+// guards against a regression where payment_intent.payment_failed events
+// were routed through the same external_id lookup as checkout.session.*
+// events. The data object for that event type is a PaymentIntent (pi_...),
+// a different ID namespace than the Checkout Session ID (cs_...) stored in
+// payment_links.external_id — so external_id could never match, and the
+// failure was silently ignored (subscription stayed active, no past_due,
+// no dunning). The payload's data.object.id here is deliberately NOT the
+// seeded external_id, proving resolution goes through metadata.invoice_id.
+func TestIntegration_StripeWebhook_PaymentIntentFailed_ResolvesByInvoiceMetadata(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user      = "integ_billing_wh_pi_failed_user"
+		orgID     = "00000000-0000-0000-0000-000000000f09"
+		sessionID = "cs_test_f09" // the Checkout Session ID, stored as external_id
+		piID      = "pi_test_f09" // the PaymentIntent ID Stripe's event actually carries
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	pool.Exec(t.Context(), `UPDATE billing.subscriptions SET status = 'active' WHERE subject_type = 'organization' AND subject_id = $1`, orgID)
+
+	subID := getSubscriptionID(pool, orgID)
+	invID := seedInvoice(pool, subID, "USD", 900)
+	seedPaymentLink(pool, invID, sessionID, "stripe", "USD", 900)
+
+	payload := `{"type":"payment_intent.payment_failed","data":{"object":{"id":"` + piID + `","metadata":{"invoice_id":"` + invID + `"}}}}`
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var linkStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE invoice_id = $1`, invID).Scan(&linkStatus)
+	if linkStatus != "failed" {
+		t.Errorf("payment_link: want status=failed, got %q", linkStatus)
+	}
+
+	var subStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus)
+	if subStatus != "past_due" {
+		t.Errorf("subscription: want status=past_due after payment_intent.payment_failed, got %q", subStatus)
 	}
 }
 

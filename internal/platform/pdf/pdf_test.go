@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"testing"
 	"time"
+
+	"github.com/signintech/gopdf"
 )
 
 // currencyIDR keeps the Indonesian-rupiah currency code to a single literal
@@ -27,6 +29,8 @@ func TestFormatMoney(t *testing.T) {
 		{500, currencyIDR, "Rp500"},
 		{-10000, currencyIDR, "Rp-10.000"}, // discount line items are negative
 		{999, "EUR", "$9.99"},              // unknown currency falls back to the dollar format
+		{-550, "USD", "-$5.50"},            // regression: was "$-5.-50" (/ and % both keep the negative sign)
+		{-5, "USD", "-$0.05"},
 	}
 	for _, c := range cases {
 		if got := FormatMoney(c.amount, c.currency); got != c.want {
@@ -90,6 +94,37 @@ func TestRenderInvoice_ProducesPDF(t *testing.T) {
 	}
 	if !bytes.HasPrefix(out, []byte("%PDF")) {
 		t.Errorf("output does not look like a PDF (missing %%PDF header): % x", out[:min(8, len(out))])
+	}
+}
+
+// TestEmbeddedFont_LoadsAndRenders guards against a regression where
+// defaultFont returning "" (none of its hardcoded OS paths exist — e.g. a
+// minimal Alpine/distroless container with no system fonts installed)
+// caused invoice PDF generation to 500 outright, with no fallback. Proves
+// the embedded font both loaded (non-empty //go:embed) and is valid,
+// gopdf-parseable font data — the same call RenderInvoice falls back to.
+func TestEmbeddedFont_LoadsAndRenders(t *testing.T) {
+	if len(embeddedFont) == 0 {
+		t.Fatal("embeddedFont is empty — //go:embed assets/Inter-Medium.ttf picked up nothing")
+	}
+	p := &gopdf.GoPdf{}
+	p.Start(gopdf.Config{PageSize: gopdf.Rect{W: pageW, H: pageH}})
+	p.AddPage()
+	if err := p.AddTTFFontData("sans", embeddedFont); err != nil {
+		t.Fatalf("AddTTFFontData(embeddedFont): %v", err)
+	}
+	if err := p.SetFont("sans", "", 12); err != nil {
+		t.Fatalf("SetFont after loading embedded font: %v", err)
+	}
+	if err := p.Cell(nil, "test"); err != nil {
+		t.Fatalf("Cell using embedded font: %v", err)
+	}
+	out := &bytes.Buffer{}
+	if _, err := p.WriteTo(out); err != nil {
+		t.Fatalf("write PDF using embedded font: %v", err)
+	}
+	if !bytes.HasPrefix(out.Bytes(), []byte("%PDF")) {
+		t.Error("output does not look like a PDF (missing %PDF header)")
 	}
 }
 

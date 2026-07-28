@@ -1,7 +1,9 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -40,6 +42,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // clicked on another device never reaches this listener. See email-section.tsx
   // for the pending-state UI that covers the other case.
   const lastEmailRef = useRef<string | null>(null)
+  // useTranslation's `t` gets a new reference on every language change
+  // (react-i18next recomputes it via i18n.getFixedT once i18n.language
+  // differs from the last render). Reading it through a ref instead of a
+  // dependency keeps the listener effect below mount-only — otherwise a
+  // language toggle tears down and resubscribes the Supabase auth
+  // listener and refetches the session for a change that has nothing to
+  // do with auth.
+  const tRef = useRef(t)
+  useEffect(() => {
+    tRef.current = t
+  }, [t])
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -68,7 +81,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           newEmail &&
           newEmail !== lastEmailRef.current
         ) {
-          toast.success(t("settings.email.confirmed", { email: newEmail }))
+          toast.success(
+            tRef.current("settings.email.confirmed", { email: newEmail })
+          )
           void queryClient.invalidateQueries({
             queryKey: queryKeys.account.me(),
           })
@@ -82,27 +97,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     )
 
     return () => listener.subscription.unsubscribe()
-  }, [t])
+  }, [])
 
-  async function signIn(email: string, password: string): Promise<Session> {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
-    if (error) throw error
-    // Sync cookie immediately so the axios interceptor has the token
-    // before any subsequent API calls in the same tick.
-    syncCookie(data.session)
-    return data.session!
-  }
+  const signIn = useCallback(
+    async (email: string, password: string): Promise<Session> => {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+      if (error) throw error
+      // Sync cookie immediately so the axios interceptor has the token
+      // before any subsequent API calls in the same tick.
+      syncCookie(data.session)
+      return data.session!
+    },
+    []
+  )
 
-  async function signUp(email: string, password: string) {
+  const signUp = useCallback(async (email: string, password: string) => {
     const { data, error } = await supabase.auth.signUp({ email, password })
     if (error) throw error
     return data
-  }
+  }, [])
 
-  async function signOut() {
+  const signOut = useCallback(async () => {
     // Ignore Supabase API errors — the session may already be invalidated server-side
     // (e.g. after /me/sessions/revoke-all). Local cleanup must always happen.
     await supabase.auth.signOut().catch(() => undefined)
@@ -113,48 +131,58 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // account signing in on the same tab could briefly render this
     // account's cached organizations/notifications/billing data.
     queryClient.clear()
-  }
+  }, [])
 
-  async function resetPassword(email: string) {
+  const resetPassword = useCallback(async (email: string) => {
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/reset-password`,
     })
     if (error) throw error
-  }
+  }, [])
 
-  async function updatePassword(password: string) {
+  const updatePassword = useCallback(async (password: string) => {
     const { error } = await supabase.auth.updateUser({ password })
     if (error) throw error
     setIsPasswordRecovery(false)
-  }
+  }, [])
 
   // Supabase owns the whole request → verify → commit flow (with "Secure
   // email change" requiring both old and new addresses to confirm). This
   // only kicks that off — account.users.email is synced separately, after
   // the fact, by a Supabase Database Webhook.
-  async function updateEmail(email: string) {
+  const updateEmail = useCallback(async (email: string) => {
     const { error } = await supabase.auth.updateUser({ email })
     if (error) throw error
-  }
+  }, [])
 
-  return (
-    <AuthContext.Provider
-      value={{
-        session,
-        user,
-        loading,
-        isPasswordRecovery,
-        signIn,
-        signUp,
-        signOut,
-        resetPassword,
-        updatePassword,
-        updateEmail,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      session,
+      user,
+      loading,
+      isPasswordRecovery,
+      signIn,
+      signUp,
+      signOut,
+      resetPassword,
+      updatePassword,
+      updateEmail,
+    }),
+    [
+      session,
+      user,
+      loading,
+      isPasswordRecovery,
+      signIn,
+      signUp,
+      signOut,
+      resetPassword,
+      updatePassword,
+      updateEmail,
+    ]
   )
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

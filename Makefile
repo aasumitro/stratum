@@ -137,6 +137,11 @@ swagger: ## Regenerate Swagger/OpenAPI docs from handler annotations
 tidy: ## go mod tidy
 	go mod tidy
 
+.PHONY: verify-modules
+verify-modules: ## Fail if go mod tidy would change go.mod/go.sum
+	go mod tidy
+	git diff --exit-code go.mod go.sum
+
 .PHONY: fmt
 fmt: ## gofmt every file
 	gofmt -w .
@@ -166,6 +171,10 @@ test-cover-html: test-cover ## Same as test-cover, then open the HTML report in 
 lint: ## Run golangci-lint (install separately: https://golangci-lint.run/welcome/install/)
 	golangci-lint run ./...
 
+.PHONY: vuln
+vuln: ## Run Vulnerability scan
+	govulncheck ./...
+
 ## --- Local dev loop ---
 
 .PHONY: dev-reset
@@ -193,6 +202,12 @@ sync-deps: ## Upgrade Go (api/worker) and ui/app (web) deps to latest, then tidy
 sync-studio-deps: ## Upgrade studio deps to latest
 	cd ui/studio && go get -u ./... && go mod tidy
 	cd ui/studio/frontend && npx npm-check-updates -u && npm install
+
+.PHONY: pre-push
+pre-push: verify-modules vet fmt lint vuln ## Mirror the GitHub CI api+web jobs locally
+	TEST_DATABASE_URL=$(DATABASE_URL) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
+	go tool cover -func=coverage.out
+	cd ui/app && npm ci && npm run typecheck && npm run lint && npx prettier --write "**/*.{ts,tsx}" && npm run build
 
 ## --- Help ---
 

@@ -243,7 +243,10 @@ export function OrganizationDetailsCard({ organizationId, isOwner }: Props) {
                         : undefined}
                     </SelectValue>
                   </SelectTrigger>
-                  <SelectContent className="max-h-72" alignItemWithTrigger={false}>
+                  <SelectContent
+                    className="max-h-72"
+                    alignItemWithTrigger={false}
+                  >
                     {TIMEZONES.map((tz) => (
                       <SelectItem key={tz} value={tz}>
                         {tz.replace(/_/g, " ")}

@@ -39,15 +39,21 @@ export function WebhookSparkline({ organizationId, webhookId }: Props) {
   return (
     <div className="flex flex-col gap-1" title={summary}>
       <span className="sr-only">{summary}</span>
-      <div className="flex items-end gap-[2px] h-6 w-full opacity-80" aria-hidden="true">
+      <div
+        className="flex h-6 w-full items-end gap-[2px] opacity-80"
+        aria-hidden="true"
+      >
         {recent.map((d) => {
           const latency = d.latency_ms ?? 0
-          const heightPercent = Math.max(15, Math.min(100, (latency / maxLatency) * 100))
+          const heightPercent = Math.max(
+            15,
+            Math.min(100, (latency / maxLatency) * 100)
+          )
           return (
             <div
               key={d.id}
               style={{ height: `${heightPercent}%` }}
-              className={`w-[4px] sm:w-[5px] rounded-t-[1px] transition-all hover:brightness-110 ${DOT_TONE[d.status] ?? "bg-muted"}`}
+              className={`w-[4px] rounded-t-[1px] transition-all hover:brightness-110 sm:w-[5px] ${DOT_TONE[d.status] ?? "bg-muted"}`}
               title={`${d.status} • ${latency}ms`}
             />
           )

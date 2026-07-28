@@ -108,6 +108,7 @@ export interface InvitationPreview {
   organization_name: string
   role: OrganizationRole
   invited_by_email?: string
+  invited_by_name?: string
 }
 
 /** GET /organizations/join/preview — read-only organization + owner details

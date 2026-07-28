@@ -1134,6 +1134,103 @@ func TestIntegration_AcceptInvitation_AlreadyMember(t *testing.T) {
 	}
 }
 
+// stubInviterUserReader resolves one known auth_sub to a full profile
+// (name + email) — exercises previewInvitation's inviter-lookup enrichment
+// path (GetUserByAuthSub), which the batch-oriented stubMembersUserReader/
+// stubInviteAlreadyMemberUserReader stubs above don't implement.
+type stubInviterUserReader struct {
+	authSub string
+	name    string
+	email   string
+}
+
+func (s stubInviterUserReader) GetUserByAuthSub(_ context.Context, sub string) (*contracts.UserInfo, error) {
+	if sub == s.authSub {
+		return &contracts.UserInfo{AuthSub: sub, Email: s.email, Name: s.name}, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (s stubInviterUserReader) GetUserByEmail(_ context.Context, _ string) (*contracts.UserInfo, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s stubInviterUserReader) GetUsersByAuthSubs(_ context.Context, _ []string) (map[string]contracts.UserInfo, error) {
+	return nil, nil
+}
+
+func (s stubInviterUserReader) IsMFAEnabled(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
+// TestIntegration_PreviewInvitation_ReturnsOrgAndInviterDetails guards
+// against a regression where invitationPreview had no json tags: the wire
+// response serialized as PascalCase (OrganizationName, Role, ...) while
+// every field the accept-page UI reads is snake_case, so organization
+// name/role/inviter silently decoded to zero values in the browser
+// (rendered as "Join ?" / "invited you as organization.roles.undefined").
+func TestIntegration_PreviewInvitation_ReturnsOrgAndInviterDetails(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations",
+		`{"slug":"integ-ws-inv-preview","name":"Preview WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	const token = "preview-test-token-0000000000000000"
+	const inviteeEmail = "invitee-preview@test.com"
+	_, err := pool.Exec(t.Context(), `
+		INSERT INTO organization.invitations (organization_id, email, role, token, invited_by, expires_at)
+		VALUES ($1, $2, 'admin', $3, $4, NOW() + INTERVAL '7 days')`,
+		orgID, inviteeEmail, token, testAuthSub)
+	if err != nil {
+		t.Fatalf("seed invitation: %v", err)
+	}
+
+	ur := stubInviterUserReader{authSub: testAuthSub, name: "Ada Lovelace", email: "ada@test.com"}
+	engine := organization.NewModuleEngineWithUserReaderAndEmail(pool, "sub_invitee_preview", inviteeEmail, ur)
+	w2 := httptest.NewRecorder()
+	engine.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodGet, "/api/invitations/preview?token="+token, ""))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("preview: want 200, got %d: %s", w2.Code, w2.Body)
+	}
+
+	var body struct {
+		Data struct {
+			OrganizationName string `json:"organization_name"`
+			Role             string `json:"role"`
+			InvitedByEmail   string `json:"invited_by_email"`
+			InvitedByName    string `json:"invited_by_name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w2.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.OrganizationName != "Preview WS" {
+		t.Errorf("want organization_name %q, got %q", "Preview WS", body.Data.OrganizationName)
+	}
+	if body.Data.Role != "admin" {
+		t.Errorf("want role %q, got %q", "admin", body.Data.Role)
+	}
+	if body.Data.InvitedByEmail != "ada@test.com" {
+		t.Errorf("want invited_by_email %q, got %q", "ada@test.com", body.Data.InvitedByEmail)
+	}
+	if body.Data.InvitedByName != "Ada Lovelace" {
+		t.Errorf("want invited_by_name %q, got %q", "Ada Lovelace", body.Data.InvitedByName)
+	}
+}
+
 // stubInviteAlreadyMemberUserReader resolves exactly one known email to a
 // known auth_sub — enough for createInvitation's email-to-membership
 // lookup without a cross-module import into the account package.

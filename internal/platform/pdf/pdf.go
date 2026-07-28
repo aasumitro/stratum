@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,6 +11,17 @@ import (
 
 	"github.com/signintech/gopdf"
 )
+
+// embeddedFont is the last-resort fallback when none of defaultFont's OS
+// paths exist (e.g. a minimal Alpine/distroless container with no system
+// fonts installed) — without it, invoice PDF generation 500s outright on
+// those hosts instead of rendering with a bundled font. Same file already
+// shipped for ui/studio's frontend (SIL Open Font License, see "Inter Font
+// License.txt" there); copied here rather than imported since ui/studio
+// carries its own standalone go.mod (never shared with this module).
+//
+//go:embed assets/Inter-Medium.ttf
+var embeddedFont []byte
 
 const (
 	pageW     = 595.28 // A4 width in points
@@ -127,8 +139,12 @@ func RenderInvoice(d InvoiceData, lang string) ([]byte, error) {
 	p.Start(gopdf.Config{PageSize: gopdf.Rect{W: pageW, H: pageH}})
 	p.AddPage()
 
-	if err := p.AddTTFFont("sans", defaultFont()); err != nil {
-		return nil, fmt.Errorf("loading font: %w", err)
+	if path := defaultFont(); path != "" {
+		if err := p.AddTTFFont("sans", path); err != nil {
+			return nil, fmt.Errorf("loading font: %w", err)
+		}
+	} else if err := p.AddTTFFontData("sans", embeddedFont); err != nil {
+		return nil, fmt.Errorf("loading embedded fallback font: %w", err)
 	}
 	setTextColor(p, colorPrimary)
 
@@ -321,13 +337,24 @@ func setTextColor(p *gopdf.GoPdf, c rgbColor)   { p.SetTextColor(c.r, c.g, c.b) 
 func setStrokeColor(p *gopdf.GoPdf, c rgbColor) { p.SetStrokeColor(c.r, c.g, c.b) }
 func fillColor(p *gopdf.GoPdf, c rgbColor)      { p.SetFillColor(c.r, c.g, c.b) }
 
-// FormatMoney renders a minor-unit amount (cents) as a display string for the given currency.
+// FormatMoney renders a minor-unit amount (cents) as a display string for
+// the given currency — amountMinor is negative for discount line items.
 func FormatMoney(amountMinor int64, currency string) string {
 	switch currency {
 	case "IDR":
 		return "Rp" + groupThousands(amountMinor)
 	default:
-		return fmt.Sprintf("$%d.%02d", amountMinor/100, amountMinor%100)
+		// Sign extracted before formatting: Go's / truncates toward zero
+		// and % keeps the dividend's sign, so a negative amountMinor
+		// (e.g. -550) would otherwise print as "$-5.-50" instead of
+		// "-$5.50" — groupThousands (the IDR path above) already handles
+		// this correctly, this default branch didn't.
+		sign := ""
+		if amountMinor < 0 {
+			sign = "-"
+			amountMinor = -amountMinor
+		}
+		return fmt.Sprintf("%s$%d.%02d", sign, amountMinor/100, amountMinor%100)
 	}
 }
 

@@ -260,6 +260,41 @@ func TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus(t *testing.T) {
 	}
 }
 
+// TestIntegration_RecordLoginEvent_FailsClosedOnRedisError guards against a
+// regression where the rate-gate ignored Redis errors (`exists, _ :=
+// ...Exists(...)`) and treated an unreadable gate as "not gated yet" — on
+// every authenticated request. A Redis outage would then turn into a login
+// event insert plus a Supabase Admin API call per request instead of being
+// skipped. Points the client at an address nothing listens on so
+// Exists/Set fail the same way a real outage would, with no real Redis
+// needed.
+func TestIntegration_RecordLoginEvent_FailsClosedOnRedisError(t *testing.T) {
+	const authSub = "integ_login_gate_fail_closed"
+	pool := testPool(t)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM account.login_events WHERE auth_sub = $1`, authSub)
+	})
+
+	unreachable := goredis.NewClient(&goredis.Options{
+		Addr:        "127.0.0.1:1",
+		DialTimeout: 200 * time.Millisecond,
+	})
+	defer unreachable.Close()
+
+	mod := account.NewModuleForTestWithAdminAndRedis(pool, "", "", unreachable)
+	mod.RecordLoginEvent(t.Context(), authSub, "127.0.0.1", "test-agent")
+
+	var count int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM account.login_events WHERE auth_sub = $1`, authSub,
+	).Scan(&count); err != nil {
+		t.Fatalf("count login_events: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("want 0 login_events rows when the rate-gate check errors, got %d", count)
+	}
+}
+
 // stubExportOrgReader satisfies contracts.OrganizationReader with a single
 // known membership — enough to exercise buildExportData's organizations
 // section without a cross-module import into the organization package.

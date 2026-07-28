@@ -101,7 +101,13 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 	}
 
 	hookSem := make(chan struct{}, authHookConcurrency)
-	runHook := func(fn func(ctx context.Context)) {
+	// parent is the request's own context, already detached via
+	// context.WithoutCancel by the caller — preserves OTel spans and
+	// request-scoped log fields (so hook logs correlate back to the
+	// request that triggered them) while not inheriting the request's
+	// cancellation, which would otherwise fire the moment the response is
+	// written, before this 200ms budget has a chance to run.
+	runHook := func(parent context.Context, fn func(ctx context.Context)) {
 		select {
 		case hookSem <- struct{}{}:
 		default:
@@ -110,7 +116,7 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 		}
 		go func() {
 			defer func() { <-hookSem }()
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ctx, cancel := context.WithTimeout(parent, 200*time.Millisecond)
 			defer cancel()
 			fn(ctx)
 		}()
@@ -182,13 +188,13 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 
 			if h.OnAuth != nil {
 				fn := h.OnAuth
-				runHook(func(ctx context.Context) { fn(ctx, sub) })
+				runHook(context.WithoutCancel(c.Request.Context()), func(ctx context.Context) { fn(ctx, sub) })
 			}
 
 			if h.OnLogin != nil {
 				fn := h.OnLogin
 				ip, ua := c.ClientIP(), c.Request.UserAgent()
-				runHook(func(ctx context.Context) { fn(ctx, sub, ip, ua) })
+				runHook(context.WithoutCancel(c.Request.Context()), func(ctx context.Context) { fn(ctx, sub, ip, ua) })
 			}
 
 			c.Next()

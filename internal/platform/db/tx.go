@@ -70,6 +70,18 @@ func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx Querier) error) 
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
+	// Without this, a panic inside fn unwinds past the error-handling
+	// rollback below entirely — neither Commit nor Rollback ever runs, so
+	// the leased pool connection is never released even though an outer
+	// recovery middleware catches the panic and the request survives.
+	// Rolling back here and re-panicking guarantees cleanup without
+	// swallowing the panic itself.
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback(ctx)
+			panic(p)
+		}
+	}()
 
 	if err := fn(tx); err != nil {
 		if rbErr := tx.Rollback(ctx); rbErr != nil {

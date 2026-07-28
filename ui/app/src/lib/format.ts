@@ -19,7 +19,7 @@ export function initials(name: string): string {
     .toUpperCase()
 }
 
-// formatMoney matches the backend's platform/pdf.FormatMoney convention:
+// formatMoney matches the backend's formatting convention:
 // USD (and other 2-decimal currencies) store amount_cents/100; IDR has no
 // minor unit here, so it renders the raw integer.
 export function formatMoney(amountCents: number, currency: string): string {

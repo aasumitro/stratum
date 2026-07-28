@@ -1,6 +1,6 @@
 import { useActiveOrganization } from "@/hooks/use-active-organization"
 import { useBillingStatus } from "@/hooks/use-billing-status"
-import { hasPermission } from "@/lib/permissions/matrix"
+import { hasPermission } from "@/lib/permissions-matrix"
 import type { OrganizationRole } from "@/types/organization"
 
 export interface Permissions {

@@ -179,13 +179,14 @@ func (s *service) acceptInvitation(
 // commits to accepting (the "valid" confirm card — "Join Acme Corp?
 // mark@acme.com invited you as Member").
 type invitationPreview struct {
-	OrganizationID   string
-	OrganizationName string
-	Role             string
-	InvitedByEmail   string
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name"`
+	Role             string `json:"role"`
+	InvitedByEmail   string `json:"invited_by_email,omitempty"`
+	InvitedByName    string `json:"invited_by_name,omitempty"`
 	// InvitedEmail is only populated on an ErrInvitationEmailMismatch
 	// return — the address the invitation actually targets.
-	InvitedEmail string
+	InvitedEmail string `json:"invited_email,omitempty"`
 }
 
 // previewInvitation runs the same validation acceptInvitation does (found,
@@ -218,6 +219,7 @@ func (s *service) previewInvitation(
 	if s.userReader != nil {
 		if u, err := s.userReader.GetUserByAuthSub(ctx, inv.InvitedBy); err == nil && u != nil {
 			preview.InvitedByEmail = u.Email
+			preview.InvitedByName = u.Name
 		}
 	}
 	return preview, nil

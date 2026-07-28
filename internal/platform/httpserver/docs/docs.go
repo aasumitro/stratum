@@ -7067,17 +7067,20 @@ const docTemplate = `{
         "invitationPreview": {
             "type": "object",
             "properties": {
-                "invitedByEmail": {
+                "invited_by_email": {
                     "type": "string"
                 },
-                "invitedEmail": {
+                "invited_by_name": {
+                    "type": "string"
+                },
+                "invited_email": {
                     "description": "InvitedEmail is only populated on an ErrInvitationEmailMismatch\nreturn — the address the invitation actually targets.",
                     "type": "string"
                 },
-                "organizationID": {
+                "organization_id": {
                     "type": "string"
                 },
-                "organizationName": {
+                "organization_name": {
                     "type": "string"
                 },
                 "role": {

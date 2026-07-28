@@ -49,14 +49,14 @@ function Shell({
     primary: "bg-primary/10 text-primary",
   }[tone]
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-6 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center">
       <div
         className={`flex size-16 items-center justify-center rounded-full ${toneClass}`}
       >
         {icon}
       </div>
       <div>
-        <h1 className="text-xl font-extrabold">{title}</h1>
+        <h1 className="text-xl font-extrabold whitespace-pre-line">{title}</h1>
         {description && (
           <p className="mt-1 max-w-sm text-sm text-muted-foreground">
             {description}
@@ -126,7 +126,10 @@ export function InvitationAcceptPage() {
           organization: preview.organization_name,
         })}
         description={t("organization.invitations.confirmDesc", {
-          inviter: preview.invited_by_email ?? "",
+          inviter:
+            preview.invited_by_name ||
+            preview.invited_by_email ||
+            t("organization.invitations.someone"),
           role: t(`organization.roles.${preview.role}`),
         })}
         actions={
@@ -303,17 +306,9 @@ export function InvitationAcceptPage() {
       title={t("organization.invitations.invalidTitle")}
       description={t("organization.invitations.invalidDesc")}
       actions={
-        <>
-          <Button
-            variant="outline"
-            onClick={() => void navigate({ to: "/join" })}
-          >
-            {t("organization.invitations.enterCodeManually")}
-          </Button>
-          <Button onClick={() => void navigate({ to: "/organizations" })}>
-            {t("organization.invitations.goToOrganizations")}
-          </Button>
-        </>
+        <Button onClick={() => void navigate({ to: "/organizations" })}>
+          {t("organization.invitations.goToOrganizations")}
+        </Button>
       }
     />
   )

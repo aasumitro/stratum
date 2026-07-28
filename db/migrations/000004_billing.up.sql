@@ -122,7 +122,7 @@ CREATE TABLE billing.subscription_history (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     subscription_id UUID        NOT NULL REFERENCES billing.subscriptions(id),
     action          TEXT        NOT NULL
-                                CHECK (action IN ('trial', 'activate', 'upgrade', 'downgrade', 'cancel', 'resume', 'extend', 'expire')),
+                                CHECK (action IN ('trial', 'activate', 'upgrade', 'downgrade', 'cancel', 'resume', 'extend', 'renew', 'expire')),
     from_plan       TEXT,
     to_plan         TEXT,
     amount_cents    BIGINT      NOT NULL DEFAULT 0,

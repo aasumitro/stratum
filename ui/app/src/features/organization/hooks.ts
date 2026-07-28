@@ -704,7 +704,9 @@ export function useRetryAllFailedDeliveries(
     options: {
       onSuccess: (res) => {
         toast.success(
-          t("organization.webhooks.retriedAll", { count: res.data?.retried ?? 0 })
+          t("organization.webhooks.retriedAll", {
+            count: res.data?.retried ?? 0,
+          })
         )
         const deliveriesKey = queryKeys.organizations.webhookDeliveries(
           organizationId,

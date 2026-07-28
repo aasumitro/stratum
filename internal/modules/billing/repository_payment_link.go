@@ -83,6 +83,30 @@ func (r *repository) findPaymentLinkWithSubjectByExternalID(
 	return &p, err
 }
 
+// findPaymentLinkWithSubjectByInvoiceID is findPaymentLinkWithSubjectByExternalID's
+// counterpart keyed by invoice_id instead of external_id — used for Stripe
+// event types whose data object is a PaymentIntent (payment_intent.*),
+// which carries a different ID namespace (pi_...) than the Checkout
+// Session ID (cs_...) stored in external_id, so external_id can never
+// match for those events. Most recent link wins if more than one exists
+// for the invoice (mirrors findActivePaymentLinkByInvoice's ordering).
+func (r *repository) findPaymentLinkWithSubjectByInvoiceID(
+	ctx context.Context, q db.Querier,
+	invoiceID string,
+) (*paymentLinkSubject, error) {
+	var p paymentLinkSubject
+	err := q.QueryRow(ctx, `
+		SELECT pl.id, pl.invoice_id, s.id, pl.status, s.subject_type, s.subject_id
+		FROM billing.payment_links pl
+		JOIN billing.invoices i ON i.id = pl.invoice_id
+		JOIN billing.subscriptions s ON s.id = i.subscription_id
+		WHERE pl.invoice_id = $1
+		ORDER BY pl.created_at DESC LIMIT 1`,
+		invoiceID,
+	).Scan(&p.linkID, &p.invoiceID, &p.subscriptionID, &p.status, &p.subjectType, &p.subjectID)
+	return &p, err
+}
+
 func (r *repository) listActivePaymentLinks(
 	ctx context.Context, q db.Querier,
 	subscriptionID string,

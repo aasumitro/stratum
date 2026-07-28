@@ -83,7 +83,7 @@ export function SidebarSetupCards({
             key: "invite",
             done: memberCount > 1,
             labelKey: "dashboard.checklist.invite",
-            href: `/organization/${organizationId}/members`,
+            href: `/organization/${organizationId}/settings#members`,
           },
         ]
       : []),
@@ -103,7 +103,7 @@ export function SidebarSetupCards({
             key: "webhook",
             done: webhookCount > 0,
             labelKey: "dashboard.checklist.webhook",
-            href: `/organization/${organizationId}/webhooks`,
+            href: `/organization/${organizationId}/settings?panel=webhooks`,
           },
         ]
       : []),

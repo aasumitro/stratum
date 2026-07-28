@@ -106,7 +106,7 @@ export function InviteCodeSection({
             </span>
           </div>
           {bare && (
-            <p className="text-[13px] text-muted-foreground mt-3 leading-relaxed">
+            <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
               {t("organization.inviteCode.description")}
             </p>
           )}

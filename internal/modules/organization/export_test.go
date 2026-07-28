@@ -203,6 +203,26 @@ func NewModuleEngineWithWriterAndEmail(pool *pgxpool.Pool, authSub, email string
 	return e
 }
 
+// NewModuleEngineWithUserReaderAndEmail is NewModuleEngineWithUserReader plus
+// a verified JWT "email"/"user_metadata.email_verified" claim — use for
+// invitation-preview/accept tests that need both a resolvable inviter
+// profile (name/email) and a caller identity matching the invitation.
+func NewModuleEngineWithUserReaderAndEmail(pool *pgxpool.Pool, authSub, email string, ur contracts.UserReader) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	mod := New(pool, messaging.NoopPublisher{})
+	mod.SetUserReader(ur)
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"email": email, "user_metadata": map[string]any{"email_verified": true}}})
+		c.Next()
+	}
+	orgMW := middleware.NewOrganizationMiddleware(mod)
+	noopGate := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
+	return e
+}
+
 // NewModuleEngineWithCatalogReader creates a full gin.Engine backed by a
 // real DB module with a catalog reader wired in — use for plan-validation
 // integration tests on organization creation.

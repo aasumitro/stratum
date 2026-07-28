@@ -30,7 +30,12 @@ type webhookOutcome struct {
 // causing the retry to be ACK'd as a duplicate without ever re-running).
 // eventID may be empty (test fixtures without a provider event ID) — the
 // idempotency marker is skipped, but the DB effects are still atomic.
-func (s *service) processWebhook(ctx context.Context, provider, eventID, externalID, normalizedStatus string) error {
+// invoiceID, when non-empty, resolves the payment link by invoice instead
+// of externalID — Stripe's payment_intent.* event types carry a
+// PaymentIntent (pi_...) as their data object, a different ID namespace
+// than the Checkout Session ID (cs_...) stored as external_id, so
+// external_id can never match for those events (see handleStripeWebhook).
+func (s *service) processWebhook(ctx context.Context, provider, eventID, externalID, invoiceID, normalizedStatus string) error {
 	var outcome *webhookOutcome
 	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
@@ -44,7 +49,7 @@ func (s *service) processWebhook(ctx context.Context, provider, eventID, externa
 			}
 		}
 		var err error
-		outcome, err = s.handleWebhook(txCtx, externalID, normalizedStatus)
+		outcome, err = s.handleWebhook(txCtx, externalID, invoiceID, normalizedStatus)
 		return err
 	})
 	if err != nil {
@@ -76,9 +81,16 @@ func (s *service) processWebhook(ctx context.Context, provider, eventID, externa
 
 // handleWebhook applies a provider callback's DB effects using ctx's
 // transaction-scoped querier, returning the side effects to run once that
-// transaction has committed.
-func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatus string) (*webhookOutcome, error) {
-	link, err := s.repo.findPaymentLinkWithSubjectByExternalID(ctx, s.querier(ctx), externalID)
+// transaction has committed. invoiceID, when non-empty, resolves the
+// payment link by invoice instead of externalID — see processWebhook.
+func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, normalizedStatus string) (*webhookOutcome, error) {
+	var link *paymentLinkSubject
+	var err error
+	if invoiceID != "" {
+		link, err = s.repo.findPaymentLinkWithSubjectByInvoiceID(ctx, s.querier(ctx), invoiceID)
+	} else {
+		link, err = s.repo.findPaymentLinkWithSubjectByExternalID(ctx, s.querier(ctx), externalID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +225,52 @@ func (s *service) handleWebhook(ctx context.Context, externalID, normalizedStatu
 			}
 			outcome.scheduleRenewal = &subscriptionRecord{
 				ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &newPeriodEnd,
+			}
+		// The routine renewal invoice HandleSubscriptionAutoInvoice creates 3
+		// days before period_end (inv.Kind == "subscription", the only other
+		// kind besides "extension") reaches here paid while the subscription
+		// is still active/trialing/past_due — i.e. the expected, on-time
+		// case. Without this case, period_end never advances: expireIfDue
+		// only checks whether "now" is past the *existing* period_end, with
+		// no awareness that a renewal was paid, so an on-time payer got
+		// suspended on schedule anyway.
+		case (sub.Status == statusActive || sub.Status == statusTrialing || sub.Status == statusPastDue) &&
+			inv.Kind != "extension":
+			// Extends from the current period_end, not from now — the
+			// invoice is paid up to 3 days early, and starting the new
+			// period at payment time would shave those days off the
+			// customer's paid term.
+			periodEnd := sub.PeriodEnd.AddDate(0, 1, 0)
+			if sub.Cycle == cycleYearly {
+				periodEnd = sub.PeriodEnd.AddDate(1, 0, 0)
+			}
+			switch sub.Status {
+			case statusTrialing:
+				// Single write: converts the trial to active AND clears
+				// trial_end — expireIfDue's trial_end check would otherwise
+				// still fire at the original (now past) trial_end date and
+				// undo this renewal on its very next run.
+				if _, err := s.repo.activateTrialImmediately(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, periodEnd); err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: convert trial to active on renewal: %w", err)
+				}
+			case statusPastDue:
+				if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, periodEnd); err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: roll over past-due subscription period: %w", err)
+				}
+				if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: reactivate past-due subscription: %w", err)
+				}
+			default:
+				if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, periodEnd); err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: roll over subscription period: %w", err)
+				}
+			}
+			if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "renew",
+				&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedByWebhook, nil); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: insert renew history: %w", err)
+			}
+			outcome.scheduleRenewal = &subscriptionRecord{
+				ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
 			}
 		}
 	}

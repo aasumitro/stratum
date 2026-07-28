@@ -34,10 +34,18 @@ export function useCursorAccumulator<T>(
   if (page !== prevPage) {
     setPrevPage(page)
     if (page?.data) {
-      const merged = cursor === undefined ? page.data! : [...items, ...page.data!]
+      const merged =
+        cursor === undefined ? page.data! : [...items, ...page.data!]
       setItems(
         Array.from(
-          new Map(merged.map((item) => [item && typeof item === "object" && "id" in item ? (item as { id: unknown }).id : item, item])).values()
+          new Map(
+            merged.map((item) => [
+              item && typeof item === "object" && "id" in item
+                ? (item as { id: unknown }).id
+                : item,
+              item,
+            ])
+          ).values()
         )
       )
     }

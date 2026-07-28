@@ -204,8 +204,9 @@ export function SubscriptionCancelDialog({
                 </li>
                 <li>
                   <Link
-                    to="/organization/$organizationId/audit-log"
+                    to="/organization/$organizationId/settings"
                     params={{ organizationId }}
+                    search={{ panel: "audit-log" }}
                     className="underline"
                   >
                     {t("billing.cancel.exportOrganizationData")}
