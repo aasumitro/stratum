@@ -26,8 +26,8 @@ type safeEndpoint struct {
 	AutoDisabledAt          *time.Time        `json:"auto_disabled_at,omitempty"`
 	SecretRotationExpiresAt *time.Time        `json:"secret_rotation_expires_at,omitempty"`
 	Health                  *webhookHealthDTO `json:"health,omitempty"`
-	CreatedAt               any               `json:"created_at"`
-	UpdatedAt               any               `json:"updated_at"`
+	CreatedAt               time.Time         `json:"created_at"`
+	UpdatedAt               time.Time         `json:"updated_at"`
 }
 
 type webhookHealthDTO struct {

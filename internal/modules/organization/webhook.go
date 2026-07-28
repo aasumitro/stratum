@@ -105,7 +105,11 @@ func (w *WebhookWorker) HandleWebhookRetry(ctx context.Context, body []byte) err
 		return nil
 	}
 
-	if err := deliver(ctx, w.repo, w.pool, ep, del, retryPayload(del, ep.ID)); err != nil {
+	payload, err := retryPayload(del, ep.ID)
+	if err != nil {
+		return fmt.Errorf("webhook retry: payload: %w", err)
+	}
+	if err := deliver(ctx, w.repo, w.pool, ep, del, payload); err != nil {
 		w.log.Warn("webhook retry: delivery failed", "delivery_id", del.ID, "url", ep.URL, "error", err)
 	}
 	w.checkHealth(ctx, ep)

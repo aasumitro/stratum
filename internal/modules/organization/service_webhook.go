@@ -199,7 +199,11 @@ func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webh
 	if del.EndpointID != ep.ID {
 		return errors.New("delivery does not belong to endpoint")
 	}
-	return deliver(ctx, s.repo, s.pool, ep, del, retryPayload(del, ep.ID))
+	payload, err := retryPayload(del, ep.ID)
+	if err != nil {
+		return fmt.Errorf("organization.retryWebhookDelivery: payload: %w", err)
+	}
+	return deliver(ctx, s.repo, s.pool, ep, del, payload)
 }
 
 // retryAllFailedWebhookDeliveries backs the bulk "Retry all failed" action.
@@ -237,13 +241,16 @@ func (s *service) retryAllFailedWebhookDeliveries(
 // retryPayload re-sends a minimal envelope built from the stored event
 // metadata — the original event payload isn't retained, a known limitation
 // carried forward unchanged from before this milestone.
-func retryPayload(del *webhookDeliveryRecord, endpointID string) []byte {
-	payload, _ := json.Marshal(map[string]string{
+func retryPayload(del *webhookDeliveryRecord, endpointID string) ([]byte, error) {
+	payload, err := json.Marshal(map[string]string{
 		eventPayloadIDKey:         del.EventID,
 		eventPayloadTypeKey:       del.EventType,
 		eventPayloadEndpointIDKey: endpointID,
 	})
-	return payload
+	if err != nil {
+		return nil, fmt.Errorf("organization.retryPayload: %w", err)
+	}
+	return payload, nil
 }
 
 // sendTestEvent delivers a synthetic payload through the exact same
