@@ -42,7 +42,7 @@ func (s *service) processWebhook(ctx context.Context, provider, eventID, externa
 		if eventID != "" {
 			inserted, err := s.repo.markWebhookProcessed(txCtx, tx, provider, eventID)
 			if err != nil {
-				return err
+				return fmt.Errorf("billing.processWebhook: %w", err)
 			}
 			if !inserted {
 				return nil // duplicate delivery — no-op, ACK without re-running side effects
@@ -92,14 +92,14 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 		link, err = s.repo.findPaymentLinkWithSubjectByExternalID(ctx, s.querier(ctx), externalID)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.handleWebhook: find payment link with subject: %w", err)
 	}
 	if link.status == normalizedStatus {
 		return nil, nil
 	}
 
 	if err := s.repo.updatePaymentLinkStatus(ctx, s.querier(ctx), link.linkID, normalizedStatus); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.handleWebhook: update payment link status: %w", err)
 	}
 
 	outcome := &webhookOutcome{}
@@ -113,12 +113,12 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 		// and so not caught by the eventID-based check above) serialize here
 		// instead of both reading "pending" and both applying its effects.
 		if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), link.subscriptionID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.handleWebhook: lock subscription: %w", err)
 		}
 
 		applied, err := s.repo.markInvoicePaid(ctx, s.querier(ctx), link.invoiceID, now)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.handleWebhook: mark invoice paid: %w", err)
 		}
 		if !applied {
 			// Already paid by an earlier, now-committed delivery — nothing left to do.
@@ -148,7 +148,7 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 
 		inv, err := s.repo.findInvoiceByID(ctx, s.querier(ctx), link.invoiceID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.handleWebhook: find invoice: %w", err)
 		}
 
 		// Reactivate expired subscriptions on successful payment. Below this
@@ -226,16 +226,20 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 			outcome.scheduleRenewal = &subscriptionRecord{
 				ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &newPeriodEnd,
 			}
-		// The routine renewal invoice HandleSubscriptionAutoInvoice creates 3
-		// days before period_end (inv.Kind == "subscription", the only other
-		// kind besides "extension") reaches here paid while the subscription
-		// is still active/trialing/past_due — i.e. the expected, on-time
-		// case. Without this case, period_end never advances: expireIfDue
-		// only checks whether "now" is past the *existing* period_end, with
-		// no awareness that a renewal was paid, so an on-time payer got
-		// suspended on schedule anyway.
+		// Three invoice kinds reach this switch: "activation" (a
+		// subscription's very first invoice, or a skip-trial activation —
+		// its period was already fully set at creation/activation time, so
+		// paying it is correctly a no-op here — falls through to no case),
+		// "extension" (handled by its own case above), and "subscription"
+		// (the routine renewal invoice HandleSubscriptionAutoInvoice creates
+		// 3 days before period_end — the only kind this case should roll
+		// forward). Without this case matching a genuine renewal,
+		// period_end never advances: expireIfDue only checks whether "now"
+		// is past the *existing* period_end, with no awareness that a
+		// renewal was paid, so an on-time payer got suspended on schedule
+		// anyway.
 		case (sub.Status == statusActive || sub.Status == statusTrialing || sub.Status == statusPastDue) &&
-			inv.Kind != "extension":
+			inv.Kind == "subscription":
 			// Extends from the current period_end, not from now — the
 			// invoice is paid up to 3 days early, and starting the new
 			// period at payment time would shave those days off the

@@ -1,7 +1,6 @@
 package account
 
 import (
-	"crypto/hmac"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -492,5 +491,5 @@ func verifyWebhookSecret(headerSecret, configSecret string) bool {
 	if configSecret == "" {
 		return true
 	}
-	return hmac.Equal([]byte(headerSecret), []byte(configSecret))
+	return middleware.SecureCompare(headerSecret, configSecret)
 }

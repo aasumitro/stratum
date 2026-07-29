@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/breadcrumb"
 import { NotificationBell } from "@/components/shared/notification-bell"
 import { OrganizationSwitcher } from "@/components/layout/organization-switcher"
-import { useOrganizations } from "@/features/organization/hooks"
+import { useOrganizations } from "@/features/organization/hooks/use-organization"
 
 export function AppHeader() {
   const { t } = useTranslation()

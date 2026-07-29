@@ -2,6 +2,7 @@ package organization
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -47,7 +48,10 @@ func (r *repository) insertWebhookEndpoint(
 		RETURNING `+webhookEndpointColumns,
 		organizationID, url, secretPlaintext, subscribedEvents,
 	), rec)
-	return rec, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertWebhookEndpoint: %w", err)
+	}
+	return rec, nil
 }
 
 func (r *repository) listWebhookEndpoints(
@@ -62,7 +66,7 @@ func (r *repository) listWebhookEndpoints(
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listWebhookEndpoints: %w", err)
 	}
 	defer rows.Close()
 
@@ -70,11 +74,14 @@ func (r *repository) listWebhookEndpoints(
 	for rows.Next() {
 		var rec webhookEndpointRecord
 		if err := scanWebhookEndpoint(rows, &rec); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listWebhookEndpoints: scan: %w", err)
 		}
 		recs = append(recs, rec)
 	}
-	return recs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listWebhookEndpoints: %w", err)
+	}
+	return recs, nil
 }
 
 // listEnabledWebhookEndpointsForEvent returns every enabled endpoint that
@@ -94,7 +101,7 @@ func (r *repository) listEnabledWebhookEndpointsForEvent(
 		organizationID, eventType,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listEnabledWebhookEndpointsForEvent: %w", err)
 	}
 	defer rows.Close()
 
@@ -102,11 +109,14 @@ func (r *repository) listEnabledWebhookEndpointsForEvent(
 	for rows.Next() {
 		var rec webhookEndpointRecord
 		if err := scanWebhookEndpoint(rows, &rec); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listEnabledWebhookEndpointsForEvent: scan: %w", err)
 		}
 		recs = append(recs, rec)
 	}
-	return recs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listEnabledWebhookEndpointsForEvent: %w", err)
+	}
+	return recs, nil
 }
 
 func (r *repository) findWebhookEndpoint(
@@ -120,7 +130,10 @@ func (r *repository) findWebhookEndpoint(
 		WHERE organization_id = $1 AND id = $2`,
 		organizationID, id,
 	), rec)
-	return rec, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.findWebhookEndpoint: %w", err)
+	}
+	return rec, nil
 }
 
 func (r *repository) updateWebhookEndpoint(
@@ -135,7 +148,10 @@ func (r *repository) updateWebhookEndpoint(
 		RETURNING `+webhookEndpointColumns,
 		organizationID, id, url, enabled, subscribedEvents,
 	), rec)
-	return rec, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.updateWebhookEndpoint: %w", err)
+	}
+	return rec, nil
 }
 
 // rotateWebhookSecret sets a fresh secret as current, keeps the old one as
@@ -153,7 +169,10 @@ func (r *repository) rotateWebhookSecret(
 		RETURNING `+webhookEndpointColumns,
 		organizationID, id, newSecret, graceExpiresAt,
 	), rec)
-	return rec, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.rotateWebhookSecret: %w", err)
+	}
+	return rec, nil
 }
 
 // setWebhookEnabled is a narrower update than updateWebhookEndpoint — used
@@ -169,12 +188,17 @@ func (r *repository) setWebhookEnabled(
 		WHERE id = $1`,
 		id, enabled, autoDisabledAt,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.setWebhookEnabled: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) setWebhookHealthWarnedAt(ctx context.Context, q db.Querier, id string, at time.Time) error {
-	_, err := q.Exec(ctx, `UPDATE organization.webhook_endpoints SET health_warned_at = $2 WHERE id = $1`, id, at)
-	return err
+	if _, err := q.Exec(ctx, `UPDATE organization.webhook_endpoints SET health_warned_at = $2 WHERE id = $1`, id, at); err != nil {
+		return fmt.Errorf("organization.setWebhookHealthWarnedAt: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) deleteWebhookEndpoint(
@@ -186,7 +210,10 @@ func (r *repository) deleteWebhookEndpoint(
 		WHERE organization_id = $1 AND id = $2`,
 		organizationID, id,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.deleteWebhookEndpoint: %w", err)
+	}
+	return nil
 }
 
 // webhookHealth holds the 24h and 3d delivered/total counts for an
@@ -209,7 +236,10 @@ func (r *repository) webhookHealth(ctx context.Context, q db.Querier, endpointID
 		FROM organization.webhook_deliveries WHERE endpoint_id = $1`,
 		endpointID,
 	).Scan(&h.Delivered24h, &h.Total24h, &h.Delivered3d, &h.Total3d)
-	return h, err
+	if err != nil {
+		return webhookHealth{}, fmt.Errorf("organization.webhookHealth: %w", err)
+	}
+	return h, nil
 }
 
 // webhookHealthBatch is the batched counterpart to webhookHealth — one
@@ -230,7 +260,7 @@ func (r *repository) webhookHealthBatch(ctx context.Context, q db.Querier, endpo
 		endpointIDs,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.webhookHealthBatch: %w", err)
 	}
 	defer rows.Close()
 
@@ -239,9 +269,12 @@ func (r *repository) webhookHealthBatch(ctx context.Context, q db.Querier, endpo
 		var endpointID string
 		var h webhookHealth
 		if err := rows.Scan(&endpointID, &h.Delivered24h, &h.Total24h, &h.Delivered3d, &h.Total3d); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.webhookHealthBatch: scan: %w", err)
 		}
 		out[endpointID] = h
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.webhookHealthBatch: %w", err)
+	}
+	return out, nil
 }

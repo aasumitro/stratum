@@ -269,8 +269,8 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="id">Indonesia</SelectItem>
+                    <SelectItem value="en">{t("language.en")}</SelectItem>
+                    <SelectItem value="id">{t("language.id")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

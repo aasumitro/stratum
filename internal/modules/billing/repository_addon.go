@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -28,7 +29,7 @@ func (r *repository) listAttachedAddonsWithPricing(
 		WHERE sa.subscription_id = $1
 		ORDER BY a.name`, subscriptionID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listAttachedAddonsWithPricing: %w", err)
 	}
 
 	var out []attachedAddonRecord
@@ -37,13 +38,16 @@ func (r *repository) listAttachedAddonsWithPricing(
 		var pricesJSON []byte
 		if err := rows.Scan(&a.AddonID, &a.Name, &a.Quantity, &pricesJSON); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, fmt.Errorf("billing.listAttachedAddonsWithPricing: scan: %w", err)
 		}
 		_ = json.Unmarshal(pricesJSON, &a.Prices)
 		out = append(out, a)
 	}
 	rows.Close()
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listAttachedAddonsWithPricing: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) upsertSubscriptionAddon(
@@ -55,7 +59,10 @@ func (r *repository) upsertSubscriptionAddon(
 		VALUES ($1, $2, $3)
 		ON CONFLICT (subscription_id, addon_id) DO UPDATE SET quantity = $3`,
 		subscriptionID, addonID, quantity)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.upsertSubscriptionAddon: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) deleteSubscriptionAddon(
@@ -65,5 +72,8 @@ func (r *repository) deleteSubscriptionAddon(
 	_, err := q.Exec(ctx,
 		`DELETE FROM billing.subscription_addons WHERE subscription_id = $1 AND addon_id = $2`,
 		subscriptionID, addonID)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.deleteSubscriptionAddon: %w", err)
+	}
+	return nil
 }

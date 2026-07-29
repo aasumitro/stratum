@@ -20,7 +20,7 @@ interface Props {
   onDelete?: (folderId: string) => void
 }
 
-// F-rules — nested folder tree, assembled client-side from the API's flat
+// Nested folder tree, assembled client-side from the API's flat
 // parent_folder_id list (mirrors listFolders' own comment on why it's flat).
 export function FolderTree({
   folders,

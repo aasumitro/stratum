@@ -40,14 +40,16 @@ import { DataTablePagination } from "@/components/shared/pagination"
 import { StatusBadge } from "@/components/shared/status-badge"
 import {
   useOrganizationMembers,
-  useOrganizationInvitations,
   useChangeMemberRole,
   useRemoveMember,
   useLeaveOrganization,
+} from "@/features/organization/hooks/use-members"
+import {
+  useOrganizationInvitations,
   useRevokeInvitation,
   useResendInvitation,
   useInvite,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-invitations"
 import { useAuth } from "@/components/auth-provider"
 import { initials } from "@/lib/format"
 import type { OrganizationRole, Member, Invitation } from "@/types/organization"

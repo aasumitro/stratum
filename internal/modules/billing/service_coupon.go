@@ -36,7 +36,7 @@ func couponStillApplicable(cadence string, appliedCount int, durationCount *int)
 func (s *service) findActiveCouponRedemption(ctx context.Context, q db.Querier, subscriptionID string) (*couponRedemptionRecord, error) {
 	candidates, err := s.repo.listCouponRedemptionsForSubscription(ctx, q, subscriptionID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.findActiveCouponRedemption: %w", err)
 	}
 	for i := range candidates {
 		if couponStillApplicable(candidates[i].Cadence, candidates[i].AppliedCount, candidates[i].DurationCount) {
@@ -65,7 +65,7 @@ func (s *service) listEligibleCoupons(ctx context.Context, organizationID, authS
 func (s *service) validateCouponForSubject(ctx context.Context, code, authSub string) error {
 	coupons, err := s.repo.listEligibleCoupons(ctx, s.querier(ctx), "", authSub)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.validateCouponForSubject: %w", err)
 	}
 	for _, c := range coupons {
 		if c.Code == code {
@@ -82,6 +82,12 @@ func (s *service) validateCouponForSubject(ctx context.Context, code, authSub st
 // Deliberate scope decision: only one active (non-exhausted) redemption per
 // subscription at a time — simplest model, matches how most SaaS products
 // behave; relax later if stacking coupons is explicitly requested.
+// Intermediate repo calls below are deliberately returned unwrapped: every
+// one of them already prefixes itself (e.g. "billing.findCouponByCode: ..."),
+// and all of them funnel into this function's single deferred apperr.Internal
+// cause below — wrapping each with "billing.redeemCoupon: %w" on top would
+// only add noise, not which-call context (same tradeoff as
+// organization/service_member.go's leaveOrganization/transferOwnership).
 func (s *service) redeemCoupon(ctx context.Context, organizationID, authSub, code string) (err error) {
 	defer func() {
 		if err == nil {
@@ -91,7 +97,10 @@ func (s *service) redeemCoupon(ctx context.Context, organizationID, authSub, cod
 		case errors.Is(err, ErrCouponNotFound):
 			err = apperr.NotFound("COUPON_NOT_FOUND", "coupon not found", err)
 		case errors.Is(err, ErrCouponNotRedeemable):
-			err = apperr.Validation("COUPON_NOT_REDEEMABLE", err.Error())
+			// ErrCouponNotRedeemable.Error(), not err.Error() — err may end up
+			// %w-wrapped with internal package.Op context upstream; the sentinel's
+			// own fixed message is what's safe to show the caller.
+			err = apperr.Validation("COUPON_NOT_REDEEMABLE", ErrCouponNotRedeemable.Error())
 		default:
 			err = apperr.Internal("COUPON_REDEEM_FAILED", "failed to redeem coupon", err)
 		}
@@ -143,9 +152,14 @@ func (s *service) redeemCoupon(ctx context.Context, organizationID, authSub, cod
 		return fmt.Errorf("%w: subscription already has an active coupon", ErrCouponNotRedeemable)
 	}
 
+	if ok, err := s.repo.tryIncrementCouponRedeemedCount(ctx, q, code); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("%w: coupon exhausted", ErrCouponNotRedeemable)
+	}
+
 	if err := s.repo.insertCouponRedemption(ctx, q, code, sub.ID); err != nil {
 		return err
 	}
-	_ = s.repo.incrementCouponRedeemedCount(ctx, q, code) // best-effort accounting, no lock — see incrementCouponRedeemedCount
 	return nil
 }

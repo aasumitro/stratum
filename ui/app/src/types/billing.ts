@@ -56,7 +56,7 @@ export interface Invoice {
   tax_cents: number
   currency: string
   status: InvoiceStatus
-  kind: "subscription" | "extension"
+  kind: "subscription" | "extension" | "activation"
   // Only meaningful on an "extension" invoice — whether paying it also
   // converts the subscription's cycle to yearly (applied by the backend on
   // payment confirmation, not when the invoice is created).

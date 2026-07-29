@@ -10,11 +10,9 @@ import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { IconCopy } from "@tabler/icons-react"
 import { useAuth } from "@/components/auth-provider"
-import {
-  useOrganization,
-  useOrganizationMembers,
-  useUnsuspendOrganization,
-} from "@/features/organization/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
+import { useUnsuspendOrganization } from "@/features/organization/hooks/use-settings"
 import { usePermissions } from "@/hooks/use-permissions"
 import { Button } from "@/components/ui/button"
 

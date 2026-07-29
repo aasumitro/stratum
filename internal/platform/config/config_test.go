@@ -11,7 +11,7 @@ func TestRequireWebhookSecretsOutsideDev(t *testing.T) {
 		return config.Config{
 			Env:    "production",
 			Stripe: config.StripeConfig{WebhookSecret: "s"},
-			Xendit: config.XenditConfig{CallbackToken: "x"},
+			Xendit: config.XenditConfig{CallbackToken: "x", AllowedCIDRs: []string{"192.0.2.0/24"}},
 			Auth:   config.AuthConfig{WebhookSecret: "a"},
 		}
 	}
@@ -36,6 +36,7 @@ func TestRequireWebhookSecretsOutsideDev(t *testing.T) {
 	}{
 		{"missing stripe secret", func(c *config.Config) { c.Stripe.WebhookSecret = "" }},
 		{"missing xendit token", func(c *config.Config) { c.Xendit.CallbackToken = "" }},
+		{"missing xendit cidrs", func(c *config.Config) { c.Xendit.AllowedCIDRs = nil }},
 		{"missing supabase secret", func(c *config.Config) { c.Auth.WebhookSecret = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

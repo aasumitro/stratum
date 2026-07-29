@@ -42,17 +42,30 @@ const (
 // different rate limits) and are added by each module's Register(...)
 // call instead. serviceName is passed through to otelgin for span
 // attribution.
-func New(serviceName string, baseLogger *slog.Logger, ginMode string) *gin.Engine {
+//
+// trustedProxies configures (*gin.Engine).SetTrustedProxies — gin.New()
+// defaults to trusting every peer as a proxy, which means
+// Context.ClientIP() honors a caller-supplied X-Forwarded-For header from
+// anyone. Passing nil here (no trusted proxies configured) disables that,
+// so ClientIP() always falls back to the real TCP peer address instead —
+// the safe default absent a known deployment topology. Pass the actual
+// reverse-proxy/load-balancer CIDR(s) once one is known to sit in front of
+// this service, so ClientIP() can correctly resolve the real caller through
+// it instead of always seeing the proxy's own address.
+func New(serviceName string, baseLogger *slog.Logger, ginMode string, trustedProxies []string) (*gin.Engine, error) {
 	gin.SetMode(ginMode) // "debug" | "release" | "test" — pass cfg.Env-derived value from main.go
 
 	engine := gin.New()
+	if err := engine.SetTrustedProxies(trustedProxies); err != nil {
+		return nil, fmt.Errorf("httpserver.New: invalid trusted proxies: %w", err)
+	}
 	engine.Use(
 		otelgin.Middleware(serviceName),
 		middleware.NewRequestIDMiddleware(baseLogger),
 		middleware.NewRecoveryMiddleware(),
 	)
 
-	return engine
+	return engine, nil
 }
 
 // Server wraps engine in a stdlib *http.Server configured with sane

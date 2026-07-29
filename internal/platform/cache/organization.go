@@ -11,10 +11,13 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 )
 
-const orgCacheTTL = 30 * time.Second
+const (
+	orgCacheTTL        = 30 * time.Second
+	memberRoleCacheTTL = 10 * time.Second
+)
 
 // CachedOrganizationReader wraps a contracts.OrganizationReader with Redis
-// caching. Organization info and member roles are cached for 30 seconds.
+// caching. Organization info is cached for 30s; member roles for 10s.
 // Mutations (add/remove member, update organization) should call Invalidate.
 type CachedOrganizationReader struct {
 	inner contracts.OrganizationReader
@@ -41,7 +44,7 @@ func (c *CachedOrganizationReader) GetOrganizationByID(ctx context.Context, orga
 
 	ws, err := c.inner.GetOrganizationByID(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cache.GetOrganizationByID: %w", err)
 	}
 
 	if b, err := json.Marshal(ws); err == nil {
@@ -67,10 +70,10 @@ func (c *CachedOrganizationReader) GetMemberRole(ctx context.Context, organizati
 
 	role, err := c.inner.GetMemberRole(ctx, organizationID, authSub)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cache.GetMemberRole: %w", err)
 	}
 
-	_ = c.ns.Set(ctx, key, role, orgCacheTTL)
+	_ = c.ns.Set(ctx, key, role, memberRoleCacheTTL)
 	return role, nil
 }
 

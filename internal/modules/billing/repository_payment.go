@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -28,7 +29,10 @@ func (r *repository) insertPayment(
 		VALUES ($1, $2, $3, $4, $5, $6)`,
 		invoiceID, amountCents, currency, provider, externalID, paidAt,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.insertPayment: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) listPayments(
@@ -44,7 +48,7 @@ func (r *repository) listPayments(
 		subscriptionID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listPayments: %w", err)
 	}
 	defer rows.Close()
 
@@ -55,9 +59,12 @@ func (r *repository) listPayments(
 			&p.ID, &p.InvoiceID, &p.AmountCents, &p.Currency, &p.Provider,
 			&p.ExternalID, &p.Status, &p.PaidAt, &p.CreatedAt,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.listPayments: scan: %w", err)
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listPayments: %w", err)
+	}
+	return out, nil
 }

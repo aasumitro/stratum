@@ -83,7 +83,7 @@ func (s *service) insertExtensionLineItems(
 			ctx, s.querier(ctx), invoiceID, desc, currency,
 			blocks*12, yearlyPrice/12, int64(blocks)*yearlyPrice, sortOrder,
 		); err != nil {
-			return err
+			return fmt.Errorf("billing.insertExtensionLineItems: %w", err)
 		}
 		sortOrder++
 	}
@@ -95,7 +95,7 @@ func (s *service) insertExtensionLineItems(
 			ctx, s.querier(ctx), invoiceID, desc, currency,
 			remainder, monthlyPrice, int64(remainder)*monthlyPrice, sortOrder,
 		); err != nil {
-			return err
+			return fmt.Errorf("billing.insertExtensionLineItems: %w", err)
 		}
 	}
 
@@ -119,6 +119,12 @@ func (s *service) insertExtensionLineItems(
 // actually paid (service_webhook.go). switchToAnnual is persisted onto the
 // invoice (invoices.switch_to_annual) precisely so that later, payment-time
 // code can read back what was requested here.
+// Bare repo-call returns in extendSubscription/activateTrialNow/
+// resumeSubscription below are deliberate — same funnel-into-one-deferred-
+// apperr-classification tradeoff as changePlanWithMetadata/cancelSubscription
+// (service_subscription.go) and redeemCoupon (service_coupon.go): every repo
+// call already self-prefixes, and errors.Is classification on the sentinels
+// above runs on the raw error before any of this would wrap it anyway.
 func (s *service) extendSubscription(
 	ctx context.Context, subjectType, subjectID string, months int, switchToAnnual bool, _ string,
 ) (inv *invoiceRecord, err error) {
@@ -133,8 +139,15 @@ func (s *service) extendSubscription(
 		case errors.Is(err, ErrSubscriptionNotExtendable):
 			err = apperr.Validation("SUBSCRIPTION_NOT_EXTENDABLE", "subscription cannot be extended in its current state")
 		case errors.Is(err, ErrExtensionAlreadyPending):
-			err = apperr.Validation("EXTENSION_ALREADY_PENDING", "an extension invoice is already pending payment")
+			err = apperr.Validation("EXTENSION_ALREADY_PENDING", "an invoice is already pending payment for this subscription — pay or void it before requesting an extension")
 		case errors.Is(err, ErrExtensionExceedsMaxDuration):
+			// Deliberately err.Error(), not the bare sentinel — the actual
+			// returned error (below) appends dynamic "at most until <date>"
+			// detail via %w that the user needs to see, unlike
+			// redeemCoupon's ErrCouponNotRedeemable case. The
+			// "billing.extendSubscription:" prefix baked into that same
+			// construction leaks into this user-facing validation message
+			// too — a minor cosmetic wart, left as is.
 			err = apperr.Validation("EXTENSION_EXCEEDS_MAX_DURATION", err.Error())
 		case errors.Is(err, ErrAlreadyYearly):
 			err = apperr.Validation("SUBSCRIPTION_ALREADY_YEARLY", "subscription is already on the yearly cycle")
@@ -163,7 +176,7 @@ func (s *service) extendSubscription(
 		months = 12
 	}
 
-	if isPending, _ := s.repo.hasPendingInvoiceOfKind(ctx, s.querier(ctx), sub.ID, "extension"); isPending {
+	if isPending, _ := s.repo.hasPendingInvoice(ctx, s.querier(ctx), sub.ID); isPending {
 		return nil, ErrExtensionAlreadyPending
 	}
 
@@ -284,12 +297,16 @@ func (s *service) activateTrialNow(
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
-		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "activation", false)
 		if err != nil {
 			return err
 		}
-		_ = s.insertPlanLineItem(ctx, inv, planInfo)
-		s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents)
+		if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+			return err
+		}
+		if err := s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents); err != nil {
+			return err
+		}
 
 		updated, err = s.repo.activateTrialImmediately(ctx, s.querier(ctx), sub.ID, now, periodEnd)
 		if err != nil {
@@ -416,12 +433,21 @@ func (s *service) resumeSubscription(
 		err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 			ctx := db.WithQuerier(ctx, tx)
 			var err error
+			// Stays "subscription", not "activation": the webhook dispatches
+			// this invoice's payment by subscription status
+			// (sub.Status == statusExpired, checked before the kind-based
+			// cases), so its kind never reaches the generic renewal case
+			// either way — safe regardless of which value it carries.
 			inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
 			if err != nil {
 				return err
 			}
-			_ = s.insertPlanLineItem(ctx, inv, planInfo)
-			s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents)
+			if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+				return err
+			}
+			if err := s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents); err != nil {
+				return err
+			}
 			_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume", &sub.Plan, &sub.Plan, composed, sub.Currency, resumedBy, nil)
 			return nil
 		})

@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 )
@@ -14,7 +15,7 @@ type Worker struct {
 func (w *Worker) HandleDeleteAccount(ctx context.Context, body []byte) error {
 	req, err := events.Decode[events.UserTaskRequest](body)
 	if err != nil {
-		return err
+		return fmt.Errorf("account.HandleDeleteAccount: decode: %w", err)
 	}
 	return w.svc.executeDeleteAccount(ctx, req.TaskID, req.AuthSub)
 }
@@ -22,7 +23,7 @@ func (w *Worker) HandleDeleteAccount(ctx context.Context, body []byte) error {
 func (w *Worker) HandleExportData(ctx context.Context, body []byte) error {
 	req, err := events.Decode[events.UserTaskRequest](body)
 	if err != nil {
-		return err
+		return fmt.Errorf("account.HandleExportData: decode: %w", err)
 	}
 	return w.svc.executeExportData(ctx, req.TaskID, req.AuthSub)
 }

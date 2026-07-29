@@ -62,7 +62,7 @@ CREATE TABLE billing.invoices (
     status              TEXT        NOT NULL DEFAULT 'pending'
                                     CHECK (status IN ('pending', 'paid', 'failed', 'void')),
     kind                TEXT        NOT NULL DEFAULT 'subscription'
-                                    CHECK (kind IN ('subscription', 'extension')),
+                                    CHECK (kind IN ('subscription', 'extension', 'activation')),
     -- Only meaningful on an "extension" invoice — whether paying it also
     -- converts the subscription's cycle to yearly (applied by
     -- handleWebhook on payment confirmation, not when the invoice is

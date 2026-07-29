@@ -2,9 +2,12 @@ package notification
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -51,12 +54,21 @@ func (s *service) send(
 	}
 	msg, err := s.repo.insertMessage(ctx, s.pool, organizationID, authSub, kind, channel, subject, body, payload)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("notification.send: %w", err)
 	}
 	if kind == "in_app" && authSub != nil && s.redis != nil {
 		_ = s.redis.Publish(ctx, "notif:"+*authSub, "1").Err()
 	}
 	return msg, nil
+}
+
+// claimEvent atomically records that eventID is being processed, returning
+// claimed=false if it was already claimed by an earlier delivery of the
+// same event (RabbitMQ's at-least-once guarantee means the worker can see
+// the same envelope more than once). A single INSERT is already atomic, so
+// this doesn't need its own transaction.
+func (s *service) claimEvent(ctx context.Context, eventID string) (bool, error) {
+	return s.repo.markEventProcessed(ctx, s.pool, eventID)
 }
 
 // sendToMany is the batched counterpart to send, for organization-wide
@@ -75,7 +87,7 @@ func (s *service) sendToMany(
 
 	disabled, err := s.repo.listDisabledAuthSubs(ctx, s.pool, authSubs, kind, channel)
 	if err != nil {
-		return err
+		return fmt.Errorf("notification.sendToMany: %w", err)
 	}
 
 	recipients := make([]string, 0, len(authSubs))
@@ -91,7 +103,7 @@ func (s *service) sendToMany(
 	msgs, err := s.repo.insertMessages(ctx, s.pool, organizationID,
 		recipients, kind, channel, subject, body, json.RawMessage("{}"))
 	if err != nil {
-		return err
+		return fmt.Errorf("notification.sendToMany: %w", err)
 	}
 
 	if kind == "in_app" && s.redis != nil {
@@ -118,7 +130,14 @@ func (s *service) sendEmail(
 	}
 
 	if authSub != "" {
-		if allowed, _ := s.repo.isPreferenceEnabled(ctx, s.pool, authSub, "email", templateName); !allowed {
+		allowed, err := s.repo.isPreferenceEnabled(ctx, s.pool, authSub, "email", templateName)
+		if err != nil {
+			// Fail open: a preference-check error must not silently suppress
+			// the email indefinitely (isPreferenceEnabled's own no-rows case
+			// already defaults to allowed, so this keeps the same default
+			// for a real lookup error instead of misreading it as opt-out).
+			slog.Warn("notification preference check failed, sending anyway", "auth_sub", authSub, "template", templateName, "error", err)
+		} else if !allowed {
 			return
 		}
 	}
@@ -219,13 +238,20 @@ func (s *service) listForUser(
 ) (*listResult, error) {
 	messages, err := s.repo.listMessages(ctx, s.pool, authSub, organizationID, channel, cursor, limit, offset)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid cursor") {
+			return nil, apperr.Validation("INVALID_CURSOR", "the provided cursor is malformed")
+		}
 		return nil, apperr.Internal("NOTIFICATIONS_FETCH_FAILED", "failed to list notifications", err)
 	}
-	if cursor != "" {
-		nextCursor := ""
-		if len(messages) == limit && len(messages) > 0 {
-			nextCursor = messages[len(messages)-1].ID
-		}
+
+	nextCursor := ""
+	if len(messages) == limit && len(messages) > 0 {
+		lastMsg := messages[len(messages)-1]
+		raw := lastMsg.CreatedAt.Format(time.RFC3339Nano) + "|" + lastMsg.ID
+		nextCursor = base64.StdEncoding.EncodeToString([]byte(raw))
+	}
+
+	if cursor != "" || nextCursor != "" {
 		return &listResult{Messages: messages, NextCursor: nextCursor}, nil
 	}
 	total, err := s.repo.countTotal(ctx, s.pool, authSub, organizationID, channel)

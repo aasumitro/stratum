@@ -45,7 +45,10 @@ func (r *repository) insertFile(
 		RETURNING `+fileColumns,
 		organizationID, folderID, name, path, sizeBytes, mimeType, createdBy,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertFile: %w", err)
+	}
+	return f, nil
 }
 
 // listFiles scopes to a single folder by default (folderID nil = root).
@@ -79,7 +82,7 @@ func (r *repository) listFiles(
 
 	rows, err := q.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listFiles: %w", err)
 	}
 	defer rows.Close()
 
@@ -87,11 +90,14 @@ func (r *repository) listFiles(
 	for rows.Next() {
 		var f fileRecord
 		if err := scanFile(rows, &f); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listFiles: scan: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listFiles: %w", err)
+	}
+	return out, nil
 }
 
 // listTrash returns soft-deleted files not yet purged, newest-deleted first.
@@ -104,7 +110,7 @@ func (r *repository) listTrash(ctx context.Context, q db.Querier, organizationID
 		organizationID, limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listTrash: %w", err)
 	}
 	defer rows.Close()
 
@@ -112,11 +118,14 @@ func (r *repository) listTrash(ctx context.Context, q db.Querier, organizationID
 	for rows.Next() {
 		var f fileRecord
 		if err := scanFile(rows, &f); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listTrash: scan: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listTrash: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) findFile(ctx context.Context, q db.Querier, organizationID, fileID string) (*fileRecord, error) {
@@ -126,7 +135,10 @@ func (r *repository) findFile(ctx context.Context, q db.Querier, organizationID,
 		FROM organization.files WHERE id = $1 AND organization_id = $2`,
 		fileID, organizationID,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.findFile: %w", err)
+	}
+	return f, nil
 }
 
 // moveFile reassigns a file's folder (nil = move to root). Only affects
@@ -139,7 +151,10 @@ func (r *repository) moveFile(ctx context.Context, q db.Querier, organizationID,
 		RETURNING `+fileColumns,
 		fileID, organizationID, folderID,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.moveFile: %w", err)
+	}
+	return f, nil
 }
 
 // softDeleteFile marks a file trashed (30-day recoverable delete) — storage
@@ -152,7 +167,10 @@ func (r *repository) softDeleteFile(ctx context.Context, q db.Querier, organizat
 		RETURNING `+fileColumns,
 		fileID, organizationID,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.softDeleteFile: %w", err)
+	}
+	return f, nil
 }
 
 // bulkSoftDeleteFiles trashes every fileID that belongs to organizationID
@@ -167,7 +185,7 @@ func (r *repository) bulkSoftDeleteFiles(ctx context.Context, q db.Querier, orga
 		organizationID, fileIDs,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.bulkSoftDeleteFiles: %w", err)
 	}
 	defer rows.Close()
 
@@ -175,11 +193,14 @@ func (r *repository) bulkSoftDeleteFiles(ctx context.Context, q db.Querier, orga
 	for rows.Next() {
 		var f fileRecord
 		if err := scanFile(rows, &f); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.bulkSoftDeleteFiles: scan: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.bulkSoftDeleteFiles: %w", err)
+	}
+	return out, nil
 }
 
 // restoreFile clears a trashed file's deleted_at, moving it back to root
@@ -193,7 +214,10 @@ func (r *repository) restoreFile(ctx context.Context, q db.Querier, organization
 		RETURNING `+fileColumns,
 		fileID, organizationID,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.restoreFile: %w", err)
+	}
+	return f, nil
 }
 
 // purgeFile permanently removes a single trashed file's DB row — used both
@@ -205,7 +229,10 @@ func (r *repository) purgeFile(ctx context.Context, q db.Querier, organizationID
 		RETURNING `+fileColumns,
 		fileID, organizationID,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.purgeFile: %w", err)
+	}
+	return f, nil
 }
 
 // purgeExpiredTrash hard-deletes every file trashed more than 30 days ago
@@ -220,7 +247,7 @@ func (r *repository) purgeExpiredTrash(ctx context.Context, q db.Querier, organi
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.purgeExpiredTrash: %w", err)
 	}
 	defer rows.Close()
 
@@ -228,11 +255,14 @@ func (r *repository) purgeExpiredTrash(ctx context.Context, q db.Querier, organi
 	for rows.Next() {
 		var f fileRecord
 		if err := scanFile(rows, &f); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.purgeExpiredTrash: scan: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.purgeExpiredTrash: %w", err)
+	}
+	return out, nil
 }
 
 // deleteAllFilesForOrganization removes all file records (live and trashed)
@@ -244,7 +274,7 @@ func (r *repository) deleteAllFilesForOrganization(ctx context.Context, q db.Que
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.deleteAllFilesForOrganization: %w", err)
 	}
 	defer rows.Close()
 
@@ -252,11 +282,14 @@ func (r *repository) deleteAllFilesForOrganization(ctx context.Context, q db.Que
 	for rows.Next() {
 		var p string
 		if err := rows.Scan(&p); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.deleteAllFilesForOrganization: scan: %w", err)
 		}
 		paths = append(paths, p)
 	}
-	return paths, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.deleteAllFilesForOrganization: %w", err)
+	}
+	return paths, nil
 }
 
 func (r *repository) updateLogoURL(ctx context.Context, q db.Querier, organizationID, logoURL string) error {
@@ -265,7 +298,10 @@ func (r *repository) updateLogoURL(ctx context.Context, q db.Querier, organizati
 		UPDATE organization.organizations SET settings = settings || $2::jsonb, updated_at = now() WHERE id = $1`,
 		organizationID, string(logoJSON),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.updateLogoURL: %w", err)
+	}
+	return nil
 }
 
 // sumStorageBytes only counts live files — a trashed file frees quota
@@ -276,7 +312,10 @@ func (r *repository) sumStorageBytes(ctx context.Context, q db.Querier, organiza
 		`SELECT COALESCE(SUM(size_bytes), 0) FROM organization.files WHERE organization_id = $1 AND deleted_at IS NULL`,
 		organizationID,
 	).Scan(&total)
-	return total, err
+	if err != nil {
+		return 0, fmt.Errorf("organization.sumStorageBytes: %w", err)
+	}
+	return total, nil
 }
 
 type fileRemovalCandidate struct {
@@ -286,13 +325,13 @@ type fileRemovalCandidate struct {
 
 func (r *repository) selectFilesForRemoval(ctx context.Context, q db.Querier, organizationID string, excludeFileIDs []string) ([]fileRemovalCandidate, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, size_bytes FROM organization.files 
+		SELECT id, size_bytes FROM organization.files
 		WHERE organization_id = $1 AND deleted_at IS NULL AND NOT (id = ANY(COALESCE($2, '{}'::text[])))
 		ORDER BY created_at ASC`,
 		organizationID, excludeFileIDs,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.selectFilesForRemoval: %w", err)
 	}
 	defer rows.Close()
 
@@ -300,11 +339,14 @@ func (r *repository) selectFilesForRemoval(ctx context.Context, q db.Querier, or
 	for rows.Next() {
 		var c fileRemovalCandidate
 		if err := rows.Scan(&c.ID, &c.SizeBytes); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.selectFilesForRemoval: scan: %w", err)
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.selectFilesForRemoval: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) filterRemovableFiles(ctx context.Context, q db.Querier, organizationID string, fileIDs []string) ([]fileRemovalCandidate, error) {
@@ -312,12 +354,12 @@ func (r *repository) filterRemovableFiles(ctx context.Context, q db.Querier, org
 		return nil, nil
 	}
 	rows, err := q.Query(ctx, `
-		SELECT id, size_bytes FROM organization.files 
+		SELECT id, size_bytes FROM organization.files
 		WHERE organization_id = $1 AND deleted_at IS NULL AND id = ANY($2)`,
 		organizationID, fileIDs,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.filterRemovableFiles: %w", err)
 	}
 	defer rows.Close()
 
@@ -325,9 +367,12 @@ func (r *repository) filterRemovableFiles(ctx context.Context, q db.Querier, org
 	for rows.Next() {
 		var c fileRemovalCandidate
 		if err := rows.Scan(&c.ID, &c.SizeBytes); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.filterRemovableFiles: scan: %w", err)
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.filterRemovableFiles: %w", err)
+	}
+	return out, nil
 }

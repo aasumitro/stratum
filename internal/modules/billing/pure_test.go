@@ -547,12 +547,11 @@ func TestStaleSubscriptionCheck(t *testing.T) {
 func TestMaxExtendableMonths(t *testing.T) {
 	// 2025-01-01: the 24-month window from here (Feb 2025 + Feb 2026) crosses
 	// no leap day, so 24 calendar months == exactly 730 fixed days and lines
-	// up cleanly with RV-001's worked examples. A leap-year anchor (e.g.
-	// 2024-01-01) makes 24 calendar months span 731 days — one more than the
-	// fixed-duration cap — which is exactly the calendar-vs-fixed-duration
-	// drift the plan's own Decision #11 warns about, not a bug in the
-	// function; picking a non-leap-spanning anchor avoids exercising that
-	// drift in a test that's meant to check round numbers.
+	// up cleanly with round-number worked examples below. A leap-year anchor
+	// (e.g. 2024-01-01) makes 24 calendar months span 731 days — one more
+	// than the fixed-duration cap — a calendar-vs-fixed-duration drift, not
+	// a bug in the function; picking a non-leap-spanning anchor avoids
+	// exercising that drift in a test that's meant to check round numbers.
 	createdAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	now := createdAt // unused by the calculation (anchored to createdAt, not now) but always passed, matching prorate's convention of taking now explicitly rather than calling time.Now() internally.
 
@@ -561,7 +560,6 @@ func TestMaxExtendableMonths(t *testing.T) {
 		monthsElapsed  int // periodEnd = createdAt + monthsElapsed
 		wantExtendable int
 	}{
-		// RV-001's own worked examples, used as literal test cases.
 		{"1 month elapsed leaves 23 extendable", 1, 23},
 		{"13 months elapsed leaves 11 extendable", 13, 11},
 		// Boundaries.

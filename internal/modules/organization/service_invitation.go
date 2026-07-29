@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -68,12 +69,12 @@ func (s *service) createInvitation(
 
 	token, err := generateToken(32)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createInvitation: %w", err)
 	}
 	expiresAt := time.Now().AddDate(0, 0, 7)
 	inv, err = s.repo.insertInvitation(ctx, s.pool, organizationID, email, role, token, invitedBy, expiresAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createInvitation: %w", err)
 	}
 
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberInvited, "organization", organizationID,
@@ -139,7 +140,7 @@ func (s *service) acceptInvitation(
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return acceptInvitationResult{}, err
+		return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -147,18 +148,18 @@ func (s *service) acceptInvitation(
 	// transaction — PostgreSQL marks a tx as aborted on any error, so without
 	// a savepoint the subsequent acceptInvitation UPDATE would also fail.
 	if _, err := tx.Exec(ctx, "SAVEPOINT sp_insert_member"); err != nil {
-		return acceptInvitationResult{}, err
+		return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: savepoint: %w", err)
 	}
 	alreadyMember := false
 	if _, err := s.repo.insertMembership(ctx, tx, inv.OrganizationID, authSub, inv.Role); err != nil {
 		// Unique violation = user is already a member (joined via another path).
 		// Still mark the invitation as accepted so it is not dangling.
 		if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != "23505" {
-			return acceptInvitationResult{}, err
+			return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: %w", err)
 		}
 		// Roll back to savepoint to restore the transaction to a usable state.
 		if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT sp_insert_member"); rbErr != nil {
-			return acceptInvitationResult{}, rbErr
+			return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: rollback to savepoint: %w", rbErr)
 		}
 		alreadyMember = true
 	}
@@ -166,7 +167,7 @@ func (s *service) acceptInvitation(
 		return acceptInvitationResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return acceptInvitationResult{}, err
+		return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: commit tx: %w", err)
 	}
 	s.syncMemberUsage(ctx, inv.OrganizationID)
 	if alreadyMember {
@@ -245,7 +246,7 @@ func (s *service) declineInvitation(ctx context.Context, token, email string, em
 		return ErrInvitationExpired
 	}
 	if err := s.repo.deleteInvitation(ctx, s.pool, inv.ID); err != nil {
-		return err
+		return fmt.Errorf("organization.declineInvitation: %w", err)
 	}
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyInvitationDeclined, "organization", inv.OrganizationID,
 		events.InvitationDeclined{OrganizationID: inv.OrganizationID, InvitedBy: inv.InvitedBy, InviteeEmail: inv.Email})

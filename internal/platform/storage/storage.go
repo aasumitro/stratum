@@ -68,14 +68,14 @@ func (c *Client) createBucket(ctx context.Context, b BucketConfig) error {
 	url := fmt.Sprintf("%s/storage/v1/bucket", c.baseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return fmt.Errorf("storage.createBucket: build request: %w", err)
 	}
 	c.setAuthHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("storage.createBucket: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -89,7 +89,7 @@ func (c *Client) createBucket(ctx context.Context, b BucketConfig) error {
 			// with a "statusCode":"409" field embedded in the JSON body, not as
 			// an actual HTTP 409, so the status-code check above doesn't catch it.
 		}
-		return fmt.Errorf("status %d: %s", resp.StatusCode, respBody)
+		return fmt.Errorf("storage.createBucket: status %d: %s", resp.StatusCode, respBody)
 	}
 	return nil
 }
@@ -133,7 +133,7 @@ func (c *Client) Upload(ctx context.Context, bucket, path string, r io.Reader, c
 func (c *Client) SignedURL(ctx context.Context, bucket, path string, ttl time.Duration) (string, error) {
 	url := fmt.Sprintf("%s/storage/v1/object/sign/%s/%s", c.baseURL, bucket, path)
 
-	body, _ := json.Marshal(map[string]int{"expiresIn": int(ttl.Seconds())})
+	body, _ := json.Marshal(map[string]any{"expiresIn": int(ttl.Seconds()), "download": true})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("storage.SignedURL: build request: %w", err)

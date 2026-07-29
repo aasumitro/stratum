@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -57,6 +58,13 @@ func (s *service) removeAllMemberships(ctx context.Context, authSub string) erro
 func (s *service) addMember(
 	ctx context.Context, organizationID, authSub, role string,
 ) (rec *membershipRecord, err error) {
+	if role != contracts.RoleAdmin && role != contracts.RoleMember {
+		return nil, apperr.Validation("INVALID_ROLE", "role must be admin or member")
+	}
+	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+		return nil, apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
+	}
+
 	defer func() {
 		if err == nil {
 			return
@@ -80,7 +88,7 @@ func (s *service) addMember(
 	}
 	rec, err = s.repo.insertMembership(ctx, s.pool, organizationID, authSub, role)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.addMember: %w", err)
 	}
 	s.syncMemberUsage(ctx, organizationID)
 	return rec, nil
@@ -97,6 +105,13 @@ func (s *service) removeMember(ctx context.Context, organizationID, authSub stri
 }
 
 func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub, role string) error {
+	if role != contracts.RoleAdmin && role != contracts.RoleMember {
+		return apperr.Validation("INVALID_ROLE", "role must be admin or member")
+	}
+	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+		return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
+	}
+
 	if err := s.repo.updateMemberRole(ctx, s.pool, organizationID, authSub, role); err != nil {
 		return apperr.Internal("MEMBER_ROLE_UPDATE_FAILED", "failed to update member role", err)
 	}
@@ -141,6 +156,9 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 // leaveOrganization and transferOwnership both map every failure to a 422
 // carrying the raw err.Error() text — matches the pre-migration handler,
 // which passed err.Error() straight through unconditionally for these two.
+// Their internal `return err` sites are deliberately NOT wrapped with
+// fmt.Errorf("organization.Op: %w", ...) like the rest of this module — a
+// wrap's prefix would leak into this user-facing message text via err.Error().
 func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub string) (err error) {
 	defer func() {
 		if err != nil {

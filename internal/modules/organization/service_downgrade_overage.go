@@ -37,7 +37,7 @@ func (s *service) resolveDowngradeOverage(
 		if memberLimit >= 0 {
 			currentMembers, err := s.repo.countActiveMembers(ctx, tx, organizationID)
 			if err != nil {
-				return err
+				return fmt.Errorf("organization.resolveDowngradeOverage: count members: %w", err)
 			}
 
 			overage := int(currentMembers) - memberLimit
@@ -46,7 +46,7 @@ func (s *service) resolveDowngradeOverage(
 				if len(preferredMemberAuthSubs) > 0 {
 					validPreferred, err = s.repo.filterRemovableMembers(ctx, tx, organizationID, preferredMemberAuthSubs)
 					if err != nil {
-						return err
+						return fmt.Errorf("organization.resolveDowngradeOverage: filter preferred members: %w", err)
 					}
 				}
 
@@ -59,7 +59,7 @@ func (s *service) resolveDowngradeOverage(
 				if needMore > 0 {
 					autoSelected, err = s.repo.selectMembersForRemoval(ctx, tx, organizationID, validPreferred, needMore)
 					if err != nil {
-						return err
+						return fmt.Errorf("organization.resolveDowngradeOverage: select members for removal: %w", err)
 					}
 				}
 
@@ -70,7 +70,7 @@ func (s *service) resolveDowngradeOverage(
 					if !dryRun {
 						_, err = s.repo.bulkRemoveMembers(ctx, tx, organizationID, toRemove)
 						if err != nil {
-							return err
+							return fmt.Errorf("organization.resolveDowngradeOverage: remove members: %w", err)
 						}
 					}
 					res.RemovedMemberAuthSubs = toRemove
@@ -83,7 +83,7 @@ func (s *service) resolveDowngradeOverage(
 		if storageLimitBytes >= 0 {
 			currentStorage, err := s.repo.sumStorageBytes(ctx, tx, organizationID)
 			if err != nil {
-				return err
+				return fmt.Errorf("organization.resolveDowngradeOverage: sum storage bytes: %w", err)
 			}
 
 			overageBytes := currentStorage - storageLimitBytes
@@ -92,7 +92,7 @@ func (s *service) resolveDowngradeOverage(
 				if len(preferredFileIDs) > 0 {
 					validPreferred, err = s.repo.filterRemovableFiles(ctx, tx, organizationID, preferredFileIDs)
 					if err != nil {
-						return err
+						return fmt.Errorf("organization.resolveDowngradeOverage: filter preferred files: %w", err)
 					}
 				}
 
@@ -111,7 +111,7 @@ func (s *service) resolveDowngradeOverage(
 				if freedBytes < overageBytes {
 					candidates, err := s.repo.selectFilesForRemoval(ctx, tx, organizationID, toRemove)
 					if err != nil {
-						return err
+						return fmt.Errorf("organization.resolveDowngradeOverage: select files for removal: %w", err)
 					}
 					for _, c := range candidates {
 						if freedBytes >= overageBytes {
@@ -127,7 +127,7 @@ func (s *service) resolveDowngradeOverage(
 					if !dryRun {
 						_, err = s.repo.bulkSoftDeleteFiles(ctx, tx, organizationID, toRemove)
 						if err != nil {
-							return err
+							return fmt.Errorf("organization.resolveDowngradeOverage: soft-delete files: %w", err)
 						}
 					}
 					res.RemovedFileIDs = toRemove

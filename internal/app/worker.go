@@ -11,6 +11,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/app/bootstrap"
 	"github.com/aasumitro/stratum/internal/platform/config"
+	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
 func RunWorker() error {
@@ -30,7 +31,20 @@ func RunWorker() error {
 
 	bootstrap.DeclareWorkerDelayQueues(infra.MQConn)
 
-	mods := bootstrap.NewWorkerModules(infra)
+	// Bucket existence is ensured by the API on its own startup (see
+	// api.go) — not repeated here, since it's the same idempotent setup
+	// running twice for no benefit. The worker only ever deletes existing
+	// objects (HandleOrganizationDeleted), never uploads, so it doesn't
+	// need EnsureBuckets to have already run before it's useful.
+	var storageClient *storage.Client
+	if cfg.Storage.URL != "" {
+		storageClient = storage.New(storage.Config{
+			BaseURL: cfg.Storage.URL,
+			Key:     cfg.Auth.ServiceRoleKey,
+		})
+	}
+
+	mods := bootstrap.NewWorkerModules(infra, storageClient)
 	consumers := bootstrap.NewConsumers(infra.MQConn, mods, infra.Log)
 
 	// wg tracks every consumer/background goroutine below so shutdown can

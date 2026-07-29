@@ -1,5 +1,6 @@
 import { useRef, useState, type ReactElement, type ReactNode } from "react"
 import { IconLoader2 } from "@tabler/icons-react"
+import { useTranslation } from "react-i18next"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -55,13 +56,14 @@ export function ConfirmationDialog({
   confirmPhrase,
   confirmPhraseLabel,
   confirmLabel,
-  cancelLabel = "Cancel",
+  cancelLabel,
   destructive = true,
   onConfirm,
   pending = false,
   open,
   onOpenChange,
 }: ConfirmationDialogProps) {
+  const { t } = useTranslation()
   const [typed, setTyped] = useState("")
   const locked = !!confirmPhrase && typed !== confirmPhrase
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -94,7 +96,8 @@ export function ConfirmationDialog({
         {confirmPhrase && (
           <div className="flex flex-col gap-1.5 text-left">
             <Label htmlFor="confirm-phrase" className="text-xs">
-              {confirmPhraseLabel ?? `Type "${confirmPhrase}" to confirm`}
+              {confirmPhraseLabel ??
+                t("common.typeToConfirm", { phrase: confirmPhrase })}
             </Label>
             <Input
               id="confirm-phrase"
@@ -107,7 +110,9 @@ export function ConfirmationDialog({
         )}
 
         <AlertDialogFooter>
-          <AlertDialogCancel ref={cancelRef}>{cancelLabel}</AlertDialogCancel>
+          <AlertDialogCancel ref={cancelRef}>
+            {cancelLabel ?? t("common.cancel")}
+          </AlertDialogCancel>
           <AlertDialogAction
             variant={destructive ? "destructive" : "default"}
             disabled={locked || pending}

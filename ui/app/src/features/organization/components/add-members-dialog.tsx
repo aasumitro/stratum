@@ -17,12 +17,12 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { InviteCodeSection } from "@/features/organization/components/invite-code-section"
+import { useInvite } from "@/features/organization/hooks/use-invitations"
 import {
-  useInvite,
   useImportMembers,
   type ImportRow,
   type ImportRowResult,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-members"
 import { useBillingFeatures } from "@/features/billing/hooks"
 import type { OrganizationRole } from "@/types/organization"
 

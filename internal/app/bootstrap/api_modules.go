@@ -60,6 +60,7 @@ func NewAPIModules(ctx context.Context, infra *Infra, storageClient *storage.Cli
 		StripeCancelURL:     cfg.Stripe.CancelURL,
 		XenditAPIKey:        cfg.Xendit.APIKey,
 		XenditCallbackToken: cfg.Xendit.CallbackToken,
+		XenditAllowedCIDRs:  cfg.Xendit.AllowedCIDRs,
 	}, refMod, organizationMod)
 	mailClient := mailer.New(cfg.SMTP)
 	notifMod := notification.New(infra.Pool, mailClient, organizationMod, accountMod, cfg.AppURL, infra.Redis)

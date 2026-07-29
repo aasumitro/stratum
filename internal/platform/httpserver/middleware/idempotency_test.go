@@ -2,8 +2,8 @@ package middleware
 
 // Internal (package middleware) to test idempotencyCacheKey directly,
 // mirroring ratelimiter_test.go: this codebase has no Redis test harness
-// anywhere, so these tests cover the cache-key scoping logic — the actual
-// fix for item 5's cross-user collision — not the caching mechanics.
+// anywhere, so these tests cover the cache-key scoping logic that prevents
+// a cross-user collision — not the caching mechanics.
 
 import "testing"
 
@@ -18,7 +18,7 @@ func TestIdempotencyCacheKey_ScopesByCallerAndRoute(t *testing.T) {
 	}
 	for name, other := range cases {
 		if other == base {
-			t.Errorf("%s: expected a distinct cache key, got the same as base (%q) — this is exactly the cross-user collision item 5 fixes", name, base)
+			t.Errorf("%s: expected a distinct cache key, got the same as base (%q) — this would let two different callers collide on one idempotency key", name, base)
 		}
 	}
 

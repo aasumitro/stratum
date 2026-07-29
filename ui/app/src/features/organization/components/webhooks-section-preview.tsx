@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/shared/empty-state"
 import { FeatureGateCard } from "@/components/shared/feature-gate-card"
 import { SettingsSectionPreviewList } from "@/features/organization/components/settings-section-preview-list"
 import { healthTone } from "@/features/organization/utils/webhook-health"
-import { useWebhooksContentState } from "@/features/organization/hooks"
+import { useWebhooksContentState } from "@/features/organization/hooks/use-webhooks"
 import type { WebhookEndpoint } from "@/types/organization"
 
 interface WebhooksSectionPreviewProps {

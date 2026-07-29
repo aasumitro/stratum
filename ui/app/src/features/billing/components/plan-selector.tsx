@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { Suspense, lazy, useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
   Dialog,
@@ -14,9 +14,17 @@ import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
 import { formatPrice } from "@/features/billing/utils"
 import type { BillingCycle } from "@/types/billing"
 import { cn } from "@/lib/ui"
-import { DowngradeWizard } from "./downgrade-wizard"
-import { UpgradeWizard } from "./upgrade-wizard"
 import { InvoicePreviewNote } from "./invoice-preview-note"
+
+// Only entered once the user picks a downgrade/upgrade target and hits
+// Continue — kept out of this dialog's chunk so opening the plan picker
+// itself doesn't pull either wizard in.
+const DowngradeWizard = lazy(() =>
+  import("./downgrade-wizard").then((m) => ({ default: m.DowngradeWizard }))
+)
+const UpgradeWizard = lazy(() =>
+  import("./upgrade-wizard").then((m) => ({ default: m.UpgradeWizard }))
+)
 
 interface Props {
   organizationId: string
@@ -94,35 +102,39 @@ export function PlanSelector({
   // success step ever gets a chance to render.
   if (showDowngradeWizard) {
     return (
-      <DowngradeWizard
-        organizationId={organizationId}
-        open={open}
-        onOpenChange={handleOpenChange}
-        targetPlan={selectedPlan}
-        targetCycle={cycle}
-        currentPlan={currentPlan}
-        currentCycle={currentCycle}
-        currentPeriodEnd={currentPeriodEnd}
-        currency={currency}
-        onBackToPlans={() => setShowDowngradeWizard(false)}
-      />
+      <Suspense fallback={null}>
+        <DowngradeWizard
+          organizationId={organizationId}
+          open={open}
+          onOpenChange={handleOpenChange}
+          targetPlan={selectedPlan}
+          targetCycle={cycle}
+          currentPlan={currentPlan}
+          currentCycle={currentCycle}
+          currentPeriodEnd={currentPeriodEnd}
+          currency={currency}
+          onBackToPlans={() => setShowDowngradeWizard(false)}
+        />
+      </Suspense>
     )
   }
 
   if (showUpgradeWizard) {
     return (
-      <UpgradeWizard
-        organizationId={organizationId}
-        open={open}
-        onOpenChange={handleOpenChange}
-        targetPlan={selectedPlan}
-        targetCycle={cycle}
-        currentPlan={currentPlan}
-        currentCycle={currentCycle}
-        currentPeriodEnd={currentPeriodEnd}
-        currency={currency}
-        onBackToPlans={() => setShowUpgradeWizard(false)}
-      />
+      <Suspense fallback={null}>
+        <UpgradeWizard
+          organizationId={organizationId}
+          open={open}
+          onOpenChange={handleOpenChange}
+          targetPlan={selectedPlan}
+          targetCycle={cycle}
+          currentPlan={currentPlan}
+          currentCycle={currentCycle}
+          currentPeriodEnd={currentPeriodEnd}
+          currency={currency}
+          onBackToPlans={() => setShowUpgradeWizard(false)}
+        />
+      </Suspense>
     )
   }
 

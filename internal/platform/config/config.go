@@ -23,6 +23,19 @@ type Config struct {
 	ServiceVersion string `env:"SERVICE_VERSION" envDefault:"dev"`
 	CORSOrigins    string `env:"CORS_ORIGINS"` // comma-separated, empty = allow all
 
+	// TrustedProxies lists the CIDR ranges of reverse proxies/load balancers
+	// this service sits directly behind (an ingress controller's pod CIDR,
+	// an ALB/GCLB's subnet, Cloudflare's published ranges, ...). Only hops
+	// in this list are trusted to supply X-Forwarded-For/X-Real-IP; empty
+	// means "trust nobody", so gin's Context.ClientIP() — and everything
+	// keyed on it, including NewIPAllowlistMiddleware and the webhook rate
+	// limiter's ByClientIP — falls back to the raw TCP peer address. Set
+	// this whenever a real proxy/LB/ingress terminates connections before
+	// they reach this process, or every forwarded request resolves to the
+	// proxy's own IP instead of the real client's (breaking IP allowlists
+	// and letting a spoofed header evade per-IP rate limiting).
+	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
+
 	AuditRetentionDays int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
 
 	// StatsToken gates GET /health/stats (goroutine/heap/pool internals —
@@ -90,8 +103,9 @@ type StripeConfig struct {
 }
 
 type XenditConfig struct {
-	APIKey        string `env:"XENDIT_API_KEY"`
-	CallbackToken string `env:"XENDIT_CALLBACK_TOKEN"`
+	APIKey        string   `env:"XENDIT_API_KEY"`
+	CallbackToken string   `env:"XENDIT_CALLBACK_TOKEN"`
+	AllowedCIDRs  []string `env:"XENDIT_ALLOWED_CIDRS" envSeparator:","`
 }
 
 type SMTPConfig struct {
@@ -113,6 +127,13 @@ func Load() (*Config, error) {
 	if err := env.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
+
+	switch cfg.Env {
+	case "development", "staging", "production":
+	default:
+		return nil, fmt.Errorf("config: invalid APP_ENV %q (want development|staging|production)", cfg.Env)
+	}
+
 	return cfg, nil
 }
 
@@ -133,6 +154,9 @@ func (c *Config) RequireWebhookSecretsOutsideDev() error {
 	}
 	if c.Xendit.CallbackToken == "" {
 		missing = append(missing, "XENDIT_CALLBACK_TOKEN")
+	}
+	if len(c.Xendit.AllowedCIDRs) == 0 {
+		missing = append(missing, "XENDIT_ALLOWED_CIDRS")
 	}
 	if c.Auth.WebhookSecret == "" {
 		missing = append(missing, "SUPABASE_WEBHOOK_SECRET")

@@ -31,7 +31,7 @@ import {
   useWebhooksContentState,
   useDeleteWebhook,
   useSendWebhookTestEvent,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-webhooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { WebhookFormPanel } from "@/features/organization/components/webhook-form-panel"
 import { RotateSecretPanel } from "@/features/organization/components/rotate-secret-panel"

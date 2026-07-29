@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -26,7 +27,7 @@ func (s *service) regenerateInviteCode(ctx context.Context, organizationID strin
 
 	code, err = generateToken(8)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("organization.regenerateInviteCode: %w", err)
 	}
 	return code, s.repo.updateInviteCode(ctx, s.pool, organizationID, code, true)
 }
@@ -40,7 +41,7 @@ func (s *service) toggleInviteCode(ctx context.Context, organizationID string, e
 
 	t, err := s.repo.findOrganizationByID(ctx, s.pool, organizationID)
 	if err != nil {
-		return err
+		return fmt.Errorf("organization.toggleInviteCode: %w", err)
 	}
 	code := ""
 	if t.InviteCode != nil {
@@ -49,7 +50,7 @@ func (s *service) toggleInviteCode(ctx context.Context, organizationID string, e
 	if enabled && code == "" {
 		code, err = generateToken(8)
 		if err != nil {
-			return err
+			return fmt.Errorf("organization.toggleInviteCode: %w", err)
 		}
 	}
 	return s.repo.updateInviteCode(ctx, s.pool, organizationID, code, enabled)

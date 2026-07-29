@@ -35,8 +35,8 @@ import { UnsavedChangesGuard } from "@/components/shared/unsaved-changes-guard"
 import {
   useOrganization,
   useUpdateOrganization,
-  useUpdateOrganizationSettings,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-organization"
+import { useUpdateOrganizationSettings } from "@/features/organization/hooks/use-settings"
 import { slugify } from "@/lib/format"
 
 const TIMEZONES = Intl.supportedValuesOf("timeZone")

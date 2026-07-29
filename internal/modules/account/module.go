@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,7 +49,7 @@ func New(
 func (m *Module) GetUserByAuthSub(ctx context.Context, authSub string) (*contracts.UserInfo, error) {
 	u, err := m.svc.getProfile(ctx, authSub)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("account.GetUserByAuthSub: %w", err)
 	}
 	return &contracts.UserInfo{
 		ID:        u.ID,
@@ -64,7 +65,7 @@ func (m *Module) GetUserByAuthSub(ctx context.Context, authSub string) (*contrac
 func (m *Module) GetUserByEmail(ctx context.Context, email string) (*contracts.UserInfo, error) {
 	u, err := m.svc.getProfileByEmail(ctx, email)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("account.GetUserByEmail: %w", err)
 	}
 	return &contracts.UserInfo{
 		ID:        u.ID,
@@ -80,7 +81,7 @@ func (m *Module) GetUserByEmail(ctx context.Context, email string) (*contracts.U
 func (m *Module) GetUsersByAuthSubs(ctx context.Context, authSubs []string) (map[string]contracts.UserInfo, error) {
 	users, err := m.svc.listProfilesByAuthSubs(ctx, authSubs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("account.GetUsersByAuthSubs: %w", err)
 	}
 	out := make(map[string]contracts.UserInfo, len(users))
 	for _, u := range users {

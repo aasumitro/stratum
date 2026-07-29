@@ -4,7 +4,7 @@ import { IconLoader2, IconX } from "@tabler/icons-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
-import { useRotateWebhookSecret } from "@/features/organization/hooks"
+import { useRotateWebhookSecret } from "@/features/organization/hooks/use-webhooks"
 
 interface Props {
   organizationId: string

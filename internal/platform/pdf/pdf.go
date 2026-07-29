@@ -225,7 +225,7 @@ func RenderInvoice(d InvoiceData, lang string) ([]byte, error) {
 
 	var buf bytes.Buffer
 	if _, err := p.WriteTo(&buf); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pdf.RenderInvoice: %w", err)
 	}
 	return buf.Bytes(), nil
 }

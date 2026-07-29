@@ -38,7 +38,7 @@ func (s *service) downgradeSubscription(
 	// The HTTP layer (RLS middleware) wraps this entire method in a transaction.
 	// Locking the row serializes concurrent downgrade requests for this org.
 	if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
-		return nil, contracts.OverageResolution{}, err
+		return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: %w", err)
 	}
 
 	// Validate it is actually a downgrade

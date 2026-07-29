@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/tooltip"
 import { Skeleton } from "@/components/ui/skeleton"
 import { usePlans, useExtendSubscription } from "@/features/billing/hooks"
+import { computeExtensionSubtotal } from "@/features/billing/proration"
 import { formatMoney } from "@/lib/format"
 import type { Invoice, Subscription } from "@/types/billing"
 
@@ -33,21 +34,6 @@ function addMonths(from: string | undefined, months: number): Date | null {
   const d = new Date(from)
   d.setMonth(d.getMonth() + months)
   return d
-}
-
-// Mirrors computeExtensionSubtotal (service_subscription_billing.go): every
-// full 12-month block bills at the plan's yearly price, any remainder at
-// the monthly price. months < 12 collapses to blocks == 0, today's flat
-// calculation — same formula handles both, matching the backend exactly so
-// this pre-commit estimate never disagrees with what's actually charged.
-function computeExtensionSubtotal(
-  prices: { monthly: number; yearly: number } | undefined,
-  months: number
-): number {
-  if (!prices) return 0
-  const blocks = Math.floor(months / 12)
-  const remainder = months % 12
-  return blocks * prices.yearly + remainder * prices.monthly
 }
 
 interface Props {

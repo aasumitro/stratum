@@ -173,11 +173,14 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 
 			// Synchronous revocation check — must happen before c.Next().
 			if h.IsRevoked != nil {
-				if sid := SessionIdentifier(claims); sid != "" {
-					if h.IsRevoked(c.Request.Context(), sid) {
-						c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
-						return
-					}
+				sid := SessionIdentifier(claims)
+				if sid == "" {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token missing session identifier"})
+					return
+				}
+				if h.IsRevoked(c.Request.Context(), sid) {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
+					return
 				}
 			}
 

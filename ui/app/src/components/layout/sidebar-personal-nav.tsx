@@ -13,7 +13,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
-import { useOrganizations } from "@/features/organization/hooks"
+import { useOrganizations } from "@/features/organization/hooks/use-organization"
 import { useNotificationCount } from "@/features/notification/hooks"
 
 /**

@@ -5,6 +5,9 @@ import type { HTTPResponse } from "./response"
 
 type UseHTTPMutationParams<TData, TVariables> = {
   url: string | ((variables: TVariables) => string)
+  headers?:
+    | Record<string, string>
+    | ((variables: TVariables) => Record<string, string>)
   options?: UseMutationOptions<
     HTTPResponse<TData>,
     HTTPResponse<unknown>,
@@ -13,13 +16,20 @@ type UseHTTPMutationParams<TData, TVariables> = {
 }
 
 function postFn<TData, TVariables>(
-  url: string | ((variables: TVariables) => string)
+  url: string | ((variables: TVariables) => string),
+  headers?:
+    | Record<string, string>
+    | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
       const resolvedUrl = typeof url === "function" ? url(variables) : url
+      const resolvedHeaders =
+        typeof headers === "function" ? headers(variables) : headers
 
-      const res = await api.post<HTTPResponse<TData>>(resolvedUrl, variables)
+      const res = await api.post<HTTPResponse<TData>>(resolvedUrl, variables, {
+        headers: resolvedHeaders,
+      })
 
       return res.data
     } catch (error) {
@@ -29,15 +39,22 @@ function postFn<TData, TVariables>(
 }
 
 function putFn<TData, TVariables extends { id?: number; data?: unknown }>(
-  url: string | ((variables: TVariables) => string)
+  url: string | ((variables: TVariables) => string),
+  headers?:
+    | Record<string, string>
+    | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
       const resolvedUrl = typeof url === "function" ? url(variables) : url
+      const resolvedHeaders =
+        typeof headers === "function" ? headers(variables) : headers
 
       const body = "data" in variables ? variables.data : variables
 
-      const res = await api.put<HTTPResponse<TData>>(resolvedUrl, body)
+      const res = await api.put<HTTPResponse<TData>>(resolvedUrl, body, {
+        headers: resolvedHeaders,
+      })
 
       return res.data
     } catch (error) {
@@ -48,10 +65,11 @@ function putFn<TData, TVariables extends { id?: number; data?: unknown }>(
 
 export function useHTTPActionPost<TData, TVariables = void>({
   url,
+  headers,
   options,
 }: UseHTTPMutationParams<TData, TVariables>) {
   return useMutation({
-    mutationFn: postFn<TData, TVariables>(url),
+    mutationFn: postFn<TData, TVariables>(url, headers),
     ...options,
   })
 }
@@ -62,21 +80,28 @@ export function useHTTPActionPut<
     id?: number
     data?: unknown
   },
->({ url, options }: UseHTTPMutationParams<TData, TVariables>) {
+>({ url, headers, options }: UseHTTPMutationParams<TData, TVariables>) {
   return useMutation({
-    mutationFn: putFn<TData, TVariables>(url),
+    mutationFn: putFn<TData, TVariables>(url, headers),
     ...options,
   })
 }
 
 function deleteFn<TData, TVariables = void>(
-  url: string | ((variables: TVariables) => string)
+  url: string | ((variables: TVariables) => string),
+  headers?:
+    | Record<string, string>
+    | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
       const resolvedUrl = typeof url === "function" ? url(variables) : url
+      const resolvedHeaders =
+        typeof headers === "function" ? headers(variables) : headers
 
-      const res = await api.delete<HTTPResponse<TData>>(resolvedUrl)
+      const res = await api.delete<HTTPResponse<TData>>(resolvedUrl, {
+        headers: resolvedHeaders,
+      })
 
       return res.data
     } catch (error) {
@@ -87,21 +112,29 @@ function deleteFn<TData, TVariables = void>(
 
 export function useHTTPActionDelete<TData, TVariables = void>({
   url,
+  headers,
   options,
 }: UseHTTPMutationParams<TData, TVariables>) {
   return useMutation({
-    mutationFn: deleteFn<TData, TVariables>(url),
+    mutationFn: deleteFn<TData, TVariables>(url, headers),
     ...options,
   })
 }
 
 function patchFn<TData, TVariables>(
-  url: string | ((variables: TVariables) => string)
+  url: string | ((variables: TVariables) => string),
+  headers?:
+    | Record<string, string>
+    | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
       const resolvedUrl = typeof url === "function" ? url(variables) : url
-      const res = await api.patch<HTTPResponse<TData>>(resolvedUrl, variables)
+      const resolvedHeaders =
+        typeof headers === "function" ? headers(variables) : headers
+      const res = await api.patch<HTTPResponse<TData>>(resolvedUrl, variables, {
+        headers: resolvedHeaders,
+      })
       return res.data
     } catch (error) {
       throw catchHTTPError(error)
@@ -111,10 +144,11 @@ function patchFn<TData, TVariables>(
 
 export function useHTTPActionPatch<TData, TVariables = void>({
   url,
+  headers,
   options,
 }: UseHTTPMutationParams<TData, TVariables>) {
   return useMutation({
-    mutationFn: patchFn<TData, TVariables>(url),
+    mutationFn: patchFn<TData, TVariables>(url, headers),
     ...options,
   })
 }

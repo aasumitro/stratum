@@ -311,6 +311,36 @@ func TestIntegration_AddAndRemoveMember(t *testing.T) {
 	}
 }
 
+// Unlike removeMember/updateMemberRole, addMember has no handler-level
+// owner check ahead of it — this is the one path where
+// service_member.go's addMember service-layer guard is the only thing
+// stopping the organization owner from being re-added as an ordinary
+// member.
+func TestIntegration_AddMember_RejectsAddingTheOwner(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-owner-add","name":"Owner Add WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/members",
+		`{"auth_sub":"`+testAuthSub+`","role":"member"}`))
+	if w2.Code != http.StatusUnprocessableEntity {
+		t.Errorf("adding the owner as a member: want 422, got %d: %s", w2.Code, w2.Body)
+	}
+}
+
 // stubMembersUserReader satisfies contracts.UserReader with a single known
 // profile — enough to exercise listMembers' batch profile-enrichment path
 // (GetUsersByAuthSubs) without a cross-module import into the account package.

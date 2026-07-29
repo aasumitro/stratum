@@ -21,7 +21,7 @@ var ErrStorageLimitReached = errors.New("storage limit reached")
 // parent_folder_id chain has no other way to detect or unwind.
 var ErrFolderCycle = errors.New("cannot move a folder into its own subfolder")
 
-// ErrFolderNotEmpty: deleting a folder is blocked while it still has
+// ErrFolderNotEmpty - deleting a folder is blocked while it still has
 // live files or subfolders, so the ON DELETE CASCADE on
 // folders.parent_folder_id never fires against non-empty content.
 var ErrFolderNotEmpty = errors.New("folder is not empty")
@@ -95,7 +95,7 @@ func (s *service) uploadFile(
 	}
 	if folderID != nil {
 		if _, err := s.repo.findFolder(ctx, s.pool, organizationID, *folderID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.uploadFile: find folder: %w", err)
 		}
 	}
 
@@ -115,7 +115,7 @@ func (s *service) uploadFile(
 	// passing the same stale check.
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, organizationID); err != nil {
-			return err
+			return fmt.Errorf("organization.uploadFile: advisory lock: %w", err)
 		}
 		if s.billingReader != nil {
 			current, limit, err := s.billingReader.CheckUsageLimit(ctx, organizationID, "storage_bytes")
@@ -123,6 +123,7 @@ func (s *service) uploadFile(
 				return ErrStorageLimitReached
 			}
 		}
+		contentType = safeStoredContentType(contentType)
 		if err := s.store.Upload(ctx, "organization-files", path, r, contentType); err != nil {
 			return fmt.Errorf("organization.uploadFile: %w", err)
 		}
@@ -132,7 +133,10 @@ func (s *service) uploadFile(
 		}
 		var err error
 		rec, err = s.repo.insertFile(ctx, tx, organizationID, folderID, fileName, path, sizeBytes, mt, authSub)
-		return err
+		if err != nil {
+			return fmt.Errorf("organization.uploadFile: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -183,9 +187,13 @@ func (s *service) fileDownloadURL(ctx context.Context, organizationID, fileID st
 	}
 	f, err := s.repo.findFile(ctx, s.pool, organizationID, fileID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("organization.fileDownloadURL: %w", err)
 	}
-	return s.store.SignedURL(ctx, "organization-files", f.Path, 5*time.Minute)
+	url, err = s.store.SignedURL(ctx, "organization-files", f.Path, 5*time.Minute)
+	if err != nil {
+		return "", fmt.Errorf("organization.fileDownloadURL: %w", err)
+	}
+	return url, nil
 }
 
 func (s *service) moveFile(ctx context.Context, organizationID, fileID string, folderID *string) (f *fileRecord, err error) {
@@ -203,7 +211,7 @@ func (s *service) moveFile(ctx context.Context, organizationID, fileID string, f
 
 	if folderID != nil {
 		if _, err := s.repo.findFolder(ctx, s.pool, organizationID, *folderID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.moveFile: find folder: %w", err)
 		}
 	}
 	return s.repo.moveFile(ctx, s.pool, organizationID, fileID, folderID)
@@ -277,6 +285,12 @@ func (s *service) maybePurgeExpiredTrash(ctx context.Context, organizationID str
 	}
 	ctx = context.WithoutCancel(ctx)
 	go func() {
+		// Bounds the background sweep so a congested DB connection or a
+		// hanging storage-provider call can't leak this goroutine
+		// indefinitely — context.WithoutCancel alone has no deadline. Same
+		// convention as syncStorageUsage/syncMemberUsage.
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
 		expired, err := s.repo.purgeExpiredTrash(ctx, s.pool, organizationID)
 		if err != nil {
 			return
@@ -307,10 +321,14 @@ func (s *service) createFolder(
 
 	if parentFolderID != nil {
 		if _, err := s.repo.findFolder(ctx, s.pool, organizationID, *parentFolderID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.createFolder: find parent folder: %w", err)
 		}
 	}
-	return s.repo.insertFolder(ctx, s.pool, organizationID, parentFolderID, name, authSub)
+	f, err = s.repo.insertFolder(ctx, s.pool, organizationID, parentFolderID, name, authSub)
+	if err != nil {
+		return nil, fmt.Errorf("organization.createFolder: %w", err)
+	}
+	return f, nil
 }
 
 func (s *service) listFolders(ctx context.Context, organizationID string) ([]folderRecord, error) {
@@ -345,11 +363,11 @@ func (s *service) updateFolder(
 			return nil, fmt.Errorf("organization.updateFolder: a folder cannot be its own parent")
 		}
 		if _, err := s.repo.findFolder(ctx, s.pool, organizationID, *parentFolderID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.updateFolder: find parent folder: %w", err)
 		}
 		isDescendant, err := s.repo.isDescendantOf(ctx, s.pool, organizationID, folderID, *parentFolderID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.updateFolder: check descendant: %w", err)
 		}
 		if isDescendant {
 			return nil, ErrFolderCycle
@@ -372,10 +390,23 @@ func (s *service) deleteFolder(ctx context.Context, organizationID, folderID str
 
 	empty, err := s.repo.folderIsEmpty(ctx, s.pool, organizationID, folderID)
 	if err != nil {
-		return err
+		return fmt.Errorf("organization.deleteFolder: %w", err)
 	}
 	if !empty {
 		return ErrFolderNotEmpty
 	}
 	return s.repo.deleteFolder(ctx, s.pool, organizationID, folderID)
+}
+
+// safeStoredContentType keeps a conservative allowlist of inert/renderable
+// types and neutralises everything else so it can't be served as active
+// content from the storage origin via a signed URL.
+func safeStoredContentType(ct string) string {
+	switch ct {
+	case "image/png", "image/jpeg", "image/gif", "image/webp",
+		"application/pdf", "text/plain; charset=utf-8", "text/csv":
+		return ct
+	default:
+		return "application/octet-stream"
+	}
 }

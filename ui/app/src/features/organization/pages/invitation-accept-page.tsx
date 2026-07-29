@@ -17,7 +17,7 @@ import {
   useAcceptInvitation,
   useDeclineInvitation,
   useRequestNewInvitation,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-invitations"
 import { parseApiError } from "@/lib/api/error"
 
 type State =

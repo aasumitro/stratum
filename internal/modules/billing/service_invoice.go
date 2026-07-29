@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -86,7 +87,7 @@ func (s *service) regeneratePaymentLink(
 	}()
 
 	if err := s.repo.expirePendingPaymentLinks(ctx, s.querier(ctx), invoiceID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.regeneratePaymentLink: %w", err)
 	}
 	return s.createPaymentLink(ctx, subjectType, subjectID, invoiceID)
 }
@@ -120,15 +121,15 @@ func (s *service) getInvoicePDFData(
 
 	inv, err = s.repo.findInvoiceByIDAndSubject(ctx, s.querier(ctx), invoiceID, subjectType, subjectID)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, fmt.Errorf("billing.getInvoicePDFData: find invoice: %w", err)
 	}
 	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, fmt.Errorf("billing.getInvoicePDFData: find subscription: %w", err)
 	}
 	planInfo, err = s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, fmt.Errorf("billing.getInvoicePDFData: plan catalog: %w", err)
 	}
 	lineItems, _ = s.repo.listLineItems(ctx, s.querier(ctx), inv.ID)
 	return inv, sub, planInfo, lineItems, nil
@@ -265,7 +266,7 @@ func (s *service) previewInvoice(
 
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.previewInvoice: %w", err)
 	}
 	targetPlan, targetCycle := plan, cycle
 	if targetPlan == "" {
@@ -397,18 +398,25 @@ func (s *service) composeInvoiceAmount(
 func (s *service) applyInvoiceCharges(
 	ctx context.Context, q db.Querier, subscriptionID, invoiceID, currency string,
 	addonLines []lineItemSpec, couponCode string, discountCents int64,
-) {
+) error {
 	sortOrder := 1
 	for _, line := range addonLines {
-		_ = s.repo.insertLineItem(ctx, q, invoiceID, line.Description,
-			currency, line.Quantity, line.UnitPriceCents, line.TotalCents, sortOrder)
+		if err := s.repo.insertLineItem(ctx, q, invoiceID, line.Description,
+			currency, line.Quantity, line.UnitPriceCents, line.TotalCents, sortOrder); err != nil {
+			return err
+		}
 		sortOrder++
 	}
 	if couponCode != "" {
-		_ = s.repo.insertLineItem(ctx, q, invoiceID, "Discount: "+couponCode,
-			currency, 1, -discountCents, -discountCents, sortOrder)
-		_ = s.repo.incrementCouponRedemptionApplied(ctx, q, subscriptionID, couponCode)
+		if err := s.repo.insertLineItem(ctx, q, invoiceID, "Discount: "+couponCode,
+			currency, 1, -discountCents, -discountCents, sortOrder); err != nil {
+			return err
+		}
+		if err := s.repo.incrementCouponRedemptionApplied(ctx, q, subscriptionID, couponCode); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func selectProvider(currency string) string {

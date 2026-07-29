@@ -281,10 +281,9 @@ func TestOrganizationMiddleware_OrganizationNotActive(t *testing.T) {
 	}
 }
 
-// Regression test for a bug found during live-DB verification: the
-// active-only check blocked every scoped route for a suspended
-// organization, including /unsuspend itself — making a suspended
-// organization permanently unrecoverable via the API.
+// Confirms the active-only check does not block /unsuspend itself for a
+// suspended organization — otherwise a suspended organization would be
+// permanently unrecoverable via the API.
 func TestOrganizationMiddleware_Suspended_UnsuspendStaysReachable(t *testing.T) {
 	ws := &contracts.OrganizationInfo{ID: "ws-01", Status: "suspended"}
 	e := makeOrganizationEngine(stubWsReader{ws: ws, role: "owner"})

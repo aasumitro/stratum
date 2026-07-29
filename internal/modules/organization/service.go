@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -43,11 +44,13 @@ func isUniqueViolation(err error) bool {
 }
 
 // generateToken is shared by invitation tokens, invite codes, and webhook
-// secrets — all need a random hex string, just at different lengths.
-func generateToken(length int) (string, error) {
-	b := make([]byte, length)
+// secrets — all need a random hex string, just at different strengths.
+// byteLength is a count of random bytes, not output characters: the
+// returned string is the full hex encoding, twice as long as byteLength.
+func generateToken(byteLength int) (string, error) {
+	b := make([]byte, byteLength)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		return "", fmt.Errorf("organization.generateToken: %w", err)
 	}
-	return hex.EncodeToString(b)[:length], nil
+	return hex.EncodeToString(b), nil
 }

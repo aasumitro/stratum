@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -34,7 +35,10 @@ func (r *repository) findSubscriptionBySubject(
 		subjectType, subjectID,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.findSubscriptionBySubject: %w", err)
+	}
+	return s, nil
 }
 
 // lockSubscriptionForUpdate takes a row lock on the subscription for the
@@ -47,7 +51,11 @@ func (r *repository) findSubscriptionBySubject(
 // computed from the coupon's cadence and applied_count, not stored.
 func (r *repository) lockSubscriptionForUpdate(ctx context.Context, q db.Querier, subscriptionID string) error {
 	var id string
-	return q.QueryRow(ctx, `SELECT id FROM billing.subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID).Scan(&id)
+	err := q.QueryRow(ctx, `SELECT id FROM billing.subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID).Scan(&id)
+	if err != nil {
+		return fmt.Errorf("billing.lockSubscriptionForUpdate: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) insertSubscription(
@@ -57,6 +65,9 @@ func (r *repository) insertSubscription(
 	s := new(subscriptionRecord)
 	now := time.Now()
 	periodEnd := now.AddDate(0, 1, 0)
+	if cycle == cycleYearly {
+		periodEnd = now.AddDate(1, 0, 0)
+	}
 	err := q.QueryRow(ctx,
 		`INSERT INTO billing.subscriptions (subject_type, subject_id, plan, status, cycle, currency, period_start, period_end)
 		VALUES ($1, $2, $3, 'active', $4, $5, $6, $7)
@@ -65,7 +76,10 @@ func (r *repository) insertSubscription(
 		subjectType, subjectID, plan, cycle, currency, now, periodEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.insertSubscription: %w", err)
+	}
+	return s, nil
 }
 
 func (r *repository) insertSubscriptionWithTrial(
@@ -82,7 +96,10 @@ func (r *repository) insertSubscriptionWithTrial(
 		subjectType, subjectID, plan, cycle, currency, now, trialEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.insertSubscriptionWithTrial: %w", err)
+	}
+	return s, nil
 }
 
 func (r *repository) updateSubscriptionPlan(
@@ -96,7 +113,10 @@ func (r *repository) updateSubscriptionPlan(
 		id, plan, cycle,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.updateSubscriptionPlan: %w", err)
+	}
+	return s, nil
 }
 
 func (r *repository) updateSubscriptionStatus(
@@ -110,7 +130,10 @@ func (r *repository) updateSubscriptionStatus(
 		id, status,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.updateSubscriptionStatus: %w", err)
+	}
+	return s, nil
 }
 
 // activateTrialImmediately converts a trialing subscription to active right
@@ -130,7 +153,10 @@ func (r *repository) activateTrialImmediately(
 		id, periodStart, periodEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.activateTrialImmediately: %w", err)
+	}
+	return s, nil
 }
 
 func (r *repository) findSubscriptionByID(ctx context.Context, q db.Querier, id string) (*subscriptionRecord, error) {
@@ -139,7 +165,10 @@ func (r *repository) findSubscriptionByID(ctx context.Context, q db.Querier, id 
 		`SELECT `+subsCols+` FROM billing.subscriptions WHERE id = $1`, id,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.findSubscriptionByID: %w", err)
+	}
+	return s, nil
 }
 
 func (r *repository) updateSubscriptionPlanAndPeriod(
@@ -153,7 +182,10 @@ func (r *repository) updateSubscriptionPlanAndPeriod(
 		id, plan, cycle, periodEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt)
-	return s, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.updateSubscriptionPlanAndPeriod: %w", err)
+	}
+	return s, nil
 }
 
 // countSubscriptionsBySubjectIDs counts subscriptions belonging to any of
@@ -170,7 +202,10 @@ func (r *repository) countSubscriptionsBySubjectIDs(ctx context.Context, q db.Qu
 		WHERE subject_type = 'organization' AND subject_id = ANY($1)`,
 		subjectIDs,
 	).Scan(&count)
-	return count, err
+	if err != nil {
+		return 0, fmt.Errorf("billing.countSubscriptionsBySubjectIDs: %w", err)
+	}
+	return count, nil
 }
 
 func (r *repository) updateSubscriptionPeriod(
@@ -183,7 +218,10 @@ func (r *repository) updateSubscriptionPeriod(
 		WHERE id = $1`,
 		id, periodStart, periodEnd,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.updateSubscriptionPeriod: %w", err)
+	}
+	return nil
 }
 
 // updateSubscriptionCycleAndPeriod mirrors updateSubscriptionPeriod but also
@@ -200,5 +238,8 @@ func (r *repository) updateSubscriptionCycleAndPeriod(
 		WHERE id = $1`,
 		id, cycle, periodStart, periodEnd,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.updateSubscriptionCycleAndPeriod: %w", err)
+	}
+	return nil
 }

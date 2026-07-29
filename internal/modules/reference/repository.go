@@ -2,6 +2,7 @@ package reference
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -34,7 +35,7 @@ func (r *repository) listCountries(ctx context.Context, q db.Querier) ([]country
 		WHERE active = true
 		ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reference.listCountries: %w", err)
 	}
 	defer rows.Close()
 
@@ -42,7 +43,7 @@ func (r *repository) listCountries(ctx context.Context, q db.Querier) ([]country
 	for rows.Next() {
 		var c countryRecord
 		if err := rows.Scan(&c.Code, &c.Name, &c.PhoneCode, &c.CurrencyCode, &c.Active, &c.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reference.listCountries: scan: %w", err)
 		}
 		out = append(out, c)
 	}
@@ -56,7 +57,7 @@ func (r *repository) listCurrencies(ctx context.Context, q db.Querier) ([]curren
 		WHERE active = true
 		ORDER BY code`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reference.listCurrencies: %w", err)
 	}
 	defer rows.Close()
 
@@ -64,7 +65,7 @@ func (r *repository) listCurrencies(ctx context.Context, q db.Querier) ([]curren
 	for rows.Next() {
 		var c currencyRecord
 		if err := rows.Scan(&c.Code, &c.Name, &c.Symbol, &c.DecimalPlaces, &c.Active, &c.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reference.listCurrencies: scan: %w", err)
 		}
 		out = append(out, c)
 	}
@@ -73,6 +74,8 @@ func (r *repository) listCurrencies(ctx context.Context, q db.Querier) ([]curren
 
 func (r *repository) getCountryTaxRate(ctx context.Context, q db.Querier, code string) (int, error) {
 	var rate int
-	err := q.QueryRow(ctx, `SELECT tax_rate_bps FROM ref.countries WHERE code = $1`, code).Scan(&rate)
-	return rate, err
+	if err := q.QueryRow(ctx, `SELECT tax_rate_bps FROM ref.countries WHERE code = $1`, code).Scan(&rate); err != nil {
+		return 0, fmt.Errorf("reference.getCountryTaxRate: %w", err)
+	}
+	return rate, nil
 }

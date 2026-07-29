@@ -155,10 +155,9 @@ func TestResolveDowngradeOverage(t *testing.T) {
 	})
 }
 
-// TestResolveDowngradeOverage_PublishesMemberRemovedEvents guards against
-// the gap flagged as needing confirmation during implementation:
-// the bulk removal path must publish organization.member.removed once per
-// removed member (matching removeMember's single-member path), not skip
+// TestResolveDowngradeOverage_PublishesMemberRemovedEvents confirms the
+// bulk removal path publishes organization.member.removed once per removed
+// member (matching removeMember's single-member path), not skip
 // notification entirely just because the removal happened in bulk.
 func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	pool := testPool(t)
@@ -213,9 +212,9 @@ func (f *fakeCacheInvalidator) InvalidateMemberRole(_ context.Context, organizat
 	f.invalidatedRoles = append(f.invalidatedRoles, struct{ organizationID, authSub string }{organizationID, authSub})
 }
 
-// TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache guards
-// against a gap found live: removeMember's single-member path invalidates
-// the removed member's cached RBAC role immediately
+// TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache confirms
+// the bulk downgrade path invalidates a removed member's cached RBAC role
+// too: removeMember's single-member path invalidates it immediately
 // (handler_member.go's h.invalidateRole), via the HTTP handler layer. The
 // bulk downgrade path never goes through that handler at all — it's called
 // service-to-service from billing — so without this, a bulk-removed member

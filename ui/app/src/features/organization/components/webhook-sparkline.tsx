@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { useWebhookDeliveries } from "@/features/organization/hooks"
+import { useWebhookDeliveries } from "@/features/organization/hooks/use-webhooks"
 
 const DOT_TONE: Record<string, string> = {
   delivered: "bg-emerald-500",

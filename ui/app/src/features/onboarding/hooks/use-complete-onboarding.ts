@@ -10,9 +10,9 @@ import type { HTTPResponse } from "@/lib/api/response"
 
 /**
  * Onboarding ends the moment the organization step succeeds (create, join,
- * or accept an invitation) — there's no separate confirmation screen (1c:
- * "on success: toast ... -> land on first-run dashboard"). This marks
- * onboarding_completed and lands on the resulting organization directly.
+ * or accept an invitation) — there's no separate confirmation screen, just
+ * a toast, then landing on the resulting organization directly. This marks
+ * onboarding_completed.
  */
 export function useCompleteOnboarding() {
   const queryClient = useQueryClient()

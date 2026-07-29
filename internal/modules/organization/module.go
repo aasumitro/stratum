@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
@@ -70,9 +71,14 @@ func (m *Module) SetBillingWriter(bw contracts.BillingWriter) {
 }
 
 // SetStorageClient wires the storage client after construction.
-// Called from main.go after the storage client is created.
+// Called from main.go after the storage client is created. Also wired onto
+// Worker, not just svc — HandleOrganizationDeleted needs it to purge a
+// deleted organization's files, and runs in the worker process, which
+// constructs its own storage client (see RunWorker) independently of the
+// API's.
 func (m *Module) SetStorageClient(s *storage.Client) {
 	m.svc.store = s
+	m.Worker.store = s
 }
 
 // SetCatalogReader wires the catalog reader after construction to validate
@@ -100,7 +106,7 @@ func (m *Module) RemoveAllMemberships(ctx context.Context, authSub string) error
 func (m *Module) GetOrganizationByID(ctx context.Context, organizationID string) (*contracts.OrganizationInfo, error) {
 	t, err := m.svc.getOrganization(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.GetOrganizationByID: %w", err)
 	}
 	var s struct {
 		AllowedIPs []string `json:"allowed_ips"`
@@ -158,7 +164,7 @@ func (m *Module) GetFirstOrganizationIDForMember(ctx context.Context, authSub st
 func (m *Module) ListMembershipsForExport(ctx context.Context, authSub string) ([]contracts.OrgMembershipInfo, error) {
 	views, err := m.svc.listMembershipsForExport(ctx, authSub)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.ListMembershipsForExport: %w", err)
 	}
 	out := make([]contracts.OrgMembershipInfo, len(views))
 	for i, v := range views {

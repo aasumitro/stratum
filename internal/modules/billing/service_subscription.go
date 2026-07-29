@@ -32,7 +32,7 @@ func (s *service) provisionSubscription(
 		}
 		count, err = s.repo.countSubscriptionsBySubjectIDs(ctx, s.querier(ctx), ownedIDs)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.provisionSubscription: count subscriptions: %w", err)
 		}
 	}
 
@@ -66,14 +66,14 @@ func (s *service) provisionSubscription(
 		}
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
-				return err
+				return fmt.Errorf("billing.provisionSubscription: insert subscription: %w", err)
 			}
 			// Subscription already exists (idempotency: message redelivery or prior partial failure).
 			// Fetch it and fall through — the invoice check below handles the missing-invoice case.
 			isNew = false
 			sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 			if err != nil {
-				return err
+				return fmt.Errorf("billing.provisionSubscription: %w", err)
 			}
 		}
 
@@ -95,7 +95,7 @@ func (s *service) provisionSubscription(
 				periodEnd = *sub.PeriodEnd
 			}
 			if err := s.repo.upsertUsage(ctx, s.querier(ctx), subjectID, "members", 1, periodStart, periodEnd); err != nil {
-				return err
+				return fmt.Errorf("billing.provisionSubscription: seed usage: %w", err)
 			}
 		}
 
@@ -119,8 +119,8 @@ func (s *service) provisionSubscription(
 				}
 			}
 			if !alreadyRedeemed {
-				if err := s.repo.insertCouponRedemption(ctx, s.querier(ctx), couponCode, sub.ID); err == nil {
-					_ = s.repo.incrementCouponRedeemedCount(ctx, s.querier(ctx), couponCode) // best-effort accounting, no lock — see incrementCouponRedeemedCount
+				if ok, _ := s.repo.tryIncrementCouponRedeemedCount(ctx, s.querier(ctx), couponCode); ok {
+					_ = s.repo.insertCouponRedemption(ctx, s.querier(ctx), couponCode, sub.ID)
 				}
 			}
 		}
@@ -153,12 +153,16 @@ func (s *service) provisionSubscription(
 					taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryCode)
 				}
 				tax := calculateTax(composed, taxRate)
-				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency, "subscription", false)
+				inv, invErr := s.repo.insertInvoice(ctx, s.querier(ctx), subjectID, sub.ID, composed, taxRate, tax, currency, "activation", false)
 				if invErr != nil {
 					return fmt.Errorf("billing.provisionSubscription: insert invoice: %w", invErr)
 				}
-				_ = s.insertPlanLineItem(ctx, inv, planInfo)
-				s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, currency, addonLines, couponCode, discountCents)
+				if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+					return fmt.Errorf("billing.provisionSubscription: insert plan line item: %w", err)
+				}
+				if err := s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, currency, addonLines, couponCode, discountCents); err != nil {
+					return fmt.Errorf("billing.provisionSubscription: apply invoice charges: %w", err)
+				}
 				invoiceCreated = &events.InvoiceCreated{
 					OrgID: subjectID, InvoiceID: inv.ID,
 					Plan: plan, AmountCents: inv.AmountCents, Currency: currency, DueAt: *inv.DueAt,
@@ -201,6 +205,10 @@ func (s *service) getSubscription(ctx context.Context, subjectType, subjectID st
 	return sub, nil
 }
 
+// Bare repo-call returns below are deliberate: each repo function already
+// self-prefixes (e.g. "billing.findSubscriptionBySubject: ..."), and every
+// path funnels into this function's single deferred apperr classification —
+// same tradeoff as redeemCoupon (service_coupon.go).
 func (s *service) changePlanWithMetadata(
 	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string, metadata []byte,
 ) (historyID string, sub *subscriptionRecord, err error) {
@@ -274,12 +282,18 @@ func (s *service) changePlanWithMetadata(
 				taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(updated.Currency))
 			}
 			tax := calculateTax(composed, taxRate)
-			if inv, err := s.repo.insertInvoice(
+			inv, invErr := s.repo.insertInvoice(
 				ctx, s.querier(ctx), subjectID, updated.ID, composed, taxRate, tax, updated.Currency, "subscription", false,
-			); err == nil {
-				_ = s.insertPlanLineItem(ctx, inv, newPlanInfo)
-				s.applyInvoiceCharges(ctx, s.querier(ctx), updated.ID, inv.ID,
-					updated.Currency, addonLines, couponCode, discountCents)
+			)
+			if invErr != nil {
+				return "", nil, invErr
+			}
+			if invErr := s.insertPlanLineItem(ctx, inv, newPlanInfo); invErr != nil {
+				return "", nil, invErr
+			}
+			if invErr := s.applyInvoiceCharges(ctx, s.querier(ctx), updated.ID, inv.ID,
+				updated.Currency, addonLines, couponCode, discountCents); invErr != nil {
+				return "", nil, invErr
 			}
 		}
 	}
@@ -294,6 +308,7 @@ func (s *service) changePlanWithMetadata(
 	return historyID, updated, nil
 }
 
+// Same deliberate no-wrap tradeoff as changePlanWithMetadata above.
 func (s *service) cancelSubscription(
 	ctx context.Context, subjectType, subjectID, cancelledBy, reason, details string,
 ) (sub *subscriptionRecord, err error) {
@@ -345,7 +360,7 @@ func (s *service) cancelSubscription(
 func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error {
 	sub, err := s.repo.findSubscriptionByID(ctx, s.querier(ctx), subscriptionID)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.expireIfDue: %w", err)
 	}
 
 	if sub.Status != statusActive && sub.Status != statusTrialing {
@@ -364,7 +379,7 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 	}
 
 	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusExpired); err != nil {
-		return err
+		return fmt.Errorf("billing.expireIfDue: %w", err)
 	}
 
 	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
@@ -388,13 +403,13 @@ func (s *service) cancelOnDeletion(ctx context.Context, organizationID string) e
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
-		return err
+		return fmt.Errorf("billing.cancelOnDeletion: %w", err)
 	}
 	if sub.Status == statusCancelled || sub.Status == statusExpired {
 		return nil
 	}
 	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusCancelled); err != nil {
-		return err
+		return fmt.Errorf("billing.cancelOnDeletion: %w", err)
 	}
 	_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
 		&sub.Plan, nil, 0, sub.Currency, changedBySystem, nil)

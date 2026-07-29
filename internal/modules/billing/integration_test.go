@@ -1056,6 +1056,221 @@ func TestIntegration_Webhook_PaidRenewalConvertsTrialToActive(t *testing.T) {
 	}
 }
 
+// TestIntegration_Webhook_PaidProvisioningInvoice_MonthlyPeriodUnchanged is
+// the first regression coverage for a 2nd+ org's own provisioning invoice:
+// before this fix, provisionSubscription tagged that invoice kind:
+// "subscription" — identical to a genuine renewal invoice — so paying it
+// hit handleWebhook's generic renewal case and rolled period_end forward by
+// one more cycle on top of what insertSubscription already seeded, granting
+// a free extra cycle. Paying the "activation"-kind invoice this fix now
+// uses must be a no-op on period_end.
+func TestIntegration_Webhook_PaidProvisioningInvoice_MonthlyPeriodUnchanged(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_paidprovision_monthly_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f86"
+		wsID2 = "00000000-0000-0000-0000-000000000f87"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, wsID2)
+	var periodStart, periodEndBefore time.Time
+	pool.QueryRow(t.Context(), `SELECT period_start, period_end FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&periodStart, &periodEndBefore)
+	// Precondition: a monthly 2nd+ org's period is already 1 month wide at
+	// creation — the cycle-aware initial-period seeding only changes
+	// behavior for yearly (see the sibling yearly test) — this establishes
+	// the baseline the payment-is-a-no-op assertion below is relative to.
+	if want := periodStart.AddDate(0, 1, 0); !periodEndBefore.Equal(want) {
+		t.Fatalf("precondition: want period_end = period_start + 1 month (%v), got %v", want, periodEndBefore)
+	}
+
+	var invID string
+	var amountCents int64
+	var kind string
+	pool.QueryRow(t.Context(),
+		`SELECT id, amount_cents, kind FROM billing.invoices WHERE subscription_id = $1 AND status = 'pending'`, subID,
+	).Scan(&invID, &amountCents, &kind)
+	if kind != "activation" {
+		t.Fatalf("want the provisioning invoice kind='activation', got %q", kind)
+	}
+
+	const extID = "stripe_sess_paidprovision_monthly"
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", amountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var periodEndAfter time.Time
+	pool.QueryRow(t.Context(), `SELECT period_end FROM billing.subscriptions WHERE id = $1`, subID).Scan(&periodEndAfter)
+	if !periodEndAfter.Equal(periodEndBefore) {
+		t.Errorf("want period_end unchanged by paying the activation invoice (still %v), got %v — a regression here means a free extra month was granted", periodEndBefore, periodEndAfter)
+	}
+
+	var renewCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'renew'`, subID,
+	).Scan(&renewCount)
+	if renewCount != 0 {
+		t.Errorf("want no 'renew' history row for paying an activation invoice, got %d", renewCount)
+	}
+}
+
+// TestIntegration_Webhook_PaidProvisioningInvoice_YearlyGetsFullYear guards
+// two things together: insertSubscription must seed a cycle-aware initial
+// period (not hardcode 1 month regardless of cycle), and paying that first
+// invoice must not additionally roll the period forward by one more cycle.
+// A yearly 2nd+ org must get a 1-year initial period, and paying its
+// provisioning invoice must leave that period untouched — not "+1 month at
+// creation, then +1 year on payment" (13 months total instead of 12).
+func TestIntegration_Webhook_PaidProvisioningInvoice_YearlyGetsFullYear(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_paidprovision_yearly_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f88"
+		wsID2 = "00000000-0000-0000-0000-000000000f89"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+		encodeOrganizationCreatedEventWithPlan(wsID2, user, "solo", "yearly")); err != nil {
+		t.Fatalf("second provision (yearly): %v", err)
+	}
+
+	subID := getSubscriptionID(pool, wsID2)
+	var periodStart, periodEndBefore time.Time
+	pool.QueryRow(t.Context(), `SELECT period_start, period_end FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&periodStart, &periodEndBefore)
+	// Guards against insertSubscription hardcoding +1 month here regardless
+	// of cycle.
+	if want := periodStart.AddDate(1, 0, 0); !periodEndBefore.Equal(want) {
+		t.Fatalf("want a yearly 2nd+ org's initial period_end = period_start + 1 year (%v), got %v", want, periodEndBefore)
+	}
+
+	var invID string
+	var amountCents int64
+	var kind string
+	pool.QueryRow(t.Context(),
+		`SELECT id, amount_cents, kind FROM billing.invoices WHERE subscription_id = $1 AND status = 'pending'`, subID,
+	).Scan(&invID, &amountCents, &kind)
+	if kind != "activation" {
+		t.Fatalf("want the provisioning invoice kind='activation', got %q", kind)
+	}
+
+	const extID = "stripe_sess_paidprovision_yearly"
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", amountCents)
+	payload := fmt.Sprintf(`{"type":"checkout.session.completed","data":{"object":{"id":%q,"payment_status":"paid"}}}`, extID)
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var periodEndAfter time.Time
+	pool.QueryRow(t.Context(), `SELECT period_end FROM billing.subscriptions WHERE id = $1`, subID).Scan(&periodEndAfter)
+	if !periodEndAfter.Equal(periodEndBefore) {
+		t.Errorf("want period_end unchanged at exactly 1 year from period_start (still %v), got %v — a regression here means 13 months were granted instead of 12", periodEndBefore, periodEndAfter)
+	}
+
+	var renewCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'renew'`, subID,
+	).Scan(&renewCount)
+	if renewCount != 0 {
+		t.Errorf("want no 'renew' history row for paying an activation invoice, got %d", renewCount)
+	}
+}
+
+// TestIntegration_ExtendSubscription_BlockedByUnpaidProvisioningInvoice
+// confirms extendSubscription's guard checks for any pending invoice, not
+// only a pending "extension"-kind one (hasPendingInvoiceOfKind) — otherwise
+// a freshly-provisioned 2nd+ org — whose own
+// first invoice is still unpaid — could still have Extend called on it,
+// producing two simultaneously-pending invoices on one subscription.
+func TestIntegration_ExtendSubscription_BlockedByUnpaidProvisioningInvoice(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_extend_blocked_unpaid_user"
+		wsID1 = "00000000-0000-0000-0000-000000000f90"
+		wsID2 = "00000000-0000-0000-0000-000000000f91"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	invoiceCountBefore := countInvoices(pool, t, wsID2)
+	if invoiceCountBefore != 1 {
+		t.Fatalf("precondition: want exactly 1 invoice (the unpaid provisioning invoice), got %d", invoiceCountBefore)
+	}
+
+	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("extend on an org with an unpaid provisioning invoice: want 422, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Status struct {
+			Code string `json:"code"`
+		} `json:"status"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Status.Code != "EXTENSION_ALREADY_PENDING" {
+		t.Errorf("want code=EXTENSION_ALREADY_PENDING, got %q", resp.Status.Code)
+	}
+
+	if got := countInvoices(pool, t, wsID2); got != invoiceCountBefore {
+		t.Errorf("want no second invoice created by the rejected extend attempt, invoice count before=%d after=%d", invoiceCountBefore, got)
+	}
+}
+
 // TestIntegration_Webhook_ReactivationRollsBackOnHistoryFailure regression-tests
 // that a failure applying the reactivation branch's writes (after the invoice
 // is already marked paid, within the same transaction) rolls back the whole
@@ -1150,6 +1365,7 @@ func TestIntegration_Webhook_ExtensionRollsBackOnHistoryFailure(t *testing.T) {
 	// wsID1 absorbs this user's one-per-user trial; wsID2 provisions active.
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
+	payProvisioningInvoice(pool, wsID2)
 
 	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
 	w := httptest.NewRecorder()
@@ -2029,6 +2245,81 @@ func TestIntegration_RedeemCoupon_ConcurrentRedemptions_OnlyOneWins(t *testing.T
 	}
 }
 
+// TestIntegration_RedeemCoupon_ConcurrentRedemptions_OnlyOneWins above races
+// two *different* coupon codes against one subscription, exercising
+// lockSubscriptionForUpdate's "one active coupon per subscription" guard.
+// max_redemptions is a *global* counter on the coupon row, shared across
+// every subscription that redeems it — a subscription-scoped lock can't
+// serialize that, so this races the *same* coupon code, with
+// max_redemptions=1, across two different organizations' subscriptions to
+// exercise tryIncrementCouponRedeemedCount's atomic UPDATE ... WHERE
+// redeemed_count < max_redemptions directly.
+func TestIntegration_RedeemCoupon_ConcurrentRedemptions_SameCode_GlobalMaxRedemptionsEnforced(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		userA = "integ_billing_coupon_global_race_user_a"
+		userB = "integ_billing_coupon_global_race_user_b"
+		orgA  = "00000000-0000-0000-0000-000000000f32"
+		orgB  = "00000000-0000-0000-0000-000000000f33"
+		code  = "GLOBALMAX_F32"
+	)
+	setupBillingTest(t, pool, orgA)
+	setupBillingTest(t, pool, orgB)
+	one := 1
+	seedCoupon(t, pool, code, couponSeedOpts{DiscountType: "fixed", AmountCents: couponAmount(100), Cadence: "forever", MaxRedemptions: &one})
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgA, userA)); err != nil {
+		t.Fatalf("provision org A: %v", err)
+	}
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgB, userB)); err != nil {
+		t.Fatalf("provision org B: %v", err)
+	}
+
+	engines := []*gin.Engine{
+		billing.NewModuleEngineWithRealRLS(pool, userA, orgA, stubRefReader{}),
+		billing.NewModuleEngineWithRealRLS(pool, userB, orgB, stubRefReader{}),
+	}
+	orgIDs := []string{orgA, orgB}
+	results := make([]int, len(engines))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range engines {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			w := httptest.NewRecorder()
+			engines[i].ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgIDs[i])+"/coupons/redeem", `{"code":"`+code+`"}`))
+			results[i] = w.Code
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	successCount := 0
+	for _, status := range results {
+		if status == http.StatusNoContent {
+			successCount++
+		}
+	}
+	if successCount != 1 {
+		t.Errorf("want exactly 1 of 2 concurrent redemptions of a max_redemptions=1 coupon to succeed, got %d (statuses: %v)", successCount, results)
+	}
+
+	var redeemedCount int
+	pool.QueryRow(t.Context(), `SELECT redeemed_count FROM billing.coupons WHERE code = $1`, code).Scan(&redeemedCount)
+	if redeemedCount != 1 {
+		t.Errorf("want redeemed_count=1 after the race (not over-redeemed), got %d", redeemedCount)
+	}
+
+	var totalRedemptions int
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.coupon_redemptions WHERE coupon_id = $1`, code).Scan(&totalRedemptions)
+	if totalRedemptions != 1 {
+		t.Errorf("want exactly 1 redemption row across both organizations, got %d", totalRedemptions)
+	}
+}
+
 // --- addon attach/detach ---
 
 func TestIntegration_AttachDetachAddon_ReflectsInListAndInvoice(t *testing.T) {
@@ -2282,6 +2573,7 @@ func TestIntegration_ExtendSubscription_HappyPath(t *testing.T) {
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
 		t.Fatalf("second provision: %v", err)
 	}
+	payProvisioningInvoice(pool, wsID2)
 
 	// NewWebhookModuleEngine (not NewModuleEngine) — this test needs the
 	// public /webhooks/stripe route to simulate the paid callback below.
@@ -2379,6 +2671,7 @@ func TestIntegration_ExtendSubscription_PaidWebhookWhenExpired(t *testing.T) {
 	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
+	payProvisioningInvoice(pool, wsID2)
 
 	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
 
@@ -2611,6 +2904,7 @@ func TestIntegration_ExtendSubscription_SwitchToAnnual_HappyPath(t *testing.T) {
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
 		t.Fatalf("second provision: %v", err)
 	}
+	payProvisioningInvoice(pool, wsID2)
 
 	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
 
@@ -2673,8 +2967,9 @@ func TestIntegration_ExtendSubscription_SwitchToAnnual_HappyPath(t *testing.T) {
 }
 
 // TestIntegration_ExtendSubscription_SwitchToAnnual_RejectedWhenAlreadyYearly
-// covers Decision #10's zero-trust requirement: rejected server-side
-// regardless of what the UI would have shown, not just hidden client-side.
+// confirms the switch-to-annual rejection is enforced server-side —
+// rejected regardless of what the UI would have shown, not just hidden
+// client-side.
 func TestIntegration_ExtendSubscription_SwitchToAnnual_RejectedWhenAlreadyYearly(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -2736,6 +3031,7 @@ func TestIntegration_ExtendSubscription_UnpaidSwitchToAnnual_LeavesCycleUntouche
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
 		t.Fatalf("second provision: %v", err)
 	}
+	payProvisioningInvoice(pool, wsID2)
 
 	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
 	w := httptest.NewRecorder()
@@ -2758,11 +3054,10 @@ func TestIntegration_ExtendSubscription_UnpaidSwitchToAnnual_LeavesCycleUntouche
 	}
 }
 
-// TestIntegration_ExtendSubscription_TieredPricing_13Months is the
-// strongest regression test for the review-caught line-item fix: it fails
-// if handleWebhook regresses to reading only lineItems[0].Quantity (which
-// would apply 12 months, the block line item's quantity, not the correct
-// 13) instead of summing every line item's quantity.
+// TestIntegration_ExtendSubscription_TieredPricing_13Months guards against
+// handleWebhook reading only lineItems[0].Quantity (which would apply 12
+// months, the block line item's quantity, not the correct 13) instead of
+// summing every line item's quantity.
 func TestIntegration_ExtendSubscription_TieredPricing_13Months(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -2787,6 +3082,7 @@ func TestIntegration_ExtendSubscription_TieredPricing_13Months(t *testing.T) {
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
 		t.Fatalf("second provision: %v", err)
 	}
+	payProvisioningInvoice(pool, wsID2)
 
 	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
 	before := getSubscriptionData(t, e, wsID2)
@@ -2812,7 +3108,7 @@ func TestIntegration_ExtendSubscription_TieredPricing_13Months(t *testing.T) {
 	}
 
 	// Two line items, each internally consistent (unit_price * quantity ==
-	// total_cents) — the review-caught invoice-PDF correctness fix.
+	// total_cents) — the numbers an invoice PDF renders must add up.
 	rows, err := pool.Query(t.Context(),
 		`SELECT quantity, unit_price_cents, total_cents FROM billing.invoice_line_items WHERE invoice_id = $1 ORDER BY sort_order`, resp.Data.ID)
 	if err != nil {
@@ -2864,9 +3160,9 @@ func TestIntegration_ExtendSubscription_TieredPricing_13Months(t *testing.T) {
 }
 
 // TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle
-// covers the Risks section's explicitly-called-out conflation: a plain
-// 12-month extend prices identically to switch-to-annual (one yearly block)
-// but must never touch cycle — only the switch_to_annual request path does.
+// confirms a plain 12-month extend, which prices identically to
+// switch-to-annual (one yearly block), must never touch cycle — only the
+// switch_to_annual request path does.
 func TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -2891,6 +3187,7 @@ func TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle(t *
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
 		t.Fatalf("second provision: %v", err)
 	}
+	payProvisioningInvoice(pool, wsID2)
 
 	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
 	w := httptest.NewRecorder()
@@ -2925,9 +3222,9 @@ func TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle(t *
 }
 
 // TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDirection
-// verifies item 4c: the pending-invoice guard needs no new logic to cover
-// both invoice variants, because both keep kind="extension" — a pending
-// plain extend blocks a switch-to-annual attempt and vice versa.
+// confirms the pending-invoice guard needs no new logic to cover both
+// invoice variants, because both keep kind="extension" — a pending plain
+// extend blocks a switch-to-annual attempt and vice versa.
 func TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDirection(t *testing.T) {
 	pool := testPoolBilling(t)
 
@@ -2954,6 +3251,7 @@ func TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDir
 		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
 			t.Fatalf("second provision: %v", err)
 		}
+		payProvisioningInvoice(pool, wsID2)
 
 		e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
 		w1 := httptest.NewRecorder()
@@ -2992,6 +3290,7 @@ func TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDir
 		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user)); err != nil {
 			t.Fatalf("second provision: %v", err)
 		}
+		payProvisioningInvoice(pool, wsID2)
 
 		e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
 		w1 := httptest.NewRecorder()
@@ -3737,6 +4036,7 @@ func TestIntegration_Webhook_Extension_Concurrency(t *testing.T) {
 	// subscriptions, same pattern as TestIntegration_ExtendSubscription_HappyPath.
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID0, user))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
+	payProvisioningInvoice(pool, wsID1)
 
 	e := billing.NewWebhookModuleEngine(pool, user, wsID1)
 	w1 := httptest.NewRecorder()

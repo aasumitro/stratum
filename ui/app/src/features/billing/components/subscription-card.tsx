@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { Suspense, lazy, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -11,11 +11,23 @@ import {
 import { usePermissions } from "@/hooks/use-permissions"
 import { PlanSelector } from "./plan-selector"
 import { SubscriptionStatusBanner } from "./subscription-status-banner"
-import { SubscriptionExtendDialog } from "./subscription-extend-dialog"
-import { SubscriptionCancelDialog } from "./subscription-cancel-dialog"
 import { SubscriptionDetailsGrid } from "./subscription-details-grid"
 import { SubscriptionHistorySection } from "./subscription-history-section"
 import { FeaturesSection } from "./features-section"
+
+// Both wizards only surface once the owner opts in (Extend is gated behind
+// `canExtend`, Cancel behind its own dialog trigger) — kept out of the
+// subscription card's own chunk so a plain read-only visit doesn't load them.
+const SubscriptionExtendDialog = lazy(() =>
+  import("./subscription-extend-dialog").then((m) => ({
+    default: m.SubscriptionExtendDialog,
+  }))
+)
+const SubscriptionCancelDialog = lazy(() =>
+  import("./subscription-cancel-dialog").then((m) => ({
+    default: m.SubscriptionCancelDialog,
+  }))
+)
 
 function trialDaysLeft(trialEnd?: string) {
   if (!trialEnd) return null
@@ -41,7 +53,7 @@ export function SubscriptionCard({ organizationId }: Props) {
   const [showSelector, setShowSelector] = useState(false)
 
   const { data: subData, isLoading } = useBillingSubscription(organizationId)
-  const { isOwner } = usePermissions()
+  const { isOwner, hasPendingInvoice } = usePermissions()
 
   const sub = subData?.data
 
@@ -88,7 +100,10 @@ export function SubscriptionCard({ organizationId }: Props) {
   // banner, one action per state) instead of a header button.
   // Extension only applies to an already-active, invoiced subscription —
   // trialing/cancelled/expired don't have a real billing period to extend.
-  const canExtend = isOwner && sub.status === "active"
+  // Also blocked while any invoice on the subscription is still unpaid —
+  // requesting an extension before the current one clears would leave two
+  // invoices pending on the same subscription at once.
+  const canExtend = isOwner && sub.status === "active" && !hasPendingInvoice
 
   return (
     <div className="flex flex-col gap-4">
@@ -122,19 +137,23 @@ export function SubscriptionCard({ organizationId }: Props) {
                 </span>
               )}
               {canExtend && (
-                <SubscriptionExtendDialog
-                  organizationId={organizationId}
-                  subscription={sub}
-                />
+                <Suspense fallback={null}>
+                  <SubscriptionExtendDialog
+                    organizationId={organizationId}
+                    subscription={sub}
+                  />
+                </Suspense>
               )}
-              <SubscriptionCancelDialog
-                organizationId={organizationId}
-                plan={sub.plan}
-                cycle={sub.cycle}
-                currency={sub.currency}
-                periodEnd={sub.period_end}
-                canCancel={canCancel}
-              />
+              <Suspense fallback={null}>
+                <SubscriptionCancelDialog
+                  organizationId={organizationId}
+                  plan={sub.plan}
+                  cycle={sub.cycle}
+                  currency={sub.currency}
+                  periodEnd={sub.period_end}
+                  canCancel={canCancel}
+                />
+              </Suspense>
             </div>
           </div>
         </CardHeader>

@@ -207,6 +207,21 @@ func seedBillingOrganization(pool *pgxpool.Pool, orgID, ownerID string) {
 		orgID, "billing-test-"+orgID[len(orgID)-4:], ownerID)
 }
 
+// payProvisioningInvoice marks a freshly-provisioned subscription's own
+// pending invoice paid directly (not via a webhook round trip) so
+// extendSubscription's pending-invoice guard no longer sees it. Safe as a
+// no-op setup step for tests exercising Extend afterward: the provisioning
+// invoice's kind is "activation", whose payment never mutates period_end
+// (see handleWebhook's kind switch) — only the webhook path applies period
+// side effects, and this bypasses that path entirely.
+func payProvisioningInvoice(pool *pgxpool.Pool, orgID string) {
+	pool.Exec(context.Background(), `
+		UPDATE billing.invoices SET status = 'paid', paid_at = now()
+		WHERE status = 'pending' AND subscription_id = (
+			SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1
+		)`, orgID)
+}
+
 func TestIntegration_ProvisionAndGetSubscription(t *testing.T) {
 	pool := testPoolBilling(t)
 

@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -66,7 +67,7 @@ func (r *repository) loadPlanFeatures(
 		FROM billing.plan_features
 		WHERE plan_id = $1`, planID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("billing.loadPlanFeatures: %w", err)
 	}
 
 	limits = map[string]int{}
@@ -78,7 +79,7 @@ func (r *repository) loadPlanFeatures(
 		var configValue []byte
 		if err := rows.Scan(&featureID, &limitValue, &configValue); err != nil {
 			rows.Close()
-			return nil, nil, nil, err
+			return nil, nil, nil, fmt.Errorf("billing.loadPlanFeatures: scan: %w", err)
 		}
 		switch {
 		case limitValue != nil:
@@ -90,7 +91,10 @@ func (r *repository) loadPlanFeatures(
 		}
 	}
 	rows.Close()
-	return limits, features, configValues, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, fmt.Errorf("billing.loadPlanFeatures: %w", err)
+	}
+	return limits, features, configValues, nil
 }
 
 // loadAddonFeatures returns feature_id -> limit_value delta for an addon
@@ -104,7 +108,7 @@ func (r *repository) loadAddonFeatures(
 		FROM billing.addon_features
 		WHERE addon_id = $1`, addonID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.loadAddonFeatures: %w", err)
 	}
 	defer rows.Close()
 
@@ -113,13 +117,16 @@ func (r *repository) loadAddonFeatures(
 		var featureID string
 		var limitValue *int64
 		if err := rows.Scan(&featureID, &limitValue); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.loadAddonFeatures: scan: %w", err)
 		}
 		if limitValue != nil {
 			features[featureID] = int(*limitValue)
 		}
 	}
-	return features, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.loadAddonFeatures: %w", err)
+	}
+	return features, nil
 }
 
 // planFeatureSet is one plan's resolved Limits/Features/ConfigValues —
@@ -142,7 +149,7 @@ func (r *repository) loadPlanFeaturesBatch(
 		FROM billing.plan_features
 		WHERE plan_id = ANY($1)`, planIDs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.loadPlanFeaturesBatch: %w", err)
 	}
 	defer rows.Close()
 
@@ -152,7 +159,7 @@ func (r *repository) loadPlanFeaturesBatch(
 		var limitValue *int64
 		var configValue []byte
 		if err := rows.Scan(&planID, &featureID, &limitValue, &configValue); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.loadPlanFeaturesBatch: scan: %w", err)
 		}
 		set, ok := out[planID]
 		if !ok {
@@ -168,7 +175,10 @@ func (r *repository) loadPlanFeaturesBatch(
 		}
 		out[planID] = set
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.loadPlanFeaturesBatch: %w", err)
+	}
+	return out, nil
 }
 
 // loadAddonFeaturesBatch is the batched counterpart to loadAddonFeatures —
@@ -181,7 +191,7 @@ func (r *repository) loadAddonFeaturesBatch(
 		FROM billing.addon_features
 		WHERE addon_id = ANY($1)`, addonIDs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.loadAddonFeaturesBatch: %w", err)
 	}
 	defer rows.Close()
 
@@ -190,7 +200,7 @@ func (r *repository) loadAddonFeaturesBatch(
 		var addonID, featureID string
 		var limitValue *int64
 		if err := rows.Scan(&addonID, &featureID, &limitValue); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.loadAddonFeaturesBatch: scan: %w", err)
 		}
 		if limitValue == nil {
 			continue
@@ -200,7 +210,10 @@ func (r *repository) loadAddonFeaturesBatch(
 		}
 		out[addonID][featureID] = int(*limitValue)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.loadAddonFeaturesBatch: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) listPlans(ctx context.Context, q db.Querier) ([]planRecord, error) {
@@ -210,7 +223,7 @@ func (r *repository) listPlans(ctx context.Context, q db.Querier) ([]planRecord,
 		WHERE active = true
 		ORDER BY sort_order`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listPlans: %w", err)
 	}
 
 	var out []planRecord
@@ -222,14 +235,14 @@ func (r *repository) listPlans(ctx context.Context, q db.Querier) ([]planRecord,
 			&p.SortOrder, &p.Active, &p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, fmt.Errorf("billing.listPlans: scan: %w", err)
 		}
 		_ = json.Unmarshal(pricesJSON, &p.Prices)
 		out = append(out, p)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listPlans: %w", err)
 	}
 	if len(out) == 0 {
 		return out, nil
@@ -241,7 +254,7 @@ func (r *repository) listPlans(ctx context.Context, q db.Querier) ([]planRecord,
 	}
 	featureSets, err := r.loadPlanFeaturesBatch(ctx, q, planIDs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listPlans: %w", err)
 	}
 	for i := range out {
 		set, ok := featureSets[out[i].ID]
@@ -267,13 +280,13 @@ func (r *repository) findPlanByID(ctx context.Context, q db.Querier, id string) 
 		&p.SortOrder, &p.Active, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.findPlanByID: %w", err)
 	}
 	_ = json.Unmarshal(pricesJSON, &p.Prices)
 
 	limits, features, configValues, err := r.loadPlanFeatures(ctx, q, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.findPlanByID: %w", err)
 	}
 	p.Limits = limits
 	p.Features = features
@@ -288,7 +301,7 @@ func (r *repository) listFeatures(ctx context.Context, q db.Querier) ([]featureR
 		WHERE active = true
 		ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listFeatures: %w", err)
 	}
 	defer rows.Close()
 
@@ -296,11 +309,14 @@ func (r *repository) listFeatures(ctx context.Context, q db.Querier) ([]featureR
 	for rows.Next() {
 		var f featureRecord
 		if err := rows.Scan(&f.ID, &f.Name, &f.Description, &f.Type, &f.MetricKey, &f.Active, &f.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.listFeatures: scan: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listFeatures: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) listAddons(ctx context.Context, q db.Querier) ([]addonRecord, error) {
@@ -310,7 +326,7 @@ func (r *repository) listAddons(ctx context.Context, q db.Querier) ([]addonRecor
 		WHERE active = true
 		ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listAddons: %w", err)
 	}
 
 	var out []addonRecord
@@ -319,14 +335,14 @@ func (r *repository) listAddons(ctx context.Context, q db.Querier) ([]addonRecor
 		var pricesJSON []byte
 		if err := rows.Scan(&a.ID, &a.Name, &a.Description, &pricesJSON, &a.Active, &a.CreatedAt); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, fmt.Errorf("billing.listAddons: scan: %w", err)
 		}
 		_ = json.Unmarshal(pricesJSON, &a.Prices)
 		out = append(out, a)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listAddons: %w", err)
 	}
 	if len(out) == 0 {
 		return out, nil
@@ -338,7 +354,7 @@ func (r *repository) listAddons(ctx context.Context, q db.Querier) ([]addonRecor
 	}
 	featureSets, err := r.loadAddonFeaturesBatch(ctx, q, addonIDs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listAddons: %w", err)
 	}
 	for i := range out {
 		if fs, ok := featureSets[out[i].ID]; ok {
@@ -359,13 +375,13 @@ func (r *repository) findAddonByID(ctx context.Context, q db.Querier, id string)
 		WHERE id = $1 AND active = true`, id,
 	).Scan(&a.ID, &a.Name, &a.Description, &pricesJSON, &a.Active, &a.CreatedAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.findAddonByID: %w", err)
 	}
 	_ = json.Unmarshal(pricesJSON, &a.Prices)
 
 	features, err := r.loadAddonFeatures(ctx, q, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.findAddonByID: %w", err)
 	}
 	a.Features = features
 	return &a, nil

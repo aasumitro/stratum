@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -19,9 +20,12 @@ type Worker struct {
 func (w *Worker) HandleOrganizationDeleted(ctx context.Context, body []byte) error {
 	evt, err := events.Decode[events.OrganizationDeleted](body)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleOrganizationDeleted: decode: %w", err)
 	}
-	return w.svc.cancelOnDeletion(ctx, evt.OrganizationID)
+	if err := w.svc.cancelOnDeletion(ctx, evt.OrganizationID); err != nil {
+		return fmt.Errorf("billing.HandleOrganizationDeleted: %w", err)
+	}
+	return nil
 }
 
 // HandleOrganizationCreated provisions a subscription for the plan and cycle
@@ -34,11 +38,14 @@ func (w *Worker) HandleOrganizationDeleted(ctx context.Context, body []byte) err
 func (w *Worker) HandleOrganizationCreated(ctx context.Context, body []byte) error {
 	evt, err := events.Decode[events.OrganizationCreated](body)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleOrganizationCreated: decode: %w", err)
 	}
 	_, err = w.svc.provisionSubscription(ctx, subjectTypeOrganization, evt.OrganizationID,
 		evt.Plan, evt.Cycle, evt.CreatedBy, evt.CountryCode, evt.Addons, evt.CouponCode)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.HandleOrganizationCreated: %w", err)
+	}
+	return nil
 }
 
 // HandleSubscriptionCheck processes a delayed expiry check. If the
@@ -46,9 +53,12 @@ func (w *Worker) HandleOrganizationCreated(ctx context.Context, body []byte) err
 func (w *Worker) HandleSubscriptionCheck(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleSubscriptionCheck: decode: %w", err)
 	}
-	return w.svc.expireIfDue(ctx, check.SubscriptionID)
+	if err := w.svc.expireIfDue(ctx, check.SubscriptionID); err != nil {
+		return fmt.Errorf("billing.HandleSubscriptionCheck: %w", err)
+	}
+	return nil
 }
 
 // staleSubscriptionCheck reports whether a delayed SubscriptionCheck message
@@ -72,7 +82,7 @@ func staleSubscriptionCheck(sub *subscriptionRecord, check events.SubscriptionCh
 func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleSubscriptionRemind: decode: %w", err)
 	}
 	sub, err := w.svc.repo.findSubscriptionByID(ctx, w.svc.pool, check.SubscriptionID)
 	if err != nil || (sub.Status != statusActive && sub.Status != statusTrialing) {
@@ -94,7 +104,7 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: decode: %w", err)
 	}
 	sub, err := w.svc.repo.findSubscriptionByID(ctx, w.svc.pool, check.SubscriptionID)
 	if err != nil || (sub.Status != statusActive && sub.Status != statusTrialing) {
@@ -116,17 +126,19 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		if _, linkErr := w.svc.repo.findActivePaymentLinkByInvoice(ctx, w.svc.pool, pending.ID); linkErr == nil {
 			return nil
 		}
-		_, err = w.svc.createPaymentLink(ctx, "", "", pending.ID)
-		return err
+		if _, err := w.svc.createPaymentLink(ctx, "", "", pending.ID); err != nil {
+			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: regenerate payment link: %w", err)
+		}
+		return nil
 	case errors.Is(err, pgx.ErrNoRows):
 		// no pending invoice yet — create one below
 	default:
-		return err
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: find pending invoice: %w", err)
 	}
 
 	planInfo, err := w.svc.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
 	}
 
 	composed, addonLines, couponCode, discountCents := w.svc.composeInvoiceAmount(
@@ -145,14 +157,18 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 	tax := calculateTax(composed, taxRate)
 	inv, err := w.svc.repo.insertInvoice(ctx, w.svc.pool, sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: insert invoice: %w", err)
 	}
-	_ = w.svc.insertPlanLineItem(ctx, inv, planInfo)
-	w.svc.applyInvoiceCharges(ctx, w.svc.pool, sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents)
+	if err := w.svc.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: insert plan line item: %w", err)
+	}
+	if err := w.svc.applyInvoiceCharges(ctx, w.svc.pool, sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents); err != nil {
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: apply invoice charges: %w", err)
+	}
 
 	_, err = w.svc.createPaymentLink(ctx, "", "", inv.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: create payment link: %w", err)
 	}
 
 	events.Publish(ctx, w.svc.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", sub.SubjectID,

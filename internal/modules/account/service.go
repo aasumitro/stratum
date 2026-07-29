@@ -138,7 +138,7 @@ func (s *service) requestDeleteAccount(ctx context.Context, authSub string) (*ta
 	}
 	owned, err := s.orgReader.CountActiveOwnedOrganizations(ctx, authSub)
 	if err != nil {
-		return nil, apperr.Validation("ACCOUNT_DELETE_FAILED", err.Error())
+		return nil, apperr.Internal("ACCOUNT_DELETE_FAILED", "failed to request account deletion", err)
 	}
 	if owned > 0 {
 		return nil, apperr.Validation("ACCOUNT_DELETE_FAILED", "transfer or delete your organizations before deleting your account")
@@ -146,7 +146,7 @@ func (s *service) requestDeleteAccount(ctx context.Context, authSub string) (*ta
 
 	task, err := s.repo.insertTask(ctx, s.pool, authSub, "delete_account")
 	if err != nil {
-		return nil, apperr.Validation("ACCOUNT_DELETE_FAILED", err.Error())
+		return nil, apperr.Internal("ACCOUNT_DELETE_FAILED", "failed to request account deletion", err)
 	}
 
 	events.Publish(ctx, s.pub, events.ExchangeAccount, events.RoutingKeyUserDeleteRequest, "account", "",
@@ -223,7 +223,7 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 
 	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
 		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
-		return err
+		return fmt.Errorf("account.executeDeleteAccount: %w", err)
 	}
 
 	// Best-effort: remove Supabase auth user so they cannot log back in.
@@ -330,7 +330,7 @@ func (s *service) executeExportData(ctx context.Context, taskID, authSub string)
 	data, err := s.buildExportData(ctx, authSub)
 	if err != nil {
 		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
-		return err
+		return fmt.Errorf("account.executeExportData: %w", err)
 	}
 
 	result, err := json.Marshal(data)

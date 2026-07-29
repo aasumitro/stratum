@@ -34,7 +34,10 @@ func testPool(t *testing.T) *pgxpool.Pool {
 }
 
 func TestNew_WiresBaselineMiddleware(t *testing.T) {
-	e := httpserver.New("test-svc", slog.Default(), "test")
+	e, err := httpserver.New("test-svc", slog.Default(), "test", nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	e.GET("/ping", func(c *gin.Context) { c.String(http.StatusOK, "pong") })
 
 	w := httptest.NewRecorder()

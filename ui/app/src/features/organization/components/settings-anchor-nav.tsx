@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { cn } from "@/lib/ui"
 
 interface AnchorItem {
@@ -19,6 +20,7 @@ interface SettingsAnchorNavProps {
  * it never drives scrolling itself.
  */
 export function SettingsAnchorNav({ items }: SettingsAnchorNavProps) {
+  const { t } = useTranslation()
   const [activeId, setActiveId] = useState(items[0]?.id)
 
   useEffect(() => {
@@ -46,7 +48,7 @@ export function SettingsAnchorNav({ items }: SettingsAnchorNavProps) {
 
   return (
     <nav
-      aria-label="Settings sections"
+      aria-label={t("organization.settings.sectionsNavLabel")}
       className="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-border bg-background/95 px-0 py-2 whitespace-nowrap backdrop-blur-sm md:hidden"
     >
       {items.map((item) => (

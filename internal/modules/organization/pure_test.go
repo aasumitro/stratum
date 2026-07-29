@@ -16,8 +16,8 @@ func TestGenerateToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generateToken(%d): %v", length, err)
 		}
-		if len(got) != length {
-			t.Errorf("generateToken(%d): got len %d, want %d", length, len(got), length)
+		if len(got) != length*2 {
+			t.Errorf("generateToken(%d): got len %d, want %d", length, len(got), length*2)
 		}
 		if !hexRE.MatchString(got) {
 			t.Errorf("generateToken(%d): non-hex chars in %q", length, got)

@@ -13,11 +13,9 @@ import { DataTable, type DataTableColumn } from "@/components/shared/data-table"
 import { CreateOrganizationDialog } from "@/features/organization/components/create-organization-dialog"
 import { JoinOrganizationDialog } from "@/features/organization/components/join-organization-dialog"
 import { PendingInvitationCard } from "@/features/organization/components/pending-invitation-card"
-import {
-  useOrganizations,
-  useOrganizationMembers,
-  useMyInvitations,
-} from "@/features/organization/hooks"
+import { useOrganizations } from "@/features/organization/hooks/use-organization"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
+import { useMyInvitations } from "@/features/organization/hooks/use-invitations"
 import { useBillingSubscription, usePlans } from "@/features/billing/hooks"
 import { useUpdatePreferences } from "@/features/account/hooks"
 import { queryKeys } from "@/lib/api/keys"
@@ -28,7 +26,7 @@ function daysLeft(iso?: string): number {
   return ms > 0 ? Math.ceil(ms / (1000 * 60 * 60 * 24)) : 0
 }
 
-// ponytail: one members + one subscription request per row (N+1) — GET
+// One members + one subscription request per row (N+1) — GET
 // /organizations has no bulk members/plan projection. Fine at "orgs one
 // user belongs to" scale (a handful); revisit with a batch endpoint if this
 // list ever needs to show hundreds of rows.

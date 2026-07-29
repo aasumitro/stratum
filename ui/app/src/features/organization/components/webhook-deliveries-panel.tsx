@@ -32,7 +32,7 @@ import {
   useRetryDelivery,
   useRetryAllFailedDeliveries,
   type WebhookDeliveryFilter,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-webhooks"
 import type { WebhookDelivery, WebhookEndpoint } from "@/types/organization"
 
 const STATUSES = ["delivered", "failed", "pending"] as const

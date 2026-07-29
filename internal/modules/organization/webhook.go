@@ -20,6 +20,7 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
+	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
 // webhookHTTPClient re-validates the resolved IP on every dial, closing the
@@ -39,12 +40,17 @@ const (
 	webhookHealthWarnThreshold = 70
 )
 
-// WebhookWorker delivers outbound webhook events to customer endpoints.
+// WebhookWorker delivers outbound webhook events to customer endpoints, and
+// — despite the name, kept as-is to avoid an unrelated rename — also owns
+// HandleOrganizationDeleted (see service_organization.go), this module's
+// only other worker-side event consumer. Both need the same
+// repo/pool/log; store is used only by the latter.
 type WebhookWorker struct {
-	repo *repository
-	pool *pgxpool.Pool
-	pub  messaging.EventPublisher
-	log  *slog.Logger
+	repo  *repository
+	pool  *pgxpool.Pool
+	pub   messaging.EventPublisher
+	log   *slog.Logger
+	store *storage.Client
 }
 
 // HandleOutboundEvent receives any billing or organization event envelope and fans

@@ -23,6 +23,7 @@ type ProviderConfig struct {
 	StripeCancelURL     string
 	XenditAPIKey        string
 	XenditCallbackToken string
+	XenditAllowedCIDRs  []string
 }
 
 type paymentLinkResult struct {
@@ -59,20 +60,20 @@ func createStripeCheckoutSession(
 		"https://api.stripe.com/v1/checkout/sessions",
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.createStripeCheckoutSession: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(cfg.StripeAPIKey, "")
 
 	resp, err := httpclient.TrustedClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.createStripeCheckoutSession: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("stripe: status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("billing.createStripeCheckoutSession: status %d: %s", resp.StatusCode, body)
 	}
 
 	var out struct {
@@ -80,7 +81,7 @@ func createStripeCheckoutSession(
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.createStripeCheckoutSession: decode: %w", err)
 	}
 	return &paymentLinkResult{ExternalID: out.ID, URL: out.URL}, nil
 }
@@ -101,20 +102,20 @@ func createXenditInvoice(
 		"https://api.xendit.co/v2/invoices",
 		strings.NewReader(string(payload)))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.createXenditInvoice: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.SetBasicAuth(cfg.XenditAPIKey, "")
 
 	resp, err := httpclient.TrustedClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.createXenditInvoice: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("xendit: status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("billing.createXenditInvoice: status %d: %s", resp.StatusCode, body)
 	}
 
 	var out struct {
@@ -123,7 +124,7 @@ func createXenditInvoice(
 		ExpiryDate *time.Time `json:"expiry_date"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.createXenditInvoice: decode: %w", err)
 	}
 	return &paymentLinkResult{ExternalID: out.ID, URL: out.InvoiceURL, ExpiresAt: out.ExpiryDate}, nil
 }

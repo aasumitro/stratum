@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next"
 import { useHTTPActionPost } from "@/lib/api/action"
 import { API } from "@/lib/api/path"
 import { parseApiError } from "@/lib/api/error"
-import { useCountries, useOrganizations } from "@/features/organization/hooks"
+import { useCountries, useOrganizations } from "./use-organization"
 import { usePlans } from "@/features/billing/hooks"
 import type { Organization } from "@/types/organization"
 

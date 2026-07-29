@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import { IconX } from "@tabler/icons-react"
+import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/ui"
 
@@ -27,10 +28,11 @@ interface FilterBarProps {
 export function FilterBar({
   chips,
   onClearAll,
-  clearAllLabel = "Clear filters",
+  clearAllLabel,
   children,
   className,
 }: FilterBarProps) {
+  const { t } = useTranslation()
   return (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
       {children}
@@ -53,7 +55,7 @@ export function FilterBar({
           className="h-7 text-xs text-muted-foreground"
           onClick={onClearAll}
         >
-          {clearAllLabel}
+          {clearAllLabel ?? t("common.clearFilters")}
         </Button>
       )}
     </div>

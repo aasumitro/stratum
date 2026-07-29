@@ -2,6 +2,7 @@ package organization
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -33,7 +34,10 @@ func (r *repository) insertFolder(ctx context.Context, q db.Querier, organizatio
 		RETURNING `+folderColumns,
 		organizationID, parentFolderID, name, createdBy,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertFolder: %w", err)
+	}
+	return f, nil
 }
 
 // listFolders returns every folder in the organization — the frontend
@@ -46,7 +50,7 @@ func (r *repository) listFolders(ctx context.Context, q db.Querier, organization
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listFolders: %w", err)
 	}
 	defer rows.Close()
 
@@ -54,11 +58,14 @@ func (r *repository) listFolders(ctx context.Context, q db.Querier, organization
 	for rows.Next() {
 		var f folderRecord
 		if err := scanFolder(rows, &f); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listFolders: scan: %w", err)
 		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listFolders: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) findFolder(ctx context.Context, q db.Querier, organizationID, folderID string) (*folderRecord, error) {
@@ -67,7 +74,10 @@ func (r *repository) findFolder(ctx context.Context, q db.Querier, organizationI
 		SELECT `+folderColumns+` FROM organization.folders WHERE id = $1 AND organization_id = $2`,
 		folderID, organizationID,
 	), f)
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.findFolder: %w", err)
+	}
+	return f, nil
 }
 
 func (r *repository) updateFolder(
@@ -98,7 +108,10 @@ func (r *repository) updateFolder(
 	default:
 		return r.findFolder(ctx, q, organizationID, folderID)
 	}
-	return f, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.updateFolder: %w", err)
+	}
+	return f, nil
 }
 
 // isDescendantOf reports whether candidateParentID is folderID itself or one
@@ -122,7 +135,10 @@ func (r *repository) isDescendantOf(
 		SELECT EXISTS(SELECT 1 FROM ancestors WHERE id = $3)`,
 		organizationID, candidateParentID, folderID,
 	).Scan(&exists)
-	return exists, err
+	if err != nil {
+		return false, fmt.Errorf("organization.isDescendantOf: %w", err)
+	}
+	return exists, nil
 }
 
 // folderIsEmpty reports whether folderID has no live files and no
@@ -133,18 +149,20 @@ func (r *repository) folderIsEmpty(ctx context.Context, q db.Querier, organizati
 		`SELECT EXISTS(SELECT 1 FROM organization.files WHERE organization_id = $1 AND folder_id = $2 AND deleted_at IS NULL)`,
 		organizationID, folderID,
 	).Scan(&hasFiles); err != nil {
-		return false, err
+		return false, fmt.Errorf("organization.folderIsEmpty: %w", err)
 	}
 	if err := q.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM organization.folders WHERE organization_id = $1 AND parent_folder_id = $2)`,
 		organizationID, folderID,
 	).Scan(&hasSubfolders); err != nil {
-		return false, err
+		return false, fmt.Errorf("organization.folderIsEmpty: %w", err)
 	}
 	return !hasFiles && !hasSubfolders, nil
 }
 
 func (r *repository) deleteFolder(ctx context.Context, q db.Querier, organizationID, folderID string) error {
-	_, err := q.Exec(ctx, `DELETE FROM organization.folders WHERE id = $1 AND organization_id = $2`, folderID, organizationID)
-	return err
+	if _, err := q.Exec(ctx, `DELETE FROM organization.folders WHERE id = $1 AND organization_id = $2`, folderID, organizationID); err != nil {
+		return fmt.Errorf("organization.deleteFolder: %w", err)
+	}
+	return nil
 }

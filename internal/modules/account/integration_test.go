@@ -216,7 +216,7 @@ func testRedisAccount(t *testing.T) *goredis.Client {
 	return c
 }
 
-// TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus regression-tests H2's
+// TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus confirms the
 // login-time refresh: a caller whose account.users.mfa_enabled is stale
 // (false, because their client never called POST /me/mfa/sync after they
 // enrolled a factor elsewhere) gets it corrected the next time

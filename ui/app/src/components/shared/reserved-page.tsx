@@ -1,4 +1,5 @@
 import { IconCodeVariableMinus } from "@tabler/icons-react"
+import { useTranslation } from "react-i18next"
 import { EmptyState } from "@/components/shared/empty-state"
 
 interface ReservedPageProps {
@@ -11,11 +12,12 @@ interface ReservedPageProps {
  * feature is designed.
  */
 export function ReservedPage({ label }: ReservedPageProps) {
+  const { t } = useTranslation()
   return (
     <EmptyState
       icon={IconCodeVariableMinus}
       title={label}
-      description="Reserved for a future platform feature."
+      description={t("common.reservedFeature")}
     />
   )
 }

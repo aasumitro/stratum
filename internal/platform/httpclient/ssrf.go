@@ -74,11 +74,11 @@ func SSRFSafeClient() *http.Client {
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				host, port, err := net.SplitHostPort(addr)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("httpclient.SSRFSafeClient: split host/port: %w", err)
 				}
 				ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("httpclient.SSRFSafeClient: resolve %q: %w", host, err)
 				}
 				return dialValidated(ctx, dialer.DialContext, network, port, ips)
 			},

@@ -2,6 +2,7 @@ package organization
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -41,7 +42,10 @@ func (r *repository) findFirstOrganizationIDByMember(ctx context.Context, q db.Q
 		LIMIT 1`,
 		authSub,
 	).Scan(&id)
-	return id, err
+	if err != nil {
+		return "", fmt.Errorf("organization.findFirstOrganizationIDByMember: %w", err)
+	}
+	return id, nil
 }
 
 func (r *repository) insertOwnerMembership(ctx context.Context, q db.Querier, organizationID, authSub string) error {
@@ -51,15 +55,20 @@ func (r *repository) insertOwnerMembership(ctx context.Context, q db.Querier, or
 		ON CONFLICT (organization_id, auth_sub) DO NOTHING`,
 		organizationID, authSub,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.insertOwnerMembership: %w", err)
+	}
+	return nil
 }
 
 // removeAllMemberships deletes every membership row for a user across all
 // organizations — used by the GDPR account-deletion flow, not by any
 // single-organization membership management route.
 func (r *repository) removeAllMemberships(ctx context.Context, q db.Querier, authSub string) error {
-	_, err := q.Exec(ctx, `DELETE FROM organization.memberships WHERE auth_sub = $1`, authSub)
-	return err
+	if _, err := q.Exec(ctx, `DELETE FROM organization.memberships WHERE auth_sub = $1`, authSub); err != nil {
+		return fmt.Errorf("organization.removeAllMemberships: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) listMembers(ctx context.Context, q db.Querier, organizationID string) ([]membershipRecord, error) {
@@ -71,7 +80,7 @@ func (r *repository) listMembers(ctx context.Context, q db.Querier, organization
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listMembers: %w", err)
 	}
 	defer rows.Close()
 
@@ -79,11 +88,14 @@ func (r *repository) listMembers(ctx context.Context, q db.Querier, organization
 	for rows.Next() {
 		var m membershipRecord
 		if err := rows.Scan(&m.ID, &m.OrganizationID, &m.AuthSub, &m.Role, &m.JoinedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listMembers: scan: %w", err)
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listMembers: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) listMemberAuthSubs(ctx context.Context, q db.Querier, organizationID string) ([]string, error) {
@@ -92,7 +104,7 @@ func (r *repository) listMemberAuthSubs(ctx context.Context, q db.Querier, organ
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listMemberAuthSubs: %w", err)
 	}
 	defer rows.Close()
 
@@ -100,11 +112,14 @@ func (r *repository) listMemberAuthSubs(ctx context.Context, q db.Querier, organ
 	for rows.Next() {
 		var sub string
 		if err := rows.Scan(&sub); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listMemberAuthSubs: scan: %w", err)
 		}
 		out = append(out, sub)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listMemberAuthSubs: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) insertMembership(
@@ -118,7 +133,10 @@ func (r *repository) insertMembership(
 		RETURNING id, organization_id, auth_sub, role, joined_at`,
 		organizationID, authSub, role,
 	).Scan(&m.ID, &m.OrganizationID, &m.AuthSub, &m.Role, &m.JoinedAt)
-	return m, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertMembership: %w", err)
+	}
+	return m, nil
 }
 
 func (r *repository) deleteMembership(ctx context.Context, q db.Querier, organizationID, authSub string) error {
@@ -126,7 +144,10 @@ func (r *repository) deleteMembership(ctx context.Context, q db.Querier, organiz
 		DELETE FROM organization.memberships WHERE organization_id = $1 AND auth_sub = $2`,
 		organizationID, authSub,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.deleteMembership: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organizationID, authSub, role string) error {
@@ -135,7 +156,10 @@ func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organiz
 		WHERE organization_id = $1 AND auth_sub = $2`,
 		organizationID, authSub, role,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.updateMemberRole: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) getMemberRole(ctx context.Context, q db.Querier, organizationID, authSub string) (string, error) {
@@ -145,7 +169,10 @@ func (r *repository) getMemberRole(ctx context.Context, q db.Querier, organizati
 		WHERE organization_id = $1 AND auth_sub = $2`,
 		organizationID, authSub,
 	).Scan(&role)
-	return role, err
+	if err != nil {
+		return "", fmt.Errorf("organization.getMemberRole: %w", err)
+	}
+	return role, nil
 }
 
 func (r *repository) updateOrganizationOwner(ctx context.Context, q db.Querier, id, newOwnerAuthSub string) error {
@@ -154,7 +181,10 @@ func (r *repository) updateOrganizationOwner(ctx context.Context, q db.Querier, 
 		WHERE id = $1`,
 		id, newOwnerAuthSub,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.updateOrganizationOwner: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) countActiveMembers(ctx context.Context, q db.Querier, organizationID string) (int64, error) {
@@ -163,19 +193,22 @@ func (r *repository) countActiveMembers(ctx context.Context, q db.Querier, organ
 		`SELECT COUNT(*) FROM organization.memberships WHERE organization_id = $1`,
 		organizationID,
 	).Scan(&n)
-	return n, err
+	if err != nil {
+		return 0, fmt.Errorf("organization.countActiveMembers: %w", err)
+	}
+	return n, nil
 }
 
 func (r *repository) selectMembersForRemoval(ctx context.Context, q db.Querier, organizationID string, excludeAuthSubs []string, limit int) ([]string, error) {
 	rows, err := q.Query(ctx, `
-		SELECT auth_sub FROM organization.memberships 
+		SELECT auth_sub FROM organization.memberships
 		WHERE organization_id = $1 AND role != 'owner' AND NOT (auth_sub = ANY(COALESCE($2, '{}'::text[])))
 		ORDER BY joined_at DESC
 		LIMIT $3`,
 		organizationID, excludeAuthSubs, limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.selectMembersForRemoval: %w", err)
 	}
 	defer rows.Close()
 
@@ -183,22 +216,25 @@ func (r *repository) selectMembersForRemoval(ctx context.Context, q db.Querier, 
 	for rows.Next() {
 		var sub string
 		if err := rows.Scan(&sub); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.selectMembersForRemoval: scan: %w", err)
 		}
 		out = append(out, sub)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.selectMembersForRemoval: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) bulkRemoveMembers(ctx context.Context, q db.Querier, organizationID string, authSubs []string) ([]string, error) {
 	rows, err := q.Query(ctx, `
-		DELETE FROM organization.memberships 
+		DELETE FROM organization.memberships
 		WHERE organization_id = $1 AND role != 'owner' AND auth_sub = ANY(COALESCE($2, '{}'::text[]))
 		RETURNING auth_sub`,
 		organizationID, authSubs,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.bulkRemoveMembers: %w", err)
 	}
 	defer rows.Close()
 
@@ -206,11 +242,14 @@ func (r *repository) bulkRemoveMembers(ctx context.Context, q db.Querier, organi
 	for rows.Next() {
 		var sub string
 		if err := rows.Scan(&sub); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.bulkRemoveMembers: scan: %w", err)
 		}
 		out = append(out, sub)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.bulkRemoveMembers: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) filterRemovableMembers(ctx context.Context, q db.Querier, organizationID string, authSubs []string) ([]string, error) {
@@ -218,12 +257,12 @@ func (r *repository) filterRemovableMembers(ctx context.Context, q db.Querier, o
 		return nil, nil
 	}
 	rows, err := q.Query(ctx, `
-		SELECT auth_sub FROM organization.memberships 
+		SELECT auth_sub FROM organization.memberships
 		WHERE organization_id = $1 AND role != 'owner' AND auth_sub = ANY($2)`,
 		organizationID, authSubs,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.filterRemovableMembers: %w", err)
 	}
 	defer rows.Close()
 
@@ -231,9 +270,12 @@ func (r *repository) filterRemovableMembers(ctx context.Context, q db.Querier, o
 	for rows.Next() {
 		var sub string
 		if err := rows.Scan(&sub); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.filterRemovableMembers: scan: %w", err)
 		}
 		out = append(out, sub)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.filterRemovableMembers: %w", err)
+	}
+	return out, nil
 }

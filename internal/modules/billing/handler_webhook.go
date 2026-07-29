@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
-
-	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
 // --- webhook routes (public, no auth) ---
@@ -227,7 +227,7 @@ func verifyXenditToken(headerToken, configToken string) bool {
 	if configToken == "" {
 		return true
 	}
-	return hmac.Equal([]byte(headerToken), []byte(configToken))
+	return middleware.SecureCompare(headerToken, configToken)
 }
 
 func normalizeStripeStatus(s string) string {

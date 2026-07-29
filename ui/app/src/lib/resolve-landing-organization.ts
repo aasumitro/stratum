@@ -63,3 +63,20 @@ export async function resolveLandingRoute(
 
   return { to: "/organizations" }
 }
+
+/**
+ * Same as resolveLandingRoute, but never throws — any failure fetching the
+ * profile/organization list (network down, etc.) falls back to the
+ * organization list route instead of breaking navigation. For guard
+ * redirects (already-authenticated user hitting /login, /register, ...)
+ * where landing anywhere reachable is better than a broken beforeLoad.
+ */
+export async function resolveLandingRouteSafe(
+  queryClient: QueryClient
+): Promise<LandingRoute> {
+  try {
+    return await resolveLandingRoute(queryClient)
+  } catch {
+    return { to: "/organizations" }
+  }
+}

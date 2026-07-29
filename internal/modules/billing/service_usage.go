@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -12,6 +13,8 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 )
 
+// Bare repo-call returns below are deliberate — same funnel-into-one-
+// deferred-apperr-classification tradeoff as redeemCoupon (service_coupon.go).
 func (s *service) recordUsage(ctx context.Context, organizationID, metric string, value int64) (err error) {
 	defer func() {
 		if err != nil {
@@ -83,11 +86,11 @@ func (s *service) getUsage(ctx context.Context, _, subjectID string) ([]usageRec
 func (s *service) checkUsageLimit(ctx context.Context, organizationID, metric string) (current int64, limit int, err error) {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("billing.checkUsageLimit: %w", err)
 	}
 	planInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("billing.checkUsageLimit: %w", err)
 	}
 	limit = -1
 	if v, ok := planInfo.Limits[metric]; ok {
@@ -108,7 +111,7 @@ func (s *service) checkUsageLimit(ctx context.Context, organizationID, metric st
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, limit, nil
 		}
-		return 0, limit, err
+		return 0, limit, fmt.Errorf("billing.checkUsageLimit: %w", err)
 	}
 	return usage.Value, limit, nil
 }
@@ -121,11 +124,11 @@ func (s *service) checkUsageLimit(ctx context.Context, organizationID, metric st
 func (s *service) checkFeatureAccess(ctx context.Context, organizationID, feature string) error {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.checkFeatureAccess: %w", err)
 	}
 	planInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return err
+		return fmt.Errorf("billing.checkFeatureAccess: %w", err)
 	}
 	if slices.Contains(planInfo.Features, feature) {
 		return nil
@@ -151,6 +154,8 @@ type entitlementRecord struct {
 	ConfigValue json.RawMessage `json:"config_value,omitempty"` // config only
 }
 
+// Bare repo-call returns below are deliberate — same funnel-into-one-
+// deferred-apperr-classification tradeoff as redeemCoupon (service_coupon.go).
 func (s *service) resolveEntitlements(ctx context.Context, organizationID string) (out []entitlementRecord, err error) {
 	defer func() {
 		if err == nil {

@@ -52,7 +52,7 @@ func NewCORSMiddleware(cfg CORSConfig) (gin.HandlerFunc, error) {
 		}
 
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Organization-ID, X-Request-ID")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Organization-ID, X-Request-ID, Idempotency-Key")
 		c.Header("Access-Control-Expose-Headers", "X-Request-ID")
 		c.Header("Access-Control-Max-Age", "86400")
 

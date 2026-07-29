@@ -63,6 +63,20 @@ func Publish(ctx context.Context, pub messaging.EventPublisher, exchange, routin
 	}
 }
 
+// EnvelopeID reads just the id field of a wire-format Envelope, without
+// decoding the typed Data payload — for callers that need the event's
+// identity ahead of knowing (or caring about) its concrete type, e.g. an
+// idempotency check that must run before dispatch.
+func EnvelopeID(body []byte) (string, error) {
+	var env struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return "", err
+	}
+	return env.ID, nil
+}
+
 // Decode unmarshals an Envelope and then the typed Data field.
 func Decode[T any](body []byte) (T, error) {
 	var zero T

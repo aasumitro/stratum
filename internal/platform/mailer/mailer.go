@@ -97,7 +97,10 @@ func (m *Mailer) Send(msg Message) error {
 	if m.port == 465 {
 		return m.sendTLS(addr, auth, m.fromAddr, msg.To, []byte(body.String()))
 	}
-	return smtp.SendMail(addr, auth, m.fromAddr, []string{msg.To}, []byte(body.String()))
+	if err := smtp.SendMail(addr, auth, m.fromAddr, []string{msg.To}, []byte(body.String())); err != nil {
+		return fmt.Errorf("mailer.Send: %w", err)
+	}
+	return nil
 }
 
 // sendTLS handles implicit TLS (port 465).
@@ -105,37 +108,40 @@ func (m *Mailer) sendTLS(addr string, auth smtp.Auth, from, to string, body []by
 	dialer := &tls.Dialer{Config: &tls.Config{ServerName: m.host, MinVersion: tls.VersionTLS12}}
 	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("tls dial: %w", err)
+		return fmt.Errorf("mailer.sendTLS: tls dial: %w", err)
 	}
 	defer conn.Close()
 
 	host, _, _ := net.SplitHostPort(addr)
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		return fmt.Errorf("smtp client: %w", err)
+		return fmt.Errorf("mailer.sendTLS: smtp client: %w", err)
 	}
 	defer client.Close()
 
 	if err := client.Auth(auth); err != nil {
-		return fmt.Errorf("smtp auth: %w", err)
+		return fmt.Errorf("mailer.sendTLS: smtp auth: %w", err)
 	}
 	if err := client.Mail(from); err != nil {
-		return err
+		return fmt.Errorf("mailer.sendTLS: mail from: %w", err)
 	}
 	if err := client.Rcpt(to); err != nil {
-		return err
+		return fmt.Errorf("mailer.sendTLS: rcpt to: %w", err)
 	}
 	w, err := client.Data()
 	if err != nil {
-		return err
+		return fmt.Errorf("mailer.sendTLS: data: %w", err)
 	}
 	if _, err := w.Write(body); err != nil {
-		return err
+		return fmt.Errorf("mailer.sendTLS: write body: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return fmt.Errorf("mailer.sendTLS: close writer: %w", err)
 	}
-	return client.Quit()
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("mailer.sendTLS: quit: %w", err)
+	}
+	return nil
 }
 
 var crlfReplacer = strings.NewReplacer("\r", "", "\n", "")

@@ -67,7 +67,7 @@ func (n *Namespace) Delete(ctx context.Context, key string) error {
 func (n *Namespace) Exists(ctx context.Context, key string) (bool, error) {
 	count, err := n.client.Exists(ctx, n.key(key)).Result()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("cache.Exists: %w", err)
 	}
 	return count > 0, nil
 }

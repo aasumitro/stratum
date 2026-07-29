@@ -123,3 +123,33 @@ func TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit(t *testing.T
 		t.Errorf("fired = %v, want exactly [\"succeed\"]", fired)
 	}
 }
+
+func TestIntegration_RLSTxMiddleware_CommitFailure(t *testing.T) {
+	pool := rlsTestPool(t)
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws_rls_test_commit_fail"})
+		c.Next()
+	})
+	e.Use(middleware.NewRLSTxMiddleware(pool))
+	e.GET("/commit-fail", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+		c.Writer.Write([]byte(`{"success":true}`))
+
+		// Force the transaction to an aborted state so Commit() fails.
+		tx := db.QuerierFromContext(c.Request.Context(), nil)
+		_, _ = tx.Exec(c.Request.Context(), "SELECT 1/0")
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/commit-fail", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when commit fails, got %d", w.Code)
+	}
+	expectedBody := `{"error":"database error"}`
+	if w.Body.String() != expectedBody {
+		t.Fatalf("expected %q, got %q", expectedBody, w.Body.String())
+	}
+}

@@ -16,7 +16,7 @@ import {
   useDowngradeSubscription,
   useInvoicePreview,
 } from "@/features/billing/hooks"
-import { useOrganizationMembers } from "@/features/organization/hooks"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import { formatPrice } from "@/features/billing/utils"
 import type {
   BillingCycle,

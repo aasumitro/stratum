@@ -2,8 +2,10 @@ package messaging
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
@@ -81,13 +83,13 @@ func (c *Consumer) runOnce(ctx context.Context) error {
 	defer func() { _ = ch.Close() }()
 
 	if err := DeclareExchange(ch, c.spec.Exchange); err != nil {
-		return err
+		return fmt.Errorf("messaging.runOnce: %w", err)
 	}
 	if err := DeclareDLX(ch, c.spec.DLX); err != nil {
-		return err
+		return fmt.Errorf("messaging.runOnce: %w", err)
 	}
 	if err := DeclareQueue(ch, c.spec.Exchange.Name, c.spec.Queue); err != nil {
-		return err
+		return fmt.Errorf("messaging.runOnce: %w", err)
 	}
 
 	prefetch := c.spec.PrefetchCount
@@ -124,6 +126,40 @@ func (c *Consumer) runOnce(ctx context.Context) error {
 	return nil
 }
 
+// envelopeMeta mirrors just the top-level identity fields of
+// events.Envelope, decoded best-effort for panic-log correlation only.
+// This package can't import contracts/events to use the real type —
+// events.Envelope's own file imports this package, so importing back would
+// cycle — and a generic consumer has no business decoding the typed Data
+// payload anyway (each Handler already does that for the concrete event it
+// expects).
+type envelopeMeta struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Source string `json:"source"`
+}
+
+// safeHandle runs the handler with panic recovery, converting a recovered
+// panic into an error. This makes a panicking handler indistinguishable
+// from one that returns an error to handleDelivery's single Reject/Ack
+// decision point below, so it gets the same bounded-retry-then-dead-letter
+// treatment (see the Reject branch's comment) instead of unwinding through
+// this goroutine and taking the whole worker process down with it.
+func (c *Consumer) safeHandle(ctx context.Context, body []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			var meta envelopeMeta
+			_ = json.Unmarshal(body, &meta) // best-effort; zero value logs fine if this fails too
+			c.logger.Error("handler panicked, recovering",
+				"queue", c.spec.Queue.Name, "panic", r,
+				"event_id", meta.ID, "event_type", meta.Type, "event_source", meta.Source,
+				"stack", string(debug.Stack()))
+			err = fmt.Errorf("handler panicked: %v", r)
+		}
+	}()
+	return c.handler(ctx, body)
+}
+
 func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
 	// Continue the producer's trace (see publisher.go's publish) instead of
 	// starting a disconnected one.
@@ -138,7 +174,7 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
 		trace.WithSpanKind(trace.SpanKindConsumer))
 	defer span.End()
 
-	err := c.handler(msgCtx, delivery.Body)
+	err := c.safeHandle(msgCtx, delivery.Body)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

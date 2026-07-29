@@ -9,7 +9,7 @@ import { UnsavedChangesGuard } from "@/components/shared/unsaved-changes-guard"
 import {
   useCreateWebhook,
   useUpdateWebhook,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-webhooks"
 import {
   WEBHOOK_EVENT_CATALOG,
   WEBHOOK_EVENT_GROUPS,

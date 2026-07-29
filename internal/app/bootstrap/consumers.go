@@ -97,7 +97,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleOrganizationCreated, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleOrganizationCreated), log),
 
 		// notification: invoice paid alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -113,7 +113,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleInvoicePaid, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleInvoicePaid), log),
 
 		// billing: check subscription expiry (delivered via delay queue DLX)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -177,7 +177,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleSubscriptionRemind, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleSubscriptionRemind), log),
 
 		// notification: renewal invoice created
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -193,7 +193,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleInvoiceCreated, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleInvoiceCreated), log),
 
 		// notification: send invite email
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -209,7 +209,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleMemberInvited, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleMemberInvited), log),
 
 		// notification: email the original inviter when a lost/expired invite is re-requested
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -225,7 +225,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleInvitationRequested, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleInvitationRequested), log),
 
 		// notification: notify the original inviter (in-app) when an invitee declines
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -241,7 +241,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleInvitationDeclined, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleInvitationDeclined), log),
 
 		// account: async account deletion (GDPR)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -289,7 +289,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleUserEmailChanged, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleUserEmailChanged), log),
 
 		// billing: cancel subscription when organization is deleted
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -321,7 +321,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleOrganizationDeleted, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleOrganizationDeleted), log),
 
 		// notification: member removed alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -337,7 +337,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleMemberRemoved, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleMemberRemoved), log),
 
 		// notification: member role changed alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -353,7 +353,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleMemberRoleChanged, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleMemberRoleChanged), log),
 
 		// notification: ownership transferred alert to new owner
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -369,7 +369,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleOwnershipTransferred, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleOwnershipTransferred), log),
 
 		// notification: webhook endpoint health warning (owner only)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -385,7 +385,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleWebhookHealthWarning, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleWebhookHealthWarning), log),
 
 		// notification: webhook endpoint auto-disabled (owner only)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -401,7 +401,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleWebhookAutoDisabled, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleWebhookAutoDisabled), log),
 
 		// notification: payment failed alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -417,7 +417,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleInvoiceFailed, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleInvoiceFailed), log),
 
 		// notification: subscription activated alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -433,7 +433,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleSubscriptionActivated, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleSubscriptionActivated), log),
 
 		// notification: trial started alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -449,7 +449,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleTrialStarted, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleTrialStarted), log),
 
 		// notification: usage approaching its plan+addon limit
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -465,7 +465,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleUsageLimitWarning, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleUsageLimitWarning), log),
 
 		// notification: subscription cancelled alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -481,7 +481,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleSubscriptionCancelled, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleSubscriptionCancelled), log),
 
 		// notification: subscription expired alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -497,7 +497,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleSubscriptionExpired, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleSubscriptionExpired), log),
 
 		// notification: subscription resumed alert
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -513,7 +513,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleSubscriptionResumed, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleSubscriptionResumed), log),
 
 		// notification: dunning day-3 payment reminder (via billing.delay DLX)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -529,7 +529,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleSubscriptionPaymentRemind, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleSubscriptionPaymentRemind), log),
 
 		// notification: dunning day-7 final warning (via billing.delay DLX)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -545,7 +545,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleSubscriptionPaymentFinal, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleSubscriptionPaymentFinal), log),
 
 		// notification: organization suspended alert to all members
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -561,7 +561,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleOrganizationSuspended, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleOrganizationSuspended), log),
 
 		// notification: organization reactivated alert to all members
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -577,7 +577,7 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
-		}, mods.Notification.Worker.HandleOrganizationReactivated, log),
+		}, mods.Notification.Worker.Idempotent(mods.Notification.Worker.HandleOrganizationReactivated), log),
 
 		// outbound webhooks: fan out billing events to customer webhook endpoints
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -641,5 +641,24 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeOrganizationDLX, QueueName: exchangeOrganizationDLQ},
 			PrefetchCount: 1,
 		}, mods.Organization.Worker.HandleWebhookRetry, log),
+
+		// organization: purge a deleted organization's logo + files from
+		// storage — moved off the synchronous DELETE /organizations/:id
+		// request path, same retry/DLQ settings as the billing/notification
+		// consumers of this same event.
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},
+			Queue: messaging.QueueSpec{
+				Name:                 "organization.organization-deleted",
+				BindingKeys:          []string{events.RoutingKeyOrganizationDeleted},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeOrganizationDLX,
+				DeadLetterRoutingKey: "organization.organization-deleted",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeOrganizationDLX, QueueName: exchangeOrganizationDLQ},
+			PrefetchCount: 10,
+		}, mods.Organization.Worker.HandleOrganizationDeleted, log),
 	}
 }

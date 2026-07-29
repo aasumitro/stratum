@@ -54,7 +54,7 @@ func Dial(ctx context.Context, url string, logger *slog.Logger) (*Connection, er
 	}
 
 	if err := c.connect(); err != nil {
-		return nil, fmt.Errorf("initial rabbitmq connect: %w", err)
+		return nil, fmt.Errorf("messaging.Dial: initial connect: %w", err)
 	}
 
 	go c.reconnectLoop(ctx)
@@ -67,7 +67,7 @@ func (c *Connection) connect() error {
 		Heartbeat: heartbeatTimeout,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("messaging.connect: %w", err)
 	}
 
 	c.mu.Lock()
@@ -160,16 +160,20 @@ func (c *Connection) Channel() (*amqp.Channel, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.conn == nil || c.conn.IsClosed() {
-		return nil, fmt.Errorf("rabbitmq connection is not currently open")
+		return nil, fmt.Errorf("messaging.Channel: rabbitmq connection is not currently open")
 	}
-	return c.conn.Channel()
+	ch, err := c.conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("messaging.Channel: %w", err)
+	}
+	return ch, nil
 }
 
 // Ping opens a channel and immediately closes it to verify the broker is reachable.
 func (c *Connection) Ping() error {
 	ch, err := c.Channel()
 	if err != nil {
-		return err
+		return fmt.Errorf("messaging.Ping: %w", err)
 	}
 	return ch.Close()
 }

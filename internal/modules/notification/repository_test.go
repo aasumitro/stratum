@@ -461,9 +461,9 @@ func TestIntegration_MarkRead_UpdatesOnlyTargetMessage(t *testing.T) {
 }
 
 // TestIntegration_MarkRead_ScopedToOwnAuthSub confirms markRead cannot be used
-// to flip another user's notification — a real authorization gap found while
-// building mark-all-read: the id-only WHERE clause let any authenticated
-// caller mark any notification read by guessing its id.
+// to flip another user's notification: the id-only WHERE clause would
+// otherwise let any authenticated caller mark any notification read by
+// guessing its id.
 func TestIntegration_MarkRead_ScopedToOwnAuthSub(t *testing.T) {
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0000-000000000e03"

@@ -21,10 +21,8 @@ import {
   AlertDialogTitle,
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
-import {
-  useOrganization,
-  useUpdateOrganizationSettings,
-} from "@/features/organization/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
+import { useUpdateOrganizationSettings } from "@/features/organization/hooks/use-settings"
 
 interface Props {
   organizationId: string

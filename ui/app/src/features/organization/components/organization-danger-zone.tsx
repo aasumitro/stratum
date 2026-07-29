@@ -31,12 +31,14 @@ import {
 import { ConfirmationDialog } from "@/components/shared/confirmation-dialog"
 import {
   useDeleteOrganization,
-  useTransferOwnership,
   useSuspendOrganization,
   useUnsuspendOrganization,
+} from "@/features/organization/hooks/use-settings"
+import {
+  useTransferOwnership,
   useOrganizationMembers,
-  useWebhooks,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-members"
+import { useWebhooks } from "@/features/organization/hooks/use-webhooks"
 import { useUsage } from "@/features/billing/hooks"
 import { formatBytes } from "@/lib/format"
 

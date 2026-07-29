@@ -21,9 +21,9 @@ import { StatusBadge } from "@/components/shared/status-badge"
 import { useCursorAccumulator } from "@/lib/api/use-cursor-accumulator"
 import {
   useAuditLog,
-  useOrganizationMembers,
   type AuditLogFilter,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-audit-log"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import { humanizeAuditAction } from "@/features/organization/utils/humanize-audit-action"
 import { initials, describeDevice } from "@/lib/format"
 import { cn } from "@/lib/ui"

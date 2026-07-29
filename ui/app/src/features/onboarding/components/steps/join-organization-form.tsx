@@ -5,7 +5,7 @@ import { IconLoader2 } from "@tabler/icons-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useHTTPActionPost } from "@/lib/api/action"
-import { useInviteCodePreview } from "@/features/organization/hooks"
+import { useInviteCodePreview } from "@/features/organization/hooks/use-invitations"
 import { API } from "@/lib/api/path"
 import { parseApiError } from "@/lib/api/error"
 import type { Organization } from "@/types/organization"
@@ -151,7 +151,7 @@ export function JoinOrganizationForm({
               onChange: ({ value }) => {
                 if (!value.trim())
                   return t("onboarding.organization.codeRequired")
-                if (value.trim().length !== 8)
+                if (value.trim().length !== 16)
                   return t("onboarding.organization.codeLength")
                 return undefined
               },
@@ -168,7 +168,7 @@ export function JoinOrganizationForm({
               />
             )}
           </form.Field>
-          <form.Subscribe selector={(s) => s.values.code.trim().length === 8}>
+          <form.Subscribe selector={(s) => s.values.code.trim().length === 16}>
             {(codeComplete) => (
               <Button type="submit" disabled={!codeComplete || checking}>
                 {checking && (

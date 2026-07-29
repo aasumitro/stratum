@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -97,19 +98,19 @@ func (s *service) createOrganization(
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createOrganization: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	t, err := s.repo.insertOrganization(ctx, tx, slug, name, ownerID, countryCode)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createOrganization: %w", err)
 	}
 	if err := s.repo.insertOwnerMembership(ctx, tx, t.ID, ownerID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createOrganization: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createOrganization: commit tx: %w", err)
 	}
 
 	eventAddons := make([]events.AddonSelection, len(addons))
@@ -179,23 +180,60 @@ func (s *service) deleteOrganization(ctx context.Context, id string) (err error)
 	}()
 
 	if err := s.repo.softDeleteOrganization(ctx, s.pool, id); err != nil {
-		return err
+		return fmt.Errorf("organization.deleteOrganization: %w", err)
 	}
 
-	// Best-effort storage cleanup — wipe logo and all uploaded files.
-	// Errors are non-fatal: organization is already marked deleted in DB.
-	if s.store != nil {
-		_ = s.store.Delete(ctx, "organization", id+"/logo")
-
-		if paths, err := s.repo.deleteAllFilesForOrganization(ctx, s.pool, id); err == nil {
-			for _, p := range paths {
-				_ = s.store.Delete(ctx, "organization-files", p)
-			}
-		}
-	}
-
+	// Storage cleanup (logo + every uploaded file) used to run synchronously
+	// here — unbounded in file count, so a large organization could make
+	// this request take arbitrarily long or time out. It's now handled by
+	// HandleOrganizationDeleted (service_organization.go, same file, below),
+	// a worker consumer of the same OrganizationDeleted event published just
+	// below. The organization is already soft-deleted by this point, so the
+	// gap between this publish and the worker picking it up is invisible to
+	// callers — the organization middleware already rejects every request
+	// against a soft-deleted org.
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOrganizationDeleted, "organization", id,
 		events.OrganizationDeleted{OrganizationID: id, DeletedAt: time.Now()})
+	return nil
+}
+
+// HandleOrganizationDeleted performs the storage cleanup deleteOrganization
+// used to do inline on the request path (see the comment there) — unbounded
+// in file count, so it belongs off that path. Naturally idempotent against
+// RabbitMQ's at-least-once redelivery: deleteAllFilesForOrganization's
+// RETURNING clause finds nothing once the rows are already gone, and a
+// repeated storage Delete on an already-missing object is a safe no-op —
+// no dedup tracking needed here, unlike notification's worker.
+//
+// Unlike the original inline version, a deleteAllFilesForOrganization
+// failure now returns an error (bounded retry + eventual dead-letter, see
+// topology.go) instead of being silently swallowed — that trade-off existed
+// only because the original code ran on a request path where retrying
+// wasn't an option; here it is, and a transient DB blip shouldn't
+// permanently orphan a deleted organization's files. Individual per-file
+// storage.Delete failures stay best-effort, same as before: an object
+// storage delete failing for one path is unlikely to succeed differently on
+// a whole-batch retry, and every path already comes from a completed DB
+// delete, so there's nothing to roll back into a consistent retry state.
+func (w *WebhookWorker) HandleOrganizationDeleted(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.OrganizationDeleted](body)
+	if err != nil {
+		w.log.Warn("organization deleted: malformed event", "error", err)
+		return nil // don't re-queue a bad envelope
+	}
+	if w.store == nil {
+		return nil
+	}
+
+	_ = w.store.Delete(ctx, "organization", evt.OrganizationID+"/logo")
+
+	paths, err := w.repo.deleteAllFilesForOrganization(ctx, w.pool, evt.OrganizationID)
+	if err != nil {
+		return fmt.Errorf("organization: delete files for %s: %w", evt.OrganizationID, err)
+	}
+	for _, p := range paths {
+		_ = w.store.Delete(ctx, "organization-files", p)
+	}
 	return nil
 }
 
@@ -289,7 +327,7 @@ func (s *service) selfUnsuspendOrganization(ctx context.Context, organizationID 
 
 	ws, err := s.getOrganization(ctx, organizationID)
 	if err != nil {
-		return err
+		return fmt.Errorf("organization.selfUnsuspendOrganization: %w", err)
 	}
 	if ws.SuspendedReason != suspendReasonSelfService {
 		return ErrCannotSelfUnsuspendBillingHold

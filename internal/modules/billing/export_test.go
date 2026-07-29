@@ -128,7 +128,9 @@ func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) 
 	noopMW := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
 	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
-	mod.RegisterWebhooks(e.Group("/webhooks"))
+	if err := mod.RegisterWebhooks(e.Group("/webhooks")); err != nil {
+		panic(err) // unreachable with the empty ProviderConfig this test helper always uses
+	}
 	return e
 }
 

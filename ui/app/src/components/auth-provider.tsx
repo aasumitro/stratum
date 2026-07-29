@@ -194,7 +194,11 @@ export function useAuth(): AuthContextValue {
 
 function syncCookie(session: Session | null) {
   if (session?.access_token) {
-    setCookie("__session", session.access_token, 0.5) // 12 hours
+    // expires_at is UNIX seconds; fall back to ~1h if absent
+    const expMs =
+      (session.expires_at ?? Math.floor(Date.now() / 1000) + 3600) * 1000
+    const days = Math.max(0, (expMs - Date.now()) / 86_400_000)
+    setCookie("__session", session.access_token, days)
   } else {
     deleteCookie("__session")
   }

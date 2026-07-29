@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
+import { useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { useTranslation } from "react-i18next"
 import { IconLoader2, IconDeviceMobile } from "@tabler/icons-react"
 import { Button } from "@/components/ui/button"
@@ -7,16 +8,29 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { supabase } from "@/lib/auth/supabase"
 import { useMfaFactors } from "@/features/account/hooks"
+import { resolveLandingRouteSafe } from "@/lib/resolve-landing-organization"
 
-function postChallengeRedirect(navigate: ReturnType<typeof useNavigate>) {
+// Same fallback chain as the primary sign-in flow (use-sign-in.ts):
+// an explicit pending redirect wins, otherwise fall back to the user's
+// resolved landing organization instead of a hardcoded route.
+async function postChallengeRedirect(
+  navigate: ReturnType<typeof useNavigate>,
+  queryClient: QueryClient
+) {
   const pending = localStorage.getItem("post_login_redirect")
   localStorage.removeItem("post_login_redirect")
-  void navigate({ to: (pending as never) ?? "/organizations" })
+  if (pending && pending.startsWith("/")) {
+    await navigate({ to: pending as never })
+    return
+  }
+  const dest = await resolveLandingRouteSafe(queryClient)
+  await navigate(dest as never)
 }
 
 export function MfaChallengeForm() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data: factors, isLoading } = useMfaFactors()
   const [code, setCode] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -38,7 +52,7 @@ export function MfaChallengeForm() {
       setError(t("auth.mfaChallenge.invalidCode"))
       return
     }
-    postChallengeRedirect(navigate)
+    await postChallengeRedirect(navigate, queryClient)
   }
 
   return (

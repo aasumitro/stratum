@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -28,7 +29,10 @@ func (r *repository) upsertUsage(
 		DO UPDATE SET value = $3, recorded_at = now()`,
 		organizationID, metric, value, periodStart, periodEnd,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.upsertUsage: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) listCurrentUsage(
@@ -42,7 +46,7 @@ func (r *repository) listCurrentUsage(
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listCurrentUsage: %w", err)
 	}
 	defer rows.Close()
 
@@ -50,11 +54,14 @@ func (r *repository) listCurrentUsage(
 	for rows.Next() {
 		var u usageRecord
 		if err := rows.Scan(&u.ID, &u.OrganizationID, &u.Metric, &u.Value, &u.PeriodStart, &u.PeriodEnd, &u.RecordedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.listCurrentUsage: scan: %w", err)
 		}
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listCurrentUsage: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) getCurrentUsage(
@@ -68,7 +75,10 @@ func (r *repository) getCurrentUsage(
 		ORDER BY period_end DESC LIMIT 1`,
 		organizationID, metric,
 	).Scan(&u.ID, &u.OrganizationID, &u.Metric, &u.Value, &u.PeriodStart, &u.PeriodEnd, &u.RecordedAt)
-	return &u, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.getCurrentUsage: %w", err)
+	}
+	return &u, nil
 }
 
 // addonLimitDeltas sums billing.addon_features.limit_value (× the addon's
@@ -86,7 +96,7 @@ func (r *repository) addonLimitDeltas(ctx context.Context, q db.Querier, subscri
 		WHERE sa.subscription_id = $1 AND af.limit_value IS NOT NULL
 		GROUP BY af.feature_id`, subscriptionID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.addonLimitDeltas: %w", err)
 	}
 	defer rows.Close()
 
@@ -95,9 +105,12 @@ func (r *repository) addonLimitDeltas(ctx context.Context, q db.Querier, subscri
 		var featureID string
 		var delta int64
 		if err := rows.Scan(&featureID, &delta); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.addonLimitDeltas: scan: %w", err)
 		}
 		deltas[featureID] = int(delta)
 	}
-	return deltas, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.addonLimitDeltas: %w", err)
+	}
+	return deltas, nil
 }

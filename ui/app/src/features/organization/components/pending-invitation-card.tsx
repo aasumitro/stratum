@@ -6,7 +6,7 @@ import { parseApiError } from "@/lib/api/error"
 import {
   useAcceptInvitation,
   useDeclineInvitation,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-invitations"
 import type { MyInvitation } from "@/types/organization"
 
 export function PendingInvitationCard({

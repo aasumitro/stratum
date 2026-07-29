@@ -1,11 +1,9 @@
-import { useState } from "react"
+import { Suspense, lazy, useState } from "react"
 import { useParams, useNavigate, useSearch } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
 
-import {
-  useOrganization,
-  useWebhooksContentState,
-} from "@/features/organization/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
+import { useWebhooksContentState } from "@/features/organization/hooks/use-webhooks"
 import { useBillingFeatures } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { SettingsAnchorNav } from "@/features/organization/components/settings-anchor-nav"
@@ -17,11 +15,7 @@ import { OrganizationIPAllowlistForm } from "@/features/organization/components/
 import { OrganizationDangerZone } from "@/features/organization/components/organization-danger-zone"
 import { MembersTable } from "@/features/organization/components/members-table"
 import { WebhooksSectionPreview } from "@/features/organization/components/webhooks-section-preview"
-import { WebhooksPanel } from "@/features/organization/components/webhooks-panel"
 import { AuditLogSectionPreview } from "@/features/organization/components/audit-log-section-preview"
-import { AuditLogTable } from "@/features/organization/components/audit-log-table"
-import { AuditLogFilters } from "@/features/organization/components/audit-log-filters"
-import { AddMembersDialog } from "@/features/organization/components/add-members-dialog"
 import { OverlayPanel } from "@/components/shared/overlay-panel"
 import { FeatureGateCard } from "@/components/shared/feature-gate-card"
 import { Button } from "@/components/ui/button"
@@ -31,10 +25,34 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 
+// These four are only ever visible behind a dialog/overlay the user opens
+// explicitly (Add members, the Webhooks panel, the Audit log panel) — kept
+// out of this page's own chunk so viewing Settings doesn't pull them in.
+const AddMembersDialog = lazy(() =>
+  import("@/features/organization/components/add-members-dialog").then((m) => ({
+    default: m.AddMembersDialog,
+  }))
+)
+const WebhooksPanel = lazy(() =>
+  import("@/features/organization/components/webhooks-panel").then((m) => ({
+    default: m.WebhooksPanel,
+  }))
+)
+const AuditLogTable = lazy(() =>
+  import("@/features/organization/components/audit-log-table").then((m) => ({
+    default: m.AuditLogTable,
+  }))
+)
+const AuditLogFilters = lazy(() =>
+  import("@/features/organization/components/audit-log-filters").then((m) => ({
+    default: m.AuditLogFilters,
+  }))
+)
+
 // Settings is one continuous page, composed of anchor-linked sections,
 // instead of separate routes/tabs: General, Members, Webhooks, Security,
 // Audit Log, Danger Zone. Each section is filtered by role before it
-// renders at all (ADR-0017: absent, never shown locked) — Webhooks/Audit
+// renders at all — absent, never shown locked — so Webhooks/Audit
 // Log/Danger Zone simply aren't in the DOM below their role threshold,
 // there's no route left to guard directly.
 export function OrganizationSettingsPage() {
@@ -140,12 +158,14 @@ export function OrganizationSettingsPage() {
     <div className="flex flex-col">
       <SettingsAnchorNav items={anchorItems} />
 
-      <AddMembersDialog
-        organizationId={organizationId}
-        open={addMembersOpen}
-        onOpenChange={setAddMembersOpen}
-        isOwner={isOwner}
-      />
+      <Suspense fallback={null}>
+        <AddMembersDialog
+          organizationId={organizationId}
+          open={addMembersOpen}
+          onOpenChange={setAddMembersOpen}
+          isOwner={isOwner}
+        />
+      </Suspense>
 
       <div className="flex w-full flex-col pt-10 pb-24">
         <SettingsSection
@@ -240,13 +260,15 @@ export function OrganizationSettingsPage() {
           </SettingsSection>
         )}
 
-        <WebhooksPanel
-          organizationId={organizationId}
-          open={canAccessWebhooks && search.panel === "webhooks"}
-          webhookId={search.webhookId}
-          onOpenChange={(open) => setPanel(open ? "webhooks" : undefined)}
-          onWebhookIdChange={setWebhookId}
-        />
+        <Suspense fallback={null}>
+          <WebhooksPanel
+            organizationId={organizationId}
+            open={canAccessWebhooks && search.panel === "webhooks"}
+            webhookId={search.webhookId}
+            onOpenChange={(open) => setPanel(open ? "webhooks" : undefined)}
+            onWebhookIdChange={setWebhookId}
+          />
+        </Suspense>
 
         <SettingsSection
           id="security"
@@ -287,25 +309,27 @@ export function OrganizationSettingsPage() {
           </SettingsSection>
         )}
 
-        <OverlayPanel
-          open={canAccessAuditLog && search.panel === "audit-log"}
-          onOpenChange={(open) => setPanel(open ? "audit-log" : undefined)}
-          title={t("organization.settings.sections.auditLog")}
-          headerContent={
-            canAccessAuditLog && search.panel === "audit-log" ? (
-              <AuditLogFilters
-                organizationId={organizationId}
-                total={auditLogTotal}
-              />
-            ) : undefined
-          }
-          bodyClassName="p-4 md:p-0"
-        >
-          <AuditLogTable
-            organizationId={organizationId}
-            onTotalChange={setAuditLogTotal}
-          />
-        </OverlayPanel>
+        <Suspense fallback={null}>
+          <OverlayPanel
+            open={canAccessAuditLog && search.panel === "audit-log"}
+            onOpenChange={(open) => setPanel(open ? "audit-log" : undefined)}
+            title={t("organization.settings.sections.auditLog")}
+            headerContent={
+              canAccessAuditLog && search.panel === "audit-log" ? (
+                <AuditLogFilters
+                  organizationId={organizationId}
+                  total={auditLogTotal}
+                />
+              ) : undefined
+            }
+            bodyClassName="p-4 md:p-0"
+          >
+            <AuditLogTable
+              organizationId={organizationId}
+              onTotalChange={setAuditLogTotal}
+            />
+          </OverlayPanel>
+        </Suspense>
 
         {isOwner && organization && (
           <SettingsSection

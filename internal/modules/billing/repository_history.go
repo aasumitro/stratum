@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -38,19 +39,28 @@ func (r *repository) insertHistory(
 		RETURNING id`,
 		subscriptionID, action, fromPlan, toPlan, amountCents, currency, changedBy, metadata,
 	).Scan(&id)
-	return id, err
+	if err != nil {
+		return "", fmt.Errorf("billing.insertHistory: %w", err)
+	}
+	return id, nil
 }
 
 func (r *repository) updateHistoryMetadata(ctx context.Context, q db.Querier, historyID string, metadata []byte) error {
 	_, err := q.Exec(ctx, `UPDATE billing.subscription_history SET metadata = $2 WHERE id = $1`, historyID, metadata)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.updateHistoryMetadata: %w", err)
+	}
+	return nil
 }
 
 // anonymizeHistory replaces changed_by with a placeholder across a user's
 // subscription history entries — used by the GDPR account-deletion flow.
 func (r *repository) anonymizeHistory(ctx context.Context, q db.Querier, authSub string) error {
 	_, err := q.Exec(ctx, `UPDATE billing.subscription_history SET changed_by = 'deleted_user' WHERE changed_by = $1`, authSub)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.anonymizeHistory: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) listHistory(
@@ -66,7 +76,7 @@ func (r *repository) listHistory(
 		subscriptionID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listHistory: %w", err)
 	}
 	defer rows.Close()
 
@@ -77,9 +87,12 @@ func (r *repository) listHistory(
 			&h.ID, &h.SubscriptionID, &h.Action, &h.FromPlan, &h.ToPlan,
 			&h.AmountCents, &h.Currency, &h.ChangedBy, &h.ChangedAt, &h.Metadata,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.listHistory: scan: %w", err)
 		}
 		out = append(out, h)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listHistory: %w", err)
+	}
+	return out, nil
 }

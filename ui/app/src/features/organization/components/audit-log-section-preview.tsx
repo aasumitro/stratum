@@ -4,10 +4,8 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/shared/empty-state"
 import { StatusBadge } from "@/components/shared/status-badge"
-import {
-  useAuditLog,
-  useOrganizationMembers,
-} from "@/features/organization/hooks"
+import { useAuditLog } from "@/features/organization/hooks/use-audit-log"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import { humanizeAuditAction } from "@/features/organization/utils/humanize-audit-action"
 import { initials, timeAgo } from "@/lib/format"
 
@@ -41,10 +39,12 @@ export function AuditLogSectionPreview({
 
   if (!events.length) {
     return (
-      <EmptyState
-        icon={IconInfoCircle}
-        title={t("organization.auditLog.noEvents")}
-      />
+      <div className="rounded-xl border bg-card">
+        <EmptyState
+          icon={IconInfoCircle}
+          title={t("organization.auditLog.noEvents")}
+        />
+      </div>
     )
   }
 

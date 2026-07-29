@@ -230,18 +230,6 @@ func (r *repository) hasPendingInvoice(ctx context.Context, q db.Querier, subscr
 	return count > 0, err
 }
 
-func (r *repository) hasPendingInvoiceOfKind(
-	ctx context.Context, q db.Querier, subscriptionID, kind string,
-) (bool, error) {
-	var count int
-	err := q.QueryRow(ctx, `
-		SELECT COUNT(*) FROM billing.invoices
-		WHERE subscription_id = $1 AND status = 'pending' AND kind = $2`,
-		subscriptionID, kind,
-	).Scan(&count)
-	return count > 0, err
-}
-
 func (r *repository) voidPendingInvoicesAndLinks(ctx context.Context, q db.Querier, subscriptionID string) error {
 	_, err := q.Exec(ctx, `
 		WITH voided AS (

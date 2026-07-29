@@ -10,11 +10,11 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import {
-  useOrganization,
   useGenerateInviteCode,
   useToggleInviteCode,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-invitations"
 
 interface Props {
   organizationId: string

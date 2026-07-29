@@ -26,8 +26,8 @@ const webhooksTestOrgSlugPrefix = "integ-ws-webhooks-"
 
 func init() {
 	// These tests deliver to httptest.Server (loopback, http), which the
-	// SSRF guard added for backend-fixes-plan item 1 correctly rejects in
-	// production — relax it for this test binary only.
+	// SSRF guard correctly rejects in production — relax it for this test
+	// binary only.
 	organization.AllowLoopbackWebhooksForTest()
 }
 

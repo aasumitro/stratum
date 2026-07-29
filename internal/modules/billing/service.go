@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,7 +66,7 @@ var (
 	ErrAddonNotFound               = errors.New("addon not found")
 	ErrUnknownPlan                 = errors.New("unknown plan")
 	ErrSubscriptionNotExtendable   = errors.New("subscription is not in an extendable state")
-	ErrExtensionAlreadyPending     = errors.New("an extension invoice is already pending payment")
+	ErrExtensionAlreadyPending     = errors.New("an invoice is already pending payment for this subscription")
 	ErrExtensionExceedsMaxDuration = errors.New("extension would exceed the maximum subscription duration")
 	ErrAlreadyYearly               = errors.New("subscription is already on the yearly cycle")
 	ErrSubscriptionNotTrialing     = errors.New("subscription is not currently trialing")
@@ -129,7 +130,7 @@ func (s *service) findAddonByID(ctx context.Context, id string) (*addonRecord, e
 func (s *service) planCatalog(ctx context.Context, id string) (*contracts.PlanInfo, error) {
 	p, err := s.findPlanByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.planCatalog: %w", err)
 	}
 	return planToInfo(p), nil
 }
@@ -137,7 +138,7 @@ func (s *service) planCatalog(ctx context.Context, id string) (*contracts.PlanIn
 func (s *service) plansCatalog(ctx context.Context) ([]contracts.PlanInfo, error) {
 	plans, err := s.listPlansRecords(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.plansCatalog: %w", err)
 	}
 	out := make([]contracts.PlanInfo, len(plans))
 	for i := range plans {
@@ -149,7 +150,7 @@ func (s *service) plansCatalog(ctx context.Context) ([]contracts.PlanInfo, error
 func (s *service) addonCatalog(ctx context.Context, id string) (*contracts.AddonInfo, error) {
 	a, err := s.findAddonByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.addonCatalog: %w", err)
 	}
 	return addonToInfo(a), nil
 }
@@ -157,7 +158,7 @@ func (s *service) addonCatalog(ctx context.Context, id string) (*contracts.Addon
 func (s *service) addonsCatalog(ctx context.Context) ([]contracts.AddonInfo, error) {
 	addons, err := s.listAddonsRecords(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.addonsCatalog: %w", err)
 	}
 	out := make([]contracts.AddonInfo, len(addons))
 	for i := range addons {
@@ -169,7 +170,7 @@ func (s *service) addonsCatalog(ctx context.Context) ([]contracts.AddonInfo, err
 func (s *service) featureCatalog(ctx context.Context) ([]contracts.FeatureInfo, error) {
 	features, err := s.listFeaturesRecords(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.featureCatalog: %w", err)
 	}
 	out := make([]contracts.FeatureInfo, len(features))
 	for i, f := range features {

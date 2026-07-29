@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -109,7 +110,7 @@ func addonToInfo(a *addonRecord) *contracts.AddonInfo {
 func (m *Module) GetSubscriptionBySubject(ctx context.Context, subjectType, subjectID string) (*contracts.SubscriptionInfo, error) {
 	s, err := m.svc.getSubscription(ctx, subjectType, subjectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.GetSubscriptionBySubject: %w", err)
 	}
 	return &contracts.SubscriptionInfo{
 		ID:          s.ID,
@@ -125,7 +126,10 @@ func (m *Module) GetSubscriptionBySubject(ctx context.Context, subjectType, subj
 // CheckUsageLimit implements contracts.BillingReader.
 func (m *Module) CheckUsageLimit(ctx context.Context, organizationID, metric string) (int64, int, error) {
 	current, limit, err := m.svc.checkUsageLimit(ctx, organizationID, metric)
-	return current, limit, err
+	if err != nil {
+		return current, limit, fmt.Errorf("billing.CheckUsageLimit: %w", err)
+	}
+	return current, limit, nil
 }
 
 // CheckFeatureAccess implements contracts.BillingReader.
@@ -234,8 +238,14 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 //
 //	POST /webhooks/stripe
 //	POST /webhooks/xendit
-func (m *Module) RegisterWebhooks(r *gin.RouterGroup) {
+func (m *Module) RegisterWebhooks(r *gin.RouterGroup) error {
 	h := &handler{svc: m.svc, stripeSecret: m.cfg.StripeWebhookSecret, xenditToken: m.cfg.XenditCallbackToken}
 	r.POST("/stripe", h.handleStripeWebhook)
-	r.POST("/xendit", h.handleXenditWebhook)
+
+	ipAllowlist, err := middleware.NewIPAllowlistMiddleware(m.cfg.XenditAllowedCIDRs)
+	if err != nil {
+		return fmt.Errorf("billing.RegisterWebhooks: %w", err)
+	}
+	r.POST("/xendit", ipAllowlist, h.handleXenditWebhook)
+	return nil
 }

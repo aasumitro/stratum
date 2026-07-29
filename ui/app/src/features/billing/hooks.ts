@@ -33,7 +33,11 @@ export function useBillingSubscription(organizationId: string) {
   return useHTTPQuery<Subscription>({
     queryKey: queryKeys.billing.subscription(organizationId),
     url: API.billing(organizationId),
-    options: { retry: false },
+    // Payment happens on a separate hosted-checkout tab, confirmed async via
+    // webhook — refetch on window focus (overriding the app-wide dev-mode
+    // suppression) so returning to this tab after paying shows the result
+    // without a manual reload.
+    options: { retry: false, refetchOnWindowFocus: true },
   })
 }
 
@@ -41,7 +45,7 @@ export function useInvoices(organizationId: string, enabled = true) {
   return useHTTPQuery<Invoice[]>({
     queryKey: queryKeys.billing.invoices(organizationId),
     url: API.billing(organizationId, "invoices"),
-    options: { retry: false, enabled },
+    options: { retry: false, enabled, refetchOnWindowFocus: true },
   })
 }
 

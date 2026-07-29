@@ -23,13 +23,14 @@ import {
   useRestoreFile,
   usePurgeFile,
   uploadOrganizationFile,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-files"
 import { useBillingFeatures } from "@/features/billing/hooks"
 import { API } from "@/lib/api/path"
 import { useQueryClient } from "@tanstack/react-query"
 import type { OrganizationFile } from "@/types/organization"
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024
+const MAX_CONCURRENT_UPLOADS = 4
 
 export interface UploadItem {
   id: string
@@ -103,20 +104,28 @@ export function FilesPage() {
     return [...chain, ...trail]
   }, [folders, folderId, t])
 
-  function startUploads(fileList: FileList | File[]) {
+  async function startUploads(fileList: FileList | File[]) {
     const list = Array.from(fileList)
+    const inFlight = new Set<Promise<void>>()
+
     for (const file of list) {
       if (file.size > MAX_FILE_SIZE) {
         toast.error(t("organization.files.tooLarge", { name: file.name }))
         continue
       }
+
+      if (inFlight.size >= MAX_CONCURRENT_UPLOADS) {
+        await Promise.race(inFlight)
+      }
+
       const controller = new AbortController()
       const id = `${file.name}-${Date.now()}-${Math.random()}`
       setUploads((prev) => [
         ...prev,
         { id, file, progress: 0, status: "uploading", controller },
       ])
-      uploadOrganizationFile(
+
+      const task: Promise<void> = uploadOrganizationFile(
         organizationId,
         file,
         folderId,
@@ -159,6 +168,11 @@ export function FilesPage() {
             )
           )
         })
+        .finally(() => {
+          inFlight.delete(task)
+        })
+
+      inFlight.add(task)
     }
   }
 
@@ -184,7 +198,7 @@ export function FilesPage() {
       onDrop={(e) => {
         e.preventDefault()
         setDragOver(false)
-        if (e.dataTransfer.files.length) startUploads(e.dataTransfer.files)
+        if (e.dataTransfer.files.length) void startUploads(e.dataTransfer.files)
       }}
     >
       <FilesSidebar
@@ -220,7 +234,7 @@ export function FilesPage() {
               onSearchChange={setSearch}
               searchAll={searchAll}
               onSearchAllChange={setSearchAll}
-              onFilesSelected={startUploads}
+              onFilesSelected={(files) => void startUploads(files)}
             />
 
             {selected.size > 0 && (

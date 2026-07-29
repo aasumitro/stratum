@@ -17,11 +17,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { downloadFile } from "@/lib/api/download"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import {
-  useOrganizationMembers,
   auditLogExportUrl,
   type AuditLogFilter,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-audit-log"
 import type { SettingsSearch } from "@/routes/_protected/organization/$organizationId/settings"
 
 const ACTIONS = ["POST", "PATCH", "PUT", "DELETE"] as const
