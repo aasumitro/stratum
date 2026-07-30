@@ -17,7 +17,9 @@ import {
   useInvoicePreview,
 } from "@/features/billing/hooks"
 import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
+import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
+import { formatMoney } from "@/lib/format"
 import type {
   BillingCycle,
   InvoicePreview,
@@ -69,6 +71,13 @@ export function DowngradeWizard({
   // "success", so a live read risks showing stale/refetched data instead).
   const [confirmedPreview, setConfirmedPreview] =
     useState<InvoicePreview | null>(null)
+  // Same freeze-at-confirm reasoning as confirmedPreview above, but for
+  // whether a pending invoice existed going in — changePlanWithMetadata
+  // (backend, called internally by downgradeSubscription) voids it and
+  // issues a fresh one when it does, so the success copy must reflect that
+  // instead of the plain proration text.
+  const [hadPendingInvoiceAtConfirm, setHadPendingInvoiceAtConfirm] =
+    useState(false)
 
   // Selections
   const [selectedMembers, setSelectedMembers] = useState<string[]>([])
@@ -83,6 +92,7 @@ export function DowngradeWizard({
   const { mutate: downgrade, isPending: downgrading } =
     useDowngradeSubscription(organizationId)
 
+  const { hasPendingInvoice } = usePermissions()
   const { data: plansData } = usePlans()
   const plans = plansData?.data ?? []
   const targetPlanInfo = plans.find((p) => p.id === targetPlan)
@@ -172,6 +182,7 @@ export function DowngradeWizard({
               : null
           )
           setConfirmedPreview(preview ?? null)
+          setHadPendingInvoiceAtConfirm(hasPendingInvoice)
           setStep("success")
         },
       }
@@ -187,6 +198,7 @@ export function DowngradeWizard({
       setSelectedFiles([])
       setResult(null)
       setConfirmedPreview(null)
+      setHadPendingInvoiceAtConfirm(false)
     }, 300)
   }
 
@@ -218,13 +230,24 @@ export function DowngradeWizard({
                 {t(`billing.plans.${targetCycle}`)}
               </span>
             </div>
-            {confirmedPreview?.new_period_end && (
+            {hadPendingInvoiceAtConfirm && confirmedPreview ? (
               <p className="pt-1 text-xs text-muted-foreground">
-                {t("billing.plans.noChargeToday")}{" "}
-                {t("billing.downgrade.successEffectiveOn", {
-                  date: formatDate(confirmedPreview.new_period_end),
+                {t("billing.downgrade.successNewInvoiceIssued", {
+                  amount: formatMoney(
+                    confirmedPreview.total_cents,
+                    confirmedPreview.currency
+                  ),
                 })}
               </p>
+            ) : (
+              confirmedPreview?.new_period_end && (
+                <p className="pt-1 text-xs text-muted-foreground">
+                  {t("billing.plans.noChargeToday")}{" "}
+                  {t("billing.downgrade.successEffectiveOn", {
+                    date: formatDate(confirmedPreview.new_period_end),
+                  })}
+                </p>
+              )
             )}
           </div>
 
@@ -281,47 +304,38 @@ export function DowngradeWizard({
           <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">
-                {t("billing.downgrade.planLabel")}
+                {t("billing.downgrade.currentPlanLabel")}
               </span>
               <span className="font-medium">
-                {currentPlanInfo?.name ?? currentPlan} →{" "}
+                {currentPlanInfo?.name ?? currentPlan}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.downgrade.selectedPlanLabel")}
+              </span>
+              <span className="font-medium">
                 {targetPlanInfo?.name ?? targetPlan}
               </span>
             </div>
-            {targetPrices && (
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">
-                  {t("billing.downgrade.newPrice")}
-                </span>
-                <span className="font-medium">
-                  {formatPrice(
-                    targetCycle === "monthly"
-                      ? targetPrices.monthly
-                      : targetPrices.yearly,
-                    currency,
-                    targetCycle,
-                    t
-                  )}
-                </span>
-              </div>
-            )}
-            {cycleChanged && (
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">
-                  {t("billing.downgrade.cycleLabel")}
-                </span>
-                <span className="font-medium">
-                  {t(`billing.plans.${currentCycle}`)} →{" "}
-                  {t(`billing.plans.${targetCycle}`)}
-                </span>
-              </div>
-            )}
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.downgrade.cycleLabel")}
+              </span>
+              <span className="font-medium">
+                {cycleChanged
+                  ? `${t(`billing.plans.${currentCycle}`)} → ${t(`billing.plans.${targetCycle}`)}`
+                  : t(`billing.plans.${targetCycle}`)}
+              </span>
+            </div>
           </div>
 
           <InvoicePreviewNote
             preview={preview}
             loading={previewLoading}
             currentPeriodEnd={currentPeriodEnd}
+            planName={targetPlanInfo?.name ?? targetPlan}
+            hasPendingInvoice={hasPendingInvoice}
           />
 
           {previewLoading ? (
@@ -494,10 +508,17 @@ export function DowngradeWizard({
         <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
           <div className="flex items-center justify-between">
             <span className="text-muted-foreground">
-              {t("billing.downgrade.planLabel")}
+              {t("billing.downgrade.currentPlanLabel")}
             </span>
             <span className="font-medium">
-              {currentPlanInfo?.name ?? currentPlan} →{" "}
+              {currentPlanInfo?.name ?? currentPlan}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">
+              {t("billing.downgrade.selectedPlanLabel")}
+            </span>
+            <span className="font-medium">
               {targetPlanInfo?.name ?? targetPlan}
             </span>
           </div>
@@ -518,23 +539,24 @@ export function DowngradeWizard({
               </span>
             </div>
           )}
-          {cycleChanged && (
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">
-                {t("billing.downgrade.cycleLabel")}
-              </span>
-              <span className="font-medium">
-                {t(`billing.plans.${currentCycle}`)} →{" "}
-                {t(`billing.plans.${targetCycle}`)}
-              </span>
-            </div>
-          )}
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">
+              {t("billing.downgrade.cycleLabel")}
+            </span>
+            <span className="font-medium">
+              {cycleChanged
+                ? `${t(`billing.plans.${currentCycle}`)} → ${t(`billing.plans.${targetCycle}`)}`
+                : t(`billing.plans.${targetCycle}`)}
+            </span>
+          </div>
         </div>
 
         <InvoicePreviewNote
           preview={preview}
           loading={previewLoading}
           currentPeriodEnd={currentPeriodEnd}
+          planName={targetPlanInfo?.name ?? targetPlan}
+          hasPendingInvoice={hasPendingInvoice}
         />
 
         <p className="text-sm text-muted-foreground">

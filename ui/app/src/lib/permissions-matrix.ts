@@ -19,9 +19,9 @@ export const PERMISSION_MATRIX: Record<
   files: { view: "admin" },
   webhooks: { view: "owner" },
   auditLog: { view: "admin" },
-  billing: { view: "member", manage: "owner" },
+  billing: { view: "admin", manage: "owner" },
   settingsGeneral: { view: "member", edit: "owner" },
-  settingsSecurity: { view: "member", edit: "owner" },
+  settingsSecurity: { view: "admin", edit: "owner" },
   settingsDanger: { view: "owner", delete: "owner" },
 }
 

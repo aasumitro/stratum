@@ -545,41 +545,68 @@ func TestStaleSubscriptionCheck(t *testing.T) {
 // --- maxExtendableMonths ---
 
 func TestMaxExtendableMonths(t *testing.T) {
-	// 2025-01-01: the 24-month window from here (Feb 2025 + Feb 2026) crosses
-	// no leap day, so 24 calendar months == exactly 730 fixed days and lines
-	// up cleanly with round-number worked examples below. A leap-year anchor
-	// (e.g. 2024-01-01) makes 24 calendar months span 731 days — one more
-	// than the fixed-duration cap — a calendar-vs-fixed-duration drift, not
-	// a bug in the function; picking a non-leap-spanning anchor avoids
-	// exercising that drift in a test that's meant to check round numbers.
-	createdAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	now := createdAt // unused by the calculation (anchored to createdAt, not now) but always passed, matching prorate's convention of taking now explicitly rather than calling time.Now() internally.
+	// Runway-cap model: period_end may never sit more than 24 calendar
+	// months ahead of now, full stop — not "24 months since created_at".
+	// 2025-01-01 has no leap day inside its 24-month window, so it lines up
+	// cleanly with round-number worked examples below; the leap-year case
+	// gets its own dedicated test further down.
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name           string
-		monthsElapsed  int // periodEnd = createdAt + monthsElapsed
-		wantExtendable int
+		name            string
+		monthsRemaining int // periodEnd = now + monthsRemaining
+		wantExtendable  int
 	}{
-		{"1 month elapsed leaves 23 extendable", 1, 23},
-		{"13 months elapsed leaves 11 extendable", 13, 11},
+		{"1 month remaining leaves 23 extendable", 1, 23},
+		{"13 months remaining leaves 11 extendable", 13, 11},
 		// Boundaries.
-		{"0 months elapsed (brand new sub) leaves the full 24", 0, 24},
-		{"24 months elapsed (already at cap) leaves 0", 24, 0},
-		{"23 months elapsed leaves exactly 1", 23, 1},
+		{"0 months remaining (period ends today) leaves the full 24", 0, 24},
+		{"24 months remaining (already at cap) leaves 0", 24, 0},
+		{"23 months remaining leaves exactly 1", 23, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			periodEnd := createdAt.AddDate(0, c.monthsElapsed, 0)
-			if got := maxExtendableMonths(createdAt, periodEnd, now); got != c.wantExtendable {
+			periodEnd := now.AddDate(0, c.monthsRemaining, 0)
+			if got := maxExtendableMonths(periodEnd, now); got != c.wantExtendable {
 				t.Errorf("maxExtendableMonths() = %d, want %d", got, c.wantExtendable)
 			}
 		})
 	}
 
-	t.Run("never returns more than the 24-month bound regardless of how far in the past periodEnd is", func(t *testing.T) {
-		periodEnd := createdAt.AddDate(0, -100, 0) // pathological: periodEnd long before createdAt
-		if got := maxExtendableMonths(createdAt, periodEnd, now); got > 24 {
+	t.Run("never returns more than the 24-month bound even for an already-expired periodEnd", func(t *testing.T) {
+		periodEnd := now.AddDate(0, -100, 0) // pathological: periodEnd long in the past
+		if got := maxExtendableMonths(periodEnd, now); got > 24 {
 			t.Errorf("maxExtendableMonths() = %d, want <= 24", got)
+		}
+	})
+
+	t.Run("a plan-change-shifted time-of-day doesn't cost a whole month", func(t *testing.T) {
+		// Reproduces a real case: now at 09:04:50, but period_end sits a few
+		// hours later in the day (10:40:05) because a plan change reprorated
+		// the period anchored to time.Now() of that change. 13 months
+		// remaining should still leave 11 extendable exactly like the
+		// clean-timestamp case above — the few hours of same-day drift must
+		// not shave off a 12th.
+		drifted := time.Date(2025, 1, 1, 9, 4, 50, 0, time.UTC)
+		periodEnd := drifted.AddDate(0, 13, 0).Add(95 * time.Minute) // ~10:40 the same day
+		if got := maxExtendableMonths(periodEnd, drifted); got != 11 {
+			t.Errorf("maxExtendableMonths() = %d, want 11", got)
+		}
+	})
+
+	t.Run("a leap day inside the 24-month window no longer costs a whole month", func(t *testing.T) {
+		// Real case that motivated the runway-cap rewrite: an org created
+		// 2026-07-30, still on its first yearly period (period_end
+		// 2027-07-30, 12 months remaining). 2028 is a leap year, so the old
+		// fixed-duration-from-created_at cap (2*365*24h) landed one day
+		// short of a true calendar 2-year horizon and undercounted this as
+		// 11 extendable instead of 12. Calendar arithmetic (AddDate) on both
+		// sides of the comparison must get this right regardless of leap
+		// years.
+		now := time.Date(2026, 7, 30, 14, 48, 45, 0, time.UTC)
+		periodEnd := now.AddDate(0, 12, 0) // 2027-07-30, 12 months remaining
+		if got := maxExtendableMonths(periodEnd, now); got != 12 {
+			t.Errorf("maxExtendableMonths() = %d, want 12", got)
 		}
 	})
 }

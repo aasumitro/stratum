@@ -5,15 +5,6 @@ import { Button } from "@/components/ui/button"
 import { ActivateTrialDialog } from "./activate-trial-dialog"
 import type { Subscription } from "@/types/billing"
 
-function formatDate(s?: string) {
-  if (!s) return "—"
-  return new Date(s).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })
-}
-
 interface Props {
   sub: Subscription
   organizationId: string
@@ -81,29 +72,10 @@ export function SubscriptionStatusBanner({
     )
   }
 
+  // cancelled gets its resume action on the dunning banner at the top of
+  // the page instead (billing-layout.tsx) — same state, one banner.
   if (sub.status === "cancelled") {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted px-4 py-3">
-        <p className="text-sm">
-          {t("billing.states.cancelledAccessUntil", {
-            date: formatDate(sub.period_end),
-          })}
-        </p>
-        {isOwner && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={resuming}
-            onClick={onResume}
-          >
-            {resuming && (
-              <IconLoader2 data-icon="inline-start" className="animate-spin" />
-            )}
-            {t("billing.subscription.resume")}
-          </Button>
-        )}
-      </div>
-    )
+    return null
   }
 
   if (sub.status === "trialing") {

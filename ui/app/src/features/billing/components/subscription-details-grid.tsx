@@ -29,7 +29,11 @@ interface Props {
 export function SubscriptionDetailsGrid({ sub, daysLeft, children }: Props) {
   const { t } = useTranslation()
   return (
-    <div className="grid gap-6 lg:grid-cols-4">
+    // 2 columns below lg (not 1) — a single narrow column stacked all 3-4
+    // groups full-height with a large gap between each, wasting the mobile
+    // viewport's unused horizontal half and making a handful of short facts
+    // (plan, status, cycle, two dates) scroll like a much longer page.
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 lg:gap-6">
       <div className="lg:border-r lg:pr-6">
         <div className="space-y-4">
           <div className="space-y-1">

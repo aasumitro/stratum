@@ -63,7 +63,8 @@ export function OrganizationLayout() {
     void navigate({ to: "/organizations" })
   }, [isError, error, navigate, t, session])
 
-  const { isOwner, hasPendingInvoice } = usePermissions()
+  const { isOwner, hasPendingInvoice, role, canViewBilling, canAccessFiles } =
+    usePermissions()
   const organization = wsData?.data
   const isSuspended = organization?.status === "suspended"
 
@@ -95,6 +96,26 @@ export function OrganizationLayout() {
       params: { organizationId },
     })
   }, [hasPendingInvoice, currentSegment, navigate, organizationId])
+
+  // Top-level segments below a role's threshold (PERMISSION_MATRIX) hide
+  // from the sidebar (sidebar-organization-nav.tsx's ORG_NAV `.filter`),
+  // but the route itself is still reachable by typing the URL directly —
+  // send those visitors to Settings instead, same as a role-gated Settings
+  // section simply not being in the DOM. Segment→allowed mirrors ORG_NAV's
+  // own `allowed` fields, so a future nav item only needs an entry here.
+  const isSegmentAllowed =
+    currentSegment === "files"
+      ? canAccessFiles
+      : currentSegment === "billing"
+        ? canViewBilling
+        : true
+  useEffect(() => {
+    if (role === undefined || !currentSegment || isSegmentAllowed) return
+    void navigate({
+      to: "/organization/$organizationId/settings",
+      params: { organizationId },
+    })
+  }, [role, isSegmentAllowed, currentSegment, navigate, organizationId])
 
   return (
     <div className="flex flex-1 flex-col gap-6">

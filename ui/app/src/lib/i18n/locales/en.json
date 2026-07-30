@@ -703,6 +703,7 @@
       "exportCsv": "Export CSV",
       "eventsTotal": "{{count}} events",
       "noEvents": "No audit events yet.",
+      "noEventsDescription": "Actions taken in this organization will show up here.",
       "fromDate": "From",
       "toDate": "To",
       "allActors": "All actors",
@@ -967,11 +968,17 @@
       "optionSwitchAnnual": "Switch to Annual (12 months)",
       "currentRenewalLabel": "Current renewal",
       "newRenewalLabel": "New renewal date",
-      "amountLabel": "Amount",
       "consequenceMonths": "Your subscription is extended to {{date}} once this invoice is paid.",
       "consequenceAnnual": "Your billing cycle becomes yearly once this invoice is paid.",
       "subtotal": "Estimated total: {{amount}}",
       "plusTax": "+ tax",
+      "lineTwelveMonthsYearly": "12 months (yearly rate)",
+      "lineYearlyBlocks": "{{blocks}} × 12 months (yearly rate)",
+      "lineMonthlyRemainder": "{{count}} month(s) (monthly rate)",
+      "subtotalLabel": "Subtotal",
+      "taxLabel": "Tax",
+      "taxAtCheckout": "Calculated at checkout",
+      "finalAmountNote": "The exact total, including tax, shows on the invoice after you confirm.",
       "confirmExtend": "Confirm",
       "successTitle": "Extension invoice created",
       "successDescription": "Nothing changes yet — pay the invoice below to apply it.",
@@ -988,6 +995,8 @@
       "previewDescription": "We'll check your current usage against the new plan's limits.",
       "previewOverageWarning": "If your usage exceeds the new plan's limits, you'll be asked to choose what to remove before this takes effect.",
       "planLabel": "Plan",
+      "currentPlanLabel": "Current plan",
+      "selectedPlanLabel": "Selected plan",
       "cycleLabel": "Billing cycle",
       "newPrice": "New price",
       "selectionTitle": "Select items to remove",
@@ -1006,7 +1015,8 @@
       "successDescription": "Your plan has been changed.",
       "successEffectiveOn": "Effective {{date}}.",
       "successRemovedInfo": "Removed:",
-      "successNothingRemoved": "Your usage was already within the new plan's limits — nothing needed to be removed."
+      "successNothingRemoved": "Your usage was already within the new plan's limits — nothing needed to be removed.",
+      "successNewInvoiceIssued": "Your previous unpaid invoice was voided. A new invoice for {{amount}} has been issued for this change — pay it in Billing to keep your organization in good standing."
     },
     "cancel": {
       "reasonTitle": "Why are you cancelling?",
@@ -1031,6 +1041,7 @@
       "accessUntilLabel": "Access until",
       "reviewAccessUntil": "Your subscription stays active — access continues until {{date}}.",
       "reviewAfterPeriodEnd": "After that date, you'll lose access to this organization's paid features. Before you go, you may want to export your data.",
+      "pendingInvoiceNote": "You still have an unpaid invoice. Cancelling doesn't clear it — you can pay it from Billing, or it stays outstanding.",
       "exportTitle": "Export your data",
       "exportPersonalData": "Export my personal data (Account)",
       "exportOrganizationData": "Export organization data (Audit log)",
@@ -1050,13 +1061,16 @@
       "reviewTitle": "Confirm plan change",
       "reviewDescription": "Review the pricing before confirming.",
       "planLabel": "Plan",
+      "currentPlanLabel": "Current plan",
+      "selectedPlanLabel": "Selected plan",
       "cycleLabel": "Billing cycle",
       "termsAgreed": "I agree to the billing terms for this change.",
       "confirmUpgrade": "Confirm change",
       "successTitle": "Plan changed",
       "successDescription": "Your subscription is now on {{plan}}.",
       "successRenewsOn": "Renews on {{date}}.",
-      "successCharged": "Charged {{amount}} on your next invoice."
+      "successCharged": "Charged {{amount}} on your next invoice.",
+      "successNewInvoiceIssued": "Your previous unpaid invoice was voided. A new invoice for {{amount}} has been issued for this change — pay it in Billing to keep your organization in good standing."
     },
     "plans": {
       "title": "Choose a plan",
@@ -1075,7 +1089,11 @@
       "changePlanDescription": "Proration converts remaining value to time — no charge or refund today.",
       "noChargeToday": "No charge today.",
       "prorationExplainer": "Your remaining value converts to time: new period end {{newDate}} (was {{oldDate}}).",
-      "nextInvoiceTotal": "Next invoice total: {{amount}}"
+      "nextInvoiceTotalNote": "Billed on your next invoice.",
+      "discountLabel": "Discount",
+      "totalLabel": "Total",
+      "voidsPendingInvoiceTitle": "You have an unpaid invoice.",
+      "voidsPendingInvoiceExplainer": "Confirming this change voids it and issues a new invoice for the amount above, due immediately."
     },
     "invoices": {
       "title": "Invoices",
@@ -1088,6 +1106,13 @@
       "statusFailed": "Failed",
       "statusVoid": "Void",
       "noInvoices": "No invoices yet.",
+      "noResults": "No invoices match your search or filter.",
+      "searchPlaceholder": "Search invoice number…",
+      "dueLabel": "Due {{date}}",
+      "kind": {
+        "extension": "Extension",
+        "activation": "Activation"
+      },
       "pay": "Pay",
       "opening": "Opening…",
       "payFailed": "Failed to open payment link",
@@ -1211,12 +1236,12 @@
       "payInvoice": "Pay invoice →",
       "expiredTitle": "Access paused",
       "expiredDescription": "Pay the open invoice to reactivate instantly once the webhook confirms.",
-      "resumeGetLink": "Resume — get payment link",
-      "cancelledAccessUntil": "Access until {{date}}."
+      "resumeGetLink": "Resume — get payment link"
     },
     "managedByNote": "Billing actions are managed by the organization owner.",
     "pendingChanges": {
-      "title": "Next invoice",
+      "title": "At your next renewal",
+      "titlePendingInvoice": "You have an unpaid invoice",
       "breakdown": "Breakdown",
       "total": "Total"
     },

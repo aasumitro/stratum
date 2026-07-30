@@ -703,6 +703,7 @@
       "exportCsv": "Ekspor CSV",
       "eventsTotal": "{{count}} peristiwa",
       "noEvents": "Belum ada peristiwa audit.",
+      "noEventsDescription": "Tindakan yang dilakukan di organisasi ini akan muncul di sini.",
       "fromDate": "Dari",
       "toDate": "Hingga",
       "allActors": "Semua aktor",
@@ -967,11 +968,17 @@
       "optionSwitchAnnual": "Beralih ke Tahunan (12 bulan)",
       "currentRenewalLabel": "Perpanjangan saat ini",
       "newRenewalLabel": "Tanggal perpanjangan baru",
-      "amountLabel": "Jumlah",
       "consequenceMonths": "Langganan Anda diperpanjang hingga {{date}} setelah faktur ini dibayar.",
       "consequenceAnnual": "Siklus penagihan Anda menjadi tahunan setelah faktur ini dibayar.",
       "subtotal": "Perkiraan total: {{amount}}",
       "plusTax": "+ pajak",
+      "lineTwelveMonthsYearly": "12 bulan (tarif tahunan)",
+      "lineYearlyBlocks": "{{blocks}} × 12 bulan (tarif tahunan)",
+      "lineMonthlyRemainder": "{{count}} bulan (tarif bulanan)",
+      "subtotalLabel": "Subtotal",
+      "taxLabel": "Pajak",
+      "taxAtCheckout": "Dihitung saat checkout",
+      "finalAmountNote": "Total pasti, termasuk pajak, akan tampil di faktur setelah Anda mengonfirmasi.",
       "confirmExtend": "Konfirmasi",
       "successTitle": "Faktur perpanjangan dibuat",
       "successDescription": "Belum ada perubahan — bayar faktur di bawah untuk menerapkannya.",
@@ -988,6 +995,8 @@
       "previewDescription": "Kami akan memeriksa penggunaan Anda saat ini terhadap batas paket baru.",
       "previewOverageWarning": "Jika penggunaan Anda melebihi batas paket baru, Anda akan diminta memilih apa yang akan dihapus sebelum ini berlaku.",
       "planLabel": "Paket",
+      "currentPlanLabel": "Paket saat ini",
+      "selectedPlanLabel": "Paket yang dipilih",
       "cycleLabel": "Siklus penagihan",
       "newPrice": "Harga baru",
       "selectionTitle": "Pilih item yang akan dihapus",
@@ -1006,7 +1015,8 @@
       "successDescription": "Paket Anda telah diubah.",
       "successEffectiveOn": "Berlaku {{date}}.",
       "successRemovedInfo": "Dihapus:",
-      "successNothingRemoved": "Penggunaan Anda sudah sesuai batas paket baru — tidak ada yang perlu dihapus."
+      "successNothingRemoved": "Penggunaan Anda sudah sesuai batas paket baru — tidak ada yang perlu dihapus.",
+      "successNewInvoiceIssued": "Faktur Anda yang belum dibayar sebelumnya telah dibatalkan. Faktur baru sebesar {{amount}} telah diterbitkan untuk perubahan ini — bayar di Billing agar organisasi Anda tetap dalam status baik."
     },
     "cancel": {
       "reasonTitle": "Mengapa Anda membatalkan?",
@@ -1031,6 +1041,7 @@
       "accessUntilLabel": "Akses hingga",
       "reviewAccessUntil": "Langganan Anda tetap aktif — akses berlanjut hingga {{date}}.",
       "reviewAfterPeriodEnd": "Setelah tanggal tersebut, Anda akan kehilangan akses ke fitur berbayar organisasi ini. Sebelum itu, Anda mungkin ingin mengekspor data Anda.",
+      "pendingInvoiceNote": "Anda masih memiliki faktur yang belum dibayar. Membatalkan langganan tidak menghapusnya — Anda bisa membayarnya di Billing, atau faktur tersebut akan tetap tertunggak.",
       "exportTitle": "Ekspor data Anda",
       "exportPersonalData": "Ekspor data pribadi saya (Akun)",
       "exportOrganizationData": "Ekspor data organisasi (Log audit)",
@@ -1050,13 +1061,16 @@
       "reviewTitle": "Konfirmasi perubahan paket",
       "reviewDescription": "Tinjau harga sebelum mengonfirmasi.",
       "planLabel": "Paket",
+      "currentPlanLabel": "Paket saat ini",
+      "selectedPlanLabel": "Paket yang dipilih",
       "cycleLabel": "Siklus penagihan",
       "termsAgreed": "Saya setuju dengan ketentuan penagihan untuk perubahan ini.",
       "confirmUpgrade": "Konfirmasi perubahan",
       "successTitle": "Paket diubah",
       "successDescription": "Langganan Anda sekarang menggunakan {{plan}}.",
       "successRenewsOn": "Diperpanjang pada {{date}}.",
-      "successCharged": "Ditagih {{amount}} pada faktur berikutnya."
+      "successCharged": "Ditagih {{amount}} pada faktur berikutnya.",
+      "successNewInvoiceIssued": "Faktur Anda yang belum dibayar sebelumnya telah dibatalkan. Faktur baru sebesar {{amount}} telah diterbitkan untuk perubahan ini — bayar di Billing agar organisasi Anda tetap dalam status baik."
     },
     "plans": {
       "title": "Pilih paket",
@@ -1075,7 +1089,11 @@
       "changePlanDescription": "Prorata mengonversi sisa nilai menjadi waktu — tidak ada biaya atau pengembalian dana hari ini.",
       "noChargeToday": "Tidak ada biaya hari ini.",
       "prorationExplainer": "Sisa nilai Anda dikonversi menjadi waktu: akhir periode baru {{newDate}} (sebelumnya {{oldDate}}).",
-      "nextInvoiceTotal": "Total faktur berikutnya: {{amount}}"
+      "nextInvoiceTotalNote": "Ditagihkan pada faktur berikutnya.",
+      "discountLabel": "Diskon",
+      "totalLabel": "Total",
+      "voidsPendingInvoiceTitle": "Anda memiliki faktur yang belum dibayar.",
+      "voidsPendingInvoiceExplainer": "Mengonfirmasi perubahan ini akan membatalkan faktur tersebut dan menerbitkan faktur baru sejumlah di atas, jatuh tempo segera."
     },
     "invoices": {
       "title": "Tagihan",
@@ -1088,6 +1106,13 @@
       "statusFailed": "Gagal",
       "statusVoid": "Batal",
       "noInvoices": "Belum ada tagihan.",
+      "noResults": "Tidak ada tagihan yang cocok dengan pencarian atau filter Anda.",
+      "searchPlaceholder": "Cari nomor tagihan…",
+      "dueLabel": "Jatuh tempo {{date}}",
+      "kind": {
+        "extension": "Perpanjangan",
+        "activation": "Aktivasi"
+      },
       "pay": "Bayar",
       "opening": "Membuka…",
       "payFailed": "Gagal membuka tautan pembayaran",
@@ -1211,12 +1236,12 @@
       "payInvoice": "Bayar faktur →",
       "expiredTitle": "Akses dijeda",
       "expiredDescription": "Bayar faktur terbuka untuk mengaktifkan kembali secara instan setelah webhook mengonfirmasi.",
-      "resumeGetLink": "Lanjutkan — dapatkan tautan pembayaran",
-      "cancelledAccessUntil": "Akses hingga {{date}}."
+      "resumeGetLink": "Lanjutkan — dapatkan tautan pembayaran"
     },
     "managedByNote": "Tindakan penagihan dikelola oleh pemilik organisasi.",
     "pendingChanges": {
-      "title": "Faktur berikutnya",
+      "title": "Saat perpanjangan berikutnya",
+      "titlePendingInvoice": "Anda memiliki faktur yang belum dibayar",
       "breakdown": "Rincian",
       "total": "Total"
     },

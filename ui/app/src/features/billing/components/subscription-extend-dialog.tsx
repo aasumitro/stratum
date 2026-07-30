@@ -247,39 +247,70 @@ export function SubscriptionExtendDialog({
               )}
             </div>
 
-            <div className="rounded-lg border p-3 text-sm">
+            <div className="flex flex-col gap-1.5 rounded-lg border p-3 text-sm">
               {plansLoading ? (
                 <Skeleton className="h-6 w-full" />
+              ) : mode === "annual" ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">
+                    {t("billing.extend.lineTwelveMonthsYearly")}
+                  </span>
+                  <span>
+                    {formatMoney(annualSubtotal, subscription.currency)}
+                  </span>
+                </div>
               ) : (
                 <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">
-                      {t("billing.extend.amountLabel")}
-                    </span>
-                    <span className="font-semibold">
-                      {t("billing.extend.subtotal", {
-                        amount: formatMoney(
-                          mode === "annual" ? annualSubtotal : monthsSubtotal,
-                          subscription.currency
-                        ),
-                      })}{" "}
-                      <span className="font-normal text-muted-foreground">
-                        {t("billing.extend.plusTax")}
+                  {blocks >= 1 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        {t("billing.extend.lineYearlyBlocks", { blocks })}
                       </span>
+                      <span>
+                        {formatMoney(
+                          blocks * (prices?.yearly ?? 0),
+                          subscription.currency
+                        )}
+                      </span>
+                    </div>
+                  )}
+                  {(blocks === 0 || remainder > 0) && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        {t("billing.extend.lineMonthlyRemainder", {
+                          count: blocks === 0 ? months : remainder,
+                        })}
+                      </span>
+                      <span>
+                        {formatMoney(
+                          (blocks === 0 ? months : remainder) *
+                            (prices?.monthly ?? 0),
+                          subscription.currency
+                        )}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!plansLoading && (
+                <>
+                  <div className="flex items-center justify-between border-t pt-1.5 font-medium">
+                    <span>{t("billing.extend.subtotalLabel")}</span>
+                    <span>
+                      {formatMoney(
+                        mode === "annual" ? annualSubtotal : monthsSubtotal,
+                        subscription.currency
+                      )}
                     </span>
                   </div>
-                  {mode === "months" && blocks >= 1 && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {remainder > 0
-                        ? t("billing.extend.tieredBreakdownWithRemainder", {
-                            blocks,
-                            remainder,
-                          })
-                        : t("billing.extend.tieredBreakdownBlocksOnly", {
-                            blocks,
-                          })}
-                    </p>
-                  )}
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>{t("billing.extend.taxLabel")}</span>
+                    <span>{t("billing.extend.taxAtCheckout")}</span>
+                  </div>
+                  <p className="pt-1 text-xs text-muted-foreground">
+                    {t("billing.extend.finalAmountNote")}
+                  </p>
                 </>
               )}
             </div>

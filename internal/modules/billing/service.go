@@ -71,6 +71,7 @@ var (
 	ErrAlreadyYearly               = errors.New("subscription is already on the yearly cycle")
 	ErrSubscriptionNotTrialing     = errors.New("subscription is not currently trialing")
 	ErrSubscriptionNotResumable    = errors.New("subscription is not in a resumable state")
+	ErrPlanChangeNotAllowed        = errors.New("subscription is not in a state that allows plan changes")
 )
 
 func calculateTax(subtotalCents int64, taxRateBPS int) int64 {

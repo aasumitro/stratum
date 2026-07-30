@@ -1,13 +1,7 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { IconChevronDown } from "@tabler/icons-react"
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { IconChevronDown, IconFileInvoice } from "@tabler/icons-react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Select,
   SelectContent,
@@ -16,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { SearchBar } from "@/components/shared/search-bar"
 import { PdfButton } from "@/features/billing/components/pdf-button"
 import { PreviewButton } from "@/features/billing/components/preview-button"
 import { PayButton } from "@/features/billing/components/pay-button"
@@ -61,6 +56,7 @@ export function InvoicesTable({ organizationId }: Props) {
   const { t } = useTranslation()
   const { isOwner } = usePermissions()
   const [statusFilter, setStatusFilter] = useState("all")
+  const [search, setSearch] = useState("")
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const { data, isLoading } = useInvoices(organizationId, isOwner)
   const { data: linksData } = usePaymentLinks(organizationId)
@@ -74,10 +70,13 @@ export function InvoicesTable({ organizationId }: Props) {
     ])
   }
   const allInvoices = data?.data ?? []
-  const invoices =
-    statusFilter === "all"
-      ? allInvoices
-      : allInvoices.filter((inv) => inv.status === statusFilter)
+  const query = search.trim().toLowerCase()
+  const invoices = allInvoices
+    .filter((inv) => statusFilter === "all" || inv.status === statusFilter)
+    .filter(
+      (inv) =>
+        !query || (inv.invoice_number ?? "").toLowerCase().includes(query)
+    )
 
   // A pending invoice with an already-open (unexpired, unpaid) link
   // shows "awaiting payment" instead of a fresh Pay button, until the
@@ -87,18 +86,24 @@ export function InvoicesTable({ organizationId }: Props) {
       .filter((l) => l.status === "pending")
       .map((l) => l.invoice_id)
   )
-
   return (
     <Card id="billing-invoices" className="scroll-mt-6">
-      <CardHeader>
+      <CardHeader className="flex flex-col gap-4 space-y-0 pb-4 sm:flex-row sm:items-center sm:justify-between">
         <CardTitle>{t("billing.invoices.title")}</CardTitle>
         {isOwner && !!allInvoices.length && (
-          <CardAction>
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <SearchBar
+              value={search}
+              onChange={setSearch}
+              placeholder={t("billing.invoices.searchPlaceholder")}
+              autoFocusShortcut={false}
+              className="flex-1 sm:w-48 sm:flex-none md:w-64 lg:w-80"
+            />
             <Select
               value={statusFilter}
               onValueChange={(v) => setStatusFilter(v ?? "all")}
             >
-              <SelectTrigger className="h-7 w-32 text-xs">
+              <SelectTrigger className="h-9 w-[100px] sm:h-9 sm:w-32">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -119,7 +124,7 @@ export function InvoicesTable({ organizationId }: Props) {
                 </SelectItem>
               </SelectContent>
             </Select>
-          </CardAction>
+          </div>
         )}
       </CardHeader>
       <CardContent>
@@ -136,6 +141,10 @@ export function InvoicesTable({ organizationId }: Props) {
         ) : !allInvoices.length ? (
           <p className="text-sm text-muted-foreground">
             {t("billing.invoices.noInvoices")}
+          </p>
+        ) : !invoices.length ? (
+          <p className="text-sm text-muted-foreground">
+            {t("billing.invoices.noResults")}
           </p>
         ) : (
           <div className="flex flex-col gap-3">
@@ -155,46 +164,62 @@ export function InvoicesTable({ organizationId }: Props) {
               // even with zero payment attempts yet, or those actions
               // would be unreachable for a freshly-created pending invoice.
               const expandable = isActive || invPayments.length > 0
-              return (
-                <div
-                  key={inv.id}
-                  className={cn(
-                    "overflow-hidden rounded-lg border border-border",
-                    !isActive && !canRegenerate && "opacity-50"
-                  )}
-                >
+              // A compact 2-line row, not a 3-4 line stack: line 1 is
+              // invoice number + amount/status together (so amount never
+              // has to sit in its own block below), line 2 is metadata that
+              // never wraps to a 3rd line — the kind tag folds away below
+              // sm: (content-priority: date and due date matter more than
+              // the invoice's kind) instead of pushing the row taller.
+              const rowMain = (
+                <div className="flex min-w-0 flex-1 items-center gap-3">
                   <div
                     className={cn(
-                      "flex flex-wrap items-center justify-between gap-3 p-4",
-                      expandable && "cursor-pointer"
+                      "flex size-9 shrink-0 items-center justify-center rounded-full",
+                      STATUS_BADGE[inv.status] ??
+                        "bg-muted text-muted-foreground"
                     )}
-                    onClick={() =>
-                      expandable && setExpandedId(isExpanded ? null : inv.id)
-                    }
                   >
-                    <div className="flex items-center gap-2">
-                      {expandable && (
-                        <IconChevronDown
-                          className={cn(
-                            "size-4 shrink-0 text-muted-foreground transition-transform",
-                            isExpanded ? "rotate-180" : ""
-                          )}
-                        />
+                    <IconFileInvoice className="size-4" />
+                  </div>
+                  {expandable && (
+                    <IconChevronDown
+                      className={cn(
+                        "size-4 shrink-0 text-muted-foreground transition-transform",
+                        isExpanded ? "rotate-180" : ""
                       )}
-                      <div>
-                        <p className="font-mono text-xs text-muted-foreground">
-                          {inv.invoice_number ?? "—"}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
+                    />
+                  )}
+                  <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <p className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+                        {inv.invoice_number ?? "—"}
+                      </p>
+                      <div className="flex items-center gap-x-2 overflow-hidden text-sm text-nowrap text-muted-foreground">
+                        <span className="shrink-0">
                           {formatDate(inv.created_at)}
-                        </p>
+                        </span>
+                        {inv.kind !== "subscription" && (
+                          <span className="hidden shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase sm:inline">
+                            {t(`billing.invoices.kind.${inv.kind}`)}
+                          </span>
+                        )}
+                        {inv.status === "pending" && inv.due_at && (
+                          <span className="hidden truncate sm:inline-block">
+                            {t("billing.invoices.dueLabel", {
+                              date: formatDate(inv.due_at),
+                            })}
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
+
+                    <div className="flex shrink-0 items-center gap-2">
                       <span
                         className={cn(
                           "text-sm font-semibold",
-                          canRegenerate && "line-through opacity-50"
+                          canRegenerate && "line-through opacity-50",
+                          (inv.status === "pending" || canRegenerate) &&
+                            "hidden sm:inline-block"
                         )}
                       >
                         {formatMoney(inv.amount_cents, inv.currency)}
@@ -207,27 +232,63 @@ export function InvoicesTable({ organizationId }: Props) {
                       >
                         {inv.status}
                       </span>
-                      <div
-                        className="flex items-center gap-1"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {inv.status === "pending" && (
-                          <PayButton
-                            invoiceId={inv.id}
-                            organizationId={organizationId}
-                            amountCents={inv.amount_cents}
-                            currency={inv.currency}
-                            awaitingPayment={openLinkByInvoice.has(inv.id)}
-                          />
-                        )}
-                        {canRegenerate && (
-                          <RegenerateButton
-                            invoiceId={inv.id}
-                            organizationId={organizationId}
-                          />
-                        )}
-                      </div>
                     </div>
+                  </div>
+                </div>
+              )
+              return (
+                <div
+                  key={inv.id}
+                  className={cn(
+                    "overflow-hidden rounded-lg border border-border transition-colors",
+                    !isActive && !canRegenerate && "opacity-50",
+                    expandable && "hover:bg-muted/50"
+                  )}
+                >
+                  <div className="flex flex-col p-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                    {expandable ? (
+                      <button
+                        type="button"
+                        aria-expanded={isExpanded}
+                        onClick={() =>
+                          setExpandedId(isExpanded ? null : inv.id)
+                        }
+                        className="min-w-0 rounded-md p-3 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:flex-1"
+                      >
+                        {rowMain}
+                      </button>
+                    ) : (
+                      <div className="min-w-0 p-3 sm:flex-1">{rowMain}</div>
+                    )}
+                    {(inv.status === "pending" || canRegenerate) && (
+                      <div className="flex items-center justify-between gap-3 px-3 pb-3 sm:justify-end sm:gap-1 sm:p-3">
+                        <span
+                          className={cn(
+                            "shrink-0 text-sm font-semibold sm:hidden",
+                            canRegenerate && "line-through opacity-50"
+                          )}
+                        >
+                          {formatMoney(inv.amount_cents, inv.currency)}
+                        </span>
+                        <div className="flex items-center justify-end gap-1">
+                          {inv.status === "pending" && (
+                            <PayButton
+                              invoiceId={inv.id}
+                              organizationId={organizationId}
+                              amountCents={inv.amount_cents}
+                              currency={inv.currency}
+                              awaitingPayment={openLinkByInvoice.has(inv.id)}
+                            />
+                          )}
+                          {canRegenerate && (
+                            <RegenerateButton
+                              invoiceId={inv.id}
+                              organizationId={organizationId}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   {isExpanded && expandable && (
                     <div className="divide-y divide-border border-t border-border bg-muted/30">
@@ -302,7 +363,7 @@ export function InvoicesTable({ organizationId }: Props) {
                         )
                       })}
                       {!invPayments.length && isActive && (
-                        <div className="flex items-center gap-1 p-4">
+                        <div className="flex items-center justify-end gap-1 p-4">
                           <PreviewButton
                             invoiceId={inv.id}
                             organizationId={organizationId}

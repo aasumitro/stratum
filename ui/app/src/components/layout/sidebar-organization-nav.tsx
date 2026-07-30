@@ -33,6 +33,15 @@ interface NavItem {
   allowed: boolean
   /** does a pending-invoice/suspended organization block this item too? */
   billingBlockable: boolean
+  /**
+   * Settings only: the owner already gets a prominent banner (with a
+   * direct link to Billing) elsewhere on the page, so its own amber dot is
+   * redundant for that role. Files carries no such banner, and stays
+   * genuinely blocked for the owner too during a pending invoice (see
+   * organization-layout.tsx's redirect) — its dot must stay regardless of
+   * role.
+   */
+  hideBillingDotForOwner?: boolean
 }
 
 /**
@@ -47,7 +56,8 @@ export function SidebarOrganizationNav() {
   const { t } = useTranslation()
   const { location } = useRouterState()
   const { organizationId, organization } = useActiveOrganization()
-  const { isBillingBlocked, canAccessFiles, canViewBilling } = usePermissions()
+  const { isOwner, isBillingBlocked, canAccessFiles, canViewBilling } =
+    usePermissions()
 
   if (!organizationId) {
     return (
@@ -132,6 +142,7 @@ export function SidebarOrganizationNav() {
       icon: IconSettings2,
       allowed: true,
       billingBlockable: true,
+      hideBillingDotForOwner: true,
     },
   ]
 
@@ -140,7 +151,10 @@ export function SidebarOrganizationNav() {
   }
 
   function renderNavItem(item: NavItem) {
-    const showBillingDot = item.billingBlockable && isBillingBlocked
+    const showBillingDot =
+      item.billingBlockable &&
+      isBillingBlocked &&
+      !(item.hideBillingDotForOwner && isOwner)
     return (
       <SidebarMenuItem key={item.to}>
         <SidebarMenuButton

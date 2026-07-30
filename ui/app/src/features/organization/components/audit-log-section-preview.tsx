@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { IconInfoCircle } from "@tabler/icons-react"
+import { IconHistory } from "@tabler/icons-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/shared/empty-state"
@@ -41,8 +41,9 @@ export function AuditLogSectionPreview({
     return (
       <div className="rounded-xl border bg-card">
         <EmptyState
-          icon={IconInfoCircle}
+          icon={IconHistory}
           title={t("organization.auditLog.noEvents")}
+          description={t("organization.auditLog.noEventsDescription")}
         />
       </div>
     )

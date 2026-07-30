@@ -95,7 +95,10 @@ export function SubscriptionCard({ organizationId }: Props) {
 
   const daysLeft = trialDaysLeft(sub.trial_end)
   const canCancel =
-    isOwner && (sub.status === "active" || sub.status === "trialing")
+    isOwner &&
+    (sub.status === "active" ||
+      sub.status === "trialing" ||
+      sub.status === "past_due")
   // cancelled/expired both get a dedicated banner+action above (one
   // banner, one action per state) instead of a header button.
   // Extension only applies to an already-active, invoiced subscription —
@@ -104,6 +107,11 @@ export function SubscriptionCard({ organizationId }: Props) {
   // requesting an extension before the current one clears would leave two
   // invoices pending on the same subscription at once.
   const canExtend = isOwner && sub.status === "active" && !hasPendingInvoice
+  // Unlike Extend, plan changes don't need an active billing period —
+  // trialing has no invoice yet, expired/past_due may want to queue up a
+  // different plan before/while reactivating. Only cancelled is blocked:
+  // there's no billing to change until they resume first (banner action).
+  const canChangePlan = isOwner && sub.status !== "cancelled"
 
   return (
     <div className="flex flex-col gap-4">
@@ -123,7 +131,7 @@ export function SubscriptionCard({ organizationId }: Props) {
               {t("billing.subscription.title")}
             </CardTitle>
             <div className="flex flex-wrap items-center gap-2">
-              {isOwner ? (
+              {canChangePlan && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -131,7 +139,8 @@ export function SubscriptionCard({ organizationId }: Props) {
                 >
                   {t("billing.subscription.changePlan")}
                 </Button>
-              ) : (
+              )}
+              {!isOwner && (
                 <span className="text-xs text-muted-foreground">
                   {t("billing.managedByNote")}
                 </span>

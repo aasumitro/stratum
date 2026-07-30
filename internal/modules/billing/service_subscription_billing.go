@@ -14,30 +14,48 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
-// maxSubscriptionDuration caps a subscription's total lifetime — measured
-// from its original creation (subscriptions.created_at, never touched by
-// any status/period transition) to its extended period_end — at 2 years.
-// Extensions that would push period_end past this are rejected outright
-// rather than silently clamped, so the owner always knows exactly how much
-// runway an extension purchase bought.
-const maxSubscriptionDuration = 2 * 365 * 24 * time.Hour
+// maxRunwayMonths caps prepaid future runway, not subscription lifetime: at
+// any point in time, period_end may never sit more than this many calendar
+// months ahead of now. A subscription may be renewed indefinitely — each
+// extension just isn't allowed to push period_end past the 24-month horizon
+// measured from the moment of that extension. Extensions that would exceed
+// it are rejected outright rather than silently clamped, so the owner always
+// knows exactly how much runway an extension purchase bought.
+const maxRunwayMonths = 24
 
 // maxExtendableMonths answers "how many more months, if any, can this
-// subscription be extended by" — the single place that computes this, so
-// extendSubscription's reject-if-exceeds check and the frontend-facing
-// max_extendable_months field on the subscription GET response can never
-// disagree. A bounded loop over n = 0..24 (not a closed-form calculation):
-// AddDate's calendar-month semantics (28/30/31-day months) aren't cleanly
-// invertible into a formula, and the bound is tiny enough that a loop is
-// simpler and provably correct.
-func maxExtendableMonths(createdAt, periodEnd, _ time.Time) int {
-	maxAllowedEnd := createdAt.Add(maxSubscriptionDuration)
-	for n := 24; n >= 0; n-- {
-		if !periodEnd.AddDate(0, n, 0).After(maxAllowedEnd) {
+// subscription be extended by right now" — the single place that computes
+// this, so extendSubscription's reject-if-exceeds check and the
+// frontend-facing max_extendable_months field on the subscription GET
+// response can never disagree. A bounded loop over n = 0..maxRunwayMonths
+// (not a closed-form calculation): AddDate's calendar-month semantics
+// (28/30/31-day months) aren't cleanly invertible into a formula, and the
+// bound is tiny enough that a loop is simpler and provably correct.
+//
+// Both sides of the comparison go through AddDate (calendar arithmetic), not
+// a fixed-duration Add: comparing a fixed 24*30-ish-day duration against
+// calendar-month increments drifts by a day whenever a leap day falls inside
+// the window, which previously undercounted the allowance by a full month
+// for anyone whose 24-month horizon crossed a Feb 29. Using AddDate on both
+// sides keeps them exactly in step regardless of leap years.
+//
+// Compared at day granularity, not exact timestamps: period_end's
+// time-of-day drifts away from now's whenever a plan change reprorates the
+// period (changePlanWithMetadata anchors the new period to time.Now() of the
+// change). A few hours of drift shouldn't cost the owner a whole month of
+// extendable runway — only full elapsed days should.
+func maxExtendableMonths(periodEnd, now time.Time) int {
+	maxAllowedEnd := truncateToDay(now.AddDate(0, maxRunwayMonths, 0))
+	for n := maxRunwayMonths; n >= 0; n-- {
+		if !truncateToDay(periodEnd.AddDate(0, n, 0)).After(maxAllowedEnd) {
 			return n
 		}
 	}
 	return 0
+}
+
+func truncateToDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
 // computeExtensionSubtotal implements the tiered extension-pricing rule:
@@ -181,8 +199,9 @@ func (s *service) extendSubscription(
 	}
 
 	newPeriodEnd := sub.PeriodEnd.AddDate(0, months, 0)
-	if months > maxExtendableMonths(sub.CreatedAt, *sub.PeriodEnd, time.Now()) {
-		maxAllowedEnd := sub.CreatedAt.Add(maxSubscriptionDuration)
+	now := time.Now()
+	if months > maxExtendableMonths(*sub.PeriodEnd, now) {
+		maxAllowedEnd := truncateToDay(now.AddDate(0, maxRunwayMonths, 0))
 		return nil, fmt.Errorf("billing.extendSubscription: %w: at most until %s", ErrExtensionExceedsMaxDuration, maxAllowedEnd.Format(time.RFC3339))
 	}
 

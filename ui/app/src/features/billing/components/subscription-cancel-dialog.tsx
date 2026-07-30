@@ -19,6 +19,7 @@ import {
   useCancelSubscription,
   useResumeSubscription,
 } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
 import type { BillingCycle, CancelReason } from "@/types/billing"
 
@@ -69,6 +70,7 @@ export function SubscriptionCancelDialog({
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
   const { data: plansData } = usePlans()
+  const { hasPendingInvoice } = usePermissions()
 
   const planInfo = (plansData?.data ?? []).find((p) => p.id === plan)
   const prices = planInfo?.prices[currency] ?? planInfo?.prices["USD"]
@@ -189,6 +191,12 @@ export function SubscriptionCancelDialog({
               <span className="font-medium">{formatDate(periodEnd)}</span>
             </div>
           </div>
+
+          {hasPendingInvoice && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+              {t("billing.cancel.pendingInvoiceNote")}
+            </div>
+          )}
 
           <div className="flex flex-col gap-3 py-2 text-sm text-muted-foreground">
             <p>{t("billing.cancel.reviewAfterPeriodEnd")}</p>

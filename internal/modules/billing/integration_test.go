@@ -596,6 +596,34 @@ func TestIntegration_ChangePlan_UnknownPlan(t *testing.T) {
 	}
 }
 
+// TestIntegration_ChangePlan_CancelledRejected is the server-side twin of the
+// frontend's canChangePlan gate: a cancelled subscription has no active
+// billing to change plans on, so it must resume first. Guards
+// changePlanWithMetadata directly, which also covers the downgrade wizard's
+// endpoint (it funnels through the same function).
+func TestIntegration_ChangePlan_CancelledRejected(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_changeplan_cancelled_user"
+		orgID = "00000000-0000-0000-0000-000000000d17"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID, stubRefReader{})
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("change plan while cancelled: want 422, got %d: %s", w.Code, w.Body)
+	}
+}
+
 // --- Expire ---
 
 func TestIntegration_ExpireIfDue_ActivePastEnd(t *testing.T) {
@@ -2837,18 +2865,18 @@ func TestIntegration_ExtendSubscription_ExceedsMaxDuration_Rejected(t *testing.T
 		t.Fatalf("second provision: %v", err)
 	}
 
-	// Simulate a subscription created 23 months ago: created_at+2y = now+1mo,
-	// and period_end is already now+1mo (fresh active sub) — so a further
-	// 1-month extension would land at now+2mo, past the cap.
+	// Runway-cap model: period_end may never sit more than 24 calendar
+	// months ahead of now, regardless of created_at. Push period_end out to
+	// exactly that horizon so any further extension is rejected outright.
 	pool.Exec(t.Context(),
-		`UPDATE billing.subscriptions SET created_at = now() - interval '23 months' WHERE subject_type = 'organization' AND subject_id = $1`,
+		`UPDATE billing.subscriptions SET period_end = now() + interval '24 months' WHERE subject_type = 'organization' AND subject_id = $1`,
 		wsID2)
 
 	e := billing.NewModuleEngine(pool, user, wsID2, stubRefReader{})
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
 	if w.Code != http.StatusUnprocessableEntity {
-		t.Errorf("extend past 2y cap: want 422, got %d: %s", w.Code, w.Body)
+		t.Errorf("extend past 24-month runway cap: want 422, got %d: %s", w.Code, w.Body)
 	}
 }
 
@@ -3341,13 +3369,13 @@ func TestIntegration_GetSubscription_MaxExtendableMonths(t *testing.T) {
 		t.Fatalf("want max_extendable_months present as a number, got %#v", data["max_extendable_months"])
 	}
 	// Not asserting the exact value: unlike TestMaxExtendableMonths (which
-	// uses fixed, deliberately leap-year-safe dates to prove the arithmetic
-	// exactly), this runs against the real current time, so the precise
-	// number legitimately varies by a month or two depending on which real
-	// calendar dates the test happens to run against — the calendar-month
-	// vs. fixed-730-day-duration drift the plan itself documents. This test
-	// only needs to confirm the field is wired end to end and in a sane
-	// range for a subscription that was just created.
+	// uses fixed dates to prove the arithmetic exactly), this runs against
+	// the real current time, so the precise number legitimately varies by a
+	// day depending on where "now" falls relative to period_end's
+	// time-of-day. This test only needs to confirm the field is wired end
+	// to end and in a sane range for a subscription that was just created
+	// (monthly cycle, period_end ~ now+1mo, so ~23 of the 24-month runway
+	// cap remains).
 	if got < 20 || got > 24 {
 		t.Errorf("a brand new active subscription: want max_extendable_months in [20,24], got %v", got)
 	}

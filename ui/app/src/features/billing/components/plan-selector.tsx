@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
 import type { BillingCycle } from "@/types/billing"
 import { cn } from "@/lib/ui"
@@ -55,6 +56,7 @@ export function PlanSelector({
   const [cycle, setCycle] = useState<BillingCycle>(currentCycle)
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
+  const { hasPendingInvoice } = usePermissions()
   const { data, isLoading } = usePlans()
 
   const plans = (data?.data ?? [])
@@ -231,6 +233,8 @@ export function PlanSelector({
             preview={preview}
             loading={previewLoading}
             currentPeriodEnd={currentPeriodEnd}
+            planName={selected?.name ?? selectedPlan}
+            hasPendingInvoice={hasPendingInvoice}
           />
         )}
 

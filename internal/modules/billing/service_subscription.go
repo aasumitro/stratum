@@ -223,6 +223,8 @@ func (s *service) changePlanWithMetadata(
 			err = apperr.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found", err)
 		case errors.Is(err, ErrUnknownPlan):
 			err = apperr.Validation("UNKNOWN_PLAN", "unknown plan")
+		case errors.Is(err, ErrPlanChangeNotAllowed):
+			err = apperr.Validation("PLAN_CHANGE_NOT_ALLOWED", "subscription cannot change plans in its current state")
 		default:
 			err = apperr.Internal("PLAN_CHANGE_FAILED", "failed to change plan", err)
 		}
@@ -236,6 +238,13 @@ func (s *service) changePlanWithMetadata(
 	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
 		return "", nil, err
+	}
+	// A cancelled sub has no active billing to change — resume it first.
+	// Every other status (active/trialing/expired/past_due) is allowed:
+	// trialing has no invoice yet, expired/past_due may want a different
+	// plan queued up before or right as they pay to reactivate.
+	if sub.Status == statusCancelled {
+		return "", nil, ErrPlanChangeNotAllowed
 	}
 
 	oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)

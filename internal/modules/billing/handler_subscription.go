@@ -34,7 +34,7 @@ type subscriptionWithCoupon struct {
 	ActiveCoupon *string `json:"active_coupon,omitempty"`
 	// MaxExtendableMonths lets the frontend gate the Extend flow's counter,
 	// "Switch to Annual" option, and entry point without re-deriving the
-	// 24-month lifetime cap from raw dates itself (see maxExtendableMonths
+	// 24-month runway cap from raw dates itself (see maxExtendableMonths
 	// in service_subscription_billing.go for why that's rejected). 0 for a
 	// subscription with no current period (e.g. still trialing) — nothing
 	// to extend.
@@ -67,7 +67,7 @@ func (h *handler) getSubscription(c *gin.Context) {
 		resp.ActiveCoupon = &redemption.CouponCode
 	}
 	if sub.PeriodEnd != nil {
-		resp.MaxExtendableMonths = maxExtendableMonths(sub.CreatedAt, *sub.PeriodEnd, time.Now())
+		resp.MaxExtendableMonths = maxExtendableMonths(*sub.PeriodEnd, time.Now())
 	}
 	response.Success(resp).JSON(c, http.StatusOK)
 }

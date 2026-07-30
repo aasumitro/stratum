@@ -18,6 +18,7 @@ export interface Permissions {
   canAccessFiles: boolean
   canAccessWebhooks: boolean
   canAccessAuditLog: boolean
+  canAccessSecurity: boolean
   canEditSettings: boolean
   canUploadLogo: boolean
   hasPendingInvoice: boolean
@@ -41,6 +42,7 @@ export function usePermissions(): Permissions {
     canAccessFiles: hasPermission(role, "files", "view"),
     canAccessWebhooks: hasPermission(role, "webhooks", "view"),
     canAccessAuditLog: hasPermission(role, "auditLog", "view"),
+    canAccessSecurity: hasPermission(role, "settingsSecurity", "view"),
     canEditSettings: hasPermission(role, "settingsGeneral", "edit"),
     // admin+ (no matching matrix action — settingsGeneral.edit is owner-only, which is narrower than logo upload's real permission)
     canUploadLogo: isAdminUp,

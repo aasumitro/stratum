@@ -52,7 +52,7 @@ const AuditLogFilters = lazy(() =>
 // Settings is one continuous page, composed of anchor-linked sections,
 // instead of separate routes/tabs: General, Members, Webhooks, Security,
 // Audit Log, Danger Zone. Each section is filtered by role before it
-// renders at all — absent, never shown locked — so Webhooks/Audit
+// renders at all — absent, never shown locked — so Webhooks/Security/Audit
 // Log/Danger Zone simply aren't in the DOM below their role threshold,
 // there's no route left to guard directly.
 export function OrganizationSettingsPage() {
@@ -68,6 +68,7 @@ export function OrganizationSettingsPage() {
     canManageMembers,
     canAccessWebhooks,
     canAccessAuditLog,
+    canAccessSecurity,
     isBillingBlocked,
   } = usePermissions()
   const organization = wsData?.data
@@ -140,7 +141,14 @@ export function OrganizationSettingsPage() {
           },
         ]
       : []),
-    { id: "security", label: t("organization.settings.sections.security") },
+    ...(canAccessSecurity
+      ? [
+          {
+            id: "security",
+            label: t("organization.settings.sections.security"),
+          },
+        ]
+      : []),
     ...(canAccessAuditLog
       ? [
           {
@@ -173,9 +181,11 @@ export function OrganizationSettingsPage() {
           title={t("organization.settings.sections.general")}
           description={t("organization.settings.generalDescription")}
           docLinks={
-            <DocumentationLinks
-              labels={[t("organization.settings.docsGeneral2")]}
-            />
+            isAdminUp && (
+              <DocumentationLinks
+                labels={[t("organization.settings.docsGeneral2")]}
+              />
+            )
           }
         >
           <div className="flex flex-col gap-6">
@@ -203,12 +213,14 @@ export function OrganizationSettingsPage() {
             )
           }
           docLinks={
-            <DocumentationLinks
-              labels={[
-                t("organization.settings.docsMembers1"),
-                t("organization.settings.docsMembers2"),
-              ]}
-            />
+            isAdminUp && (
+              <DocumentationLinks
+                labels={[
+                  t("organization.settings.docsMembers1"),
+                  t("organization.settings.docsMembers2"),
+                ]}
+              />
+            )
           }
         >
           {isMemberSeatLocked ? (
@@ -270,21 +282,23 @@ export function OrganizationSettingsPage() {
           />
         </Suspense>
 
-        <SettingsSection
-          id="security"
-          title={t("organization.settings.sections.security")}
-          description={t("organization.settings.securityDescription")}
-          docLinks={
-            <DocumentationLinks
-              labels={[t("organization.settings.docsSecurity1")]}
+        {canAccessSecurity && (
+          <SettingsSection
+            id="security"
+            title={t("organization.settings.sections.security")}
+            description={t("organization.settings.securityDescription")}
+            docLinks={
+              <DocumentationLinks
+                labels={[t("organization.settings.docsSecurity1")]}
+              />
+            }
+          >
+            <OrganizationIPAllowlistForm
+              organizationId={organizationId}
+              isOwner={isOwner}
             />
-          }
-        >
-          <OrganizationIPAllowlistForm
-            organizationId={organizationId}
-            isOwner={isOwner}
-          />
-        </SettingsSection>
+          </SettingsSection>
+        )}
 
         {canAccessAuditLog && (
           <SettingsSection

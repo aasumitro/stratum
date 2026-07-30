@@ -1,27 +1,39 @@
 import { Outlet, useParams } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
+import { IconLoader2 } from "@tabler/icons-react"
 import { Banner } from "@/components/shared/banner"
+import { Button } from "@/components/ui/button"
 import { usePermissions } from "@/hooks/use-permissions"
-import { useBillingSubscription, useInvoices } from "@/features/billing/hooks"
+import {
+  useBillingSubscription,
+  useInvoices,
+  useResumeSubscription,
+} from "@/features/billing/hooks"
 import { PendingChangesBar } from "@/features/billing/components/pending-changes-bar"
 import { computeDunningBanners } from "@/features/billing/dunning-banners"
 
-// Billing is a single page (Plan, Usage, Invoices, add-ons) — every part
-// of it is viewable by any member; only mutations are owner-only (the
-// API's own RBAC is what actually enforces this).
+// Billing is a single page (Plan, Usage, Invoices, add-ons) — viewable by
+// admin+ only (a plain member shouldn't know billing exists at all, see
+// PERMISSION_MATRIX); mutations are further narrowed to owner-only (the
+// API's own RBAC is what actually enforces this). A member who hits this
+// route directly by URL is redirected by organization-layout.tsx's effect
+// before this ever mounts with real data — this guard only covers the one
+// render in between.
 export function BillingLayout() {
   const { t } = useTranslation()
   const { organizationId } = useParams({ strict: false }) as {
     organizationId: string
   }
-  const { role, isOwner, canViewBilling } = usePermissions()
+  const { role, isOwner, canViewBilling, hasPendingInvoice } = usePermissions()
 
   const { data: subData } = useBillingSubscription(organizationId)
   const { data: invoicesData } = useInvoices(organizationId, isOwner)
   const sub = subData?.data
+  const { mutate: resume, isPending: resuming } =
+    useResumeSubscription(organizationId)
 
   if (role !== undefined && !canViewBilling) {
-    return null // unreachable in practice — canViewBilling is true for any member
+    return null
   }
 
   const dunningBanners = computeDunningBanners(
@@ -38,6 +50,18 @@ export function BillingLayout() {
         <a href="#billing-invoices" className="text-sm font-medium underline">
           {t("billing.dunning.payAction")}
         </a>
+      ) : b.id === "dunning-cancelled" && isOwner ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={resuming}
+          onClick={() => resume()}
+        >
+          {resuming && (
+            <IconLoader2 data-icon="inline-start" className="animate-spin" />
+          )}
+          {t("billing.subscription.resume")}
+        </Button>
       ) : undefined,
   }))
 
@@ -51,6 +75,7 @@ export function BillingLayout() {
         organizationId={organizationId}
         nextInvoiceDate={sub?.period_end ?? sub?.trial_end}
         isOwner={isOwner}
+        hasPendingInvoice={hasPendingInvoice}
       />
       <Outlet />
     </div>
