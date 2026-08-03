@@ -128,7 +128,9 @@ func NewRateLimitMiddleware(limiter *cache.RateLimiter, keyFunc KeyFunc, default
 		orgID := c.Param("organizationID")
 
 		if rc.Billing != nil && rc.Catalog != nil && orgID != "" {
-			if sub, err := rc.Billing.GetSubscriptionBySubject(c.Request.Context(), "organization", orgID); err == nil {
+			if sub, err := rc.Billing.GetSubscriptionBySubject(
+				c.Request.Context(), "organization", orgID,
+			); err == nil {
 				switch sub.Status {
 				case "trialing":
 					limit = cache.PerMinute(trialRateLimit)

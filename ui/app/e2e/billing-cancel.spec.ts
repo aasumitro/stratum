@@ -126,9 +126,12 @@ test("cancel with a named reason shows review then success", async ({
   await expect(
     page.getByRole("link", { name: /export my personal data/i })
   ).toHaveAttribute("href", "/account")
+  // Audit log lives under Settings as a panel query param (PLAN-013), not
+  // its own route — a pre-existing route-drift gap this file had, unrelated
+  // to today's scheduled-cancellation work.
   await expect(
     page.getByRole("link", { name: /export organization data/i })
-  ).toHaveAttribute("href", "/organization/org-1/audit-log")
+  ).toHaveAttribute("href", "/organization/org-1/settings?panel=audit-log")
 
   await page.getByRole("button", { name: /confirm cancellation/i }).click()
 
@@ -139,11 +142,14 @@ test("cancel with a named reason shows review then success", async ({
   expect(captured.payload?.reason).toBe("too_expensive")
   expect(captured.payload?.details).toBeUndefined()
 
+  // Active subscriptions defer cancellation to renewal (PLAN-017) — access
+  // stays valid until then, so success offers "undo the schedule", not
+  // "resume" (that's the trialing-only immediate-cancel path).
   await expect(
-    page.getByRole("heading", { name: /subscription cancelled/i })
+    page.getByRole("heading", { name: /cancellation scheduled/i })
   ).toBeVisible()
   await expect(
-    page.getByRole("button", { name: /resume subscription/i })
+    page.getByRole("button", { name: /undo cancellation/i })
   ).toBeVisible()
 })
 

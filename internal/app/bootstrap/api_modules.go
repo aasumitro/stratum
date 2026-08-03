@@ -51,7 +51,8 @@ func NewAPIModules(ctx context.Context, infra *Infra, storageClient *storage.Cli
 	accountNS := cache.NewNamespace(infra.Redis, "account")
 
 	organizationMod := organization.New(infra.Pool, infra.MQPublisher)
-	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL, cfg.Auth.ServiceRoleKey, accountNS, storageClient, cfg.Auth.WebhookSecret)
+	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
+		cfg.Auth.ServiceRoleKey, accountNS, storageClient, cfg.Auth.WebhookSecret)
 	refMod := reference.New(infra.Pool)
 	billingMod := billing.New(infra.Pool, infra.MQPublisher, billing.ProviderConfig{
 		StripeAPIKey:        cfg.Stripe.APIKey,
@@ -63,7 +64,8 @@ func NewAPIModules(ctx context.Context, infra *Infra, storageClient *storage.Cli
 		XenditAllowedCIDRs:  cfg.Xendit.AllowedCIDRs,
 	}, refMod, organizationMod)
 	mailClient := mailer.New(cfg.SMTP)
-	notifMod := notification.New(infra.Pool, mailClient, organizationMod, accountMod, cfg.AppURL, infra.Redis)
+	notifMod := notification.New(infra.Pool, mailClient,
+		organizationMod, accountMod, cfg.AppURL, infra.Redis)
 
 	organizationMod.SetBillingReader(billingMod)
 	organizationMod.SetBillingWriter(billingMod)

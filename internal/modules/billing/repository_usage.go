@@ -114,3 +114,46 @@ func (r *repository) addonLimitDeltas(ctx context.Context, q db.Querier, subscri
 	}
 	return deltas, nil
 }
+
+// futureAddonLimitDeltas is addonLimitDeltas' generalization for a
+// subscription's *future* entitlement: for every addon currently attached,
+// uses overrides[addonID] (a scheduled quantity change not yet applied) in
+// place of the addon's live quantity when present, else its live quantity —
+// so with an empty overrides map this computes exactly what addonLimitDeltas
+// computes. Aggregation happens in Go rather than SQL since the per-addon
+// override can't be expressed as a single COALESCE without either a
+// dynamic CASE per addon or an array-typed query argument, and the result
+// set here is always small (one row per addon_feature this subscription's
+// attached addons define).
+func (r *repository) futureAddonLimitDeltas(
+	ctx context.Context, q db.Querier, subscriptionID string, overrides map[string]int,
+) (map[string]int, error) {
+	rows, err := q.Query(ctx, `
+		SELECT af.feature_id, af.limit_value, sa.addon_id, sa.quantity
+		FROM billing.subscription_addons sa
+		JOIN billing.addon_features af ON af.addon_id = sa.addon_id
+		WHERE sa.subscription_id = $1 AND af.limit_value IS NOT NULL`, subscriptionID)
+	if err != nil {
+		return nil, fmt.Errorf("billing.futureAddonLimitDeltas: %w", err)
+	}
+	defer rows.Close()
+
+	deltas := map[string]int{}
+	for rows.Next() {
+		var featureID, addonID string
+		var limitValue int64
+		var liveQuantity int
+		if err := rows.Scan(&featureID, &limitValue, &addonID, &liveQuantity); err != nil {
+			return nil, fmt.Errorf("billing.futureAddonLimitDeltas: scan: %w", err)
+		}
+		quantity := liveQuantity
+		if override, ok := overrides[addonID]; ok {
+			quantity = override
+		}
+		deltas[featureID] += int(limitValue) * quantity
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.futureAddonLimitDeltas: %w", err)
+	}
+	return deltas, nil
+}

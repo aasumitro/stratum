@@ -66,7 +66,9 @@ func NewHandlerEngineWithCaller(callerSub, ownerSub string) *gin.Engine {
 	e.GET("/billing/coupons", h.listEligibleCoupons)
 
 	e.PATCH("/billing/plan", ownerOnly, h.changePlan)
+	e.POST("/billing/downgrade/undo", ownerOnly, h.undoDowngrade)
 	e.POST("/billing/cancel", ownerOnly, h.cancelSubscription)
+	e.POST("/billing/cancel/undo", ownerOnly, h.undoCancellation)
 	e.POST("/billing/resume", ownerOnly, h.resumeSubscription)
 	e.POST("/billing/extend", ownerOnly, h.extendSubscription)
 	e.POST("/billing/activate", ownerOnly, h.activateTrialNow)
@@ -76,6 +78,7 @@ func NewHandlerEngineWithCaller(callerSub, ownerSub string) *gin.Engine {
 	e.POST("/billing/coupons/redeem", ownerOnly, h.redeemCoupon)
 	e.POST("/billing/addons", ownerOnly, h.attachAddon)
 	e.DELETE("/billing/addons/:addonID", ownerOnly, h.detachAddon)
+	e.POST("/billing/addons/:addonID/undo", ownerOnly, h.undoAddonQuantityChange)
 	return e
 }
 

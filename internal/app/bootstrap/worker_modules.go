@@ -49,18 +49,24 @@ func NewWorkerModules(infra *Infra, storageClient *storage.Client) *WorkerModule
 
 	refMod := reference.New(infra.Pool)
 	organizationMod := organization.New(infra.Pool, infra.MQPublisher)
-	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL, cfg.Auth.ServiceRoleKey, nil, nil, "")
-	billingMod := billing.New(infra.Pool, infra.MQPublisher, billing.ProviderConfig{
-		StripeAPIKey:        cfg.Stripe.APIKey,
-		StripeWebhookSecret: cfg.Stripe.WebhookSecret,
-		StripeSuccessURL:    cfg.Stripe.SuccessURL,
-		StripeCancelURL:     cfg.Stripe.CancelURL,
-		XenditAPIKey:        cfg.Xendit.APIKey,
-		XenditCallbackToken: cfg.Xendit.CallbackToken,
-		XenditAllowedCIDRs:  cfg.Xendit.AllowedCIDRs,
-	}, refMod, organizationMod)
+	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
+		cfg.Auth.ServiceRoleKey, nil, nil, "")
+	billingMod := billing.New(
+		infra.Pool, infra.MQPublisher,
+		billing.ProviderConfig{
+			StripeAPIKey:        cfg.Stripe.APIKey,
+			StripeWebhookSecret: cfg.Stripe.WebhookSecret,
+			StripeSuccessURL:    cfg.Stripe.SuccessURL,
+			StripeCancelURL:     cfg.Stripe.CancelURL,
+			XenditAPIKey:        cfg.Xendit.APIKey,
+			XenditCallbackToken: cfg.Xendit.CallbackToken,
+			XenditAllowedCIDRs:  cfg.Xendit.AllowedCIDRs,
+		},
+		refMod, organizationMod,
+	)
 	mailClient := mailer.New(cfg.SMTP)
-	notifMod := notification.New(infra.Pool, mailClient, organizationMod, accountMod, cfg.AppURL, infra.Redis)
+	notifMod := notification.New(infra.Pool, mailClient,
+		organizationMod, accountMod, cfg.AppURL, infra.Redis)
 
 	accountMod.SetOrganizationWriter(organizationMod)
 	accountMod.SetNotificationWriter(notifMod)

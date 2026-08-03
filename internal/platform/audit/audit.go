@@ -142,7 +142,11 @@ func (w *Writer) run() {
 // batching Writer. For call sites outside the /api/v1 middleware chain
 // (e.g. webhook routes) that have no request to hang Middleware off of but
 // still need an audit trail.
-func InsertDirect(ctx context.Context, q db.Querier, actor, action, resource string, statusCode int, metadata []byte) error {
+func InsertDirect(
+	ctx context.Context, q db.Querier,
+	actor, action, resource string,
+	statusCode int, metadata []byte,
+) error {
 	_, err := q.Exec(ctx, `
 		INSERT INTO audit.events (actor, action, resource, status_code, metadata)
 		VALUES ($1, $2, $3, $4, $5)`,
@@ -362,7 +366,10 @@ func (f Filter) apply(query string, args *db.Args) string {
 
 // ListByOrganization returns audit events for an organization, newest first,
 // optionally narrowed by filter.
-func ListByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationID string, limit, offset int, filter Filter) ([]EventRecord, int64, error) {
+func ListByOrganization(
+	ctx context.Context, pool *pgxpool.Pool,
+	organizationID string, limit, offset int, filter Filter,
+) ([]EventRecord, int64, error) {
 	countQuery := `SELECT COUNT(*) FROM audit.events WHERE organization_id = $1`
 	countArgs := db.NewArgs(organizationID)
 	countQuery = filter.apply(countQuery, countArgs)
@@ -402,7 +409,10 @@ func ListByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationID 
 // newest first, optionally narrowed by filter. Pass an empty cursor to get
 // the first page. Returns events and the next cursor (empty when there are
 // no more pages).
-func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizationID string, limit int, cursor string, filter Filter) ([]EventRecord, string, error) {
+func ListByOrganizationCursor(
+	ctx context.Context, pool *pgxpool.Pool,
+	organizationID string, limit int, cursor string, filter Filter,
+) ([]EventRecord, string, error) {
 	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
 		FROM audit.events WHERE organization_id = $1`
 	args := db.NewArgs(organizationID)
@@ -463,7 +473,10 @@ func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizat
 // Unlike ListByOrganizationCursor, this paginates by created_at rather than id:
 // audit.events.id is gen_random_uuid() (random v4, not time-ordered), so
 // "ORDER BY id DESC" does not actually mean newest-first.
-func ListByActorCursor(ctx context.Context, pool *pgxpool.Pool, authSub string, limit int, cursor string, from, to *time.Time) ([]EventRecord, string, error) {
+func ListByActorCursor(
+	ctx context.Context, pool *pgxpool.Pool,
+	authSub string, limit int, cursor string, from, to *time.Time,
+) ([]EventRecord, string, error) {
 	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
 		FROM audit.events WHERE actor = $1`
 	args := db.NewArgs(authSub)
@@ -542,11 +555,17 @@ func csvSafe(s string) string {
 // Unlike ExportByOrganization, organization_id can be NULL here (e.g. /me routes
 // aren't scoped to an organization) and the actor column is omitted — it's
 // always the same value, so it'd be redundant on every row.
-func ExportByActor(ctx context.Context, pool *pgxpool.Pool, authSub string, from, to *time.Time, w io.Writer) error {
+func ExportByActor(
+	ctx context.Context, pool *pgxpool.Pool,
+	authSub string, from, to *time.Time, w io.Writer,
+) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	if err := cw.Write([]string{"id", "organization_id", "action", "resource", "status_code", "ip", "user_agent", "created_at"}); err != nil {
+	if err := cw.Write([]string{
+		"id", "organization_id", "action", "resource",
+		"status_code", "ip", "user_agent", "created_at",
+	}); err != nil {
 		return fmt.Errorf("audit.ExportByActor: write header: %w", err)
 	}
 
@@ -594,11 +613,17 @@ func ExportByActor(ctx context.Context, pool *pgxpool.Pool, authSub string, from
 // ExportByOrganization streams audit events for an organization as CSV to
 // w, honoring the same filter as ListByOrganizationCursor so the export
 // matches whatever the admin currently has on screen.
-func ExportByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationID string, filter Filter, w io.Writer) error {
+func ExportByOrganization(
+	ctx context.Context, pool *pgxpool.Pool,
+	organizationID string, filter Filter, w io.Writer,
+) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	if err := cw.Write([]string{"id", "organization_id", "actor", "action", "resource", "status_code", "ip", "user_agent", "created_at"}); err != nil {
+	if err := cw.Write([]string{
+		"id", "organization_id", "actor", "action", "resource",
+		"status_code", "ip", "user_agent", "created_at",
+	}); err != nil {
 		return fmt.Errorf("audit.ExportByOrganization: write header: %w", err)
 	}
 
@@ -620,7 +645,10 @@ func ExportByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationI
 		if err := rows.Scan(&id, &orgID, &actor, &action, &resource, &code, &ip, &ua, &ts); err != nil {
 			return fmt.Errorf("audit.ExportByOrganization: scan: %w", err)
 		}
-		if err := cw.Write([]string{id, orgID, csvSafe(actor), csvSafe(action), csvSafe(resource), strconv.Itoa(code), ip, csvSafe(ua), ts.Format(time.RFC3339)}); err != nil {
+		if err := cw.Write([]string{
+			id, orgID, csvSafe(actor), csvSafe(action), csvSafe(resource),
+			strconv.Itoa(code), ip, csvSafe(ua), ts.Format(time.RFC3339),
+		}); err != nil {
 			return fmt.Errorf("audit.ExportByOrganization: write row: %w", err)
 		}
 	}

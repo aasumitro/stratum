@@ -124,6 +124,32 @@ async function mockBillingAPIs(page: Page, sub: SubscriptionOverrides = {}) {
       }),
     })
   })
+
+  // PendingChangesBar (rendered above every billing page) reads this as an
+  // object, not the `**/v1/**` wildcard's array fallback above — without an
+  // explicit mock here it crashes formatMoney() on an undefined currency
+  // the moment hasPendingInvoice is true, tripping this file's own error
+  // boundary before any assertion below ever runs.
+  await page.route(
+    "**/v1/organizations/org-1/billing/preview*",
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            plan: "solo",
+            cycle: sub.cycle ?? "monthly",
+            currency: "USD",
+            plan_line_cents: 900,
+            total_cents: 900,
+          },
+          status: { error: false },
+        }),
+      })
+    }
+  )
 }
 
 async function openExtendDialog(page: Page) {

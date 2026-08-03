@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import {
   useBillingSubscription,
   useResumeSubscription,
+  useUndoScheduledCancellation,
 } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { PlanSelector } from "./plan-selector"
@@ -14,6 +15,7 @@ import { SubscriptionStatusBanner } from "./subscription-status-banner"
 import { SubscriptionDetailsGrid } from "./subscription-details-grid"
 import { SubscriptionHistorySection } from "./subscription-history-section"
 import { FeaturesSection } from "./features-section"
+import { OverageWarningCard } from "./overage-warning-card"
 
 // Both wizards only surface once the owner opts in (Extend is gated behind
 // `canExtend`, Cancel behind its own dialog trigger) — kept out of the
@@ -59,6 +61,8 @@ export function SubscriptionCard({ organizationId }: Props) {
 
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
+  const { mutate: undoCancellation, isPending: undoingCancellation } =
+    useUndoScheduledCancellation(organizationId)
 
   if (isLoading) {
     return (
@@ -122,6 +126,8 @@ export function SubscriptionCard({ organizationId }: Props) {
         daysLeft={daysLeft}
         resuming={resuming}
         onResume={() => resume()}
+        undoingCancellation={undoingCancellation}
+        onUndoCancellation={() => undoCancellation()}
       />
 
       <Card className="[--card-spacing:--spacing(8)]">
@@ -160,6 +166,7 @@ export function SubscriptionCard({ organizationId }: Props) {
                   cycle={sub.cycle}
                   currency={sub.currency}
                   periodEnd={sub.period_end}
+                  status={sub.status}
                   canCancel={canCancel}
                 />
               </Suspense>
@@ -167,7 +174,13 @@ export function SubscriptionCard({ organizationId }: Props) {
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
-          <SubscriptionDetailsGrid sub={sub} daysLeft={daysLeft}>
+          <OverageWarningCard organizationId={organizationId} />
+          <SubscriptionDetailsGrid
+            sub={sub}
+            daysLeft={daysLeft}
+            organizationId={organizationId}
+            isOwner={!!isOwner}
+          >
             <FeaturesSection organizationId={organizationId} />
           </SubscriptionDetailsGrid>
           <Separator />
@@ -196,6 +209,7 @@ export function SubscriptionCard({ organizationId }: Props) {
         currentCycle={sub.cycle}
         currentPeriodEnd={sub.period_end}
         currency={sub.currency}
+        subscriptionStatus={sub.status}
         open={showSelector}
         onOpenChange={setShowSelector}
       />

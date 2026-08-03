@@ -17,7 +17,10 @@ const meterExportInterval = 60 * time.Second
 // OTLP/gRPC on a periodic interval. There's no sampling concept for
 // metrics — every recorded measurement counts toward the aggregate — so
 // unlike traces, isLocal here only affects TLS, not export volume.
-func newMeterProvider(ctx context.Context, isLocal bool, collectorURL string, res *resource.Resource) (*metric.MeterProvider, error) {
+func newMeterProvider(
+	ctx context.Context, isLocal bool,
+	collectorURL string, res *resource.Resource,
+) (*metric.MeterProvider, error) {
 	options := []otlpmetricgrpc.Option{
 		otlpmetricgrpc.WithEndpoint(collectorURL),
 		otlpmetricgrpc.WithTimeout(dialTimeout),

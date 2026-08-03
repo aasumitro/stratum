@@ -62,7 +62,8 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 		return nil, fmt.Errorf("configuring http server: %w", err)
 	}
 	engine.Use(corsMW, middleware.SecureHeaders(), middleware.MaxBodySize(52<<20)) // 52 MB > 50 MB file cap
-	httpserver.RegisterHealth(engine, httpserver.HealthDeps{Pool: infra.Pool, Redis: infra.Redis, MQ: infra.MQConn, StatsToken: cfg.StatsToken})
+	httpserver.RegisterHealth(engine, httpserver.HealthDeps{Pool: infra.Pool,
+		Redis: infra.Redis, MQ: infra.MQConn, StatsToken: cfg.StatsToken})
 	if cfg.Env == EnvDevelopment {
 		httpserver.RegisterSwagger(engine)
 	}

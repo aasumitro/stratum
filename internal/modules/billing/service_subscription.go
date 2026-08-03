@@ -254,7 +254,7 @@ func (s *service) changePlanWithMetadata(
 
 	action := "upgrade"
 	if newPlanInfo.SortOrder < oldPlanInfo.SortOrder {
-		action = "downgrade"
+		action = actionDowngrade
 	}
 	var updated *subscriptionRecord
 
@@ -345,6 +345,43 @@ func (s *service) cancelSubscription(
 		return nil, ErrSubscriptionNotCancellable
 	}
 
+	// Trialing has no paid period to protect, so cancellation applies
+	// immediately below. Every other status defers to renewal instead:
+	// status stays whatever it was (active/past_due) until the renewal
+	// worker actually terminates the subscription — never reduce
+	// entitlement mid-period. Scheduling a cancellation also supersedes
+	// every other scheduled amendment, since it's the maximal reduction.
+	if sub.Status != statusTrialing {
+		if err = s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
+			return nil, err
+		}
+		if err = s.repo.scheduleCancellation(ctx, s.querier(ctx), sub.ID); err != nil {
+			return nil, err
+		}
+		if err = s.repo.clearScheduledPlanDowngrade(ctx, s.querier(ctx), sub.ID); err != nil {
+			return nil, err
+		}
+		if err = s.repo.clearAllScheduledAddonQuantityChanges(ctx, s.querier(ctx), sub.ID); err != nil {
+			return nil, err
+		}
+		metadata, _ := json.Marshal(struct {
+			Reason  string `json:"reason"`
+			Details string `json:"details,omitempty"`
+		}{Reason: reason, Details: details})
+		phase := historyPhaseScheduled
+		if _, err = s.repo.insertHistoryWithPhase(ctx, s.querier(ctx), sub.ID, "cancel",
+			&sub.Plan, nil, 0, sub.Currency, cancelledBy, metadata, &phase, sub.PeriodEnd); err != nil {
+			return nil, err
+		}
+		// Deliberately no status change, no SubscriptionCancelled publish —
+		// that fires only when the renewal worker actually applies this.
+		sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
+		if err != nil {
+			return nil, err
+		}
+		return sub, nil
+	}
+
 	updated, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusCancelled)
 	if err != nil {
 		return nil, err
@@ -364,6 +401,50 @@ func (s *service) cancelSubscription(
 			CancelledAt:    time.Now(),
 		})
 	return updated, nil
+}
+
+// undoScheduledCancellation clears a scheduled cancellation while status is
+// still active/past_due — the subscription never actually stopped. Distinct
+// from resumeSubscription, which only reactivates an already-cancelled
+// subscription with a brand-new billing period; this requires
+// scheduled_cancel_at set regardless of status, and a subscription that has
+// already been cancelled has nothing left to un-schedule.
+func (s *service) undoScheduledCancellation(
+	ctx context.Context, subjectType, subjectID string,
+) (sub *subscriptionRecord, err error) {
+	defer func() {
+		if err == nil {
+			return
+		}
+		sub = nil
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			err = apperr.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found", err)
+		case errors.Is(err, ErrNoScheduledCancellation):
+			err = apperr.Validation("NO_SCHEDULED_CANCELLATION", "no scheduled cancellation to undo")
+		default:
+			err = apperr.Internal("SUBSCRIPTION_UNDO_CANCEL_FAILED", "failed to undo scheduled cancellation", err)
+		}
+	}()
+
+	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
+		return nil, err
+	}
+	if sub.Status == statusCancelled || sub.ScheduledCancelAt == nil {
+		return nil, ErrNoScheduledCancellation
+	}
+	if err = s.repo.clearScheduledCancellation(ctx, s.querier(ctx), sub.ID); err != nil {
+		return nil, err
+	}
+	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	return sub, nil
 }
 
 func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error {

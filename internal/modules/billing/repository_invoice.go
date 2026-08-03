@@ -230,6 +230,21 @@ func (r *repository) hasPendingInvoice(ctx context.Context, q db.Querier, subscr
 	return count > 0, err
 }
 
+// hasPendingInvoiceBlockingExtend is hasPendingInvoice narrowed to exclude
+// addon_increase invoices: an unpaid addon increase, like an unpaid
+// extension, pays for something additional to the current period, so it
+// doesn't need to be resolved before requesting more runway on that period
+// — only an invoice that backs the period itself should block extending it.
+func (r *repository) hasPendingInvoiceBlockingExtend(ctx context.Context, q db.Querier, subscriptionID string) (bool, error) {
+	var count int
+	err := q.QueryRow(ctx, `
+		SELECT COUNT(*) FROM billing.invoices
+		WHERE subscription_id = $1 AND status = 'pending' AND kind != 'addon_increase'`,
+		subscriptionID,
+	).Scan(&count)
+	return count > 0, err
+}
+
 func (r *repository) voidPendingInvoicesAndLinks(ctx context.Context, q db.Querier, subscriptionID string) error {
 	_, err := q.Exec(ctx, `
 		WITH voided AS (
@@ -240,6 +255,24 @@ func (r *repository) voidPendingInvoicesAndLinks(ctx context.Context, q db.Queri
 		UPDATE billing.payment_links SET status = 'expired'
 		WHERE invoice_id IN (SELECT id FROM voided)`,
 		subscriptionID,
+	)
+	return err
+}
+
+// voidInvoiceAndLinks is voidPendingInvoicesAndLinks scoped to one invoice
+// instead of every pending invoice on a subscription — used to supersede a
+// single stale addon-increase invoice on a repeat request without touching
+// an unrelated pending invoice (e.g. a renewal) on the same subscription.
+func (r *repository) voidInvoiceAndLinks(ctx context.Context, q db.Querier, invoiceID string) error {
+	_, err := q.Exec(ctx, `
+		WITH voided AS (
+			UPDATE billing.invoices SET status = 'void', updated_at = now()
+			WHERE id = $1 AND status = 'pending'
+			RETURNING id
+		)
+		UPDATE billing.payment_links SET status = 'expired'
+		WHERE invoice_id IN (SELECT id FROM voided)`,
+		invoiceID,
 	)
 	return err
 }

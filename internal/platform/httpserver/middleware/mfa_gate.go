@@ -27,13 +27,15 @@ func RequireMFAIfEnabled(userReader contracts.UserReader) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := ClaimsFromContext(c)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or malformed authorization header"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized,
+				gin.H{"error": "missing or malformed authorization header"})
 			return
 		}
 
 		enabled, err := userReader.IsMFAEnabled(c.Request.Context(), claims.Subject)
 		if err != nil {
-			response.Error("MFA_STATUS_UNAVAILABLE", "could not verify your account's MFA status, try again").
+			response.Error("MFA_STATUS_UNAVAILABLE",
+				"could not verify your account's MFA status, try again").
 				JSON(c, http.StatusServiceUnavailable)
 			c.Abort()
 			return
@@ -44,7 +46,8 @@ func RequireMFAIfEnabled(userReader contracts.UserReader) gin.HandlerFunc {
 		}
 
 		if aal, _ := claims.Raw["aal"].(string); aal != "aal2" {
-			response.Error("MFA_REQUIRED", "this action requires a verified second factor").
+			response.Error("MFA_REQUIRED",
+				"this action requires a verified second factor").
 				JSON(c, http.StatusForbidden)
 			c.Abort()
 			return

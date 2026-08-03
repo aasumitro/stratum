@@ -276,6 +276,27 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 			outcome.scheduleRenewal = &subscriptionRecord{
 				ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
 			}
+		// An addon-increase invoice paid: fold the addon row's pending
+		// quantity into its live quantity and clear both pending columns —
+		// the mirror-image of applyScheduledAddonQuantityChange for the
+		// increase (pay-first) direction instead of the decrease
+		// (schedule-first) one. Nothing about the subscription's own
+		// period/status changes here; this only ever affects one addon row.
+		// No new event beyond InvoicePaid (outcome.paid, set above) — the
+		// frontend already invalidates the addons query off other addon
+		// mutations and wires the same invalidation to InvoicePaid.
+		case inv.Kind == "addon_increase":
+			addon, err := s.repo.findAddonByPendingInvoice(ctx, s.querier(ctx), inv.ID)
+			if err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: find addon by pending invoice: %w", err)
+			}
+			if err := s.repo.applyPendingAddonIncrease(ctx, s.querier(ctx), addon.SubscriptionID, addon.AddonID); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: apply pending addon increase: %w", err)
+			}
+			if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "addon_change",
+				nil, nil, inv.AmountCents, inv.Currency, changedByWebhook, nil); err != nil {
+				return nil, fmt.Errorf("billing.handleWebhook: insert addon_change history: %w", err)
+			}
 		}
 	}
 

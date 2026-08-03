@@ -11,9 +11,10 @@ import {
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import type { BillingCycle } from "@/types/billing"
+import type { BillingCycle, SubscriptionStatus } from "@/types/billing"
 import { cn } from "@/lib/ui"
 import { InvoicePreviewNote } from "./invoice-preview-note"
 
@@ -33,6 +34,7 @@ interface Props {
   currentCycle: BillingCycle
   currentPeriodEnd?: string
   currency: string
+  subscriptionStatus: SubscriptionStatus
   open: boolean
   onOpenChange: (open: boolean) => void
 }
@@ -49,6 +51,7 @@ export function PlanSelector({
   currentCycle,
   currentPeriodEnd,
   currency,
+  subscriptionStatus,
   open,
   onOpenChange,
 }: Props) {
@@ -57,13 +60,27 @@ export function PlanSelector({
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
   const { hasPendingInvoice } = usePermissions()
-  const { data, isLoading } = usePlans()
+  // country_code, not the subscription's own currency field, is what scopes
+  // this fetch down to one currency — a customer must never receive (or be
+  // able to pick from) pricing for a currency they can't actually be billed
+  // in. Kept disabled until it's known, rather than firing once unscoped
+  // and again once scoped.
+  const { data: orgData, isLoading: orgLoading } =
+    useOrganization(organizationId)
+  const countryCode = orgData?.data?.country_code ?? ""
+  const { data, isLoading: plansLoading } = usePlans(countryCode, !orgLoading)
+  const isLoading = orgLoading || plansLoading
 
   const plans = (data?.data ?? [])
     .filter((p) => p.active)
     .sort((a, b) => a.sort_order - b.sort_order)
   const selected = plans.find((p) => p.id === selectedPlan)
   const current = plans.find((p) => p.id === currentPlan)
+  // Every plan above was scoped by the same country_code, so each one's
+  // price map holds exactly one currency — read it back from the data
+  // itself for display, rather than the `currency` prop, so this never
+  // depends on the two staying in sync.
+  const displayCurrency = Object.keys(plans[0]?.prices ?? {})[0] ?? currency
 
   const isChanging = selectedPlan !== currentPlan || cycle !== currentCycle
   const isDowngrade =
@@ -115,6 +132,7 @@ export function PlanSelector({
           currentCycle={currentCycle}
           currentPeriodEnd={currentPeriodEnd}
           currency={currency}
+          subscriptionStatus={subscriptionStatus}
           onBackToPlans={() => setShowDowngradeWizard(false)}
         />
       </Suspense>
@@ -180,7 +198,7 @@ export function PlanSelector({
             {plans.map((plan) => {
               const isCustom = plan.id === "custom"
               const isCurrent = plan.id === currentPlan
-              const prices = plan.prices[currency] ?? plan.prices["USD"]
+              const prices = plan.prices[displayCurrency]
               const amount = prices
                 ? cycle === "monthly"
                   ? prices.monthly
@@ -213,7 +231,7 @@ export function PlanSelector({
                       </span>
                     ) : (
                       <span className="text-muted-foreground">
-                        {formatPrice(amount, currency, cycle, t)}
+                        {formatPrice(amount, displayCurrency, cycle, t)}
                       </span>
                     )}
                   </div>

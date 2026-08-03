@@ -16,6 +16,7 @@ import {
   useDowngradeSubscription,
   useInvoicePreview,
 } from "@/features/billing/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
@@ -24,6 +25,7 @@ import type {
   BillingCycle,
   InvoicePreview,
   OverageResolution,
+  SubscriptionStatus,
 } from "@/types/billing"
 import type { Member } from "@/types/organization"
 import { InvoicePreviewNote } from "./invoice-preview-note"
@@ -47,6 +49,7 @@ interface Props {
   currentCycle: BillingCycle
   currentPeriodEnd?: string
   currency: string
+  subscriptionStatus: SubscriptionStatus
   onBackToPlans: () => void
 }
 
@@ -62,9 +65,18 @@ export function DowngradeWizard({
   currentCycle,
   currentPeriodEnd,
   currency,
+  subscriptionStatus,
   onBackToPlans,
 }: Props) {
   const { t } = useTranslation()
+  // Trialing has no paid period to protect, so the backend applies a
+  // downgrade immediately and resolves overage synchronously — every other
+  // status defers to renewal, doesn't touch live plan/cycle or entitlement
+  // yet, and ignores any member/file picks sent along (nothing is being
+  // removed today), so this wizard skips the selection step and swaps the
+  // destructive/proration copy for a plain scheduled-effective note
+  // whenever this is false.
+  const isTrialing = subscriptionStatus === "trialing"
   const [step, setStep] = useState<Step>("preview")
   // Frozen at confirm time — see UpgradeWizard's identical field for why
   // (the preview query's enabled condition goes false once step flips to
@@ -93,12 +105,23 @@ export function DowngradeWizard({
     useDowngradeSubscription(organizationId)
 
   const { hasPendingInvoice } = usePermissions()
-  const { data: plansData } = usePlans()
+  // country_code, not the subscription's own currency field, is what scopes
+  // this fetch down to one currency — kept disabled until it's known,
+  // rather than firing once unscoped and again once scoped.
+  const { data: orgData, isLoading: orgLoading } =
+    useOrganization(organizationId)
+  const countryCode = orgData?.data?.country_code ?? ""
+  const { data: plansData } = usePlans(countryCode, !orgLoading)
   const plans = plansData?.data ?? []
   const targetPlanInfo = plans.find((p) => p.id === targetPlan)
   const currentPlanInfo = plans.find((p) => p.id === currentPlan)
-  const targetPrices =
-    targetPlanInfo?.prices[currency] ?? targetPlanInfo?.prices["USD"]
+  // Every plan above was scoped by the same country_code, so its price map
+  // holds exactly one currency — read it back from the data itself, rather
+  // than the `currency` prop, so this never depends on the two staying in
+  // sync.
+  const displayCurrency =
+    Object.keys(targetPlanInfo?.prices ?? {})[0] ?? currency
+  const targetPrices = targetPlanInfo?.prices[displayCurrency]
   const cycleChanged = targetCycle !== currentCycle
 
   // fetch members for selection
@@ -145,9 +168,10 @@ export function DowngradeWizard({
     return { manual, auto }
   }, [overage, selectedMembers])
 
-  // Move forward from preview
+  // Move forward from preview — the selection step only makes sense while
+  // trialing (the only status where a downgrade removes anything today).
   function handleContinueFromPreview() {
-    if (hasOverage) {
+    if (isTrialing && hasOverage) {
       setStep("selection")
     } else {
       setStep("review")
@@ -207,9 +231,18 @@ export function DowngradeWizard({
       <Dialog open={open} onOpenChange={handleClose}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("billing.downgrade.successTitle")}</DialogTitle>
+            <DialogTitle>
+              {isTrialing
+                ? t("billing.downgrade.successTitle")
+                : t("billing.downgrade.scheduledSuccessTitle")}
+            </DialogTitle>
             <DialogDescription>
-              {t("billing.downgrade.successDescription")}
+              {isTrialing
+                ? t("billing.downgrade.successDescription")
+                : t("billing.downgrade.scheduledSuccessDescription", {
+                    plan: targetPlanInfo?.name ?? targetPlan,
+                    date: formatDate(currentPeriodEnd),
+                  })}
             </DialogDescription>
           </DialogHeader>
 
@@ -230,58 +263,61 @@ export function DowngradeWizard({
                 {t(`billing.plans.${targetCycle}`)}
               </span>
             </div>
-            {hadPendingInvoiceAtConfirm && confirmedPreview ? (
-              <p className="pt-1 text-xs text-muted-foreground">
-                {t("billing.downgrade.successNewInvoiceIssued", {
-                  amount: formatMoney(
-                    confirmedPreview.total_cents,
-                    confirmedPreview.currency
-                  ),
-                })}
-              </p>
-            ) : (
-              confirmedPreview?.new_period_end && (
+            {isTrialing &&
+              (hadPendingInvoiceAtConfirm && confirmedPreview ? (
                 <p className="pt-1 text-xs text-muted-foreground">
-                  {t("billing.plans.noChargeToday")}{" "}
-                  {t("billing.downgrade.successEffectiveOn", {
-                    date: formatDate(confirmedPreview.new_period_end),
+                  {t("billing.downgrade.successNewInvoiceIssued", {
+                    amount: formatMoney(
+                      confirmedPreview.total_cents,
+                      confirmedPreview.currency
+                    ),
                   })}
                 </p>
-              )
-            )}
+              ) : (
+                confirmedPreview?.new_period_end && (
+                  <p className="pt-1 text-xs text-muted-foreground">
+                    {t("billing.plans.noChargeToday")}{" "}
+                    {t("billing.downgrade.successEffectiveOn", {
+                      date: formatDate(confirmedPreview.new_period_end),
+                    })}
+                  </p>
+                )
+              ))}
           </div>
 
-          <div className="py-4 text-sm text-muted-foreground">
-            {result &&
-            (result.removed_member_auth_subs.length > 0 ||
-              result.removed_file_ids.length > 0) ? (
-              <div className="flex flex-col gap-2">
-                <p className="font-medium text-foreground">
-                  {t("billing.downgrade.successRemovedInfo")}
-                </p>
-                <ul className="list-inside list-disc">
-                  {result.removed_member_auth_subs.map((m) => (
-                    <li key={m}>
-                      {m}
-                      {result.auto_selected_member_subs.includes(m) && (
-                        <> {t("billing.downgrade.autoSelected")}</>
-                      )}
-                    </li>
-                  ))}
-                  {result.removed_file_ids.map((f) => (
-                    <li key={f}>
-                      {f}
-                      {result.auto_selected_file_ids.includes(f) && (
-                        <> {t("billing.downgrade.autoSelected")}</>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p>{t("billing.downgrade.successNothingRemoved")}</p>
-            )}
-          </div>
+          {isTrialing && (
+            <div className="py-4 text-sm text-muted-foreground">
+              {result &&
+              (result.removed_member_auth_subs.length > 0 ||
+                result.removed_file_ids.length > 0) ? (
+                <div className="flex flex-col gap-2">
+                  <p className="font-medium text-foreground">
+                    {t("billing.downgrade.successRemovedInfo")}
+                  </p>
+                  <ul className="list-inside list-disc">
+                    {result.removed_member_auth_subs.map((m) => (
+                      <li key={m}>
+                        {m}
+                        {result.auto_selected_member_subs.includes(m) && (
+                          <> {t("billing.downgrade.autoSelected")}</>
+                        )}
+                      </li>
+                    ))}
+                    {result.removed_file_ids.map((f) => (
+                      <li key={f}>
+                        {f}
+                        {result.auto_selected_file_ids.includes(f) && (
+                          <> {t("billing.downgrade.autoSelected")}</>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p>{t("billing.downgrade.successNothingRemoved")}</p>
+              )}
+            </div>
+          )}
           <DialogFooter>
             <Button onClick={handleClose}>{t("common.done")}</Button>
           </DialogFooter>
@@ -330,76 +366,92 @@ export function DowngradeWizard({
             </div>
           </div>
 
-          <InvoicePreviewNote
-            preview={preview}
-            loading={previewLoading}
-            currentPeriodEnd={currentPeriodEnd}
-            planName={targetPlanInfo?.name ?? targetPlan}
-            hasPendingInvoice={hasPendingInvoice}
-          />
-
-          {previewLoading ? (
-            <div className="py-4">
-              <Skeleton className="h-20 w-full" />
-            </div>
+          {isTrialing ? (
+            <InvoicePreviewNote
+              preview={preview}
+              loading={previewLoading}
+              currentPeriodEnd={currentPeriodEnd}
+              planName={targetPlanInfo?.name ?? targetPlan}
+              hasPendingInvoice={hasPendingInvoice}
+            />
           ) : (
-            <div className="flex flex-col gap-4 py-4 text-sm">
-              <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive">
-                <div className="flex items-start gap-2">
-                  <IconAlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
-                  <div>
-                    <p className="font-semibold">
-                      {t("billing.downgrade.warningTitle")}
-                    </p>
-                    <p className="mt-1">{t("billing.downgrade.warningBody")}</p>
+            <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+              <b className="text-foreground">
+                {t("billing.plans.noChargeToday")}
+              </b>{" "}
+              {t("billing.downgrade.scheduledReviewNote", {
+                date: formatDate(currentPeriodEnd),
+              })}
+            </p>
+          )}
+
+          {isTrialing &&
+            (previewLoading ? (
+              <div className="py-4">
+                <Skeleton className="h-20 w-full" />
+              </div>
+            ) : (
+              <div className="flex flex-col gap-4 py-4 text-sm">
+                <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive">
+                  <div className="flex items-start gap-2">
+                    <IconAlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                    <div>
+                      <p className="font-semibold">
+                        {t("billing.downgrade.warningTitle")}
+                      </p>
+                      <p className="mt-1">
+                        {t("billing.downgrade.warningBody")}
+                      </p>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {hasOverage && (
-                <div className="rounded-md border p-3">
-                  <p className="font-medium">
-                    {t("billing.downgrade.toBeRemoved")}
-                  </p>
-                  <ul className="mt-2 list-inside list-disc text-muted-foreground">
-                    {membersToRemove.manual.map((m) => (
-                      <li key={m}>{m}</li>
-                    ))}
-                    {membersToRemove.auto.map((m) => (
-                      <li key={m}>
-                        {m} {t("billing.downgrade.autoSelected")}
-                      </li>
-                    ))}
-                    {selectedFiles.map((f: string) => (
-                      <li key={f}>{f}</li>
-                    ))}
-                    {overage?.storage?.auto_select_removals?.map(
-                      (f: string) => (
-                        <li key={f}>
-                          {f} {t("billing.downgrade.autoSelected")}
+                {hasOverage && (
+                  <div className="rounded-md border p-3">
+                    <p className="font-medium">
+                      {t("billing.downgrade.toBeRemoved")}
+                    </p>
+                    <ul className="mt-2 list-inside list-disc text-muted-foreground">
+                      {membersToRemove.manual.map((m) => (
+                        <li key={m}>{m}</li>
+                      ))}
+                      {membersToRemove.auto.map((m) => (
+                        <li key={m}>
+                          {m} {t("billing.downgrade.autoSelected")}
                         </li>
-                      )
-                    )}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
+                      ))}
+                      {selectedFiles.map((f: string) => (
+                        <li key={f}>{f}</li>
+                      ))}
+                      {overage?.storage?.auto_select_removals?.map(
+                        (f: string) => (
+                          <li key={f}>
+                            {f} {t("billing.downgrade.autoSelected")}
+                          </li>
+                        )
+                      )}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ))}
 
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() =>
-                hasOverage ? setStep("selection") : onBackToPlans()
+                isTrialing && hasOverage
+                  ? setStep("selection")
+                  : onBackToPlans()
               }
               disabled={downgrading}
             >
               {t("common.back")}
             </Button>
             <Button
-              variant="destructive"
+              variant={isTrialing ? "destructive" : "default"}
               onClick={handleConfirm}
-              disabled={downgrading || previewLoading}
+              disabled={downgrading || (isTrialing && previewLoading)}
             >
               {downgrading && (
                 <IconLoader2
@@ -532,7 +584,7 @@ export function DowngradeWizard({
                   targetCycle === "monthly"
                     ? targetPrices.monthly
                     : targetPrices.yearly,
-                  currency,
+                  displayCurrency,
                   targetCycle,
                   t
                 )}
@@ -560,7 +612,9 @@ export function DowngradeWizard({
         />
 
         <p className="text-sm text-muted-foreground">
-          {t("billing.downgrade.previewOverageWarning")}
+          {isTrialing
+            ? t("billing.downgrade.previewOverageWarning")
+            : t("billing.downgrade.previewScheduledNote")}
         </p>
 
         <DialogFooter>

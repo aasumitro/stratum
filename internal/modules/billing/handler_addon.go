@@ -19,13 +19,19 @@ type attachAddonRequest struct {
 
 // attachAddon godoc
 // @Summary      Attach an addon
-// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled. On a
+// @Description  trialing subscription the requested quantity applies immediately. On any other
+// @Description  subscription status, an increase (including a brand-new attach) instead creates a
+// @Description  day-prorated invoice and returns the addon record with pending_quantity/
+// @Description  pending_invoice_id set — the live quantity only rises once that invoice is
+// @Description  confirmed paid. A decrease still schedules for the next renewal.
 // @Tags         billing
 // @Accept       json
+// @Produce      json
 // @Security     BearerAuth
-// @Param        organizationID  path  string               true  "Organization ID"
-// @Param        body            body  attachAddonRequest   true  "Addon to attach"
-// @Success      204             "no content"
+// @Param        organizationID  path      string               true  "Organization ID"
+// @Param        body            body      attachAddonRequest   true  "Addon to attach"
+// @Success      200             {object}  response.Payload{data=attachedAddonRecord}
 // @Failure      422             {object}  response.Payload  "validation failed"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
@@ -42,13 +48,12 @@ func (h *handler) attachAddon(c *gin.Context) {
 		quantity = 1
 	}
 
-	if err := h.svc.attachAddon(
-		c.Request.Context(), ws.ID, req.AddonID, quantity,
-	); err != nil {
+	addon, err := h.svc.attachAddon(c.Request.Context(), ws.ID, req.AddonID, quantity)
+	if err != nil {
 		response.FromError(c, err)
 		return
 	}
-	c.Status(http.StatusNoContent)
+	response.Success(addon).JSON(c, http.StatusOK)
 }
 
 // detachAddon godoc
@@ -73,6 +78,33 @@ func (h *handler) detachAddon(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// undoAddonQuantityChange godoc
+// @Summary      Undo a scheduled addon quantity change
+// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Param        addonID         path      string  true  "Addon ID"
+// @Success      200             {object}  response.Payload{data=attachedAddonRecord}
+// @Failure      422             {object}  response.Payload  "nothing scheduled to undo"
+// @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/addons/{addonID}/undo [post]
+func (h *handler) undoAddonQuantityChange(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+	addonID := c.Param("addonID")
+
+	addon, err := h.svc.undoScheduledAddonQuantityChange(
+		c.Request.Context(), ws.ID, addonID,
+	)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.Success(addon).JSON(c, http.StatusOK)
 }
 
 // listAddons godoc

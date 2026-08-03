@@ -5,6 +5,15 @@ import { Button } from "@/components/ui/button"
 import { ActivateTrialDialog } from "./activate-trial-dialog"
 import type { Subscription } from "@/types/billing"
 
+function formatDate(s?: string) {
+  if (!s) return "—"
+  return new Date(s).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}
+
 interface Props {
   sub: Subscription
   organizationId: string
@@ -12,6 +21,8 @@ interface Props {
   daysLeft: number | null
   resuming: boolean
   onResume: () => void
+  undoingCancellation: boolean
+  onUndoCancellation: () => void
 }
 
 // Every subscription state gets one banner + one action.
@@ -22,8 +33,43 @@ export function SubscriptionStatusBanner({
   daysLeft,
   resuming,
   onResume,
+  undoingCancellation,
+  onUndoCancellation,
 }: Props) {
   const { t } = useTranslation()
+
+  // Deferred cancellation: status never left "active" (the renewal worker
+  // applies it later), so this is a distinct sub-state from the genuine
+  // "cancelled" banner below rather than something status alone captures.
+  if (sub.status === "active" && sub.scheduled_cancel_at) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+        <div>
+          <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+            {t("billing.states.scheduledCancelTitle")}
+          </p>
+          <p className="mt-0.5 text-xs text-amber-600/80 dark:text-amber-500/80">
+            {t("billing.states.scheduledCancelDescription", {
+              date: formatDate(sub.period_end),
+            })}
+          </p>
+        </div>
+        {isOwner && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={undoingCancellation}
+            onClick={onUndoCancellation}
+          >
+            {undoingCancellation && (
+              <IconLoader2 data-icon="inline-start" className="animate-spin" />
+            )}
+            {t("billing.states.scheduledCancelUndo")}
+          </Button>
+        )}
+      </div>
+    )
+  }
 
   if (sub.status === "past_due") {
     return (

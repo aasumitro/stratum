@@ -18,10 +18,16 @@ import {
   usePlans,
   useCancelSubscription,
   useResumeSubscription,
+  useUndoScheduledCancellation,
 } from "@/features/billing/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import type { BillingCycle, CancelReason } from "@/types/billing"
+import type {
+  BillingCycle,
+  CancelReason,
+  SubscriptionStatus,
+} from "@/types/billing"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -46,6 +52,7 @@ interface Props {
   cycle: BillingCycle
   currency: string
   periodEnd?: string
+  status: SubscriptionStatus
   canCancel: boolean
 }
 
@@ -57,6 +64,7 @@ export function SubscriptionCancelDialog({
   cycle,
   currency,
   periodEnd,
+  status,
   canCancel,
 }: Props) {
   const { t } = useTranslation()
@@ -64,20 +72,38 @@ export function SubscriptionCancelDialog({
   const [step, setStep] = useState<Step>("reason")
   const [reason, setReason] = useState<CancelReason | "">("")
   const [details, setDetails] = useState("")
+  // Trialing has no paid period to protect, so cancellation applies
+  // immediately and flips status to "cancelled" — every other status defers
+  // to renewal instead, leaving status untouched, so the success step here
+  // must offer "undo the schedule" rather than "resume an ended subscription".
+  const isTrialing = status === "trialing"
 
   const { mutate: cancel, isPending: cancelling } =
     useCancelSubscription(organizationId)
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
-  const { data: plansData } = usePlans()
+  const { mutate: undoCancellation, isPending: undoingCancellation } =
+    useUndoScheduledCancellation(organizationId)
+  // country_code, not the subscription's own currency field, is what scopes
+  // this fetch down to one currency — kept disabled until it's known,
+  // rather than firing once unscoped and again once scoped.
+  const { data: orgData, isLoading: orgLoading } =
+    useOrganization(organizationId)
+  const countryCode = orgData?.data?.country_code ?? ""
+  const { data: plansData } = usePlans(countryCode, !orgLoading)
   const { hasPendingInvoice } = usePermissions()
 
   const planInfo = (plansData?.data ?? []).find((p) => p.id === plan)
-  const prices = planInfo?.prices[currency] ?? planInfo?.prices["USD"]
+  // Scoped by the same country_code as the fetch above, so its price map
+  // holds exactly one currency — read it back from the data itself, rather
+  // than the `currency` prop, so this never depends on the two staying in
+  // sync.
+  const displayCurrency = Object.keys(planInfo?.prices ?? {})[0] ?? currency
+  const prices = planInfo?.prices[displayCurrency]
   const priceLabel = prices
     ? formatPrice(
         cycle === "monthly" ? prices.monthly : prices.yearly,
-        currency,
+        displayCurrency,
         cycle,
         t
       )
@@ -114,11 +140,19 @@ export function SubscriptionCancelDialog({
       <Dialog open={open} onOpenChange={handleClose}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("billing.cancel.successTitle")}</DialogTitle>
+            <DialogTitle>
+              {isTrialing
+                ? t("billing.cancel.successTitle")
+                : t("billing.cancel.scheduledSuccessTitle")}
+            </DialogTitle>
             <DialogDescription>
-              {t("billing.cancel.successDescription", {
-                date: formatDate(periodEnd),
-              })}
+              {isTrialing
+                ? t("billing.cancel.successDescription", {
+                    date: formatDate(periodEnd),
+                  })
+                : t("billing.cancel.scheduledSuccessDescription", {
+                    date: formatDate(periodEnd),
+                  })}
             </DialogDescription>
           </DialogHeader>
 
@@ -143,16 +177,18 @@ export function SubscriptionCancelDialog({
           <DialogFooter>
             <Button
               variant="outline"
-              disabled={resuming}
-              onClick={() => resume()}
+              disabled={isTrialing ? resuming : undoingCancellation}
+              onClick={() => (isTrialing ? resume() : undoCancellation())}
             >
-              {resuming && (
+              {(isTrialing ? resuming : undoingCancellation) && (
                 <IconLoader2
                   data-icon="inline-start"
                   className="animate-spin"
                 />
               )}
-              {t("billing.subscription.resume")}
+              {isTrialing
+                ? t("billing.subscription.resume")
+                : t("billing.states.scheduledCancelUndo")}
             </Button>
             <Button onClick={handleClose}>{t("common.done")}</Button>
           </DialogFooter>

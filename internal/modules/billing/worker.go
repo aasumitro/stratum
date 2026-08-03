@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
 // Worker consumes domain events and drives billing side-effects.
@@ -100,19 +102,175 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 	return nil
 }
 
+// reconcileScheduledCancellation takes the row lock covering this renewal
+// decision and either applies a scheduled cancellation or hands the
+// unlocked subscription back to the caller to compose a renewal invoice.
+// The lock is only held for this decision, not for the invoice/payment-link
+// work that follows in the caller — that work makes a blocking call to
+// Stripe/Xendit, and holding a transaction (and its pooled connection) open
+// across an external HTTP round-trip is the same pool-exhaustion risk this
+// module's billingPay route group already avoids for the interactive
+// pay-invoice endpoint (module.go).
+//
+// Returns (nil, nil) when there is nothing left for the caller to do: the
+// subscription wasn't found, isn't active/trialing, the check is stale, or a
+// scheduled cancellation was just applied. Returns (sub, nil) when nothing
+// is scheduled to cancel and the caller should proceed to compose an
+// invoice for sub. Returns (nil, err) on failure, in which case the
+// transaction rolled back and nothing changed — a later redelivery of the
+// same event retries from the same state.
+func (w *Worker) reconcileScheduledCancellation(ctx context.Context, check events.SubscriptionCheck) (*subscriptionRecord, error) {
+	pctx := db.WithPendingEvents(ctx)
+	var sub *subscriptionRecord
+	err := db.WithTx(pctx, w.svc.pool, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(pctx, tx)
+		q := w.svc.querier(txCtx)
+
+		if err := w.svc.repo.lockSubscriptionForUpdate(txCtx, q, check.SubscriptionID); err != nil {
+			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
+		}
+		found, err := w.svc.repo.findSubscriptionByID(txCtx, q, check.SubscriptionID)
+		if err != nil || (found.Status != statusActive && found.Status != statusTrialing) {
+			return nil // existing early-return, unchanged
+		}
+		if staleSubscriptionCheck(found, check) {
+			slog.Info("skipping stale auto-invoice", "subscription_id", found.ID, "expected_end", check.ExpectedEnd)
+			return nil // existing early-return, unchanged
+		}
+		if found.ScheduledCancelAt == nil {
+			sub = found // nothing scheduled — caller falls through to invoice composition
+			return nil
+		}
+
+		if w.svc.orgSuspender != nil && found.SubjectType == subjectTypeOrganization {
+			if err := w.svc.orgSuspender.SuspendOrganization(txCtx, found.SubjectID, "subscription cancelled"); err != nil {
+				return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: suspend organization: %w", err)
+			}
+		}
+		if _, err := w.svc.repo.updateSubscriptionStatus(txCtx, q, found.ID, statusCancelled); err != nil {
+			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
+		}
+		phase := historyPhaseApplied
+		appliedAt := time.Now()
+		if _, err := w.svc.repo.insertHistoryWithPhase(txCtx, q, found.ID, "cancel",
+			&found.Plan, nil, 0, found.Currency, changedBySystem, nil, &phase, &appliedAt); err != nil {
+			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
+		}
+		w.svc.publishAfterCommit(txCtx, events.RoutingKeySubscriptionCancelled, found.SubjectID,
+			events.SubscriptionCancelled{OrgID: found.SubjectID, SubscriptionID: found.ID, CancelledAt: time.Now()})
+		return nil // no invoice — this is the cancellation short-circuit
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Only fires events queued by a transaction that actually committed —
+	// see db.FlushPendingEvents' own doc comment on why this must never run
+	// after a rollback.
+	db.FlushPendingEvents(pctx)
+	return sub, nil
+}
+
+// reconcileScheduledOverage applies sub's scheduled plan downgrade and/or
+// addon quantity decreases, resolving any resulting member/storage overage
+// exactly once against the fully combined future state before either
+// applies — never two separate overage checks for one renewal. Like
+// reconcileScheduledCancellation, this takes its own row lock in a short
+// transaction and commits before the caller composes a renewal invoice, so
+// composeInvoiceAmount's blocking payment-provider call never runs inside a
+// held transaction. Re-reads the subscription and its scheduled addons
+// fresh under the lock rather than trusting the caller's copy, so a
+// concurrent redelivery that already applied the schedule is a safe no-op
+// here rather than a stale double-apply.
+func (w *Worker) reconcileScheduledOverage(ctx context.Context, subscriptionID string) (*subscriptionRecord, error) {
+	var result *subscriptionRecord
+	err := db.WithTx(ctx, w.svc.pool, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		q := w.svc.querier(txCtx)
+
+		if err := w.svc.repo.lockSubscriptionForUpdate(txCtx, q, subscriptionID); err != nil {
+			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+		}
+		sub, err := w.svc.repo.findSubscriptionByID(txCtx, q, subscriptionID)
+		if err != nil {
+			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+		}
+		scheduledAddons, err := w.svc.repo.listScheduledAddonChanges(txCtx, q, subscriptionID)
+		if err != nil {
+			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+		}
+		hasScheduledPlan := sub.ScheduledPlan != nil
+		if !hasScheduledPlan && len(scheduledAddons) == 0 {
+			result = sub
+			return nil
+		}
+
+		if w.svc.orgCommander != nil {
+			overage, err := w.svc.resolveFutureOveragePreview(txCtx, sub)
+			if err != nil {
+				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+			}
+			if (overage.MemberLimit >= 0 && overage.CurrentMembers > int64(overage.MemberLimit)) ||
+				(overage.StorageLimit >= 0 && overage.CurrentStorage > overage.StorageLimit) {
+				if _, err := w.svc.orgCommander.ResolveDowngradeOverage(txCtx, sub.SubjectID,
+					nil, overage.MemberLimit, nil, overage.StorageLimit, false); err != nil {
+					return fmt.Errorf("billing.reconcileScheduledOverage: resolve overage: %w", err)
+				}
+			}
+		}
+
+		if hasScheduledPlan {
+			if _, err := w.svc.repo.applyScheduledPlanDowngrade(txCtx, q, sub.ID); err != nil {
+				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+			}
+			phase := historyPhaseApplied
+			appliedAt := time.Now()
+			if _, err := w.svc.repo.insertHistoryWithPhase(txCtx, q, sub.ID, actionDowngrade,
+				&sub.Plan, sub.ScheduledPlan, 0, sub.Currency, changedBySystem, nil, &phase, &appliedAt); err != nil {
+				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+			}
+		}
+		for _, a := range scheduledAddons {
+			if a.ScheduledQuantity == 0 {
+				if err := w.svc.repo.deleteSubscriptionAddon(txCtx, q, sub.ID, a.AddonID); err != nil {
+					return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+				}
+				continue
+			}
+			if err := w.svc.repo.applyScheduledAddonQuantityChange(txCtx, q, sub.ID, a.AddonID, a.ScheduledQuantity); err != nil {
+				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+			}
+		}
+
+		result, err = w.svc.repo.findSubscriptionByID(txCtx, q, sub.ID)
+		if err != nil {
+			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // HandleSubscriptionAutoInvoice generates a renewal invoice 3 days before expiry.
 func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
 	if err != nil {
 		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: decode: %w", err)
 	}
-	sub, err := w.svc.repo.findSubscriptionByID(ctx, w.svc.pool, check.SubscriptionID)
-	if err != nil || (sub.Status != statusActive && sub.Status != statusTrialing) {
-		return nil
+
+	sub, err := w.reconcileScheduledCancellation(ctx, check)
+	if err != nil || sub == nil {
+		// err nil + sub nil covers every existing early-return case (not
+		// found, wrong status, stale check) as well as a cancellation that
+		// was just applied — either way there's no invoice to compose.
+		return err
 	}
-	if staleSubscriptionCheck(sub, check) {
-		slog.Info("skipping stale auto-invoice", "subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
-		return nil
+
+	sub, err = w.reconcileScheduledOverage(ctx, sub.ID)
+	if err != nil {
+		return err
 	}
 
 	pending, err := w.svc.repo.findPendingInvoiceBySubscription(ctx, w.svc.pool, sub.ID)

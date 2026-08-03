@@ -9,6 +9,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
 // ErrJoinAlreadyMember distinguishes an already-a-member code from a
@@ -107,13 +108,25 @@ func (s *service) joinByCode(ctx context.Context, code, authSub string) (*organi
 	if _, err := s.repo.getMemberRole(ctx, s.pool, t.ID, authSub); err == nil {
 		return nil, ErrJoinAlreadyMember
 	}
-	if s.billingReader != nil {
-		current, limit, err := s.billingReader.CheckUsageLimit(ctx, t.ID, "members")
-		if err == nil && limit >= 0 && current >= int64(limit) {
+
+	// Locked (and the limit re-checked against a live count) before the
+	// insert below, so two near-simultaneous joins for the same organization
+	// can't both pass the check against a stale/equal count and both
+	// succeed past the plan's seat limit.
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if err := s.repo.lockOrganizationForUpdate(ctx, tx, t.ID); err != nil {
+			return err
+		}
+		if err := s.checkMemberLimitLocked(ctx, tx, t.ID); err != nil {
+			return err
+		}
+		_, err := s.repo.insertMembership(ctx, tx, t.ID, authSub, contracts.RoleMember)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, ErrPlanLimitReached) {
 			return nil, ErrPlanLimitReached
 		}
-	}
-	if _, err := s.repo.insertMembership(ctx, s.pool, t.ID, authSub, contracts.RoleMember); err != nil {
 		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "23505" {
 			return nil, ErrJoinAlreadyMember
 		}

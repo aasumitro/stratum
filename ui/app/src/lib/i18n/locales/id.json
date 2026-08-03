@@ -938,6 +938,10 @@
       "planChangeFailed": "Gagal mengubah paket",
       "downgradeSuccess": "Paket diturunkan",
       "downgradeFailed": "Gagal menurunkan paket",
+      "downgradeUndone": "Penurunan paket terjadwal dibatalkan",
+      "downgradeUndoFailed": "Gagal membatalkan penurunan paket terjadwal",
+      "cancellationUndone": "Pembatalan dibatalkan",
+      "cancellationUndoFailed": "Gagal membatalkan pembatalan langganan",
       "latestActivity": "Aktivitas terbaru",
       "activeSince": "Aktif sejak {{date}}"
     },
@@ -994,6 +998,7 @@
       "previewTitle": "Turunkan ke paket yang lebih rendah",
       "previewDescription": "Kami akan memeriksa penggunaan Anda saat ini terhadap batas paket baru.",
       "previewOverageWarning": "Jika penggunaan Anda melebihi batas paket baru, Anda akan diminta memilih apa yang akan dihapus sebelum ini berlaku.",
+      "previewScheduledNote": "Ini tidak akan berlaku hingga perpanjangan berikutnya — tidak ada yang dihapus atau diubah hari ini.",
       "planLabel": "Paket",
       "currentPlanLabel": "Paket saat ini",
       "selectedPlanLabel": "Paket yang dipilih",
@@ -1011,12 +1016,16 @@
       "toBeRemoved": "Akan dihapus",
       "autoSelected": "(dipilih otomatis)",
       "confirmDowngrade": "Konfirmasi penurunan paket",
+      "scheduledReviewNote": "Ini akan berlaku saat perpanjangan pada {{date}} — paket dan batas Anda saat ini tetap aktif hingga saat itu, dan Anda dapat membatalkan penjadwalan ini kapan saja sebelum itu.",
       "successTitle": "Penurunan paket selesai",
       "successDescription": "Paket Anda telah diubah.",
       "successEffectiveOn": "Berlaku {{date}}.",
       "successRemovedInfo": "Dihapus:",
       "successNothingRemoved": "Penggunaan Anda sudah sesuai batas paket baru — tidak ada yang perlu dihapus.",
-      "successNewInvoiceIssued": "Faktur Anda yang belum dibayar sebelumnya telah dibatalkan. Faktur baru sebesar {{amount}} telah diterbitkan untuk perubahan ini — bayar di Billing agar organisasi Anda tetap dalam status baik."
+      "successNewInvoiceIssued": "Faktur Anda yang belum dibayar sebelumnya telah dibatalkan. Faktur baru sebesar {{amount}} telah diterbitkan untuk perubahan ini — bayar di Billing agar organisasi Anda tetap dalam status baik.",
+      "scheduledSuccessTitle": "Penurunan paket dijadwalkan",
+      "scheduledSuccessDescription": "Paket Anda akan berubah menjadi {{plan}} saat perpanjangan pada {{date}}.",
+      "scheduledBadge": "Dijadwalkan: {{plan}} saat perpanjangan pada {{date}}"
     },
     "cancel": {
       "reasonTitle": "Mengapa Anda membatalkan?",
@@ -1047,7 +1056,9 @@
       "exportOrganizationData": "Ekspor data organisasi (Log audit)",
       "confirmCancel": "Konfirmasi pembatalan",
       "successTitle": "Langganan dibatalkan",
-      "successDescription": "Akses Anda berlanjut hingga {{date}}. Anda dapat melanjutkan kapan saja sebelum itu."
+      "successDescription": "Akses Anda berlanjut hingga {{date}}. Anda dapat melanjutkan kapan saja sebelum itu.",
+      "scheduledSuccessTitle": "Pembatalan dijadwalkan",
+      "scheduledSuccessDescription": "Langganan Anda tetap aktif hingga {{date}} dan tidak akan diperpanjang. Anda dapat membatalkan penjadwalan ini kapan saja sebelum itu."
     },
     "upgrade": {
       "changesTitle": "Apa yang berubah",
@@ -1211,9 +1222,15 @@
       "detached": "Add-on dihapus",
       "attachFailed": "Gagal menambahkan add-on",
       "detachFailed": "Gagal menghapus add-on",
+      "scheduledChangeUndone": "Perubahan terjadwal dibatalkan",
+      "scheduledChangeUndoFailed": "Gagal membatalkan perubahan terjadwal",
       "catalogEmpty": "Tidak ada add-on yang tersedia.",
       "noneAttached": "Belum ada add-on yang terpasang.",
-      "activeQty": "aktif · qty {{qty}}"
+      "activeQty": "aktif · qty {{qty}}",
+      "manage": "Kelola add-on",
+      "scheduledQuantityBadge": "→ {{quantity}} saat perpanjangan pada {{date}}",
+      "scheduledRemovalBadge": "Dijadwalkan untuk dihapus saat perpanjangan pada {{date}}",
+      "pendingQuantityBadge": "→ {{quantity}} menunggu pembayaran"
     },
     "coupons": {
       "title": "Kode diskon",
@@ -1236,7 +1253,10 @@
       "payInvoice": "Bayar faktur →",
       "expiredTitle": "Akses dijeda",
       "expiredDescription": "Bayar faktur terbuka untuk mengaktifkan kembali secara instan setelah webhook mengonfirmasi.",
-      "resumeGetLink": "Lanjutkan — dapatkan tautan pembayaran"
+      "resumeGetLink": "Lanjutkan — dapatkan tautan pembayaran",
+      "scheduledCancelTitle": "Pembatalan dijadwalkan",
+      "scheduledCancelDescription": "Langganan Anda tetap aktif hingga {{date}} dan tidak akan diperpanjang.",
+      "scheduledCancelUndo": "Batalkan penjadwalan pembatalan"
     },
     "managedByNote": "Tindakan penagihan dikelola oleh pemilik organisasi.",
     "pendingChanges": {
@@ -1262,6 +1282,27 @@
       "noCoupons": "Tidak ada kupon yang memenuhi syarat saat ini.",
       "continue": "Lanjutkan ke pembayaran →",
       "couponTimingNote": "Menerapkan kupon di sini berlaku untuk faktur berikutnya, bukan yang ini."
+    },
+    "scheduledAmendments": {
+      "overageWarning": {
+        "title": "Melebihi batas Anda di masa depan",
+        "members": "Anda memiliki {{current}} anggota, tetapi hanya {{allowed}} yang akan diizinkan.",
+        "storage": "Anda menggunakan {{current}}, tetapi hanya {{allowed}} yang akan diizinkan.",
+        "autoResolved": "Ini akan diselesaikan secara otomatis saat perpanjangan — tidak perlu tindakan apa pun."
+      },
+      "reviewChanges": {
+        "title": "Tinjau Perubahan",
+        "pendingPayment": "Membuat invoice — batas Anda naik setelah dibayar",
+        "effectiveAtRenewal": "Berlaku saat perpanjangan pada {{date}}",
+        "changeLine": "{{name}}: {{from}} → {{to}}",
+        "confirm": "Konfirmasi perubahan",
+        "partialFailure": "Beberapa perubahan gagal diterapkan. Coba konfirmasi lagi."
+      },
+      "trialConfirm": {
+        "title": "Konfirmasi perubahan add-on",
+        "description": "Perubahan ini berlaku segera karena langganan Anda masih dalam masa uji coba.",
+        "confirm": "Konfirmasi perubahan"
+      }
     }
   },
   "shortcuts": {

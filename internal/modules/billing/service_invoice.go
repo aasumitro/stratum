@@ -335,6 +335,39 @@ func (s *service) previewInvoice(
 				}
 			}
 		}
+	} else if s.orgCommander != nil {
+		// Not a hypothetical change — preview whatever is already scheduled
+		// to apply at renewal (a plan downgrade and/or addon decreases),
+		// using the same combined future-state computation the renewal
+		// worker itself applies from, so this preview can never disagree
+		// with what actually happens at renewal.
+		scheduledAddons, err := s.repo.listScheduledAddonChanges(ctx, s.querier(ctx), sub.ID)
+		if err == nil && (sub.ScheduledPlan != nil || len(scheduledAddons) > 0) {
+			overage, err := s.resolveFutureOveragePreview(ctx, sub)
+			if err != nil {
+				slog.Error("previewInvoice: failed to compute future overage preview",
+					"organization_id", subjectID, "error", err)
+			} else if (overage.MemberLimit >= 0 && overage.CurrentMembers > int64(overage.MemberLimit)) ||
+				(overage.StorageLimit >= 0 && overage.CurrentStorage > overage.StorageLimit) {
+				res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID,
+					nil, overage.MemberLimit, nil, overage.StorageLimit, true)
+				if err == nil {
+					preview.Overage = &overagePreview{
+						Members: metricOverage{
+							Current: int(overage.CurrentMembers), Allowed: overage.MemberLimit,
+							AutoSelectRemovals: res.AutoSelectedMemberSubs,
+						},
+						Storage: metricOverage{
+							Current: int(overage.CurrentStorage), Allowed: int(overage.StorageLimit),
+							AutoSelectRemovals: res.AutoSelectedFileIDs,
+						},
+					}
+				} else {
+					slog.Error("previewInvoice: failed to dry-run scheduled overage resolution",
+						"organization_id", subjectID, "error", err)
+				}
+			}
+		}
 	}
 
 	return preview, nil

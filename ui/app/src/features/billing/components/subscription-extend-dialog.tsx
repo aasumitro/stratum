@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/tooltip"
 import { Skeleton } from "@/components/ui/skeleton"
 import { usePlans, useExtendSubscription } from "@/features/billing/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { computeExtensionSubtotal } from "@/features/billing/proration"
 import { formatMoney } from "@/lib/format"
 import type { Invoice, Subscription } from "@/types/billing"
@@ -55,7 +56,17 @@ export function SubscriptionExtendDialog({
   const [months, setMonths] = useState(1)
   const [result, setResult] = useState<Invoice | null>(null)
 
-  const { data: plansData, isLoading: plansLoading } = usePlans()
+  // country_code, not the subscription's own currency field, is what scopes
+  // this fetch down to one currency — kept disabled until it's known,
+  // rather than firing once unscoped and again once scoped.
+  const { data: orgData, isLoading: orgLoading } =
+    useOrganization(organizationId)
+  const countryCode = orgData?.data?.country_code ?? ""
+  const { data: plansData, isLoading: plansDataLoading } = usePlans(
+    countryCode,
+    !orgLoading
+  )
+  const plansLoading = orgLoading || plansDataLoading
   const { mutate: extend, isPending: extending } =
     useExtendSubscription(organizationId)
 
@@ -63,8 +74,11 @@ export function SubscriptionExtendDialog({
   const planInfo = (plansData?.data ?? []).find(
     (p) => p.id === subscription.plan
   )
-  const prices =
-    planInfo?.prices[subscription.currency] ?? planInfo?.prices["USD"]
+  // Scoped by the same country_code as the fetch above, so its price map
+  // holds exactly one currency — read it back from the data itself, rather
+  // than subscription.currency, so this never depends on the two staying
+  // in sync.
+  const prices = planInfo?.prices[Object.keys(planInfo?.prices ?? {})[0] ?? ""]
 
   // Every option this component offers is only reachable through here — no
   // separate cap enforcement to keep in sync with the backend's own.

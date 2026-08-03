@@ -41,7 +41,8 @@ func DeclareWorkerDelayQueues(mqConn *messaging.Connection) {
 	}
 	defer setupCh.Close()
 
-	_ = setupCh.ExchangeDeclare(events.ExchangeBillingDelay, amqp.ExchangeDirect, true, false, false, false, nil)
+	_ = setupCh.ExchangeDeclare(events.ExchangeBillingDelay, amqp.ExchangeDirect,
+		true, false, false, false, nil)
 
 	delayRoutes := []struct{ routingKey, dlxKey string }{
 		{events.DelayRoutingKeySubscriptionCheck, events.RoutingKeySubscriptionCheck},

@@ -44,7 +44,10 @@ type Envelope struct {
 // Publish wraps data in an Envelope and publishes it. Fire-and-forget:
 // logs on failure instead of returning an error, since event publishing
 // must not block the primary write path.
-func Publish(ctx context.Context, pub messaging.EventPublisher, exchange, routingKey, source, orgID string, data any) {
+func Publish(
+	ctx context.Context, pub messaging.EventPublisher,
+	exchange, routingKey, source, orgID string, data any,
+) {
 	env := Envelope{
 		ID:     uuid.New().String(),
 		Type:   routingKey,
@@ -55,11 +58,13 @@ func Publish(ctx context.Context, pub messaging.EventPublisher, exchange, routin
 	}
 	body, err := json.Marshal(env)
 	if err != nil {
-		logger.FromContext(ctx).Error("failed to marshal event", "routing_key", routingKey, "error", err)
+		logger.FromContext(ctx).Error("failed to marshal event",
+			"routing_key", routingKey, "error", err)
 		return
 	}
 	if err := pub.Publish(ctx, exchange, routingKey, body); err != nil {
-		logger.FromContext(ctx).Warn("event publish failed", "exchange", exchange, "routing_key", routingKey, "error", err)
+		logger.FromContext(ctx).Warn("event publish failed",
+			"exchange", exchange, "routing_key", routingKey, "error", err)
 	}
 }
 
@@ -97,7 +102,11 @@ func Decode[T any](body []byte) (T, error) {
 
 // PublishDelayed wraps data in an Envelope and publishes with a per-message TTL.
 // Used with a parking queue + DLX for delayed delivery (e.g. subscription expiry checks).
-func PublishDelayed(ctx context.Context, pub messaging.EventPublisher, exchange, routingKey, source, orgID string, data any, delay time.Duration) {
+func PublishDelayed(
+	ctx context.Context, pub messaging.EventPublisher,
+	exchange, routingKey, source, orgID string,
+	data any, delay time.Duration,
+) {
 	env := Envelope{
 		ID:     uuid.New().String(),
 		Type:   routingKey,
@@ -108,10 +117,12 @@ func PublishDelayed(ctx context.Context, pub messaging.EventPublisher, exchange,
 	}
 	body, err := json.Marshal(env)
 	if err != nil {
-		logger.FromContext(ctx).Error("failed to marshal delayed event", "routing_key", routingKey, "error", err)
+		logger.FromContext(ctx).Error("failed to marshal delayed event",
+			"routing_key", routingKey, "error", err)
 		return
 	}
 	if err := pub.PublishDelayed(ctx, exchange, routingKey, body, delay); err != nil {
-		logger.FromContext(ctx).Warn("delayed event publish failed", "exchange", exchange, "routing_key", routingKey, "error", err)
+		logger.FromContext(ctx).Warn("delayed event publish failed",
+			"exchange", exchange, "routing_key", routingKey, "error", err)
 	}
 }

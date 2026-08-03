@@ -44,11 +44,28 @@ CREATE TABLE billing.subscriptions (
     period_start TIMESTAMPTZ,
     period_end   TIMESTAMPTZ,
     trial_end    TIMESTAMPTZ,
+    -- A scheduled plan downgrade or cancellation is recorded here rather than applied immediately —
+    -- status/plan/cycle above stay live and unchanged until the renewal worker applies it, so a
+    -- paid period's entitlement is never reduced early. scheduled_plan/scheduled_cycle/
+    -- scheduled_requested_at are all-or-nothing together (ck_subscriptions_scheduled_plan_consistent
+    -- below); scheduled_cancel_at is independent but never effectively concurrent with a scheduled
+    -- plan downgrade — scheduling a cancellation clears the other in the same statement.
+    scheduled_plan         TEXT        REFERENCES billing.plans(id),
+    scheduled_cycle        TEXT        CHECK (scheduled_cycle IS NULL OR scheduled_cycle IN ('monthly', 'yearly')),
+    scheduled_requested_at TIMESTAMPTZ,
+    scheduled_cancel_at    TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (subject_type, subject_id)
+    UNIQUE (subject_type, subject_id),
+    CONSTRAINT ck_subscriptions_scheduled_plan_consistent
+        CHECK ((scheduled_plan IS NULL) = (scheduled_cycle IS NULL)
+           AND (scheduled_plan IS NULL) = (scheduled_requested_at IS NULL))
 );
-CREATE INDEX idx_subscriptions_subject ON billing.subscriptions (subject_type, subject_id);
+CREATE INDEX idx_subscriptions_subject             ON billing.subscriptions (subject_type, subject_id);
+-- Partial: almost every row has NULL scheduled_* at any given time — index only the sliver that
+-- matters for "does this subscription have anything scheduled" (renewal worker + Billing UI).
+CREATE INDEX idx_subscriptions_scheduled_cancel    ON billing.subscriptions (id) WHERE scheduled_cancel_at IS NOT NULL;
+CREATE INDEX idx_subscriptions_scheduled_downgrade ON billing.subscriptions (id) WHERE scheduled_plan IS NOT NULL;
 
 CREATE TABLE billing.invoices (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -62,7 +79,7 @@ CREATE TABLE billing.invoices (
     status              TEXT        NOT NULL DEFAULT 'pending'
                                     CHECK (status IN ('pending', 'paid', 'failed', 'void')),
     kind                TEXT        NOT NULL DEFAULT 'subscription'
-                                    CHECK (kind IN ('subscription', 'extension', 'activation')),
+                                    CHECK (kind IN ('subscription', 'extension', 'activation', 'addon_increase')),
     -- Only meaningful on an "extension" invoice — whether paying it also
     -- converts the subscription's cycle to yearly (applied by
     -- handleWebhook on payment confirmation, not when the invoice is
@@ -122,14 +139,20 @@ CREATE TABLE billing.subscription_history (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     subscription_id UUID        NOT NULL REFERENCES billing.subscriptions(id),
     action          TEXT        NOT NULL
-                                CHECK (action IN ('trial', 'activate', 'upgrade', 'downgrade', 'cancel', 'resume', 'extend', 'renew', 'expire')),
+                                CHECK (action IN ('trial', 'activate', 'upgrade', 'downgrade', 'cancel', 'resume', 'extend', 'renew', 'expire', 'addon_change')),
     from_plan       TEXT,
     to_plan         TEXT,
     amount_cents    BIGINT      NOT NULL DEFAULT 0,
     currency        TEXT        NOT NULL DEFAULT 'USD',
     changed_by      TEXT        NOT NULL DEFAULT '',
     changed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    metadata        JSONB       NOT NULL DEFAULT '{}'
+    metadata        JSONB       NOT NULL DEFAULT '{}',
+    -- A 'downgrade'/'cancel' row gets phase 'scheduled' when the change is first requested and a
+    -- second row with phase 'applied' when the renewal worker actually applies it — no new
+    -- `action` value needed, same pattern from_plan/to_plan already establish (nullable,
+    -- action-dependent, NULL for every action this doesn't apply to).
+    phase           TEXT        CHECK (phase IS NULL OR phase IN ('scheduled', 'applied')),
+    effective_at    TIMESTAMPTZ
 );
 CREATE INDEX idx_subscription_history_sub ON billing.subscription_history (subscription_id);
 
@@ -235,13 +258,38 @@ CREATE TABLE billing.addon_features (
 CREATE INDEX idx_addon_features_feature ON billing.addon_features (feature_id);
 
 CREATE TABLE billing.subscription_addons (
-    subscription_id UUID        NOT NULL REFERENCES billing.subscriptions(id),
-    addon_id        TEXT        NOT NULL REFERENCES billing.addons(id),
-    quantity        INT         NOT NULL DEFAULT 1 CHECK (quantity > 0),
-    added_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (subscription_id, addon_id)
+    subscription_id    UUID        NOT NULL REFERENCES billing.subscriptions(id),
+    addon_id           TEXT        NOT NULL REFERENCES billing.addons(id),
+    -- quantity >= 0, not > 0: a brand-new attach on a non-trialing subscription now inserts this
+    -- row with quantity = 0 ("attached, nothing paid/active yet") before anything is billed — see
+    -- pending_quantity below. 0 already contributes nothing to addonLimitDeltas, so no special-
+    -- casing is needed elsewhere for this state.
+    quantity           INT         NOT NULL DEFAULT 1 CHECK (quantity >= 0),
+    added_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- scheduled_quantity = 0 means "remove this addon at renewal" — unifies removal and quantity
+    -- decrease as one column instead of two. The live `quantity` above keeps meaning "current,
+    -- billed-for quantity" until the renewal worker applies the scheduled change.
+    scheduled_quantity      INT         CHECK (scheduled_quantity IS NULL OR scheduled_quantity >= 0),
+    scheduled_requested_at  TIMESTAMPTZ,
+    -- pending_quantity is the target quantity of an addon attach/increase awaiting payment: the
+    -- delta (pending_quantity - quantity) is what the unpaid invoice charges for — for a brand-new
+    -- attach, quantity is 0, so the full requested amount is charged. Cleared (and folded into the
+    -- live quantity) only when handleWebhook confirms that invoice paid; cleared without folding if
+    -- the invoice is voided (superseded by a newer request). Distinct from scheduled_quantity (a
+    -- decrease/removal deferred to next renewal) — an addon row can have pending_quantity set
+    -- (paying up for more) independent of scheduled_quantity (nothing to do with a decrease at the
+    -- same time).
+    pending_quantity        INT         CHECK (pending_quantity IS NULL OR pending_quantity > quantity),
+    pending_invoice_id      UUID        REFERENCES billing.invoices(id),
+    PRIMARY KEY (subscription_id, addon_id),
+    CONSTRAINT ck_subscription_addons_scheduled_consistent
+        CHECK ((scheduled_quantity IS NULL) = (scheduled_requested_at IS NULL)),
+    CONSTRAINT ck_subscription_addons_pending_consistent
+        CHECK ((pending_quantity IS NULL) = (pending_invoice_id IS NULL))
 );
-CREATE INDEX idx_subscription_addons_addon ON billing.subscription_addons (addon_id);
+CREATE INDEX idx_subscription_addons_addon      ON billing.subscription_addons (addon_id);
+CREATE INDEX idx_subscription_addons_scheduled  ON billing.subscription_addons (subscription_id) WHERE scheduled_quantity IS NOT NULL;
+CREATE INDEX idx_subscription_addons_pending    ON billing.subscription_addons (subscription_id) WHERE pending_quantity IS NOT NULL;
 
 ALTER TABLE billing.subscriptions  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE billing.invoices       ENABLE ROW LEVEL SECURITY;

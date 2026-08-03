@@ -31,7 +31,8 @@ func isSuspensionExempt(c *gin.Context, status string) bool {
 		return true
 	}
 	route := c.FullPath()
-	return strings.HasSuffix(route, "/unsuspend") || strings.Contains(route, "/billing") || (c.Request.Method == http.MethodDelete && strings.HasSuffix(route, "/:organizationID"))
+	return strings.HasSuffix(route, "/unsuspend") || strings.Contains(route, "/billing") ||
+		(c.Request.Method == http.MethodDelete && strings.HasSuffix(route, "/:organizationID"))
 }
 
 func organizationIDExtractor(c *gin.Context) string {

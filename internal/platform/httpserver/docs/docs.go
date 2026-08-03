@@ -2192,8 +2192,11 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled. On a\ntrialing subscription the requested quantity applies immediately. On any other\nsubscription status, an increase (including a brand-new attach) instead creates a\nday-prorated invoice and returns the addon record with pending_quantity/\npending_invoice_id set — the live quantity only rises once that invoice is\nconfirmed paid. A decrease still schedules for the next renewal.",
                 "consumes": [
+                    "application/json"
+                ],
+                "produces": [
                     "application/json"
                 ],
                 "tags": [
@@ -2219,8 +2222,23 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "204": {
-                        "description": "no content"
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/attachedAddonRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
                     },
                     "401": {
                         "description": "missing/invalid auth token",
@@ -2283,6 +2301,77 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/addons/{addonID}/undo": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Undo a scheduled addon quantity change",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Addon ID",
+                        "name": "addonID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/attachedAddonRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "nothing scheduled to undo",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -2359,6 +2448,70 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/cancel/undo": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Undo a scheduled cancellation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/subscriptionRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "nothing scheduled to undo",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -2547,6 +2700,70 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/downgrade/undo": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Undo a scheduled plan downgrade",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/subscriptionRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "nothing scheduled to undo",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -6530,6 +6747,13 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "pending_invoice_id": {
+                    "type": "string"
+                },
+                "pending_quantity": {
+                    "description": "PendingQuantity/PendingInvoiceID mirror ScheduledQuantity/ScheduledRequestedAt's shape but\nfor the opposite direction — an increase awaiting payment, not a decrease deferred to\nrenewal. Set together, cleared together (see ck_subscription_addons_pending_consistent).",
+                    "type": "integer"
+                },
                 "prices": {
                     "type": "object",
                     "additionalProperties": {
@@ -6538,6 +6762,12 @@ const docTemplate = `{
                 },
                 "quantity": {
                     "type": "integer"
+                },
+                "scheduled_quantity": {
+                    "type": "integer"
+                },
+                "scheduled_requested_at": {
+                    "type": "string"
                 }
             }
         },
@@ -7689,7 +7919,9 @@ const docTemplate = `{
                 "auto_disabled_at": {
                     "type": "string"
                 },
-                "created_at": {},
+                "created_at": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
                 },
@@ -7708,7 +7940,9 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
-                "updated_at": {},
+                "updated_at": {
+                    "type": "string"
+                },
                 "url": {
                     "type": "string"
                 }
@@ -7736,6 +7970,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "plan": {
+                    "type": "string"
+                },
+                "scheduled_cancel_at": {
+                    "type": "string"
+                },
+                "scheduled_cycle": {
+                    "type": "string"
+                },
+                "scheduled_plan": {
                     "type": "string"
                 },
                 "status": {
@@ -7774,7 +8017,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "max_extendable_months": {
-                    "description": "MaxExtendableMonths lets the frontend gate the Extend flow's counter,\n\"Switch to Annual\" option, and entry point without re-deriving the\n24-month lifetime cap from raw dates itself (see maxExtendableMonths\nin service_subscription_billing.go for why that's rejected). 0 for a\nsubscription with no current period (e.g. still trialing) — nothing\nto extend.",
+                    "description": "MaxExtendableMonths lets the frontend gate the Extend flow's counter,\n\"Switch to Annual\" option, and entry point without re-deriving the\n24-month runway cap from raw dates itself (see maxExtendableMonths\nin service_subscription_billing.go for why that's rejected). 0 for a\nsubscription with no current period (e.g. still trialing) — nothing\nto extend.",
                     "type": "integer"
                 },
                 "period_end": {
@@ -7784,6 +8027,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "plan": {
+                    "type": "string"
+                },
+                "scheduled_cancel_at": {
+                    "type": "string"
+                },
+                "scheduled_cycle": {
+                    "type": "string"
+                },
+                "scheduled_plan": {
                     "type": "string"
                 },
                 "status": {

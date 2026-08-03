@@ -28,19 +28,36 @@ func (r *repository) insertHistory(
 	amountCents int64, currency, changedBy string,
 	metadata []byte,
 ) (string, error) {
+	return r.insertHistoryWithPhase(ctx, q, subscriptionID, action, fromPlan, toPlan,
+		amountCents, currency, changedBy, metadata, nil, nil)
+}
+
+// insertHistoryWithPhase is insertHistory plus phase/effective_at — a
+// scheduled amendment writes phase='scheduled' when first requested and a
+// second row with phase='applied' when the renewal worker applies it; every
+// other action leaves both NULL, same as from_plan/to_plan already do for
+// actions they don't apply to.
+func (r *repository) insertHistoryWithPhase(
+	ctx context.Context, q db.Querier,
+	subscriptionID, action string,
+	fromPlan, toPlan *string,
+	amountCents int64, currency, changedBy string,
+	metadata []byte,
+	phase *string, effectiveAt *time.Time,
+) (string, error) {
 	if metadata == nil {
 		metadata = []byte("{}")
 	}
 	var id string
 	err := q.QueryRow(ctx, `
 		INSERT INTO billing.subscription_history
-			(subscription_id, action, from_plan, to_plan, amount_cents, currency, changed_by, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			(subscription_id, action, from_plan, to_plan, amount_cents, currency, changed_by, metadata, phase, effective_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id`,
-		subscriptionID, action, fromPlan, toPlan, amountCents, currency, changedBy, metadata,
+		subscriptionID, action, fromPlan, toPlan, amountCents, currency, changedBy, metadata, phase, effectiveAt,
 	).Scan(&id)
 	if err != nil {
-		return "", fmt.Errorf("billing.insertHistory: %w", err)
+		return "", fmt.Errorf("billing.insertHistoryWithPhase: %w", err)
 	}
 	return id, nil
 }

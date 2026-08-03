@@ -166,6 +166,25 @@ func NewModuleEngineWithUnverifiedEmail(pool *pgxpool.Pool, authSub, email strin
 	return e
 }
 
+// NewModuleEngineWithBillingReaderAndEmail is NewModuleEngineWithEmail plus a
+// billing reader wired in — use for invitation-accept concurrency tests that
+// need both a verified-email caller and plan member-limit enforcement.
+func NewModuleEngineWithBillingReaderAndEmail(pool *pgxpool.Pool, authSub, email string, br contracts.BillingReader) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	mod := New(pool, messaging.NoopPublisher{})
+	mod.SetBillingReader(br)
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"email": email, "user_metadata": map[string]any{"email_verified": true}}})
+		c.Next()
+	}
+	orgMW := middleware.NewOrganizationMiddleware(mod)
+	noopGate := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
+	return e
+}
+
 // NewModuleEngineWithWriter creates a full gin.Engine backed by a real DB module
 // with a billing writer wired in — use for usage-recording integration tests.
 func NewModuleEngineWithWriter(pool *pgxpool.Pool, authSub string, bw contracts.BillingWriter) *gin.Engine {

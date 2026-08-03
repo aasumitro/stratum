@@ -194,7 +194,7 @@ func (s *service) extendSubscription(
 		months = 12
 	}
 
-	if isPending, _ := s.repo.hasPendingInvoice(ctx, s.querier(ctx), sub.ID); isPending {
+	if isPending, _ := s.repo.hasPendingInvoiceBlockingExtend(ctx, s.querier(ctx), sub.ID); isPending {
 		return nil, ErrExtensionAlreadyPending
 	}
 

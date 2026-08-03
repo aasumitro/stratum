@@ -172,6 +172,73 @@ func TestProrate(t *testing.T) {
 	})
 }
 
+// --- computeAddonIncreaseProration ---
+
+func TestComputeAddonIncreaseProration(t *testing.T) {
+	t.Run("zero days remaining charges nothing", func(t *testing.T) {
+		periodStart := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+		now := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		got := computeAddonIncreaseProration(periodStart, now, now, 5, 100_00)
+		if got != 0 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 0", got)
+		}
+	})
+
+	t.Run("negative remaining (past periodEnd) charges nothing", func(t *testing.T) {
+		periodStart := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+		now := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := now.AddDate(0, 0, -1)
+		got := computeAddonIncreaseProration(periodStart, now, periodEnd, 5, 100_00)
+		if got != 0 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 0", got)
+		}
+	})
+
+	t.Run("full period remaining charges exactly the full per-unit price", func(t *testing.T) {
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := periodStart.AddDate(0, 1, 0)
+		got := computeAddonIncreaseProration(periodStart, periodStart, periodEnd, 1, 900)
+		if got != 900 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 900", got)
+		}
+	})
+
+	t.Run("full period remaining charges the full per-unit price regardless of month length", func(t *testing.T) {
+		// A same-day request should always cost exactly unitPrice*delta —
+		// the reference length is the period's own real span, not a fixed
+		// 30-day assumption, so a 31-day August period must not overcharge
+		// (the bug this test guards against: was 51_666 instead of 50_000
+		// for delta=5 at unitPrice=10_000 in a real 31-day period).
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC) // August: 31 days
+		periodEnd := periodStart.AddDate(0, 1, 0)
+		got := computeAddonIncreaseProration(periodStart, periodStart, periodEnd, 5, 10_000)
+		if got != 50_000 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 50000", got)
+		}
+	})
+
+	t.Run("half the period remaining charges roughly half", func(t *testing.T) {
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := periodStart.AddDate(0, 0, 30)
+		now := periodStart.AddDate(0, 0, 15)
+		got := computeAddonIncreaseProration(periodStart, now, periodEnd, 1, 900)
+		want := int64(450) // 900 * (15/30) * 1
+		if got != want {
+			t.Errorf("computeAddonIncreaseProration() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("delta multiplies the per-unit charge", func(t *testing.T) {
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := periodStart.AddDate(0, 0, 30)
+		got := computeAddonIncreaseProration(periodStart, periodStart, periodEnd, 5, 900)
+		want := int64(900 * 5)
+		if got != want {
+			t.Errorf("computeAddonIncreaseProration() = %d, want %d", got, want)
+		}
+	})
+}
+
 // --- normalizeStripeStatus ---
 
 func TestNormalizeStripeStatus(t *testing.T) {

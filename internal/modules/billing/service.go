@@ -55,6 +55,23 @@ const (
 
 	displayNameSystem  = "System"
 	displayNameWebhook = "Webhook"
+
+	// subscription_history.phase — a scheduled amendment's first history
+	// row gets historyPhaseScheduled; the renewal worker writes a second row
+	// with historyPhaseApplied when it actually applies the amendment.
+	historyPhaseScheduled = "scheduled"
+	historyPhaseApplied   = "applied"
+
+	// actionDowngrade is subscription_history.action for a plan downgrade,
+	// shared by the immediate-trial path, the schedule-at-renewal path, and
+	// the renewal worker's own apply step.
+	actionDowngrade = "downgrade"
+
+	// Shared apperr code/message for ErrCancellationScheduled, classified
+	// identically everywhere it's returned (plan downgrade and addon
+	// scheduling both reject the same way against the same condition).
+	cancellationScheduledCode = "CANCELLATION_SCHEDULED"
+	cancellationScheduledMsg  = "subscription is scheduled to cancel; undo that first"
 )
 
 var (
@@ -72,6 +89,7 @@ var (
 	ErrSubscriptionNotTrialing     = errors.New("subscription is not currently trialing")
 	ErrSubscriptionNotResumable    = errors.New("subscription is not in a resumable state")
 	ErrPlanChangeNotAllowed        = errors.New("subscription is not in a state that allows plan changes")
+	ErrNoScheduledCancellation     = errors.New("no scheduled cancellation to undo")
 )
 
 func calculateTax(subtotalCents int64, taxRateBPS int) int64 {
@@ -246,4 +264,29 @@ func prorate(now, periodStart, periodEnd time.Time, oldPriceCents, newPriceCents
 	ratio := oldPricePerDay / newPricePerDay
 	newRemaining := time.Duration(float64(remaining) * ratio)
 	return now.Add(newRemaining)
+}
+
+// computeAddonIncreaseProration prices an addon quantity increase for the
+// fraction of the current billing period remaining — full-price credit for
+// a same-day request, shrinking linearly to near-zero for a request made
+// the day before renewal. delta is the additional quantity being requested
+// (newQty - liveQty), unitPriceCents is the addon's normal full-cycle
+// per-unit price. The reference length is the period's own real span
+// (periodEnd - periodStart), not a fixed 30/365-day assumption — a fixed
+// reference would over-charge in a 31-day month and under-charge in a
+// 28-day one, even for a same-day request that should cost exactly
+// unitPriceCents * delta. Unlike prorate() (which shifts period_end for a
+// plan change), this returns a cash amount for a period that isn't moving —
+// the renewal that follows still bills the full new quantity at its normal
+// full-cycle price; this invoice only covers the partial period.
+func computeAddonIncreaseProration(periodStart, now, periodEnd time.Time, delta int, unitPriceCents int64) int64 {
+	remaining := periodEnd.Sub(now)
+	if remaining <= 0 {
+		return 0
+	}
+	total := periodEnd.Sub(periodStart)
+	if total <= 0 {
+		return 0
+	}
+	return int64(float64(unitPriceCents) * float64(delta) * (remaining.Seconds() / total.Seconds()))
 }

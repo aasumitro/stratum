@@ -215,6 +215,19 @@ func (r *repository) getOrganizationOwner(ctx context.Context, q db.Querier, id 
 	return ownerID, nil
 }
 
+// lockOrganizationForUpdate takes a row lock on the organization for the
+// rest of the caller's transaction. Used by addMember/acceptInvitation/
+// joinByCode so two concurrent member-adds for the same organization
+// serialize on the member-limit check-then-insert instead of both reading
+// "under limit" and both inserting past the plan's seat limit.
+func (r *repository) lockOrganizationForUpdate(ctx context.Context, q db.Querier, id string) error {
+	var got string
+	if err := q.QueryRow(ctx, `SELECT id FROM organization.organizations WHERE id = $1 FOR UPDATE`, id).Scan(&got); err != nil {
+		return fmt.Errorf("organization.lockOrganizationForUpdate: %w", err)
+	}
+	return nil
+}
+
 func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs []string) error {
 	settingsJSON, _ := json.Marshal(map[string]any{settingAllowedIPs: allowedIPs})
 	_, err := q.Exec(ctx, `

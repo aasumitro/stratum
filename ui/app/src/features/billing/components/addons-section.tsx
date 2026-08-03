@@ -1,25 +1,41 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { IconLoader2 } from "@tabler/icons-react"
+import { IconArrowBackUp } from "@tabler/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { Badge } from "@/components/ui/badge"
+import { ConfirmationDialog } from "@/components/shared/confirmation-dialog"
+import { AddAddonsDialog } from "@/features/organization/components/add-addons-dialog"
+import { ReviewChangesDialog } from "@/features/billing/components/review-changes-dialog"
+import { OverageWarningCard } from "@/features/billing/components/overage-warning-card"
+import { PayButton } from "@/features/billing/components/pay-button"
 import {
   useAddonsCatalog,
   useAttachedAddons,
   useAttachAddon,
   useDetachAddon,
+  useUndoScheduledAddonChange,
   useBillingSubscription,
+  useInvoices,
 } from "@/features/billing/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { usePermissions } from "@/hooks/use-permissions"
-import { formatPrice } from "@/features/billing/utils"
+import {
+  formatPrice,
+  computeAmendmentDiff,
+  applyAmendmentDiff,
+} from "@/features/billing/utils"
+import type { AmendmentDiff, AmendmentChange } from "@/features/billing/utils"
+
+function formatDate(s?: string) {
+  if (!s) return "—"
+  return new Date(s).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}
 
 interface Props {
   organizationId: string
@@ -28,23 +44,76 @@ interface Props {
 export function AddonsSection({ organizationId }: Props) {
   const { t } = useTranslation()
   const { isOwner } = usePermissions()
-  const [quantities, setQuantities] = useState<Record<string, string>>({})
-  const { data: catalogData, isLoading: catalogLoading } = useAddonsCatalog()
+  const [pickerRequested, setPickerRequested] = useState(false)
+  const [reviewStaged, setReviewStaged] = useState<Record<
+    string,
+    number
+  > | null>(null)
+  const [trialConfirmDiff, setTrialConfirmDiff] =
+    useState<AmendmentDiff | null>(null)
+  const [trialConfirmSubmitting, setTrialConfirmSubmitting] = useState(false)
+  const [trialConfirmFailed, setTrialConfirmFailed] = useState<
+    AmendmentChange[]
+  >([])
+
+  // The org's real country_code, not its subscription currency, is what
+  // scopes every priced catalog fetch below down to one currency — a
+  // customer must never see (or be able to pick from) a currency they
+  // can't actually be billed in. The catalog fetch stays disabled until
+  // country_code is known, rather than firing once unscoped and again once
+  // scoped — the first response would otherwise flash every currency for a
+  // moment before the real, scoped one replaces it.
+  const { data: orgData, isLoading: orgLoading } =
+    useOrganization(organizationId)
+  const countryCode = orgData?.data?.country_code ?? ""
+  const { data: catalogData, isLoading: catalogLoading } = useAddonsCatalog(
+    countryCode,
+    !orgLoading
+  )
   const { data: attachedData, isLoading: attachedLoading } =
     useAttachedAddons(organizationId)
   const { data: subData } = useBillingSubscription(organizationId)
-  const { mutate: attach, isPending: attaching } =
+  // Backs the pending-payment Pay button below — an addon row only carries
+  // pending_invoice_id, not the invoice's own amount/currency PayButton needs.
+  const { data: invoicesData } = useInvoices(organizationId)
+  const invoicesById = new Map(
+    (invoicesData?.data ?? []).map((inv) => [inv.id, inv])
+  )
+  const { mutateAsync: attach, isPending: attaching } =
     useAttachAddon(organizationId)
-  const { mutate: detach, isPending: detaching } =
+  const { mutateAsync: detach, isPending: detaching } =
     useDetachAddon(organizationId)
+  const { mutate: undoScheduledChange, isPending: undoingSchedule } =
+    useUndoScheduledAddonChange(organizationId)
 
   const catalog = (catalogData?.data ?? []).filter((a) => a.active)
+  const catalogById = new Map(catalog.map((a) => [a.id, a]))
   const attached = attachedData?.data ?? []
-  const attachedById = new Map(attached.map((a) => [a.addon_id, a]))
-  const currency = subData?.data?.currency ?? "USD"
   const cycle = subData?.data?.cycle ?? "monthly"
+  const isTrialing = subData?.data?.status === "trialing"
+  const periodEnd = subData?.data?.period_end
+  // Every addon in `catalog` was scoped by the same country_code above, so
+  // each one's price map holds exactly one currency — read it back from the
+  // data itself rather than the subscription's own currency field, so this
+  // never depends on the two staying in sync.
+  const displayCurrency = Object.keys(catalog[0]?.prices ?? {})[0] ?? "USD"
 
-  if (catalogLoading || attachedLoading) {
+  const selected = Object.fromEntries(
+    attached.map((a) => [a.addon_id, a.quantity])
+  )
+
+  function handlePickerCommit(staged: Record<string, number>) {
+    const diff = computeAmendmentDiff(staged, attached)
+    if (!diff.immediate.length && !diff.scheduled.length) return
+    if (isTrialing) {
+      if (diff.scheduled.length > 0) setTrialConfirmDiff(diff)
+      else void applyAmendmentDiff(diff, attach, detach)
+    } else {
+      setReviewStaged(staged)
+    }
+  }
+
+  if (orgLoading || catalogLoading || attachedLoading) {
     return (
       <Card>
         <CardHeader>
@@ -59,118 +128,212 @@ export function AddonsSection({ organizationId }: Props) {
     )
   }
 
-  if (!catalog.length) return null
+  if (!catalog.length) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("billing.addons.title")}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            {t("billing.addons.catalogEmpty")}
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("billing.addons.title")}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {!isOwner && (
-          <p className="mb-3 text-xs text-muted-foreground">
-            {t("billing.managedByNote")}
-          </p>
-        )}
-        <ul className="flex flex-col gap-3">
-          {catalog.map((addon) => {
-            const attachedRow = attachedById.get(addon.id)
-            const isAttached = !!attachedRow
-            const prices = addon.prices[currency] ?? addon.prices["USD"]
-            const amount = prices
-              ? cycle === "monthly"
-                ? prices.monthly
-                : prices.yearly
-              : 0
-            const quantity = quantities[addon.id] ?? "1"
-            return (
-              <li
-                key={addon.id}
-                className="flex items-center justify-between gap-3 text-sm"
-              >
-                <div className="flex flex-col">
-                  <span className="font-medium">
-                    {addon.name}
-                    {isAttached && (
-                      <span className="ml-2 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
-                        {t("billing.addons.activeQty", {
-                          qty: attachedRow.quantity,
-                        })}
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("billing.addons.title")}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <OverageWarningCard organizationId={organizationId} />
+
+          {!isOwner && (
+            <p className="text-xs text-muted-foreground">
+              {t("billing.managedByNote")}
+            </p>
+          )}
+
+          {attached.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {t("billing.addons.noneAttached")}
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-3">
+              {attached.map((addonRow) => {
+                const catalogAddon = catalogById.get(addonRow.addon_id)
+                const prices = catalogAddon?.prices[displayCurrency]
+                const amount = prices
+                  ? cycle === "monthly"
+                    ? prices.monthly
+                    : prices.yearly
+                  : 0
+                const scheduledRemoval = addonRow.scheduled_quantity === 0
+                return (
+                  <li
+                    key={addonRow.addon_id}
+                    className="flex items-center justify-between gap-3 text-sm"
+                  >
+                    <div className="flex flex-col gap-1">
+                      <span className="font-medium">
+                        {addonRow.name}
+                        <span className="ml-2 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
+                          {t("billing.addons.activeQty", {
+                            qty: addonRow.quantity,
+                          })}
+                        </span>
                       </span>
-                    )}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {addon.description} ·{" "}
-                    {formatPrice(amount, currency, cycle, t)}
-                  </span>
-                </div>
-                {isOwner &&
-                  (isAttached ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={detaching}
-                      onClick={() => detach(addon.id)}
-                    >
-                      {detaching && (
-                        <IconLoader2
-                          data-icon="inline-start"
-                          className="animate-spin"
-                        />
+                      <span className="text-xs text-muted-foreground">
+                        {catalogAddon?.description} ·{" "}
+                        {formatPrice(amount, displayCurrency, cycle, t)}
+                      </span>
+                      {addonRow.scheduled_quantity != null && (
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant="outline">
+                            {scheduledRemoval
+                              ? t("billing.addons.scheduledRemovalBadge", {
+                                  date: formatDate(periodEnd),
+                                })
+                              : t("billing.addons.scheduledQuantityBadge", {
+                                  quantity: addonRow.scheduled_quantity,
+                                  date: formatDate(periodEnd),
+                                })}
+                          </Badge>
+                          {isOwner && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-6"
+                              title={t("common.undo")}
+                              aria-label={t("common.undo")}
+                              disabled={undoingSchedule}
+                              onClick={() =>
+                                undoScheduledChange(addonRow.addon_id)
+                              }
+                            >
+                              <IconArrowBackUp className="size-3.5" />
+                            </Button>
+                          )}
+                        </div>
                       )}
-                      {detaching
-                        ? t("billing.addons.detaching")
-                        : t("billing.addons.detach")}
-                    </Button>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <Select
-                        value={quantity}
-                        onValueChange={(v) =>
-                          setQuantities((prev) => ({
-                            ...prev,
-                            [addon.id]: v ?? "1",
-                          }))
-                        }
-                      >
-                        <SelectTrigger size="sm" className="w-16">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {[1, 2, 3, 4, 5].map((q) => (
-                            <SelectItem key={q} value={String(q)}>
-                              {q}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        size="sm"
-                        disabled={attaching}
-                        onClick={() =>
-                          attach({
-                            addon_id: addon.id,
-                            quantity: Number(quantity),
-                          })
-                        }
-                      >
-                        {attaching && (
-                          <IconLoader2
-                            data-icon="inline-start"
-                            className="animate-spin"
-                          />
-                        )}
-                        {attaching
-                          ? t("billing.addons.attaching")
-                          : t("billing.addons.attach")}
-                      </Button>
+                      {addonRow.pending_quantity != null && (
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant="outline">
+                            {t("billing.addons.pendingQuantityBadge", {
+                              quantity: addonRow.pending_quantity,
+                            })}
+                          </Badge>
+                          {isOwner &&
+                            addonRow.pending_invoice_id &&
+                            (() => {
+                              const pendingInvoice = invoicesById.get(
+                                addonRow.pending_invoice_id
+                              )
+                              return (
+                                pendingInvoice && (
+                                  <PayButton
+                                    invoiceId={pendingInvoice.id}
+                                    organizationId={organizationId}
+                                    amountCents={pendingInvoice.amount_cents}
+                                    currency={pendingInvoice.currency}
+                                  />
+                                )
+                              )
+                            })()}
+                        </div>
+                      )}
                     </div>
-                  ))}
-              </li>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          {isOwner && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="self-start"
+              onClick={() => setPickerRequested(true)}
+            >
+              {t("billing.addons.manage")}
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+
+      <AddAddonsDialog
+        open={pickerRequested}
+        onOpenChange={(open) => {
+          if (!open) setPickerRequested(false)
+        }}
+        countryCode={countryCode}
+        cycle={cycle}
+        selected={selected}
+        onChange={handlePickerCommit}
+      />
+
+      {reviewStaged && (
+        <ReviewChangesDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setReviewStaged(null)
+          }}
+          staged={reviewStaged}
+          currentlyAttached={attached}
+          catalog={catalog}
+          periodEnd={periodEnd}
+          organizationId={organizationId}
+        />
+      )}
+
+      {trialConfirmDiff && (
+        <ConfirmationDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              setTrialConfirmDiff(null)
+              setTrialConfirmFailed([])
+            }
+          }}
+          render={<span className="hidden" />}
+          nativeButton={false}
+          title={t("billing.scheduledAmendments.trialConfirm.title")}
+          description={
+            trialConfirmFailed.length > 0
+              ? t("billing.scheduledAmendments.reviewChanges.partialFailure")
+              : t("billing.scheduledAmendments.trialConfirm.description")
+          }
+          consequences={trialConfirmDiff.scheduled.map((c) =>
+            t("billing.scheduledAmendments.reviewChanges.changeLine", {
+              name:
+                attached.find((a) => a.addon_id === c.addonId)?.name ??
+                c.addonId,
+              from: c.fromQty,
+              to: c.toQty,
+            })
+          )}
+          confirmLabel={t("billing.scheduledAmendments.trialConfirm.confirm")}
+          destructive={false}
+          pending={trialConfirmSubmitting || attaching || detaching}
+          onConfirm={() => {
+            setTrialConfirmSubmitting(true)
+            void applyAmendmentDiff(trialConfirmDiff, attach, detach).then(
+              (stillFailed) => {
+                setTrialConfirmSubmitting(false)
+                setTrialConfirmFailed(stillFailed)
+                if (stillFailed.length === 0) setTrialConfirmDiff(null)
+              }
             )
-          })}
-        </ul>
-      </CardContent>
-    </Card>
+          }}
+        >
+          {null}
+        </ConfirmationDialog>
+      )}
+    </>
   )
 }

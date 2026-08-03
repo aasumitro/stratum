@@ -189,6 +189,54 @@ func (h *handler) downgradeSubscription(c *gin.Context) {
 	response.Success(downgradeSubscriptionResponse{Subscription: updated, Overage: overage}).JSON(c, http.StatusOK)
 }
 
+// undoDowngrade godoc
+// @Summary      Undo a scheduled plan downgrade
+// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Success      200             {object}  response.Payload{data=subscriptionRecord}
+// @Failure      422             {object}  response.Payload  "nothing scheduled to undo"
+// @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/downgrade/undo [post]
+func (h *handler) undoDowngrade(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	sub, err := h.svc.undoScheduledPlanDowngrade(
+		c.Request.Context(), subjectTypeOrganization, ws.ID)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.Success(sub).JSON(c, http.StatusOK)
+}
+
+// undoCancellation godoc
+// @Summary      Undo a scheduled cancellation
+// @Description  Owner only.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Success      200             {object}  response.Payload{data=subscriptionRecord}
+// @Failure      422             {object}  response.Payload  "nothing scheduled to undo"
+// @Failure      403             {object}  response.Payload  "owner role required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/cancel/undo [post]
+func (h *handler) undoCancellation(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	sub, err := h.svc.undoScheduledCancellation(
+		c.Request.Context(), subjectTypeOrganization, ws.ID)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.Success(sub).JSON(c, http.StatusOK)
+}
+
 type cancelSubscriptionRequest struct {
 	Reason  string `json:"reason"  binding:"required,oneof=too_expensive missing_features switching_provider no_longer_needed other"`
 	Details string `json:"details" binding:"omitempty,max=500"`

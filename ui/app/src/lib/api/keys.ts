@@ -60,6 +60,11 @@ export const queryKeys = {
     usage: (wsId: string) => ["billing", wsId, "usage"] as const,
     history: (wsId: string) => ["billing", wsId, "history"] as const,
     addons: (wsId: string) => ["billing", wsId, "addons"] as const,
+    // Prefix shared by every useInvoicePreview variant (plan/cycle appended
+    // when previewing a hypothetical change) — invalidating this prefix
+    // covers all of them without needing to know which variant is cached.
+    preview: (wsId: string) =>
+      ["billing", wsId, "subscription", "preview"] as const,
     eligibleCouponsForNewOrg: () =>
       ["billing", "eligible-coupons-new-org"] as const,
   },

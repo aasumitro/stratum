@@ -78,7 +78,7 @@ export function useUsage(organizationId: string) {
 // the catalog stores. Omitting it keeps today's full-currency-map behavior,
 // so existing callers (billing settings' plan/addon pickers, which already
 // know the org's real currency from its subscription record) are unaffected.
-export function usePlans(countryCode?: string) {
+export function usePlans(countryCode?: string, enabled = true) {
   return useHTTPQuery<Plan[]>({
     queryKey: countryCode
       ? [...queryKeys.references.plans(), countryCode]
@@ -86,6 +86,7 @@ export function usePlans(countryCode?: string) {
     url: countryCode
       ? `${API.references("plans")}?country_code=${countryCode}`
       : API.references("plans"),
+    options: { enabled },
   })
 }
 
@@ -96,7 +97,7 @@ export function useFeatures() {
   })
 }
 
-export function useAddonsCatalog(countryCode?: string) {
+export function useAddonsCatalog(countryCode?: string, enabled = true) {
   return useHTTPQuery<Addon[]>({
     queryKey: countryCode
       ? [...queryKeys.references.addons(), countryCode]
@@ -104,6 +105,7 @@ export function useAddonsCatalog(countryCode?: string) {
     url: countryCode
       ? `${API.references("addons")}?country_code=${countryCode}`
       : API.references("addons"),
+    options: { enabled },
   })
 }
 
@@ -111,7 +113,11 @@ export function useAttachedAddons(organizationId: string) {
   return useHTTPQuery<AttachedAddon[]>({
     queryKey: queryKeys.billing.addons(organizationId),
     url: API.billing(organizationId, "addons"),
-    options: { retry: false },
+    // An addon increase is confirmed async via webhook on a separate
+    // checkout tab, same as useBillingSubscription/useInvoices — refetch on
+    // window focus so returning here after paying shows pending_quantity
+    // folded into quantity without a manual reload.
+    options: { retry: false, refetchOnWindowFocus: true },
   })
 }
 
@@ -129,12 +135,7 @@ export function useInvoicePreview(
   if (cycle) params.set("cycle", cycle)
   const qs = params.toString()
   return useHTTPQuery<InvoicePreview>({
-    queryKey: [
-      ...queryKeys.billing.subscription(organizationId),
-      "preview",
-      plan,
-      cycle,
-    ],
+    queryKey: [...queryKeys.billing.preview(organizationId), plan, cycle],
     url: `${API.billing(organizationId, "preview")}${qs ? `?${qs}` : ""}`,
     options: { retry: false, enabled },
   })
@@ -170,6 +171,9 @@ export function useCancelSubscription(organizationId: string) {
         toast.success(t("billing.subscription.cancelled"))
         void queryClient.invalidateQueries({
           queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
         })
       },
       onError: (error) =>
@@ -321,10 +325,65 @@ export function useDowngradeSubscription(organizationId: string) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.billing.history(organizationId),
         })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
       },
       onError: (error) =>
         toast.error(
           parseApiError(error, t("billing.subscription.downgradeFailed"))
+        ),
+    },
+  })
+}
+
+// useUndoScheduledDowngrade clears a scheduled plan downgrade before it
+// applies at renewal — the live plan/cycle were never touched, so only the
+// subscription (and its preview, which reads scheduled_plan) need refreshing.
+export function useUndoScheduledDowngrade(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<Subscription, void>({
+    url: API.billing(organizationId, "downgrade", "undo"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("billing.subscription.downgradeUndone"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+      },
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.downgradeUndoFailed"))
+        ),
+    },
+  })
+}
+
+// useUndoScheduledCancellation clears a scheduled cancellation before it
+// applies at renewal — status was never touched by scheduling it, so only
+// the subscription (scheduled_cancel_at) and its preview need refreshing.
+export function useUndoScheduledCancellation(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<Subscription, void>({
+    url: API.billing(organizationId, "cancel", "undo"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("billing.subscription.cancellationUndone"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+      },
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.cancellationUndoFailed"))
         ),
     },
   })
@@ -349,7 +408,10 @@ export function useBillingFeatures(organizationId: string) {
 export function useAttachAddon(organizationId: string) {
   const queryClient = useQueryClient()
   const { t } = useTranslation()
-  return useHTTPActionPost<void, { addon_id: string; quantity: number }>({
+  return useHTTPActionPost<
+    AttachedAddon,
+    { addon_id: string; quantity: number }
+  >({
     url: API.billing(organizationId, "addons"),
     options: {
       onSuccess: () => {
@@ -365,6 +427,16 @@ export function useAttachAddon(organizationId: string) {
             ...queryKeys.billing.subscription(organizationId),
             "features",
           ],
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+        // An increase on a non-trialing subscription creates a new pending
+        // invoice — refresh the invoices list too, or a freshly attached
+        // addon's Pay button has nothing to point at until some other
+        // mutation happens to invalidate it first.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.invoices(organizationId),
         })
       },
       onError: (error) =>
@@ -393,9 +465,42 @@ export function useDetachAddon(organizationId: string) {
             "features",
           ],
         })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
       },
       onError: (error) =>
         toast.error(parseApiError(error, t("billing.addons.detachFailed"))),
+    },
+  })
+}
+
+// useUndoScheduledAddonChange clears a scheduled addon quantity change (a
+// decrease or a scheduled removal) before it applies at renewal — the live
+// quantity was never touched, so this never affects the subscription's own
+// query, only the addon list, its usage-driven limits, and the preview.
+export function useUndoScheduledAddonChange(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<AttachedAddon, string>({
+    url: (addonId) => API.billing(organizationId, "addons", addonId, "undo"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("billing.addons.scheduledChangeUndone"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.addons(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.usage(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+      },
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.addons.scheduledChangeUndoFailed"))
+        ),
     },
   })
 }

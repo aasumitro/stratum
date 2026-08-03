@@ -42,6 +42,13 @@ export interface Subscription {
   // the extend endpoint itself enforces) so the frontend never re-derives
   // it from period_end/created_at and risks disagreeing by a day.
   max_extendable_months: number
+  // A plan downgrade or cancellation on a non-trialing subscription defers
+  // to renewal instead of applying immediately — these three fields are set
+  // while an amendment is scheduled and clear once the renewal worker
+  // applies (or the owner undoes) it.
+  scheduled_plan?: string
+  scheduled_cycle?: BillingCycle
+  scheduled_cancel_at?: string
   created_at: string
   updated_at: string
 }
@@ -56,7 +63,7 @@ export interface Invoice {
   tax_cents: number
   currency: string
   status: InvoiceStatus
-  kind: "subscription" | "extension" | "activation"
+  kind: "subscription" | "extension" | "activation" | "addon_increase"
   // Only meaningful on an "extension" invoice — whether paying it also
   // converts the subscription's cycle to yearly (applied by the backend on
   // payment confirmation, not when the invoice is created).
@@ -145,6 +152,17 @@ export interface AttachedAddon {
   name: string
   quantity: number
   prices: Record<string, PlanPrices>
+  // Set while a quantity decrease (or removal, quantity 0) is scheduled for
+  // renewal instead of applied immediately; both clear together once applied
+  // or undone.
+  scheduled_quantity?: number
+  scheduled_requested_at?: string
+  // Set while an increase (or a brand-new attach) is awaiting payment — the
+  // opposite direction from scheduled_quantity: quantity only rises to
+  // pending_quantity once pending_invoice_id's invoice is confirmed paid.
+  // Both clear together once applied or superseded by a newer request.
+  pending_quantity?: number
+  pending_invoice_id?: string
 }
 
 // Coupon is the shape returned by GET .../billing/coupons (eligible-coupon

@@ -123,8 +123,16 @@ export default defineConfig(({ mode }) => {
         output: { manualChunks: vendorChunk },
       },
     },
-    // Pure-logic tests only (no component rendering) — plain node environment,
-    // no jsdom/@testing-library needed until something actually renders.
+    // Plain node environment by default — most tests are pure-logic, no DOM
+    // needed. A test file that renders a hook/component (via
+    // @testing-library/react) opts into jsdom per-file with a
+    // `// @vitest-environment jsdom` docblock at its top instead of paying
+    // the jsdom cost globally. Run via `npm test`, not `vitest` directly:
+    // Node's own built-in localStorage global (unflagged since ~v24) clobbers
+    // jsdom's, breaking anything that reads localStorage during a jsdom test
+    // (e.g. lib/i18n's language-detection) — the `test` script's
+    // `NODE_OPTIONS=--no-experimental-webstorage` prefix disables Node's copy
+    // so jsdom's own takes effect.
     test: {
       environment: "node",
       include: ["src/**/*.test.ts"],

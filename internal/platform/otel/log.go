@@ -16,7 +16,10 @@ import (
 // *slog.Logger (built afterward in Setup) picks it up automatically —
 // every slog.Info/Error call anywhere in the app then also becomes an
 // OTel log record correlated with the active trace/span ID.
-func newLoggerProvider(ctx context.Context, isLocal bool, collectorURL string, res *resource.Resource) (*sdklog.LoggerProvider, error) {
+func newLoggerProvider(
+	ctx context.Context, isLocal bool,
+	collectorURL string, res *resource.Resource,
+) (*sdklog.LoggerProvider, error) {
 	options := []otlploggrpc.Option{
 		otlploggrpc.WithEndpoint(collectorURL),
 		otlploggrpc.WithTimeout(dialTimeout),

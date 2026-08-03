@@ -80,13 +80,17 @@ func (s *service) addMember(
 		}
 	}()
 
-	if s.billingReader != nil {
-		current, limit, err := s.billingReader.CheckUsageLimit(ctx, organizationID, "members")
-		if err == nil && limit >= 0 && current >= int64(limit) {
-			return nil, ErrPlanLimitReached
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if lockErr := s.repo.lockOrganizationForUpdate(ctx, tx, organizationID); lockErr != nil {
+			return lockErr
 		}
-	}
-	rec, err = s.repo.insertMembership(ctx, s.pool, organizationID, authSub, role)
+		if limitErr := s.checkMemberLimitLocked(ctx, tx, organizationID); limitErr != nil {
+			return limitErr
+		}
+		var insertErr error
+		rec, insertErr = s.repo.insertMembership(ctx, tx, organizationID, authSub, role)
+		return insertErr
+	})
 	if err != nil {
 		return nil, fmt.Errorf("organization.addMember: %w", err)
 	}
@@ -122,6 +126,32 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 
 func (s *service) getMemberRole(ctx context.Context, organizationID, authSub string) (string, error) {
 	return s.repo.getMemberRole(ctx, s.pool, organizationID, authSub)
+}
+
+// checkMemberLimitLocked re-checks the organization's plan member limit
+// against a live count from q, not the async billing.usage cache
+// CheckUsageLimit normally reads for cheap, non-authoritative checks. Call
+// only while holding organizationID's row lock (lockOrganizationForUpdate)
+// so two concurrent callers serialize on this check instead of both reading
+// "under limit" and both inserting past the plan's seat limit. Fails open
+// (no billingReader, a lookup error, or an unlimited plan) the same way
+// every other optional billingReader call in this module does.
+func (s *service) checkMemberLimitLocked(ctx context.Context, q db.Querier, organizationID string) error {
+	if s.billingReader == nil {
+		return nil
+	}
+	_, limit, err := s.billingReader.CheckUsageLimit(ctx, organizationID, "members")
+	if err != nil || limit < 0 {
+		return nil
+	}
+	current, err := s.repo.countActiveMembers(ctx, q, organizationID)
+	if err != nil {
+		return fmt.Errorf("organization.checkMemberLimitLocked: %w", err)
+	}
+	if current >= int64(limit) {
+		return ErrPlanLimitReached
+	}
+	return nil
 }
 
 // syncMemberUsage records the current active-member count for organizationID

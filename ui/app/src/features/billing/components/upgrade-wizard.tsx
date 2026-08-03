@@ -19,6 +19,7 @@ import {
   useChangePlan,
   useInvoicePreview,
 } from "@/features/billing/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
 import { formatMoney, formatBytes } from "@/lib/format"
@@ -92,7 +93,17 @@ export function UpgradeWizard({
     useState(false)
 
   const { hasPendingInvoice } = usePermissions()
-  const { data: plansData, isLoading: plansLoading } = usePlans()
+  // country_code, not the subscription's own currency field, is what scopes
+  // this fetch down to one currency — kept disabled until it's known,
+  // rather than firing once unscoped and again once scoped.
+  const { data: orgData, isLoading: orgLoading } =
+    useOrganization(organizationId)
+  const countryCode = orgData?.data?.country_code ?? ""
+  const { data: plansData, isLoading: plansDataLoading } = usePlans(
+    countryCode,
+    !orgLoading
+  )
+  const plansLoading = orgLoading || plansDataLoading
   const { data: catalogData } = useFeatures()
   const { mutate: changePlan, isPending: changing } =
     useChangePlan(organizationId)
@@ -107,10 +118,13 @@ export function UpgradeWizard({
   const plans = plansData?.data ?? []
   const targetPlanInfo = plans.find((p) => p.id === targetPlan)
   const currentPlanInfo = plans.find((p) => p.id === currentPlan)
-  // Falls back to USD same as PlanSelector's own picker list, in case the
-  // org's currency isn't a key in this plan's price map.
-  const targetPrices =
-    targetPlanInfo?.prices[currency] ?? targetPlanInfo?.prices["USD"]
+  // Every plan above was scoped by the same country_code, so its price map
+  // holds exactly one currency — read it back from the data itself, rather
+  // than the `currency` prop, so this never depends on the two staying in
+  // sync.
+  const displayCurrency =
+    Object.keys(targetPlanInfo?.prices ?? {})[0] ?? currency
+  const targetPrices = targetPlanInfo?.prices[displayCurrency]
   const featureCatalog = new Map(
     (catalogData?.data ?? []).map((f) => [f.id, f])
   )
@@ -374,7 +388,7 @@ export function UpgradeWizard({
                         targetCycle === "monthly"
                           ? targetPrices.monthly
                           : targetPrices.yearly,
-                        currency,
+                        displayCurrency,
                         targetCycle,
                         t
                       ),

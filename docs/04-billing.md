@@ -23,7 +23,7 @@ Plans, features, add-ons, and coupons are a real, enforced catalog in the databa
 
 - **Plans** carry per-currency prices and a sort order.
 - **Features** have a type: *metered* (tracked usage like members or storage), *boolean* (an on/off gate), *static* (display-only), or *config* (a JSON value delivered to the app, e.g. the API rate limit).
-- **Add-ons** attach extra numeric capacity on top of a plan (e.g. +10 members).
+- **Add-ons** attach extra numeric capacity on top of a plan (e.g. +10 members). On a trial, any change applies immediately. On a paid subscription, decreasing (or removing) an add-on takes effect at the next renewal rather than shrinking your capacity mid-period; increasing one — including attaching it for the first time — creates a day-prorated invoice on the spot, and the higher limit only takes effect once that invoice is paid.
 - **Coupons** apply fixed or percentage discounts with a once/repeated/forever cadence and optional targeting.
 
 `GET /billing/features` returns the *resolved* entitlements for an organization — one row per feature it's granted, with metered current/limit/remaining and the plan-vs-add-on split.

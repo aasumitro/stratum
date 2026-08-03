@@ -153,7 +153,9 @@ func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 //	GET    /organizations/:organizationID/billing
 //	PATCH  /organizations/:organizationID/billing/plan
 //	POST   /organizations/:organizationID/billing/downgrade
+//	POST   /organizations/:organizationID/billing/downgrade/undo
 //	POST   /organizations/:organizationID/billing/cancel
+//	POST   /organizations/:organizationID/billing/cancel/undo
 //	POST   /organizations/:organizationID/billing/resume
 //	POST   /organizations/:organizationID/billing/extend
 //	POST   /organizations/:organizationID/billing/activate
@@ -169,6 +171,7 @@ func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 //	POST   /organizations/:organizationID/billing/coupons/redeem
 //	POST   /organizations/:organizationID/billing/addons
 //	DELETE /organizations/:organizationID/billing/addons/:addonID
+//	POST   /organizations/:organizationID/billing/addons/:addonID/undo
 //	GET    /organizations/:organizationID/billing/addons
 //	GET    /organizations/:organizationID/billing/preview
 //	GET    /organizations/:organizationID/billing/coupons
@@ -205,11 +208,13 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 
 		billing.PATCH("/plan", ownerOnly, deps.MFA, h.changePlan)
 		billing.POST("/downgrade", ownerOnly, deps.MFA, h.downgradeSubscription)
+		billing.POST("/downgrade/undo", ownerOnly, deps.MFA, h.undoDowngrade)
 		billing.POST("/cancel", ownerOnly, h.cancelSubscription)
+		billing.POST("/cancel/undo", ownerOnly, h.undoCancellation)
 		billing.POST("/usage", ownerOnly, h.recordUsage)
 		billing.POST("/coupons/redeem", ownerOnly, h.redeemCoupon)
-		billing.POST("/addons", ownerOnly, deps.MFA, h.attachAddon)
 		billing.DELETE("/addons/:addonID", ownerOnly, deps.MFA, h.detachAddon)
+		billing.POST("/addons/:addonID/undo", ownerOnly, deps.MFA, h.undoAddonQuantityChange)
 	}
 
 	// billingPay deliberately excludes deps.RLS. Every route here can make a
@@ -231,6 +236,11 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billingPay.POST("/activate", ownerOnly, deps.MFA, h.activateTrialNow)
 		billingPay.POST("/invoices/:invoiceID/pay", ownerOnly, deps.Idempotency, h.createPaymentLink)
 		billingPay.POST("/invoices/:invoiceID/pay/regenerate", ownerOnly, deps.Idempotency, h.regeneratePaymentLink)
+		// attachAddon moved here from the RLS group above: a non-trialing
+		// increase now creates a gating invoice and makes the same blocking
+		// payment-link HTTP call every other route in this group makes —
+		// see attachAddon/requestAddonIncrease (service_addon.go).
+		billingPay.POST("/addons", ownerOnly, deps.MFA, h.attachAddon)
 	}
 }
 

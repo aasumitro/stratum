@@ -131,18 +131,23 @@ func (s *service) acceptInvitation(
 	if time.Now().After(inv.ExpiresAt) {
 		return acceptInvitationResult{}, ErrInvitationExpired
 	}
-	if s.billingReader != nil {
-		current, limit, err := s.billingReader.CheckUsageLimit(ctx, inv.OrganizationID, "members")
-		if err == nil && limit >= 0 && current >= int64(limit) {
-			return acceptInvitationResult{}, ErrPlanLimitReached
-		}
-	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Locked (and the limit re-checked against a live count) before the
+	// insert below, so two near-simultaneous accepts for the same
+	// organization can't both pass the check against a stale/equal count
+	// and both succeed past the plan's seat limit.
+	if err := s.repo.lockOrganizationForUpdate(ctx, tx, inv.OrganizationID); err != nil {
+		return acceptInvitationResult{}, err
+	}
+	if err := s.checkMemberLimitLocked(ctx, tx, inv.OrganizationID); err != nil {
+		return acceptInvitationResult{}, err
+	}
 
 	// SAVEPOINT guards against a 23505 unique violation aborting the whole
 	// transaction — PostgreSQL marks a tx as aborted on any error, so without

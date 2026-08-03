@@ -21,10 +21,18 @@ export function useBillingStatus(): BillingStatus {
     organizationId ?? "",
     !!organizationId && isOwner
   )
+  // extension and addon_increase invoices both pay for something additional
+  // to the current period (more time, more capacity) — the plan and
+  // capacity you already have stay exactly as valid as before either is
+  // paid, so neither should block access to it. Only an invoice that backs
+  // the current period itself (subscription/activation) does that.
   const hasPendingInvoice =
     isOwner &&
     (invoicesData?.data ?? []).some(
-      (i) => i.status === "pending" && i.kind !== "extension"
+      (i) =>
+        i.status === "pending" &&
+        i.kind !== "extension" &&
+        i.kind !== "addon_increase"
     )
 
   return {
