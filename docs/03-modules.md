@@ -16,10 +16,10 @@ Reference depends on Billing (the catalog's schema owner) to serve its own plan/
 Represents a human user, independent of any organization. Profile (name, avatar, arbitrary JSON preferences), async account deletion and GDPR export (via RabbitMQ, tracked as tasks), session/login history with revoke-all, and MFA status sync. The only identity reference stored is `auth_sub`.
 
 ## Organization
-The tenant — a company/workspace that owns billing, membership, and most business data. Handles the organization profile (name, slug, country, logo, timezone, locale, IP allowlist), membership with a fixed `owner > admin > member` role model, invitations (by email or 8-character invite code, with bulk CSV import), ownership transfer, self-service suspend/unsuspend, outbound customer webhooks, and file storage. RBAC lives here, cached in Redis for 30 seconds.
+The tenant — a company/workspace that owns billing, membership, and most business data. Handles the organization profile (name, slug, country, logo, timezone, locale, IP allowlist), membership with a fixed `owner > admin > member` role model, invitations (by email or 8-character invite code, with bulk CSV import), ownership transfer, self-service suspend/unsuspend, and outbound customer webhooks. RBAC lives here, cached in Redis for 30 seconds.
 
 ## Billing
-The subscription and license engine. A real catalog of plans, features, add-ons, and coupons drives entitlements; subscriptions move through `trialing → active → cancelled → expired` (with `active ⇄ past_due`). Supports plan changes with proration (downgrades below current usage resolve the overage — remove members/files — as part of the same request), cancel/resume, tiered-pricing extend (with an annual-cycle-conversion option), immediate trial activation, invoices with per-country tax and PDF rendering, usage metering with quota enforcement, and renewal/dunning reminders. See `04-billing.md`.
+The subscription and license engine. A real catalog of plans, features, add-ons, and coupons drives entitlements; subscriptions move through `trialing → active → cancelled → expired` (with `active ⇄ past_due`). Supports plan changes with proration (downgrades below current usage resolve the overage — remove members — as part of the same request), cancel/resume, tiered-pricing extend (with an annual-cycle-conversion option), immediate trial activation, invoices with per-country tax and PDF rendering, usage metering with quota enforcement, and renewal/dunning reminders. See `04-billing.md`.
 
 ## Payment Integration
 Deliberately minimal — collect money and tell Stratum it happened. Stripe (USD) and Xendit (IDR) generate hosted payment links; verified webhooks are the *only* thing that moves billing state. No card data is ever stored.
@@ -37,4 +37,4 @@ Not a module you call — middleware records every non-GET request (and every 4x
 `internal/platform/` holds the shared infrastructure — audit, cache, config, db, httpserver, mailer, messaging, otel, pdf, storage — one package per concern. Modules depend on the platform, never on each other.
 
 ## Routes at a glance
-Organization: `/organizations/*` (members, invitations, webhooks, files, settings, suspend). Account: `/me/*`. Billing: `/organizations/:id/billing/*`. Notifications: `/me/notifications/*`. Reference: `/references/*`. Full detail in `08-api-reference.md`.
+Organization: `/organizations/*` (members, invitations, webhooks, settings, suspend). Account: `/me/*`. Billing: `/organizations/:id/billing/*`. Notifications: `/me/notifications/*`. Reference: `/references/*`. Full detail in `08-api-reference.md`.

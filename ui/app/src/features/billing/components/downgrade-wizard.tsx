@@ -72,8 +72,8 @@ export function DowngradeWizard({
   // Trialing has no paid period to protect, so the backend applies a
   // downgrade immediately and resolves overage synchronously — every other
   // status defers to renewal, doesn't touch live plan/cycle or entitlement
-  // yet, and ignores any member/file picks sent along (nothing is being
-  // removed today), so this wizard skips the selection step and swaps the
+  // yet, and ignores any member picks sent along (nothing is being removed
+  // today), so this wizard skips the selection step and swaps the
   // destructive/proration copy for a plain scheduled-effective note
   // whenever this is false.
   const isTrialing = subscriptionStatus === "trialing"
@@ -93,7 +93,6 @@ export function DowngradeWizard({
 
   // Selections
   const [selectedMembers, setSelectedMembers] = useState<string[]>([])
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
 
   // What the backend actually removed, captured from the downgrade
   // response for the success step — distinct from the pre-submit
@@ -142,9 +141,8 @@ export function DowngradeWizard({
 
   const hasOverage = useMemo(() => {
     if (!overage) return false
-    return (
-      (overage?.members && overage.members.current > overage.members.allowed) ||
-      (overage?.storage && overage.storage.current > overage.storage.allowed)
+    return !!(
+      overage?.members && overage.members.current > overage.members.allowed
     )
   }, [overage])
 
@@ -184,15 +182,14 @@ export function DowngradeWizard({
         plan: targetPlan,
         cycle: targetCycle,
         preferred_member_auth_subs: selectedMembers,
-        preferred_file_ids: selectedFiles,
       },
       {
         onSuccess: (data) => {
           const overage = data.data?.overage
           // A Go nil slice marshals to JSON null, not [] — any dimension
-          // with nothing removed (e.g. no files touched at all) comes back
-          // null here, not empty. Normalize once, on the way in, so every
-          // consumer below can treat these as plain arrays.
+          // with nothing removed comes back null here, not empty.
+          // Normalize once, on the way in, so every consumer below can
+          // treat these as plain arrays.
           setResult(
             overage
               ? {
@@ -200,8 +197,6 @@ export function DowngradeWizard({
                     overage.removed_member_auth_subs ?? [],
                   auto_selected_member_subs:
                     overage.auto_selected_member_subs ?? [],
-                  removed_file_ids: overage.removed_file_ids ?? [],
-                  auto_selected_file_ids: overage.auto_selected_file_ids ?? [],
                 }
               : null
           )
@@ -219,7 +214,6 @@ export function DowngradeWizard({
     setTimeout(() => {
       setStep("preview")
       setSelectedMembers([])
-      setSelectedFiles([])
       setResult(null)
       setConfirmedPreview(null)
       setHadPendingInvoiceAtConfirm(false)
@@ -287,9 +281,7 @@ export function DowngradeWizard({
 
           {isTrialing && (
             <div className="py-4 text-sm text-muted-foreground">
-              {result &&
-              (result.removed_member_auth_subs.length > 0 ||
-                result.removed_file_ids.length > 0) ? (
+              {result && result.removed_member_auth_subs.length > 0 ? (
                 <div className="flex flex-col gap-2">
                   <p className="font-medium text-foreground">
                     {t("billing.downgrade.successRemovedInfo")}
@@ -299,14 +291,6 @@ export function DowngradeWizard({
                       <li key={m}>
                         {m}
                         {result.auto_selected_member_subs.includes(m) && (
-                          <> {t("billing.downgrade.autoSelected")}</>
-                        )}
-                      </li>
-                    ))}
-                    {result.removed_file_ids.map((f) => (
-                      <li key={f}>
-                        {f}
-                        {result.auto_selected_file_ids.includes(f) && (
                           <> {t("billing.downgrade.autoSelected")}</>
                         )}
                       </li>
@@ -420,16 +404,6 @@ export function DowngradeWizard({
                           {m} {t("billing.downgrade.autoSelected")}
                         </li>
                       ))}
-                      {selectedFiles.map((f: string) => (
-                        <li key={f}>{f}</li>
-                      ))}
-                      {overage?.storage?.auto_select_removals?.map(
-                        (f: string) => (
-                          <li key={f}>
-                            {f} {t("billing.downgrade.autoSelected")}
-                          </li>
-                        )
-                      )}
                     </ul>
                   </div>
                 )}
@@ -517,18 +491,6 @@ export function DowngradeWizard({
                         </label>
                       ))}
                   </div>
-                </div>
-              )}
-
-            {overage?.storage &&
-              overage.storage.current > overage.storage.allowed && (
-                <div className="flex flex-col gap-2">
-                  <p className="font-semibold">
-                    {t("billing.downgrade.selectFilesToRemove")}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {t("billing.downgrade.filesSelectionNotImplementedYet")}
-                  </p>
                 </div>
               )}
           </div>

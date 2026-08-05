@@ -326,7 +326,6 @@ CREATE POLICY org_isolation ON billing.payment_links
 INSERT INTO billing.features (id, name, description, type, metric_key) VALUES
     -- Metered
     ('members', 'Members', 'Number of organization members allowed.', 'metered', 'members'),
-    ('storage', 'Storage', 'Total file storage allowed.', 'metered', 'storage_bytes'),
     ('workspaces', 'Workspaces', 'Maximum number of workspaces.', 'metered', 'workspaces'),
     -- Collaboration
     ('teams', 'Teams', 'Maximum number of teams.', 'metered', 'teams'),
@@ -373,18 +372,15 @@ INSERT INTO billing.plans (id, name, description, prices, sort_order) VALUES
 -- overriding whichever plan it's on; there is no separate 'trial' row here.
 INSERT INTO billing.plan_features (plan_id, feature_id, limit_value, config_value) VALUES
     ('solo',  'members', 1, NULL),
-    ('solo',  'storage', 250 * 1024 * 1024, NULL),
     ('solo',  'api_rate_limit', NULL, '{"requests_per_minute": 120}'),
     ('solo',  'audit_retention_days', NULL, '{"days": 30}'),
     ('growth', 'members', 15, NULL),
-    ('growth', 'storage', 1024 * 1024 * 1024, NULL),
     ('growth', 'priority_support', NULL, NULL),
     ('growth', 'advanced_analytics', NULL, NULL),
     ('growth', 'webhooks', NULL, NULL),
     ('growth', 'api_rate_limit', NULL, '{"requests_per_minute": 720}'),
     ('growth', 'audit_retention_days', NULL, '{"days": 90}'),
     ('custom', 'members', -1, NULL),
-    ('custom', 'storage', -1, NULL),
     ('custom', 'priority_support', NULL, NULL),
     ('custom', 'dedicated_support', NULL, NULL),
     ('custom', 'advanced_analytics', NULL, NULL),
@@ -415,13 +411,15 @@ INSERT INTO billing.plan_features (plan_id, feature_id, limit_value, config_valu
 -- Quantity is stored in subscription_addons.
 -- Example:
 -- extra-seat x5 = +5 members
--- extra-storage-1gb x10 = +10GB storage
 INSERT INTO billing.addons (id, name, description, prices) VALUES
 ('extra-seat', '+1 Member', '1 additional member seat added to your plan''s limit.',
- '{"USD": {"monthly": 100, "yearly": 1000}, "IDR": {"monthly": 10000, "yearly": 100000}}'),
- ('extra-storage-1gb', '+1 GB Storage', '1 GB of additional file storage added to your plan''s limit.',
  '{"USD": {"monthly": 100, "yearly": 1000}, "IDR": {"monthly": 10000, "yearly": 100000}}');
 
 INSERT INTO billing.addon_features (addon_id, feature_id, limit_value) VALUES
-    ('extra-seat', 'members', 1),
-    ('extra-storage-1gb', 'storage', 1024 * 1024 * 1024);
+    ('extra-seat', 'members', 1);
+
+-- storage_bytes usage rows have no FK to billing.features, so they survive
+-- the storage feature/addon deletion above untouched unless purged
+-- explicitly — without this, the Studio dashboard's storage stat card would
+-- freeze at a stale nonzero total instead of reading zero.
+DELETE FROM billing.usage WHERE metric = 'storage_bytes';

@@ -16,7 +16,6 @@ export const PERMISSION_MATRIX: Record<
 > = {
   members: { view: "member", manage: "admin" },
   invitations: { view: "admin", manage: "admin" },
-  files: { view: "admin" },
   webhooks: { view: "owner" },
   auditLog: { view: "admin" },
   billing: { view: "admin", manage: "owner" },

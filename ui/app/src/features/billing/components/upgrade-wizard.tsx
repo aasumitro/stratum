@@ -22,7 +22,7 @@ import {
 import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import { formatMoney, formatBytes } from "@/lib/format"
+import { formatMoney } from "@/lib/format"
 import type { BillingCycle, InvoicePreview } from "@/types/billing"
 import { InvoicePreviewNote } from "./invoice-preview-note"
 
@@ -35,15 +35,7 @@ function formatDate(s?: string) {
   })
 }
 
-// Plan.limits is keyed by Feature.id (e.g. "storage"), which is distinct
-// from Feature.metric_key (e.g. "storage_bytes") — the id identifies the
-// catalog row, the metric_key identifies the unit/format. Byte-formatting
-// must key off metric_key, not id.
-function formatLimitValue(
-  metricKey: string | undefined,
-  value: number
-): string {
-  if (metricKey === "storage_bytes") return formatBytes(value)
+function formatLimitValue(value: number): string {
   return value.toLocaleString()
 }
 
@@ -358,10 +350,7 @@ export function UpgradeWizard({
                       ([featureId, value]) => (
                         <li key={featureId}>
                           {featureCatalog.get(featureId)?.name ?? featureId}:{" "}
-                          {formatLimitValue(
-                            featureCatalog.get(featureId)?.metric_key,
-                            value
-                          )}
+                          {formatLimitValue(value)}
                         </li>
                       )
                     )}

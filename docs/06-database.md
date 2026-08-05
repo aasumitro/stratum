@@ -19,7 +19,7 @@ Migrations live in `db/migrations/` as numbered up/down pairs, one per schema:
 | # | Schema | Contents |
 |---|---|---|
 | 000001 | `ref` | currencies, countries + seed data |
-| 000002 | `organization` | organizations, memberships, invitations, webhooks, files, folders |
+| 000002 | `organization` | organizations, memberships, invitations, webhooks |
 | 000003 | `account` | users, tasks, login events |
 | 000004 | `billing` | subscriptions, invoices, payments, usage, the catalog + row-level security |
 | 000005 | `notification` | messages, preferences |

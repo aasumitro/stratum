@@ -8,8 +8,7 @@ import (
 )
 
 const (
-	maxLogoSize       = 2 << 20  // 2 MB
-	maxFileSize       = 50 << 20 // 50 MB
+	maxLogoSize       = 2 << 20 // 2 MB
 	settingAllowedIPs = "allowed_ips"
 )
 

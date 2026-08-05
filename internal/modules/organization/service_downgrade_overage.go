@@ -12,20 +12,16 @@ import (
 func (s *service) resolveDowngradeOverage(
 	ctx context.Context, organizationID string,
 	preferredMemberAuthSubs []string, memberLimit int,
-	preferredFileIDs []string, storageLimitBytes int64,
 	dryRun bool,
 ) (contracts.OverageResolution, error) {
 	// Initialized to empty, not nil: this struct is marshaled straight into
 	// the downgrade endpoint's HTTP response (and the preview's dry-run),
 	// and a nil Go slice marshals to JSON null, not [] — a dimension with
-	// nothing removed (e.g. no files touched at all) would otherwise come
-	// back null, which is exactly the kind of value frontend code reaches
-	// for .map() on without expecting to.
+	// nothing removed would otherwise come back null, which is exactly the
+	// kind of value frontend code reaches for .map() on without expecting to.
 	res := contracts.OverageResolution{
 		RemovedMemberAuthSubs:  []string{},
 		AutoSelectedMemberSubs: []string{},
-		RemovedFileIDs:         []string{},
-		AutoSelectedFileIDs:    []string{},
 	}
 
 	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
@@ -79,63 +75,6 @@ func (s *service) resolveDowngradeOverage(
 			}
 		}
 
-		// 2. Files
-		if storageLimitBytes >= 0 {
-			currentStorage, err := s.repo.sumStorageBytes(ctx, tx, organizationID)
-			if err != nil {
-				return fmt.Errorf("organization.resolveDowngradeOverage: sum storage bytes: %w", err)
-			}
-
-			overageBytes := currentStorage - storageLimitBytes
-			if overageBytes > 0 {
-				var validPreferred []fileRemovalCandidate
-				if len(preferredFileIDs) > 0 {
-					validPreferred, err = s.repo.filterRemovableFiles(ctx, tx, organizationID, preferredFileIDs)
-					if err != nil {
-						return fmt.Errorf("organization.resolveDowngradeOverage: filter preferred files: %w", err)
-					}
-				}
-
-				var toRemove []string
-				var freedBytes int64
-
-				for _, f := range validPreferred {
-					if freedBytes >= overageBytes {
-						break
-					}
-					toRemove = append(toRemove, f.ID)
-					freedBytes += f.SizeBytes
-				}
-
-				var autoSelected []string
-				if freedBytes < overageBytes {
-					candidates, err := s.repo.selectFilesForRemoval(ctx, tx, organizationID, toRemove)
-					if err != nil {
-						return fmt.Errorf("organization.resolveDowngradeOverage: select files for removal: %w", err)
-					}
-					for _, c := range candidates {
-						if freedBytes >= overageBytes {
-							break
-						}
-						toRemove = append(toRemove, c.ID)
-						autoSelected = append(autoSelected, c.ID)
-						freedBytes += c.SizeBytes
-					}
-				}
-
-				if len(toRemove) > 0 {
-					if !dryRun {
-						_, err = s.repo.bulkSoftDeleteFiles(ctx, tx, organizationID, toRemove)
-						if err != nil {
-							return fmt.Errorf("organization.resolveDowngradeOverage: soft-delete files: %w", err)
-						}
-					}
-					res.RemovedFileIDs = toRemove
-					res.AutoSelectedFileIDs = autoSelected
-				}
-			}
-		}
-
 		return nil
 	})
 
@@ -160,9 +99,6 @@ func (s *service) resolveDowngradeOverage(
 					s.cacheInval.InvalidateMemberRole(ctx, organizationID, authSub)
 				}
 			}
-		}
-		if len(res.RemovedFileIDs) > 0 {
-			s.syncStorageUsage(ctx, organizationID)
 		}
 	}
 

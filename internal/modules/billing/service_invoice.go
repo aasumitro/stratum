@@ -243,7 +243,6 @@ type metricOverage struct {
 
 type overagePreview struct {
 	Members metricOverage `json:"members"`
-	Storage metricOverage `json:"storage"`
 }
 
 func (s *service) previewInvoice(
@@ -302,19 +301,15 @@ func (s *service) previewInvoice(
 
 			// Dry-run overage resolution if this is a downgrade
 			if planInfo.SortOrder < oldPlanInfo.SortOrder && s.orgCommander != nil {
-				memberLimit, storageLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
+				memberLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
 				res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID,
-					nil, memberLimit,
-					nil, storageLimit, true)
+					nil, memberLimit, true)
 				if err == nil {
 					usages, _ := s.repo.listCurrentUsage(ctx, s.querier(ctx), subjectID)
-					var curMembers, curStorage int
+					var curMembers int
 					for _, u := range usages {
-						switch u.Metric {
-						case "members":
+						if u.Metric == "members" {
 							curMembers = int(u.Value)
-						case "storage_bytes":
-							curStorage = int(u.Value)
 						}
 					}
 					preview.Overage = &overagePreview{
@@ -322,11 +317,6 @@ func (s *service) previewInvoice(
 							Current:            curMembers,
 							Allowed:            memberLimit,
 							AutoSelectRemovals: res.AutoSelectedMemberSubs,
-						},
-						Storage: metricOverage{
-							Current:            curStorage,
-							Allowed:            int(storageLimit),
-							AutoSelectRemovals: res.AutoSelectedFileIDs,
 						},
 					}
 				} else {
@@ -347,19 +337,14 @@ func (s *service) previewInvoice(
 			if err != nil {
 				slog.Error("previewInvoice: failed to compute future overage preview",
 					"organization_id", subjectID, "error", err)
-			} else if (overage.MemberLimit >= 0 && overage.CurrentMembers > int64(overage.MemberLimit)) ||
-				(overage.StorageLimit >= 0 && overage.CurrentStorage > overage.StorageLimit) {
+			} else if overage.MemberLimit >= 0 && overage.CurrentMembers > int64(overage.MemberLimit) {
 				res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID,
-					nil, overage.MemberLimit, nil, overage.StorageLimit, true)
+					nil, overage.MemberLimit, true)
 				if err == nil {
 					preview.Overage = &overagePreview{
 						Members: metricOverage{
 							Current: int(overage.CurrentMembers), Allowed: overage.MemberLimit,
 							AutoSelectRemovals: res.AutoSelectedMemberSubs,
-						},
-						Storage: metricOverage{
-							Current: int(overage.CurrentStorage), Allowed: int(overage.StorageLimit),
-							AutoSelectRemovals: res.AutoSelectedFileIDs,
 						},
 					}
 				} else {

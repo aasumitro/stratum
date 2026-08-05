@@ -404,7 +404,7 @@ func (h *handler) uploadAvatar(c *gin.Context) {
 		return
 	}
 
-	u, err := h.svc.uploadAvatar(c.Request.Context(), reqctx.Subject(c), file, header.Size, ct)
+	u, err := h.svc.uploadAvatar(c.Request.Context(), reqctx.Subject(c), file, ct)
 	if err != nil {
 		response.FromError(c, err)
 		return

@@ -49,10 +49,9 @@ func RunAPI() error {
 			Key:     cfg.Auth.ServiceRoleKey,
 		})
 		if err := storageClient.EnsureBuckets(ctx, []storage.BucketConfig{
-			{Name: "users", Public: true, FileSizeLimit: 2 << 20},                // 2 MB — avatars
-			{Name: "organization", Public: true, FileSizeLimit: 10 << 20},        // 10 MB — logos
-			{Name: "organization-files", Public: false, FileSizeLimit: 50 << 20}, // 50 MB — organization files
-			{Name: "platform", Public: false},                                    // PDFs — no explicit limit
+			{Name: "users", Public: true, FileSizeLimit: 2 << 20},         // 2 MB — avatars
+			{Name: "organization", Public: true, FileSizeLimit: 10 << 20}, // 10 MB — logos
+			{Name: "platform", Public: false},                             // PDFs — no explicit limit
 		}); err != nil {
 			infra.Log.Warn("storage bucket init failed — uploads may fail until buckets are created", "error", err)
 		}

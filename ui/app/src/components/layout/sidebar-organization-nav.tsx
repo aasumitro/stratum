@@ -5,7 +5,6 @@ import {
   IconCreditCard,
   IconSettings2,
   IconHome,
-  IconFolder,
   IconCodeVariableMinus,
 } from "@tabler/icons-react"
 import {
@@ -36,28 +35,22 @@ interface NavItem {
   /**
    * Settings only: the owner already gets a prominent banner (with a
    * direct link to Billing) elsewhere on the page, so its own amber dot is
-   * redundant for that role. Files carries no such banner, and stays
-   * genuinely blocked for the owner too during a pending invoice (see
-   * organization-layout.tsx's redirect) — its dot must stay regardless of
-   * role.
+   * redundant for that role.
    */
   hideBillingDotForOwner?: boolean
 }
 
 /**
- * 3-item flat nav (Files/Billing/Settings).
- * Files hides entirely for a role that can't use it at all;
- * Billing/Settings always render since every role has baseline access.
- * Billing-blocked items (Files, and Settings as an aggregate — Members
- * and/or Webhooks inside it may be blocked) get an amber dot instead — a
- * separate, org-state axis, independent of role.
+ * 2-item flat nav (Billing/Settings) — both always render since every role
+ * has baseline access. Billing-blocked items (Settings as an aggregate —
+ * Members and/or Webhooks inside it may be blocked) get an amber dot
+ * instead — a separate, org-state axis, independent of role.
  */
 export function SidebarOrganizationNav() {
   const { t } = useTranslation()
   const { location } = useRouterState()
   const { organizationId, organization } = useActiveOrganization()
-  const { isOwner, isBillingBlocked, canAccessFiles, canViewBilling } =
-    usePermissions()
+  const { isOwner, isBillingBlocked, canViewBilling } = usePermissions()
 
   if (!organizationId) {
     return (
@@ -119,14 +112,6 @@ export function SidebarOrganizationNav() {
   // Members/Webhooks sections it now contains carry their own dots), not
   // because Settings itself is ever a blocked/inaccessible segment.
   const ORG_NAV: NavItem[] = [
-    {
-      key: "files",
-      label: t("organization.tabs.files"),
-      to: `${base}/files`,
-      icon: IconFolder,
-      allowed: canAccessFiles,
-      billingBlockable: true,
-    },
     {
       key: "billing",
       label: t("organization.tabs.billing"),

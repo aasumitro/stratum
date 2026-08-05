@@ -32,11 +32,18 @@ function cspPlugin(env: Record<string, string>): Plugin {
     .filter(Boolean)
     .join(" ")
 
+  // blob: is needed for local file previews (URL.createObjectURL) before an
+  // avatar/logo upload completes; the Supabase origin is needed for the
+  // persisted image itself once uploaded.
+  const imgSrc = ["'self'", "data:", "blob:", origin(env.VITE_SUPABASE_URL)]
+    .filter(Boolean)
+    .join(" ")
+
   const csp = [
     "default-src 'self'",
     "script-src 'self' https://app.posthog.com",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    `img-src ${imgSrc}`,
     "font-src 'self' data:",
     `connect-src ${connectSrc}`,
     "base-uri 'self'",
@@ -51,10 +58,18 @@ function cspPlugin(env: Record<string, string>): Plugin {
     // only matters for what actually ships, so build-only is correct, not a compromise.
     apply: "build",
     transformIndexHtml(html) {
-      return html.replace(
-        "<head>",
-        `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`
-      )
+      // index.html ships its own static CSP meta tag for the dev server
+      // (this plugin doesn't run in dev — see the comment above). Strip it
+      // here so the build ships exactly one CSP, not two overlapping ones.
+      return html
+        .replace(
+          /\s*<meta\s+http-equiv="Content-Security-Policy"[\s\S]*?\/>\n?/,
+          ""
+        )
+        .replace(
+          "<head>",
+          `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`
+        )
     },
   }
 }

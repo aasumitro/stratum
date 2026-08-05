@@ -643,10 +643,10 @@ func NewConsumers(mqConn *messaging.Connection, mods *WorkerModules, log *slog.L
 			PrefetchCount: 1,
 		}, mods.Organization.Worker.HandleWebhookRetry, log),
 
-		// organization: purge a deleted organization's logo + files from
-		// storage — moved off the synchronous DELETE /organizations/:id
-		// request path, same retry/DLQ settings as the billing/notification
-		// consumers of this same event.
+		// organization: purge a deleted organization's logo from storage —
+		// moved off the synchronous DELETE /organizations/:id request path,
+		// same retry/DLQ settings as the billing/notification consumers of
+		// this same event.
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},
 			Queue: messaging.QueueSpec{

@@ -62,12 +62,12 @@ describe("computeAmendmentDiff", () => {
 
   it("splits a mixed selection into both buckets", () => {
     const diff = computeAmendmentDiff(
-      { "extra-seat": 5, "extra-storage-1gb": 1 },
+      { "extra-seat": 5, "extra-workspace": 1 },
       [
         makeAttached({ addon_id: "extra-seat", quantity: 3 }),
         makeAttached({
-          addon_id: "extra-storage-1gb",
-          name: "Extra Storage",
+          addon_id: "extra-workspace",
+          name: "Extra Workspace",
           quantity: 4,
         }),
       ]
@@ -76,7 +76,7 @@ describe("computeAmendmentDiff", () => {
       { addonId: "extra-seat", fromQty: 3, toQty: 5 },
     ])
     expect(diff.scheduled).toEqual([
-      { addonId: "extra-storage-1gb", fromQty: 4, toQty: 1 },
+      { addonId: "extra-workspace", fromQty: 4, toQty: 1 },
     ])
   })
 })

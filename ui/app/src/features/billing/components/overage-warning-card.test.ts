@@ -77,7 +77,7 @@ describe("OverageWarningCard", () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it("renders nothing when overage is present but no metric is actually over", async () => {
+  it("renders nothing when overage is present but members is not over", async () => {
     vi.mocked(api.get).mockResolvedValue(
       httpResponse({
         plan: "team",
@@ -87,7 +87,6 @@ describe("OverageWarningCard", () => {
         total_cents: 0,
         overage: {
           members: { current: 3, allowed: 5, auto_select_removals: [] },
-          storage: { current: 100, allowed: -1, auto_select_removals: [] },
         },
       })
     )
@@ -97,7 +96,7 @@ describe("OverageWarningCard", () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it("renders only the members metric when only members is over", async () => {
+  it("renders the members metric when members is over", async () => {
     vi.mocked(api.get).mockResolvedValue(
       httpResponse({
         plan: "team",
@@ -107,62 +106,12 @@ describe("OverageWarningCard", () => {
         total_cents: 0,
         overage: {
           members: { current: 8, allowed: 5, auto_select_removals: [] },
-          storage: { current: 100, allowed: -1, auto_select_removals: [] },
         },
       })
     )
     renderCard()
 
     await screen.findByText("You have 8 members, but only 5 will be allowed.")
-    expect(screen.queryByText(/you're using/i)).toBeNull()
-  })
-
-  it("renders only the storage metric when only storage is over", async () => {
-    vi.mocked(api.get).mockResolvedValue(
-      httpResponse({
-        plan: "team",
-        cycle: "monthly",
-        currency: "USD",
-        plan_line_cents: 0,
-        total_cents: 0,
-        overage: {
-          members: { current: 3, allowed: 5, auto_select_removals: [] },
-          storage: {
-            current: 2_147_483_648,
-            allowed: 1_073_741_824,
-            auto_select_removals: [],
-          },
-        },
-      })
-    )
-    renderCard()
-
-    await screen.findByText("You're using 2 GB, but only 1 GB will be allowed.")
-    expect(screen.queryByText(/members,/)).toBeNull()
-  })
-
-  it("renders both metrics when both are over", async () => {
-    vi.mocked(api.get).mockResolvedValue(
-      httpResponse({
-        plan: "team",
-        cycle: "monthly",
-        currency: "USD",
-        plan_line_cents: 0,
-        total_cents: 0,
-        overage: {
-          members: { current: 8, allowed: 5, auto_select_removals: [] },
-          storage: {
-            current: 2_147_483_648,
-            allowed: 1_073_741_824,
-            auto_select_removals: [],
-          },
-        },
-      })
-    )
-    renderCard()
-
-    await screen.findByText("You have 8 members, but only 5 will be allowed.")
-    screen.getByText("You're using 2 GB, but only 1 GB will be allowed.")
     screen.getByText(
       "This will be resolved automatically at renewal — no action needed."
     )

@@ -18,7 +18,7 @@ Engineering documentation for Stratum — a production-ready multi-tenant B2B Sa
 | [08-api-reference](08-api-reference.md)     | Endpoints with request/response shapes                    |
 | [09-testing](09-testing.md)                 | Test architecture, helpers, coverage                      |
 | [10-web-ui](10-web-ui.md)                   | React frontend structure, routing, state, conventions     |
-| [11-file-storage](11-file-storage.md)       | Avatar, logo, and organization file storage               |
+| [11-file-storage](11-file-storage.md)       | Avatar and organization logo storage                       |
 | [12-operations](12-operations.md)           | Deployment, backups, secrets, health, runbooks            |
 | [13-studio](13-studio.md)                   | Stratum Studio — the Wails desktop operator console       |
 

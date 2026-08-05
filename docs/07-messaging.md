@@ -20,7 +20,7 @@ A consumer that fails NACKs the message, which dead-letters to a per-queue DLQ. 
 
 ## Outbound customer webhooks
 
-Layered on top of the same event system, the worker also fans out a curated set of nine event types (invoice created/paid/failed; subscription activated/cancelled/expired/resumed; organization created; member invited) to customer-registered webhook endpoints — HMAC-signed, health-tracked, and retryable. The set is deliberately limited to events the worker actually delivers, so a customer can never subscribe to something that would silently never arrive. See the file-storage and notification docs for the delivery, health, and secret-rotation details.
+Layered on top of the same event system, the worker also fans out a curated set of nine event types (invoice created/paid/failed; subscription activated/cancelled/expired/resumed; organization created; member invited) to customer-registered webhook endpoints — HMAC-signed, health-tracked, and retryable. The set is deliberately limited to events the worker actually delivers, so a customer can never subscribe to something that would silently never arrive. See the API reference and operations docs for the delivery, health, and secret-rotation details.
 
 ## Adding an event
 1. Add the routing key (and a delay key, if delayed) to `internal/contracts/events`.

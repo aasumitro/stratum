@@ -479,6 +479,7 @@ func TestIntegration_ListAddons_ScheduledQuantityChange_OnlyThatRowPopulated(t *
 		user  = "integ_list_addons_sched_user"
 		orgID = "00000000-0000-0000-0000-000000000f95"
 	)
+	seedTestAddonCatalogRow(t, pool)
 	subID := seedActiveOrgNoSchedule(t, pool, orgID, user)
 	if _, err := pool.Exec(t.Context(),
 		`INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity, scheduled_quantity, scheduled_requested_at)
@@ -486,8 +487,8 @@ func TestIntegration_ListAddons_ScheduledQuantityChange_OnlyThatRowPopulated(t *
 		t.Fatalf("seed scheduled addon decrease: %v", err)
 	}
 	if _, err := pool.Exec(t.Context(),
-		`INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity) VALUES ($1, 'extra-storage-1gb', 3)`,
-		subID); err != nil {
+		`INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity) VALUES ($1, $2, 3)`,
+		subID, testAddonID); err != nil {
 		t.Fatalf("seed unscheduled addon: %v", err)
 	}
 
@@ -520,9 +521,9 @@ func TestIntegration_ListAddons_ScheduledQuantityChange_OnlyThatRowPopulated(t *
 			if row.ScheduledRequestedAt == nil {
 				t.Errorf("extra-seat: want scheduled_requested_at set, got nil")
 			}
-		case "extra-storage-1gb":
+		case testAddonID:
 			if row.ScheduledQuantity != nil || row.ScheduledRequestedAt != nil {
-				t.Errorf("extra-storage-1gb: want no schedule, got quantity=%v requested_at=%v", row.ScheduledQuantity, row.ScheduledRequestedAt)
+				t.Errorf("%s: want no schedule, got quantity=%v requested_at=%v", testAddonID, row.ScheduledQuantity, row.ScheduledRequestedAt)
 			}
 		default:
 			t.Errorf("unexpected addon row %q", row.AddonID)

@@ -171,9 +171,9 @@ func (w *Worker) reconcileScheduledCancellation(ctx context.Context, check event
 }
 
 // reconcileScheduledOverage applies sub's scheduled plan downgrade and/or
-// addon quantity decreases, resolving any resulting member/storage overage
-// exactly once against the fully combined future state before either
-// applies — never two separate overage checks for one renewal. Like
+// addon quantity decreases, resolving any resulting member overage exactly
+// once against the fully combined future state before either applies —
+// never two separate overage checks for one renewal. Like
 // reconcileScheduledCancellation, this takes its own row lock in a short
 // transaction and commits before the caller composes a renewal invoice, so
 // composeInvoiceAmount's blocking payment-provider call never runs inside a
@@ -209,10 +209,9 @@ func (w *Worker) reconcileScheduledOverage(ctx context.Context, subscriptionID s
 			if err != nil {
 				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
 			}
-			if (overage.MemberLimit >= 0 && overage.CurrentMembers > int64(overage.MemberLimit)) ||
-				(overage.StorageLimit >= 0 && overage.CurrentStorage > overage.StorageLimit) {
+			if overage.MemberLimit >= 0 && overage.CurrentMembers > int64(overage.MemberLimit) {
 				if _, err := w.svc.orgCommander.ResolveDowngradeOverage(txCtx, sub.SubjectID,
-					nil, overage.MemberLimit, nil, overage.StorageLimit, false); err != nil {
+					nil, overage.MemberLimit, false); err != nil {
 					return fmt.Errorf("billing.reconcileScheduledOverage: resolve overage: %w", err)
 				}
 			}

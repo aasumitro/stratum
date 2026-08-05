@@ -301,7 +301,6 @@ export function useDowngradeSubscription(organizationId: string) {
       plan: string
       cycle: string
       preferred_member_auth_subs?: string[]
-      preferred_file_ids?: string[]
     }
   >({
     url: API.billing(organizationId, "downgrade"),

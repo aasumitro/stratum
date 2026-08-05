@@ -24,7 +24,7 @@ import (
 // subjectTypeOrganization's own comment.
 func TestUnit_DowngradeSubscription_NonOrganizationSubject_Rejected(t *testing.T) {
 	svc := &service{repo: &repository{}}
-	_, _, err := svc.downgradeSubscription(t.Context(), "user", "u1", "solo", cycleMonthly, "sub_owner", nil, nil)
+	_, _, err := svc.downgradeSubscription(t.Context(), "user", "u1", "solo", cycleMonthly, "sub_owner", nil)
 	if err == nil {
 		t.Fatal("want an error for a non-organization subjectType, got nil")
 	}
@@ -60,12 +60,11 @@ func TestIntegration_DowngradeSubscription_Active_SchedulesInsteadOfApplying(t *
 		t.Fatalf("seed subscription: %v", err)
 	}
 
-	updated, overage, err := mod.svc.downgradeSubscription(t.Context(), "organization", orgID, "solo", cycleMonthly, "sub_owner", nil, nil)
+	updated, overage, err := mod.svc.downgradeSubscription(t.Context(), "organization", orgID, "solo", cycleMonthly, "sub_owner", nil)
 	if err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
-	if len(overage.RemovedMemberAuthSubs) != 0 || len(overage.AutoSelectedMemberSubs) != 0 ||
-		len(overage.RemovedFileIDs) != 0 || len(overage.AutoSelectedFileIDs) != 0 {
+	if len(overage.RemovedMemberAuthSubs) != 0 || len(overage.AutoSelectedMemberSubs) != 0 {
 		t.Errorf("want zero-value OverageResolution for the scheduled case, got %+v", overage)
 	}
 	if updated.Plan != "growth" || updated.Cycle != cycleMonthly {
@@ -122,7 +121,7 @@ func TestIntegration_DowngradeSubscription_Active_CancellationScheduled_Rejected
 		t.Fatalf("scheduleCancellation: %v", err)
 	}
 
-	_, _, err := mod.svc.downgradeSubscription(t.Context(), "organization", orgID, "solo", cycleMonthly, "sub_owner", nil, nil)
+	_, _, err := mod.svc.downgradeSubscription(t.Context(), "organization", orgID, "solo", cycleMonthly, "sub_owner", nil)
 	wantApperrCode(t, err, cancellationScheduledCode)
 
 	fresh, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
@@ -215,7 +214,7 @@ func TestIntegration_DowngradeSubscription_Concurrent_ScheduleAndUndo(t *testing
 	go func() {
 		defer wg.Done()
 		errs[0] = inTx(func(ctx context.Context) error {
-			_, _, err := mod.svc.downgradeSubscription(ctx, "organization", orgID, "solo", cycleMonthly, "sub_owner", nil, nil)
+			_, _, err := mod.svc.downgradeSubscription(ctx, "organization", orgID, "solo", cycleMonthly, "sub_owner", nil)
 			return err
 		})
 	}()

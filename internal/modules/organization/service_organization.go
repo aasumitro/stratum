@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -183,38 +185,24 @@ func (s *service) deleteOrganization(ctx context.Context, id string) (err error)
 		return fmt.Errorf("organization.deleteOrganization: %w", err)
 	}
 
-	// Storage cleanup (logo + every uploaded file) used to run synchronously
-	// here — unbounded in file count, so a large organization could make
-	// this request take arbitrarily long or time out. It's now handled by
-	// HandleOrganizationDeleted (service_organization.go, same file, below),
-	// a worker consumer of the same OrganizationDeleted event published just
-	// below. The organization is already soft-deleted by this point, so the
-	// gap between this publish and the worker picking it up is invisible to
-	// callers — the organization middleware already rejects every request
-	// against a soft-deleted org.
+	// Logo cleanup used to run synchronously here — moved off the request
+	// path to HandleOrganizationDeleted (service_organization.go, same file,
+	// below), a worker consumer of the same OrganizationDeleted event
+	// published just below. The organization is already soft-deleted by this
+	// point, so the gap between this publish and the worker picking it up is
+	// invisible to callers — the organization middleware already rejects
+	// every request against a soft-deleted org.
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOrganizationDeleted, "organization", id,
 		events.OrganizationDeleted{OrganizationID: id, DeletedAt: time.Now()})
 	return nil
 }
 
-// HandleOrganizationDeleted performs the storage cleanup deleteOrganization
-// used to do inline on the request path (see the comment there) — unbounded
-// in file count, so it belongs off that path. Naturally idempotent against
-// RabbitMQ's at-least-once redelivery: deleteAllFilesForOrganization's
-// RETURNING clause finds nothing once the rows are already gone, and a
-// repeated storage Delete on an already-missing object is a safe no-op —
-// no dedup tracking needed here, unlike notification's worker.
-//
-// Unlike the original inline version, a deleteAllFilesForOrganization
-// failure now returns an error (bounded retry + eventual dead-letter, see
-// topology.go) instead of being silently swallowed — that trade-off existed
-// only because the original code ran on a request path where retrying
-// wasn't an option; here it is, and a transient DB blip shouldn't
-// permanently orphan a deleted organization's files. Individual per-file
-// storage.Delete failures stay best-effort, same as before: an object
-// storage delete failing for one path is unlikely to succeed differently on
-// a whole-batch retry, and every path already comes from a completed DB
-// delete, so there's nothing to roll back into a consistent retry state.
+// HandleOrganizationDeleted performs the logo cleanup deleteOrganization
+// used to do inline on the request path (see the comment there) — moved off
+// that path so the request doesn't wait on an object-storage round trip.
+// Naturally idempotent against RabbitMQ's at-least-once redelivery: a
+// repeated storage Delete on an already-missing object is a safe no-op — no
+// dedup tracking needed here, unlike notification's worker.
 func (w *WebhookWorker) HandleOrganizationDeleted(ctx context.Context, body []byte) error {
 	evt, err := events.Decode[events.OrganizationDeleted](body)
 	if err != nil {
@@ -226,15 +214,25 @@ func (w *WebhookWorker) HandleOrganizationDeleted(ctx context.Context, body []by
 	}
 
 	_ = w.store.Delete(ctx, "organization", evt.OrganizationID+"/logo")
-
-	paths, err := w.repo.deleteAllFilesForOrganization(ctx, w.pool, evt.OrganizationID)
-	if err != nil {
-		return fmt.Errorf("organization: delete files for %s: %w", evt.OrganizationID, err)
-	}
-	for _, p := range paths {
-		_ = w.store.Delete(ctx, "organization-files", p)
-	}
 	return nil
+}
+
+func (s *service) uploadLogo(ctx context.Context, organizationID string, r io.Reader, contentType string) (err error) {
+	defer func() {
+		if err != nil {
+			err = apperr.Internal("LOGO_UPLOAD_FAILED", "failed to upload logo", err)
+		}
+	}()
+
+	if s.store == nil {
+		return fmt.Errorf("organization.uploadLogo: storage not configured")
+	}
+	path := organizationID + "/logo"
+	if err := s.store.Upload(ctx, "organization", path, r, contentType); err != nil {
+		return fmt.Errorf("organization.uploadLogo: %w", err)
+	}
+	logoURL := fmt.Sprintf("%s/storage/v1/object/public/organization/%s", strings.TrimSuffix(s.store.BaseURL(), "/"), path)
+	return s.repo.updateLogoURL(ctx, s.pool, organizationID, logoURL)
 }
 
 func (s *service) updateSettings(

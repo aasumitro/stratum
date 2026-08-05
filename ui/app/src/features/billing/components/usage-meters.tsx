@@ -1,22 +1,12 @@
 import { useTranslation } from "react-i18next"
-import { IconUsers, IconDatabase, IconChartBar } from "@tabler/icons-react"
+import { IconUsers, IconChartBar } from "@tabler/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useUsage, useBillingFeatures } from "@/features/billing/hooks"
-import { formatBytes } from "@/lib/format"
 import { cn } from "@/lib/ui"
 
 const METRIC_ICON: Record<string, typeof IconUsers> = {
   members: IconUsers,
-  storage: IconDatabase,
-}
-
-// The `storage` feature's usage is recorded under metric key
-// "storage_bytes" (billing.features.metric_key), not its own feature id —
-// every other metered feature's id and metric_key happen to be the same
-// string, so this is the one case that needs an explicit bridge.
-const FEATURE_TO_METRIC_KEY: Record<string, string> = {
-  storage: "storage_bytes",
 }
 
 function formatDate(s: string) {
@@ -27,8 +17,7 @@ function formatDate(s: string) {
   })
 }
 
-function formatMetricValue(featureId: string, value: number): string {
-  if (featureId === "storage") return formatBytes(value)
+function formatMetricValue(value: number): string {
   return value.toLocaleString()
 }
 
@@ -76,9 +65,7 @@ export function UsageMeters({ organizationId }: Props) {
             {metered.map((m) => {
               const current = m.current ?? 0
               const unlimited = m.limit === undefined || m.limit === -1
-              const recordedAt = recordedAtByMetric.get(
-                FEATURE_TO_METRIC_KEY[m.feature_id] ?? m.feature_id
-              )
+              const recordedAt = recordedAtByMetric.get(m.feature_id)
               const hasAddonDelta = (m.addon_delta ?? 0) > 0
               const Icon = METRIC_ICON[m.feature_id] ?? IconChartBar
               return (
@@ -107,10 +94,10 @@ export function UsageMeters({ organizationId }: Props) {
                     </div>
                     <div className="text-right">
                       <p className="font-semibold">
-                        {formatMetricValue(m.feature_id, current)}
+                        {formatMetricValue(current)}
                         {!unlimited && (
                           <span className="ml-1 font-normal text-muted-foreground">
-                            / {formatMetricValue(m.feature_id, m.limit ?? 0)}
+                            / {formatMetricValue(m.limit ?? 0)}
                           </span>
                         )}
                         {unlimited && (
@@ -124,14 +111,8 @@ export function UsageMeters({ organizationId }: Props) {
                       {!unlimited && hasAddonDelta && (
                         <span className="mt-1 inline-block w-fit rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                           {t("billing.usage.planAddonSplit", {
-                            plan: formatMetricValue(
-                              m.feature_id,
-                              m.plan_limit ?? 0
-                            ),
-                            addon: formatMetricValue(
-                              m.feature_id,
-                              m.addon_delta ?? 0
-                            ),
+                            plan: formatMetricValue(m.plan_limit ?? 0),
+                            addon: formatMetricValue(m.addon_delta ?? 0),
                           })}
                         </span>
                       )}

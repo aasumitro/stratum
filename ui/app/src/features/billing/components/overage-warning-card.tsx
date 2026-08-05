@@ -2,7 +2,6 @@ import { useTranslation } from "react-i18next"
 import { IconAlertTriangle } from "@tabler/icons-react"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
 import { useInvoicePreview } from "@/features/billing/hooks"
-import { formatBytes } from "@/lib/format"
 
 // allowed < 0 is the plan/addon "unlimited" sentinel used throughout this
 // module (see planLimits/downgradeTargetLimits on the backend) — current
@@ -27,10 +26,8 @@ export function OverageWarningCard({ organizationId }: Props) {
   if (!overage) return null
 
   const members = overage.members
-  const storage = overage.storage
   const overMembers = isOverLimit(members)
-  const overStorage = isOverLimit(storage)
-  if (!overMembers && !overStorage) return null
+  if (!overMembers) return null
 
   return (
     <Alert>
@@ -44,14 +41,6 @@ export function OverageWarningCard({ organizationId }: Props) {
             {t("billing.scheduledAmendments.overageWarning.members", {
               current: members.current,
               allowed: members.allowed,
-            })}
-          </p>
-        )}
-        {overStorage && storage && (
-          <p>
-            {t("billing.scheduledAmendments.overageWarning.storage", {
-              current: formatBytes(storage.current),
-              allowed: formatBytes(storage.allowed),
             })}
           </p>
         )}

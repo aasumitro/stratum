@@ -19,7 +19,7 @@ import (
 // back on the response instead of only being visible via the audit trail.
 func (s *service) downgradeSubscription(
 	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string,
-	removeMemberIDs []string, removeFileIDs []string,
+	removeMemberIDs []string,
 ) (*subscriptionRecord, contracts.OverageResolution, error) {
 	if subjectType != subjectTypeOrganization {
 		return nil, contracts.OverageResolution{}, apperr.Validation("DOWNGRADE_UNSUPPORTED", "downgrade is only supported for organizations")
@@ -95,12 +95,11 @@ func (s *service) downgradeSubscription(
 	var res contracts.OverageResolution
 	var metadata []byte
 	if s.orgCommander != nil {
-		memberLimit, storageLimit := s.downgradeTargetLimits(ctx, sub, newPlanInfo)
+		memberLimit := s.downgradeTargetLimits(ctx, sub, newPlanInfo)
 		// Execute overage resolution in the organization module. This executes
 		// via its own autonomous transaction but won't deadlock with our row lock.
 		res, err = s.orgCommander.ResolveDowngradeOverage(ctx, subjectID,
-			removeMemberIDs, memberLimit,
-			removeFileIDs, storageLimit, false)
+			removeMemberIDs, memberLimit, false)
 		if err != nil {
 			return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: resolve overage: %w", err)
 		}
@@ -140,55 +139,43 @@ func (s *service) undoScheduledPlanDowngrade(
 	return s.getSubscription(ctx, subjectType, subjectID)
 }
 
-// planLimits extracts a plan's raw member/storage limits (-1 meaning
-// unlimited) — the base every per-subscription limit calculation starts
-// from before adding any addon-derived delta on top.
-func planLimits(planInfo *contracts.PlanInfo) (memberLimit int, storageLimit int64) {
+// planLimits extracts a plan's raw member limit (-1 meaning unlimited) — the
+// base every per-subscription limit calculation starts from before adding
+// any addon-derived delta on top.
+func planLimits(planInfo *contracts.PlanInfo) (memberLimit int) {
 	memberLimit = -1
 	if v, ok := planInfo.Limits["members"]; ok {
 		memberLimit = v
 	}
-	storageLimit = -1
-	if v, ok := planInfo.Limits["storage"]; ok {
-		storageLimit = int64(v)
-	}
-	return memberLimit, storageLimit
+	return memberLimit
 }
 
-func (s *service) downgradeTargetLimits(ctx context.Context, sub *subscriptionRecord, newPlanInfo *contracts.PlanInfo) (int, int64) {
-	memberLimit, storageLimit := planLimits(newPlanInfo)
+func (s *service) downgradeTargetLimits(ctx context.Context, sub *subscriptionRecord, newPlanInfo *contracts.PlanInfo) int {
+	memberLimit := planLimits(newPlanInfo)
 
-	if memberLimit >= 0 || storageLimit >= 0 {
+	if memberLimit >= 0 {
 		if deltas, dErr := s.repo.addonLimitDeltas(ctx, s.querier(ctx), sub.ID); dErr == nil {
-			if memberLimit >= 0 {
-				memberLimit += deltas["members"]
-			}
-			if storageLimit >= 0 {
-				storageLimit += int64(deltas["storage"])
-			}
+			memberLimit += deltas["members"]
 		}
 	}
-	return memberLimit, storageLimit
+	return memberLimit
 }
 
 // futureOverage is what resolveFutureOveragePreview computes: a
-// subscription's member/storage limits once every currently-scheduled
-// amendment applies, alongside its current usage — enough for a caller to
-// decide whether applying those amendments would put the organization over
-// either limit.
+// subscription's member limit once every currently-scheduled amendment
+// applies, alongside its current usage — enough for a caller to decide
+// whether applying those amendments would put the organization over limit.
 type futureOverage struct {
 	MemberLimit    int
-	StorageLimit   int64
 	CurrentMembers int64
-	CurrentStorage int64
 }
 
-// resolveFutureOveragePreview computes sub's future member/storage limits —
-// its scheduled_plan if set, else its current plan, plus every attached
-// addon's scheduled_quantity if set, else its live quantity — against its
-// current usage. It never calls OrganizationCommander.ResolveDowngradeOverage
+// resolveFutureOveragePreview computes sub's future member limit — its
+// scheduled_plan if set, else its current plan, plus every attached addon's
+// scheduled_quantity if set, else its live quantity — against its current
+// usage. It never calls OrganizationCommander.ResolveDowngradeOverage
 // itself; the caller decides what to do once it knows whether the future
-// state would be over either limit. Shared by the renewal worker (applies
+// state would be over the limit. Shared by the renewal worker (applies
 // the scheduled amendments for real) and the billing preview endpoint
 // (read-only), so this future-state math exists in exactly one place.
 func (s *service) resolveFutureOveragePreview(ctx context.Context, sub *subscriptionRecord) (*futureOverage, error) {
@@ -200,7 +187,7 @@ func (s *service) resolveFutureOveragePreview(ctx context.Context, sub *subscrip
 	if err != nil {
 		return nil, fmt.Errorf("billing.resolveFutureOveragePreview: %w", err)
 	}
-	memberLimit, storageLimit := planLimits(planInfo)
+	memberLimit := planLimits(planInfo)
 
 	scheduledAddons, err := s.repo.listScheduledAddonChanges(ctx, s.querier(ctx), sub.ID)
 	if err != nil {
@@ -217,25 +204,18 @@ func (s *service) resolveFutureOveragePreview(ctx context.Context, sub *subscrip
 	if memberLimit >= 0 {
 		memberLimit += futureDeltas["members"]
 	}
-	if storageLimit >= 0 {
-		storageLimit += int64(futureDeltas["storage"])
-	}
 
 	usages, err := s.repo.listCurrentUsage(ctx, s.querier(ctx), sub.SubjectID)
 	if err != nil {
 		return nil, fmt.Errorf("billing.resolveFutureOveragePreview: %w", err)
 	}
-	var currentMembers, currentStorage int64
+	var currentMembers int64
 	for _, u := range usages {
-		switch u.Metric {
-		case "members":
+		if u.Metric == "members" {
 			currentMembers = u.Value
-		case "storage_bytes":
-			currentStorage = u.Value
 		}
 	}
 	return &futureOverage{
-		MemberLimit: memberLimit, StorageLimit: storageLimit,
-		CurrentMembers: currentMembers, CurrentStorage: currentStorage,
+		MemberLimit: memberLimit, CurrentMembers: currentMembers,
 	}, nil
 }

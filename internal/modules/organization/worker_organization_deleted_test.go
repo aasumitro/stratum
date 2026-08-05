@@ -1,7 +1,6 @@
 package organization_test
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -90,35 +89,16 @@ func (f *fakeStorageServer) deletedPaths() []string {
 	return append([]string(nil), f.deletes...)
 }
 
-// TestIntegration_HandleOrganizationDeleted_PurgesFilesAndLogo confirms the
-// storage cleanup runs here, off the synchronous deleteOrganization request
-// path.
-func TestIntegration_HandleOrganizationDeleted_PurgesFilesAndLogo(t *testing.T) {
-	pool := testPool(t)
+// TestHandleOrganizationDeleted_PurgesLogo confirms the logo cleanup runs
+// here, off the synchronous deleteOrganization request path. Needs no real
+// DB — HandleOrganizationDeleted never touches the pool, only the storage
+// client — so a nil pool is safe here, same as the two no-op tests above.
+func TestHandleOrganizationDeleted_PurgesLogo(t *testing.T) {
 	orgID := uuid.New().String()
-	path1 := orgID + "/file-1"
-	path2 := orgID + "/file-2"
-
-	t.Cleanup(func() {
-		pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
-	})
-
-	if _, err := pool.Exec(t.Context(),
-		`INSERT INTO organization.organizations (id, slug, name, owner_id) VALUES ($1, $2, $3, $4)`,
-		orgID, "worker-del-"+orgID[:8], "Worker Delete Test", testAuthSub); err != nil {
-		t.Fatalf("seed organization: %v", err)
-	}
-	for _, p := range []string{path1, path2} {
-		if _, err := pool.Exec(t.Context(),
-			`INSERT INTO organization.files (organization_id, name, path, size_bytes, created_by) VALUES ($1, $2, $3, 10, $4)`,
-			orgID, p, p, testAuthSub); err != nil {
-			t.Fatalf("seed file: %v", err)
-		}
-	}
 
 	fakeStorage := newFakeStorageServer()
 	defer fakeStorage.srv.Close()
-	mod := organization.New(pool, messaging.NoopPublisher{})
+	mod := organization.New(nil, messaging.NoopPublisher{})
 	mod.SetStorageClient(fakeStorage.client())
 
 	body := encodeOrganizationDeleted(orgID)
@@ -126,37 +106,15 @@ func TestIntegration_HandleOrganizationDeleted_PurgesFilesAndLogo(t *testing.T) 
 		t.Fatalf("HandleOrganizationDeleted: %v", err)
 	}
 
-	var count int
-	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM organization.files WHERE organization_id = $1`, orgID).Scan(&count)
-	if count != 0 {
-		t.Errorf("want all files removed from DB, %d remain", count)
-	}
-
 	deleted := fakeStorage.deletedPaths()
 	wantLogo := "organization:" + orgID + "/logo"
-	wantFile1 := "organization-files:" + path1
-	wantFile2 := "organization-files:" + path2
-	for _, want := range []string{wantLogo, wantFile1, wantFile2} {
-		if !slices.Contains(deleted, want) {
-			t.Errorf("expected a storage delete for %q, got %v", want, deleted)
-		}
+	if !slices.Contains(deleted, wantLogo) {
+		t.Errorf("expected a storage delete for %q, got %v", wantLogo, deleted)
 	}
 
-	// Redelivery: deleteAllFilesForOrganization now finds nothing (rows
-	// already gone) — must not error, and must not attempt to delete
-	// per-file paths a second time (the logo delete alone is harmless to
-	// repeat, storage.Delete on an already-missing object is a no-op).
+	// Redelivery: a repeated logo delete on an already-missing object is a
+	// safe no-op — must not error.
 	if err := mod.Worker.HandleOrganizationDeleted(t.Context(), body); err != nil {
 		t.Fatalf("redelivery must not error: %v", err)
-	}
-	redeliveredDeletes := fakeStorage.deletedPaths()
-	fileDeletesAfterRedelivery := 0
-	for _, got := range redeliveredDeletes {
-		if got == wantFile1 || got == wantFile2 {
-			fileDeletesAfterRedelivery++
-		}
-	}
-	if fileDeletesAfterRedelivery != 2 {
-		t.Errorf("want exactly 2 total file-delete calls across both deliveries (no re-attempt on redelivery), got %d", fileDeletesAfterRedelivery)
 	}
 }

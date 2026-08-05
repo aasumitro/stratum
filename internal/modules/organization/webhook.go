@@ -124,8 +124,7 @@ func (w *WebhookWorker) HandleWebhookRetry(ctx context.Context, body []byte) err
 
 // checkHealth runs the health/auto-disable checks after a real delivery
 // attempt — lazy, on-write computation, not a scheduled worker, since this
-// codebase has no cron-style periodic-sweep infrastructure (same reasoning
-// as the trash-purge sweep in service_file.go's maybePurgeExpiredTrash).
+// codebase has no cron-style periodic-sweep infrastructure (see ADR-0011).
 func (w *WebhookWorker) checkHealth(ctx context.Context, ep *webhookEndpointRecord) {
 	h, err := w.repo.webhookHealth(ctx, w.pool, ep.ID)
 	if err != nil {

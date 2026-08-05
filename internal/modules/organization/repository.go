@@ -269,3 +269,15 @@ func (r *repository) unsuspendOrganization(ctx context.Context, q db.Querier, id
 	}
 	return nil
 }
+
+func (r *repository) updateLogoURL(ctx context.Context, q db.Querier, organizationID, logoURL string) error {
+	logoJSON, _ := json.Marshal(map[string]string{"logo_url": logoURL})
+	_, err := q.Exec(ctx, `
+		UPDATE organization.organizations SET settings = settings || $2::jsonb, updated_at = now() WHERE id = $1`,
+		organizationID, string(logoJSON),
+	)
+	if err != nil {
+		return fmt.Errorf("organization.updateLogoURL: %w", err)
+	}
+	return nil
+}

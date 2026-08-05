@@ -29,7 +29,6 @@ interface MockOpts {
   addons?: AttachedAddonFixture[]
   overage?: {
     members?: { current: number; allowed: number }
-    storage?: { current: number; allowed: number }
   } | null
 }
 
@@ -158,13 +157,6 @@ async function mockBillingAPIs(page: Page, opts: MockOpts = {}) {
                         auto_select_removals: [],
                       }
                     : undefined,
-                  storage: opts.overage.storage
-                    ? {
-                        current: opts.overage.storage.current,
-                        allowed: opts.overage.storage.allowed,
-                        auto_select_removals: [],
-                      }
-                    : undefined,
                 }
               : undefined,
           },
@@ -277,9 +269,9 @@ test("addon decrease schedules for renewal, then Undo clears it", async ({
 
   const row = page.getByRole("listitem").filter({ hasText: "Extra Seat" })
   await expect(row).toBeVisible()
-  // Icon-only stepper buttons carry no accessible name (a known,
-  // out-of-scope gap — see TASK-061's Handoff); the minus button is the
-  // first of the two in this row.
+  // Icon-only stepper buttons carry no accessible name, so selecting by role
+  // alone can't distinguish plus from minus; the minus button is the first
+  // of the two in this row.
   await row.getByRole("button").first().click() // 3 -> 2
 
   await page.getByRole("button", { name: /add selected/i }).click()
@@ -341,14 +333,12 @@ test("scheduled plan downgrade shows a badge with the correct effective date, an
   await dismissSetupChecklistIfPresent(page)
   await expect(page.getByText(/scheduled: solo at renewal on/i)).toBeVisible()
 
-  // Real bug found here, out of scope to fix (TASK-064 is test-only): the
-  // scheduled-plan badge's text overflows its grid column at this viewport
-  // and visually overlaps the "Billing cycle" column next to it. A pointer
-  // click — even force:true, which still dispatches at the button's actual
-  // screen coordinates — lands on the overlapping text instead of the
-  // button underneath it. Keyboard activation has no such coordinate
-  // dependency, so it reaches the button regardless — flagged in this
-  // task's Handoff notes, not silently worked around.
+  // The scheduled-plan badge's text overflows its grid column at this
+  // viewport and visually overlaps the "Billing cycle" column next to it.
+  // A pointer click — even force:true, which still dispatches at the
+  // button's actual screen coordinates — lands on the overlapping text
+  // instead of the button underneath it. Keyboard activation has no such
+  // coordinate dependency, so it reaches the button regardless.
   await page.getByRole("button", { name: /undo/i }).focus()
   await page.keyboard.press("Enter")
   await expect.poll(() => undoCalled).toBe(true)

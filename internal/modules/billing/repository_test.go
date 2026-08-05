@@ -90,6 +90,40 @@ func setupBillingTest(t *testing.T, pool *pgxpool.Pool, orgID string) {
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, orgID) })
 }
 
+// testAddonID is a second, independently-tracked addon several amendment
+// tests need to prove per-addon bookkeeping doesn't cross-contaminate — the
+// real catalog only has one addon (extra-seat). Mapped to the "workspaces"
+// feature (metered, unrelated to members) rather than a made-up feature, so
+// tests asserting independent per-metric deltas still exercise a real,
+// distinct metric.
+const testAddonID = "extra-workspace"
+
+// seedTestAddonCatalogRow inserts testAddonID into the billing catalog for
+// tests that need a second real addon ID, and cleans it up afterward. Must
+// be called before setupBillingTest/seedActiveOrgNoSchedule so t.Cleanup's
+// LIFO order runs the subscription/subscription_addons cleanup first,
+// clearing the FK reference before this row is deleted.
+func seedTestAddonCatalogRow(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO billing.addons (id, name, description, prices) VALUES
+		($1, 'Test +1 Workspace', 'Test-only addon for integration tests.',
+		 '{"USD": {"monthly": 100, "yearly": 1000}, "IDR": {"monthly": 10000, "yearly": 100000}}')
+		ON CONFLICT (id) DO NOTHING`, testAddonID); err != nil {
+		t.Fatalf("seed test addon catalog row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO billing.addon_features (addon_id, feature_id, limit_value) VALUES ($1, 'workspaces', 1)
+		ON CONFLICT (addon_id, feature_id) DO NOTHING`, testAddonID); err != nil {
+		t.Fatalf("seed test addon_features row: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM billing.addon_features WHERE addon_id = $1`, testAddonID)
+		pool.Exec(context.Background(), `DELETE FROM billing.addons WHERE id = $1`, testAddonID)
+	})
+}
+
 // seedInvoice inserts a pending invoice for a subscription and returns its ID.
 func seedInvoice(pool *pgxpool.Pool, subscriptionID, currency string, amountCents int64) string {
 	var id string
@@ -421,8 +455,8 @@ func TestIntegration_ListAddons_Catalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAddons: %v", err)
 	}
-	if len(addons) < 2 {
-		t.Errorf("want >= 2 seeded addons, got %d", len(addons))
+	if len(addons) < 1 {
+		t.Errorf("want >= 1 seeded addon, got %d", len(addons))
 	}
 
 	var extraSeat *int

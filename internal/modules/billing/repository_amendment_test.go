@@ -208,6 +208,40 @@ func seedAmendmentAddon(t *testing.T, pool *pgxpool.Pool, r *repository, subscri
 	}
 }
 
+// testAddonID is a second, independently-tracked addon several amendment
+// tests need to prove per-addon bookkeeping doesn't cross-contaminate — the
+// real catalog only has one addon (extra-seat). Mapped to the "workspaces"
+// feature (metered, unrelated to members) rather than a made-up feature, so
+// tests asserting independent per-metric deltas still exercise a real,
+// distinct metric.
+const testAddonID = "extra-workspace"
+
+// seedTestAddonCatalogRow inserts testAddonID into the billing catalog for
+// tests that need a second real addon ID, and cleans it up afterward. Must
+// be called before seedAmendmentSubscription so t.Cleanup's LIFO order runs
+// the subscription/subscription_addons cleanup first, clearing the FK
+// reference before this row is deleted.
+func seedTestAddonCatalogRow(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO billing.addons (id, name, description, prices) VALUES
+		($1, 'Test +1 Workspace', 'Test-only addon for integration tests.',
+		 '{"USD": {"monthly": 100, "yearly": 1000}, "IDR": {"monthly": 10000, "yearly": 100000}}')
+		ON CONFLICT (id) DO NOTHING`, testAddonID); err != nil {
+		t.Fatalf("seed test addon catalog row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO billing.addon_features (addon_id, feature_id, limit_value) VALUES ($1, 'workspaces', 1)
+		ON CONFLICT (addon_id, feature_id) DO NOTHING`, testAddonID); err != nil {
+		t.Fatalf("seed test addon_features row: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM billing.addon_features WHERE addon_id = $1`, testAddonID)
+		pool.Exec(context.Background(), `DELETE FROM billing.addons WHERE id = $1`, testAddonID)
+	})
+}
+
 func TestIntegration_ScheduleAddonQuantityChange_RoundTrip(t *testing.T) {
 	pool := testPoolAmendment(t)
 	r := &repository{}
@@ -268,15 +302,16 @@ func TestIntegration_ClearAllScheduledAddonQuantityChanges(t *testing.T) {
 	pool := testPoolAmendment(t)
 	r := &repository{}
 	const orgID = "00000000-0000-0000-0000-000000000b0a"
+	seedTestAddonCatalogRow(t, pool)
 	sub := seedAmendmentSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 2)
-	seedAmendmentAddon(t, pool, r, sub.ID, "extra-storage-1gb", 5)
+	seedAmendmentAddon(t, pool, r, sub.ID, testAddonID, 5)
 
 	if err := r.scheduleAddonQuantityChange(t.Context(), pool, sub.ID, "extra-seat", 0); err != nil {
 		t.Fatalf("schedule extra-seat: %v", err)
 	}
-	if err := r.scheduleAddonQuantityChange(t.Context(), pool, sub.ID, "extra-storage-1gb", 3); err != nil {
-		t.Fatalf("schedule extra-storage-1gb: %v", err)
+	if err := r.scheduleAddonQuantityChange(t.Context(), pool, sub.ID, testAddonID, 3); err != nil {
+		t.Fatalf("schedule %s: %v", testAddonID, err)
 	}
 
 	if err := r.clearAllScheduledAddonQuantityChanges(t.Context(), pool, sub.ID); err != nil {
@@ -394,9 +429,10 @@ func TestIntegration_FutureAddonLimitDeltas_EmptyOverrides_MatchesAddonLimitDelt
 	pool := testPoolAmendment(t)
 	r := &repository{}
 	const orgID = "00000000-0000-0000-0000-000000000b10"
+	seedTestAddonCatalogRow(t, pool)
 	sub := seedAmendmentSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
-	seedAmendmentAddon(t, pool, r, sub.ID, "extra-storage-1gb", 2)
+	seedAmendmentAddon(t, pool, r, sub.ID, testAddonID, 2)
 
 	live, err := r.addonLimitDeltas(t.Context(), pool, sub.ID)
 	if err != nil {
@@ -419,9 +455,10 @@ func TestIntegration_FutureAddonLimitDeltas_OverrideAppliesInPlaceOfLiveQuantity
 	pool := testPoolAmendment(t)
 	r := &repository{}
 	const orgID = "00000000-0000-0000-0000-000000000b11"
+	seedTestAddonCatalogRow(t, pool)
 	sub := seedAmendmentSubscription(t, pool, r, orgID)
-	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)        // members: +3 live
-	seedAmendmentAddon(t, pool, r, sub.ID, "extra-storage-1gb", 2) // storage: +2GB live, no override
+	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3) // members: +3 live
+	seedAmendmentAddon(t, pool, r, sub.ID, testAddonID, 2)  // workspaces: +2 live, no override
 
 	future, err := r.futureAddonLimitDeltas(t.Context(), pool, sub.ID, map[string]int{"extra-seat": 1})
 	if err != nil {
@@ -430,7 +467,7 @@ func TestIntegration_FutureAddonLimitDeltas_OverrideAppliesInPlaceOfLiveQuantity
 	if future["members"] != 1 {
 		t.Errorf("want overridden addon to contribute its scheduled quantity (1), got members delta %d", future["members"])
 	}
-	if future["storage"] != 2*1024*1024*1024 {
-		t.Errorf("want non-overridden addon to still contribute its live quantity (2GB), got storage delta %d", future["storage"])
+	if future["workspaces"] != 2 {
+		t.Errorf("want non-overridden addon to still contribute its live quantity (2), got workspaces delta %d", future["workspaces"])
 	}
 }

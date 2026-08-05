@@ -65,7 +65,7 @@ type spyOrgCommander struct {
 }
 
 func (s *spyOrgCommander) ResolveDowngradeOverage(
-	_ context.Context, _ string, _ []string, _ int, _ []string, _ int64, _ bool,
+	_ context.Context, _ string, _ []string, _ int, _ bool,
 ) (contracts.OverageResolution, error) {
 	s.calls++
 	if s.failCount > 0 {
@@ -4443,11 +4443,6 @@ func TestIntegration_PreviewInvoice_Downgrade_IncludesOverage(t *testing.T) {
 					Allowed            int      `json:"allowed"`
 					AutoSelectRemovals []string `json:"auto_select_removals"`
 				} `json:"members"`
-				Storage struct {
-					Current            int      `json:"current"`
-					Allowed            int      `json:"allowed"`
-					AutoSelectRemovals []string `json:"auto_select_removals"`
-				} `json:"storage"`
 			} `json:"overage"`
 		} `json:"data"`
 	}

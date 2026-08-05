@@ -210,11 +210,6 @@ export interface InvoicePreview {
       allowed: number
       auto_select_removals: string[]
     }
-    storage?: {
-      current: number
-      allowed: number
-      auto_select_removals: string[]
-    }
   }
 }
 
@@ -226,8 +221,6 @@ export interface InvoicePreview {
 export interface OverageResolution {
   removed_member_auth_subs: string[]
   auto_selected_member_subs: string[]
-  removed_file_ids: string[]
-  auto_selected_file_ids: string[]
 }
 
 export interface DowngradeResult {

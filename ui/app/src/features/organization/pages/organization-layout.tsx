@@ -63,8 +63,7 @@ export function OrganizationLayout() {
     void navigate({ to: "/organizations" })
   }, [isError, error, navigate, t, session])
 
-  const { isOwner, hasPendingInvoice, role, canViewBilling, canAccessFiles } =
-    usePermissions()
+  const { isOwner, hasPendingInvoice, role, canViewBilling } = usePermissions()
   const organization = wsData?.data
   const isSuspended = organization?.status === "suspended"
 
@@ -103,12 +102,7 @@ export function OrganizationLayout() {
   // send those visitors to Settings instead, same as a role-gated Settings
   // section simply not being in the DOM. Segment→allowed mirrors ORG_NAV's
   // own `allowed` fields, so a future nav item only needs an entry here.
-  const isSegmentAllowed =
-    currentSegment === "files"
-      ? canAccessFiles
-      : currentSegment === "billing"
-        ? canViewBilling
-        : true
+  const isSegmentAllowed = currentSegment === "billing" ? canViewBilling : true
   useEffect(() => {
     if (role === undefined || !currentSegment || isSegmentAllowed) return
     void navigate({

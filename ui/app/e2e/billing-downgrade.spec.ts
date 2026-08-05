@@ -161,9 +161,9 @@ test("downgrade with no overage skips selection", async ({ page }) => {
   await page.getByRole("button", { name: /continue/i }).click()
 
   // Verify review step is shown directly (no selection step) — active
-  // subscriptions defer to renewal (PLAN-017), so this is the plain
-  // scheduled-effective note, not the destructive/feature-loss copy that
-  // only trialing (immediate-apply) downgrades show.
+  // subscriptions defer to renewal, so this is the plain scheduled-effective
+  // note, not the destructive/feature-loss copy that only trialing
+  // (immediate-apply) downgrades show.
   await expect(
     page.getByRole("heading", { name: /Review Downgrade/i })
   ).toBeVisible()
@@ -175,8 +175,8 @@ test("downgrade with no overage skips selection", async ({ page }) => {
 // and can leave the subscription over its new plan's limits — so it's the
 // only status where the selection/disclosure/candidates step still exists.
 // An active subscription always defers to renewal (see the test above) and
-// never shows this step regardless of overage; PLAN-017's overage warning
-// for that case is a page-level OverageWarningCard, covered separately.
+// never shows this step regardless of overage; its overage warning is a
+// page-level OverageWarningCard, covered separately.
 test("trialing downgrade with overage shows disclosure and candidates", async ({
   page,
 }) => {
@@ -207,7 +207,6 @@ test("trialing downgrade with overage shows disclosure and candidates", async ({
                 allowed: 1,
                 auto_select_removals: ["user-2", "user-3"],
               },
-              storage: { current: 0, allowed: 1000, auto_select_removals: [] },
             },
           },
           status: { error: false },

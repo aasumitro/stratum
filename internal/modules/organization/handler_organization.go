@@ -280,3 +280,43 @@ func (h *handler) updateSettings(c *gin.Context) {
 	h.invalidateOrg(c, ws.ID)
 	c.Status(http.StatusNoContent)
 }
+
+// uploadLogo godoc
+// @Summary      Upload organization logo
+// @Description  Admin/owner only. Max 2MB, image/* content type.
+// @Tags         organization
+// @Accept       multipart/form-data
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Param        logo            formData  file    true  "Logo image file"
+// @Success      204             "no content"
+// @Failure      422             {object}  response.Payload  "missing file, too large, or not an image"
+// @Failure      403             {object}  response.Payload  "admin role required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/logo [post]
+func (h *handler) uploadLogo(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	file, header, err := c.Request.FormFile("logo")
+	if err != nil {
+		response.Error("LOGO_MISSING", "logo file is required").JSON(c, http.StatusUnprocessableEntity)
+		return
+	}
+	defer file.Close()
+
+	if header.Size > maxLogoSize {
+		response.Error("LOGO_TOO_LARGE", "logo must be under 2 MB").JSON(c, http.StatusUnprocessableEntity)
+		return
+	}
+	ct, ok := request.SniffImageType(file)
+	if !ok {
+		response.Error("LOGO_INVALID_TYPE", "logo must be an image").JSON(c, http.StatusUnprocessableEntity)
+		return
+	}
+
+	if err := h.svc.uploadLogo(c.Request.Context(), ws.ID, file, ct); err != nil {
+		response.FromError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}

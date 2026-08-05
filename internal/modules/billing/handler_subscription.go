@@ -139,7 +139,6 @@ type downgradeSubscriptionRequest struct {
 	Plan                    string   `json:"plan" binding:"required"`
 	Cycle                   string   `json:"cycle" binding:"required,oneof=monthly yearly"`
 	PreferredMemberAuthSubs []string `json:"preferred_member_auth_subs"`
-	PreferredFileIDs        []string `json:"preferred_file_ids"`
 }
 
 // downgradeSubscriptionResponse carries the OverageResolution alongside the
@@ -178,9 +177,9 @@ func (h *handler) downgradeSubscription(c *gin.Context) {
 		return
 	}
 
-	audit.SetAfter(c, map[string]any{"target_plan": req.Plan, "target_cycle": req.Cycle, "preferred_member_auth_subs": req.PreferredMemberAuthSubs, "preferred_file_ids": req.PreferredFileIDs})
+	audit.SetAfter(c, map[string]any{"target_plan": req.Plan, "target_cycle": req.Cycle, "preferred_member_auth_subs": req.PreferredMemberAuthSubs})
 
-	updated, overage, err := h.svc.downgradeSubscription(c.Request.Context(), subjectTypeOrganization, ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), req.PreferredMemberAuthSubs, req.PreferredFileIDs)
+	updated, overage, err := h.svc.downgradeSubscription(c.Request.Context(), subjectTypeOrganization, ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), req.PreferredMemberAuthSubs)
 	if err != nil {
 		response.FromError(c, err)
 		return

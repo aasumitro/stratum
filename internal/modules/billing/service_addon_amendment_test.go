@@ -440,6 +440,7 @@ func TestIntegration_AttachAddon_Active_TwoAddonsIndependentPending(t *testing.T
 	pool := testPoolAmendment(t)
 	r := &repository{}
 	const orgID = "00000000-0000-0000-0000-000000000b1f"
+	seedTestAddonCatalogRow(t, pool)
 	mod := NewModuleForTest(pool, nil)
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 
@@ -447,13 +448,13 @@ func TestIntegration_AttachAddon_Active_TwoAddonsIndependentPending(t *testing.T
 	if err != nil {
 		t.Fatalf("attach extra-seat: %v", err)
 	}
-	storageAddon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-storage-1gb", 10)
+	secondAddon, err := mod.svc.attachAddon(t.Context(), orgID, testAddonID, 10)
 	if err != nil {
-		t.Fatalf("attach extra-storage-1gb: %v", err)
+		t.Fatalf("attach %s: %v", testAddonID, err)
 	}
-	if seatAddon.PendingInvoiceID == nil || storageAddon.PendingInvoiceID == nil ||
-		*seatAddon.PendingInvoiceID == *storageAddon.PendingInvoiceID {
-		t.Fatalf("want two distinct pending invoices, got seat=%v storage=%v", seatAddon.PendingInvoiceID, storageAddon.PendingInvoiceID)
+	if seatAddon.PendingInvoiceID == nil || secondAddon.PendingInvoiceID == nil ||
+		*seatAddon.PendingInvoiceID == *secondAddon.PendingInvoiceID {
+		t.Fatalf("want two distinct pending invoices, got seat=%v second=%v", seatAddon.PendingInvoiceID, secondAddon.PendingInvoiceID)
 	}
 
 	// Pay only the seat addon's invoice.
@@ -472,12 +473,12 @@ func TestIntegration_AttachAddon_Active_TwoAddonsIndependentPending(t *testing.T
 		t.Errorf("want extra-seat applied (quantity=5, pending cleared), got %+v", seatAfter)
 	}
 
-	storageAfter, err := r.findAttachedAddon(t.Context(), pool, sub.ID, "extra-storage-1gb")
+	secondAfter, err := r.findAttachedAddon(t.Context(), pool, sub.ID, testAddonID)
 	if err != nil {
-		t.Fatalf("findAttachedAddon extra-storage-1gb: %v", err)
+		t.Fatalf("findAttachedAddon %s: %v", testAddonID, err)
 	}
-	if storageAfter.Quantity != 0 || storageAfter.PendingQuantity == nil || *storageAfter.PendingQuantity != 10 {
-		t.Errorf("want extra-storage-1gb's pending state untouched by the seat addon's payment, got %+v", storageAfter)
+	if secondAfter.Quantity != 0 || secondAfter.PendingQuantity == nil || *secondAfter.PendingQuantity != 10 {
+		t.Errorf("want %s's pending state untouched by the seat addon's payment, got %+v", testAddonID, secondAfter)
 	}
 }
 

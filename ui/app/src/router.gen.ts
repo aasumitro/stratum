@@ -27,7 +27,6 @@ import { Route as ProtectedOrganizationOrganizationIdRouteImport } from './route
 import { Route as ProtectedInvitationsAcceptRouteImport } from './routes/_protected/invitations/accept'
 import { Route as ProtectedOrganizationOrganizationIdIndexRouteImport } from './routes/_protected/organization/$organizationId/index'
 import { Route as ProtectedOrganizationOrganizationIdSettingsRouteImport } from './routes/_protected/organization/$organizationId/settings'
-import { Route as ProtectedOrganizationOrganizationIdFilesRouteImport } from './routes/_protected/organization/$organizationId/files'
 import { Route as ProtectedOrganizationOrganizationIdBillingRouteImport } from './routes/_protected/organization/$organizationId/billing'
 import { Route as ProtectedOrganizationOrganizationIdPlatformIndexRouteImport } from './routes/_protected/organization/$organizationId/platform/index'
 import { Route as ProtectedOrganizationOrganizationIdBillingIndexRouteImport } from './routes/_protected/organization/$organizationId/billing/index'
@@ -129,12 +128,6 @@ const ProtectedOrganizationOrganizationIdSettingsRoute =
     path: '/settings',
     getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
   } as any)
-const ProtectedOrganizationOrganizationIdFilesRoute =
-  ProtectedOrganizationOrganizationIdFilesRouteImport.update({
-    id: '/files',
-    path: '/files',
-    getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
-  } as any)
 const ProtectedOrganizationOrganizationIdBillingRoute =
   ProtectedOrganizationOrganizationIdBillingRouteImport.update({
     id: '/billing',
@@ -189,7 +182,6 @@ export interface FileRoutesByFullPath {
   '/organization/$organizationId': typeof ProtectedOrganizationOrganizationIdRouteWithChildren
   '/organization/': typeof ProtectedOrganizationIndexRoute
   '/organization/$organizationId/billing': typeof ProtectedOrganizationOrganizationIdBillingRouteWithChildren
-  '/organization/$organizationId/files': typeof ProtectedOrganizationOrganizationIdFilesRoute
   '/organization/$organizationId/settings': typeof ProtectedOrganizationOrganizationIdSettingsRoute
   '/organization/$organizationId/': typeof ProtectedOrganizationOrganizationIdIndexRoute
   '/organization/$organizationId/platform/r1': typeof ProtectedOrganizationOrganizationIdPlatformR1Route
@@ -213,7 +205,6 @@ export interface FileRoutesByTo {
   '/billing/success': typeof BillingSuccessRoute
   '/invitations/accept': typeof ProtectedInvitationsAcceptRoute
   '/organization': typeof ProtectedOrganizationIndexRoute
-  '/organization/$organizationId/files': typeof ProtectedOrganizationOrganizationIdFilesRoute
   '/organization/$organizationId/settings': typeof ProtectedOrganizationOrganizationIdSettingsRoute
   '/organization/$organizationId': typeof ProtectedOrganizationOrganizationIdIndexRoute
   '/organization/$organizationId/platform/r1': typeof ProtectedOrganizationOrganizationIdPlatformR1Route
@@ -241,7 +232,6 @@ export interface FileRoutesById {
   '/_protected/organization/$organizationId': typeof ProtectedOrganizationOrganizationIdRouteWithChildren
   '/_protected/organization/': typeof ProtectedOrganizationIndexRoute
   '/_protected/organization/$organizationId/billing': typeof ProtectedOrganizationOrganizationIdBillingRouteWithChildren
-  '/_protected/organization/$organizationId/files': typeof ProtectedOrganizationOrganizationIdFilesRoute
   '/_protected/organization/$organizationId/settings': typeof ProtectedOrganizationOrganizationIdSettingsRoute
   '/_protected/organization/$organizationId/': typeof ProtectedOrganizationOrganizationIdIndexRoute
   '/_protected/organization/$organizationId/platform/r1': typeof ProtectedOrganizationOrganizationIdPlatformR1Route
@@ -269,7 +259,6 @@ export interface FileRouteTypes {
     | '/organization/$organizationId'
     | '/organization/'
     | '/organization/$organizationId/billing'
-    | '/organization/$organizationId/files'
     | '/organization/$organizationId/settings'
     | '/organization/$organizationId/'
     | '/organization/$organizationId/platform/r1'
@@ -293,7 +282,6 @@ export interface FileRouteTypes {
     | '/billing/success'
     | '/invitations/accept'
     | '/organization'
-    | '/organization/$organizationId/files'
     | '/organization/$organizationId/settings'
     | '/organization/$organizationId'
     | '/organization/$organizationId/platform/r1'
@@ -320,7 +308,6 @@ export interface FileRouteTypes {
     | '/_protected/organization/$organizationId'
     | '/_protected/organization/'
     | '/_protected/organization/$organizationId/billing'
-    | '/_protected/organization/$organizationId/files'
     | '/_protected/organization/$organizationId/settings'
     | '/_protected/organization/$organizationId/'
     | '/_protected/organization/$organizationId/platform/r1'
@@ -471,13 +458,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedOrganizationOrganizationIdSettingsRouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
     }
-    '/_protected/organization/$organizationId/files': {
-      id: '/_protected/organization/$organizationId/files'
-      path: '/files'
-      fullPath: '/organization/$organizationId/files'
-      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdFilesRouteImport
-      parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
-    }
     '/_protected/organization/$organizationId/billing': {
       id: '/_protected/organization/$organizationId/billing'
       path: '/billing'
@@ -540,7 +520,6 @@ const ProtectedOrganizationOrganizationIdBillingRouteWithChildren =
 
 interface ProtectedOrganizationOrganizationIdRouteChildren {
   ProtectedOrganizationOrganizationIdBillingRoute: typeof ProtectedOrganizationOrganizationIdBillingRouteWithChildren
-  ProtectedOrganizationOrganizationIdFilesRoute: typeof ProtectedOrganizationOrganizationIdFilesRoute
   ProtectedOrganizationOrganizationIdSettingsRoute: typeof ProtectedOrganizationOrganizationIdSettingsRoute
   ProtectedOrganizationOrganizationIdIndexRoute: typeof ProtectedOrganizationOrganizationIdIndexRoute
   ProtectedOrganizationOrganizationIdPlatformR1Route: typeof ProtectedOrganizationOrganizationIdPlatformR1Route
@@ -553,8 +532,6 @@ const ProtectedOrganizationOrganizationIdRouteChildren: ProtectedOrganizationOrg
   {
     ProtectedOrganizationOrganizationIdBillingRoute:
       ProtectedOrganizationOrganizationIdBillingRouteWithChildren,
-    ProtectedOrganizationOrganizationIdFilesRoute:
-      ProtectedOrganizationOrganizationIdFilesRoute,
     ProtectedOrganizationOrganizationIdSettingsRoute:
       ProtectedOrganizationOrganizationIdSettingsRoute,
     ProtectedOrganizationOrganizationIdIndexRoute:

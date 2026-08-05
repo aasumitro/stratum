@@ -49,8 +49,8 @@ const catalog: Addon[] = [
     created_at: "",
   },
   {
-    id: "extra-storage-1gb",
-    name: "Extra Storage",
+    id: "extra-workspace",
+    name: "Extra Workspace",
     description: "",
     prices: {},
     features: {},
@@ -130,12 +130,12 @@ describe("ReviewChangesDialog", () => {
 
   it("shows both sections for a mixed increase + decrease selection", async () => {
     renderDialog({
-      staged: { "extra-seat": 5, "extra-storage-1gb": 1 },
+      staged: { "extra-seat": 5, "extra-workspace": 1 },
       currentlyAttached: [
         attached({ addon_id: "extra-seat", quantity: 3 }),
         attached({
-          addon_id: "extra-storage-1gb",
-          name: "Extra Storage",
+          addon_id: "extra-workspace",
+          name: "Extra Workspace",
           quantity: 4,
         }),
       ],
@@ -146,7 +146,7 @@ describe("ReviewChangesDialog", () => {
     )
     expect(screen.getByText("Extra Seat: 3 → 5")).toBeTruthy()
     expect(screen.getByText("Effective at renewal on Sep 1, 2026")).toBeTruthy()
-    expect(screen.getByText("Extra Storage: 4 → 1")).toBeTruthy()
+    expect(screen.getByText("Extra Workspace: 4 → 1")).toBeTruthy()
   })
 
   it("confirming fires attach for the immediate bucket and detach for a full removal", async () => {
@@ -154,12 +154,12 @@ describe("ReviewChangesDialog", () => {
     vi.mocked(api.delete).mockResolvedValue(httpResponse(null))
     const onOpenChange = vi.fn()
     renderDialog({
-      staged: { "extra-storage-1gb": 6 },
+      staged: { "extra-workspace": 6 },
       currentlyAttached: [
         attached({ addon_id: "extra-seat", quantity: 3 }),
         attached({
-          addon_id: "extra-storage-1gb",
-          name: "Extra Storage",
+          addon_id: "extra-workspace",
+          name: "Extra Workspace",
           quantity: 4,
         }),
       ],
@@ -174,7 +174,7 @@ describe("ReviewChangesDialog", () => {
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith(
         `/v1/organizations/${organizationId}/billing/addons`,
-        { addon_id: "extra-storage-1gb", quantity: 6 },
+        { addon_id: "extra-workspace", quantity: 6 },
         expect.anything()
       )
     )
@@ -190,12 +190,12 @@ describe("ReviewChangesDialog", () => {
     vi.mocked(api.delete).mockRejectedValue(new Error("network error"))
     const onOpenChange = vi.fn()
     renderDialog({
-      staged: { "extra-storage-1gb": 6 },
+      staged: { "extra-workspace": 6 },
       currentlyAttached: [
         attached({ addon_id: "extra-seat", quantity: 3 }),
         attached({
-          addon_id: "extra-storage-1gb",
-          name: "Extra Storage",
+          addon_id: "extra-workspace",
+          name: "Extra Workspace",
           quantity: 4,
         }),
       ],

@@ -32,24 +32,6 @@ export const queryKeys = {
     webhooks: (id: string) => ["organizations", id, "webhooks"] as const,
     webhookDeliveries: (id: string, webhookId: string) =>
       ["organizations", id, "webhooks", webhookId, "deliveries"] as const,
-    files: (
-      id: string,
-      folderId?: string,
-      search?: string,
-      searchAll?: boolean,
-      cursor?: string
-    ) =>
-      [
-        "organizations",
-        id,
-        "files",
-        folderId ?? null,
-        search ?? "",
-        !!searchAll,
-        cursor ?? null,
-      ] as const,
-    folders: (id: string) => ["organizations", id, "folders"] as const,
-    trash: (id: string) => ["organizations", id, "files", "trash"] as const,
   },
   billing: {
     subscription: (wsId: string) => ["billing", wsId, "subscription"] as const,

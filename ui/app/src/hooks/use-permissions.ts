@@ -15,7 +15,6 @@ export interface Permissions {
   canManageMembers: boolean
   canViewBilling: boolean
   canActOnBilling: boolean
-  canAccessFiles: boolean
   canAccessWebhooks: boolean
   canAccessAuditLog: boolean
   canAccessSecurity: boolean
@@ -39,7 +38,6 @@ export function usePermissions(): Permissions {
     canManageMembers: hasPermission(role, "members", "manage"),
     canViewBilling: hasPermission(role, "billing", "view"),
     canActOnBilling: hasPermission(role, "billing", "manage"),
-    canAccessFiles: hasPermission(role, "files", "view"),
     canAccessWebhooks: hasPermission(role, "webhooks", "view"),
     canAccessAuditLog: hasPermission(role, "auditLog", "view"),
     canAccessSecurity: hasPermission(role, "settingsSecurity", "view"),

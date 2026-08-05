@@ -22,7 +22,7 @@ import (
 //
 // storageClient (unlike cache invalidation/catalog reading) IS wired —
 // organization's HandleOrganizationDeleted worker consumer needs it to
-// purge a deleted organization's files.
+// purge a deleted organization's logo.
 //
 // The remaining optional setters (billing reader/writer, user reader,
 // organization commander) ARE wired here even though no worker consumer

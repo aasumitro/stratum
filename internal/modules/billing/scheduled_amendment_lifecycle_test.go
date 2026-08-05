@@ -32,7 +32,7 @@ type fakeOrgCommander struct {
 }
 
 func (f *fakeOrgCommander) ResolveDowngradeOverage(
-	_ context.Context, _ string, _ []string, _ int, _ []string, _ int64, _ bool,
+	_ context.Context, _ string, _ []string, _ int, _ bool,
 ) (contracts.OverageResolution, error) {
 	f.calls++
 	if f.failCount > 0 {
@@ -96,7 +96,7 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 	// a live quantity of 3 up front, not a pending invoice.
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
 
-	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil, nil); err != nil {
+	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
 	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1); err != nil {
@@ -217,7 +217,7 @@ func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testi
 	}
 	// Seeded directly, not via attachAddon — see the CombinedApply test above.
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
-	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil, nil); err != nil {
+	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
 	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1); err != nil {
@@ -300,7 +300,7 @@ func TestIntegration_ScheduledAmendmentLifecycle_RedeliverySafety(t *testing.T) 
 	if err != nil {
 		t.Fatalf("seed subscription: %v", err)
 	}
-	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil, nil); err != nil {
+	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
 	if err := r.upsertUsage(t.Context(), pool, orgID, "members", 2, time.Now(), time.Now().AddDate(0, 1, 0)); err != nil {

@@ -73,7 +73,7 @@ func (m *Module) SetBillingWriter(bw contracts.BillingWriter) {
 // SetStorageClient wires the storage client after construction.
 // Called from main.go after the storage client is created. Also wired onto
 // Worker, not just svc — HandleOrganizationDeleted needs it to purge a
-// deleted organization's files, and runs in the worker process, which
+// deleted organization's logo, and runs in the worker process, which
 // constructs its own storage client (see RunWorker) independently of the
 // API's.
 func (m *Module) SetStorageClient(s *storage.Client) {
@@ -189,10 +189,9 @@ func (m *Module) CountActiveOwnedOrganizations(ctx context.Context, authSub stri
 func (m *Module) ResolveDowngradeOverage(
 	ctx context.Context, organizationID string,
 	preferredMemberAuthSubs []string, memberLimit int,
-	preferredFileIDs []string, storageLimitBytes int64,
 	dryRun bool,
 ) (contracts.OverageResolution, error) {
-	return m.svc.resolveDowngradeOverage(ctx, organizationID, preferredMemberAuthSubs, memberLimit, preferredFileIDs, storageLimitBytes, dryRun)
+	return m.svc.resolveDowngradeOverage(ctx, organizationID, preferredMemberAuthSubs, memberLimit, dryRun)
 }
 
 // CleanupExpiredInvitations deletes invitations past their expiry. Called by the worker ticker.
@@ -281,28 +280,6 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 			}
 
 			scoped.POST("/logo", adminUp, h.uploadLogo)
-
-			files := scoped.Group("/files")
-			files.Use(adminUp)
-			{
-				files.POST("", h.uploadFile)
-				files.GET("", h.listFiles)
-				files.GET("/trash", h.listTrash)
-				files.GET("/:fileID/download", h.downloadFile)
-				files.PATCH("/:fileID", h.moveFile)
-				files.DELETE("/:fileID", h.deleteOrganizationFile)
-				files.POST("/bulk-delete", h.bulkDeleteFiles)
-				files.POST("/:fileID/restore", h.restoreFile)
-				files.DELETE("/:fileID/permanent", h.purgeFile)
-
-				folders := files.Group("/folders")
-				{
-					folders.POST("", h.createFolder)
-					folders.GET("", h.listFolders)
-					folders.PATCH("/:folderID", h.updateFolder)
-					folders.DELETE("/:folderID", h.deleteFolder)
-				}
-			}
 		}
 	}
 

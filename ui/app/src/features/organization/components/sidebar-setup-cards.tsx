@@ -4,7 +4,6 @@ import { IconX } from "@tabler/icons-react"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { SidebarCardStack } from "@/components/layout/sidebar-card-stack"
 import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
-import { useOrganizationFiles } from "@/features/organization/hooks/use-files"
 import { useWebhooks } from "@/features/organization/hooks/use-webhooks"
 import {
   useBillingFeatures,
@@ -50,19 +49,10 @@ export function SidebarSetupCards({
     organizationId,
     perms.canAccessWebhooks
   )
-  const { data: filesData } = useOrganizationFiles(
-    organizationId,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    perms.canAccessFiles
-  )
   const subscription = subscriptionData?.data
   const trialDays = daysLeft(subscription?.trial_end)
   const memberCount = membersData?.data?.length ?? 0
   const webhookCount = webhooksData?.data?.length ?? 0
-  const filesCount = filesData?.data?.items?.length ?? 0
 
   const [checklistDismissed, setChecklistDismissed] = useState(
     () => localStorage.getItem(`checklist_dismissed_${organizationId}`) === "1"
@@ -82,16 +72,6 @@ export function SidebarSetupCards({
             done: memberCount > 1,
             labelKey: "dashboard.checklist.invite",
             href: `/organization/${organizationId}/settings#members`,
-          },
-        ]
-      : []),
-    ...(perms.canAccessFiles
-      ? [
-          {
-            key: "file",
-            done: filesCount > 0,
-            labelKey: "dashboard.checklist.file",
-            href: `/organization/${organizationId}/files`,
           },
         ]
       : []),

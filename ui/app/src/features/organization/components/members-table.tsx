@@ -397,7 +397,10 @@ export function MembersTable({ organizationId, currentRole }: Props) {
                         ) : (
                           <>
                             <Avatar className="size-7 shrink-0 rounded-lg">
-                              <AvatarImage src={row.data.avatar_url} alt="" />
+                              <AvatarImage
+                                src={row.data.avatar_url || undefined}
+                                alt=""
+                              />
                               <AvatarFallback className="rounded-lg text-xs">
                                 {initials(
                                   row.data.full_name || row.data.email || "?"
@@ -499,7 +502,10 @@ export function MembersTable({ organizationId, currentRole }: Props) {
                       </Avatar>
                     ) : (
                       <Avatar className="size-8 shrink-0 rounded-lg">
-                        <AvatarImage src={row.data.avatar_url} alt="" />
+                        <AvatarImage
+                          src={row.data.avatar_url || undefined}
+                          alt=""
+                        />
                         <AvatarFallback className="rounded-lg text-xs">
                           {initials(name || "?")}
                         </AvatarFallback>

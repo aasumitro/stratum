@@ -39,8 +39,6 @@ import {
   useOrganizationMembers,
 } from "@/features/organization/hooks/use-members"
 import { useWebhooks } from "@/features/organization/hooks/use-webhooks"
-import { useUsage } from "@/features/billing/hooks"
-import { formatBytes } from "@/lib/format"
 
 interface Props {
   organizationId: string
@@ -61,11 +59,8 @@ export function OrganizationDangerZone({
 
   const { data: membersData } = useOrganizationMembers(organizationId)
   const { data: webhooksData } = useWebhooks(organizationId)
-  const { data: usageData } = useUsage(organizationId)
   const members = membersData?.data ?? []
   const webhooks = webhooksData?.data ?? []
-  const storageBytes =
-    usageData?.data?.find((u) => u.metric === "storage_bytes")?.value ?? 0
 
   const [transferOpen, setTransferOpen] = useState(false)
   const [transferTarget, setTransferTarget] = useState("")
@@ -253,9 +248,6 @@ export function OrganizationDangerZone({
             consequences={[
               t("organization.danger.deleteConsequenceMembers", {
                 count: members.length,
-              }),
-              t("organization.danger.deleteConsequenceStorage", {
-                size: formatBytes(storageBytes),
               }),
               t("organization.danger.deleteConsequenceWebhooks", {
                 count: webhooks.length,

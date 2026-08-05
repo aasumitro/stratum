@@ -568,7 +568,7 @@ func (s *service) syncMFAStatusOnLogin(ctx context.Context, authSub string) {
 	}()
 }
 
-func (s *service) uploadAvatar(ctx context.Context, authSub string, r io.Reader, _ int64, contentType string) (*userRecord, error) {
+func (s *service) uploadAvatar(ctx context.Context, authSub string, r io.Reader, contentType string) (*userRecord, error) {
 	if s.store == nil {
 		return nil, apperr.Internal("AVATAR_UPLOAD_FAILED", "failed to upload avatar",
 			fmt.Errorf("account.uploadAvatar: storage not configured"))
