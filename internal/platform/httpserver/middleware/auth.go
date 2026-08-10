@@ -47,8 +47,9 @@ type Claims struct {
 // checked as a fallback only, for forward compatibility with any other
 // JWKS-publishing IdP config.AuthConfig's JWKSURL might someday point at
 // that issues one instead. Empty return means neither claim was present —
-// revocation checks silently no-op for that token, same fail-open
-// convention as the rest of this app's best-effort security checks.
+// callers that need revocation checking (see AuthHooks.IsRevoked below)
+// treat that as fail-closed: a token with no session identifier is
+// rejected with 401 rather than let a revocation check silently no-op.
 func SessionIdentifier(claims jwtgo.MapClaims) string {
 	if sid, _ := claims["session_id"].(string); sid != "" {
 		return sid
@@ -89,7 +90,9 @@ type AuthHooks struct {
 //
 // On success, Claims are attached to the request context — retrieve them
 // in a handler with ClaimsFromContext(c).
-func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...AuthHooks) (authMW, sseMW gin.HandlerFunc, err error) {
+func NewAuthMiddleware(
+	ctx context.Context, cfg config.AuthConfig, hooks ...AuthHooks,
+) (authMW, sseMW gin.HandlerFunc, err error) {
 	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{cfg.JWKSURL})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating JWKS client: %w", err)
@@ -101,7 +104,13 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 	}
 
 	hookSem := make(chan struct{}, authHookConcurrency)
-	runHook := func(fn func(ctx context.Context)) {
+	// parent is the request's own context, already detached via
+	// context.WithoutCancel by the caller — preserves OTel spans and
+	// request-scoped log fields (so hook logs correlate back to the
+	// request that triggered them) while not inheriting the request's
+	// cancellation, which would otherwise fire the moment the response is
+	// written, before this 200ms budget has a chance to run.
+	runHook := func(parent context.Context, fn func(ctx context.Context)) {
 		select {
 		case hookSem <- struct{}{}:
 		default:
@@ -110,7 +119,7 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 		}
 		go func() {
 			defer func() { <-hookSem }()
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ctx, cancel := context.WithTimeout(parent, 200*time.Millisecond)
 			defer cancel()
 			fn(ctx)
 		}()
@@ -167,11 +176,14 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 
 			// Synchronous revocation check — must happen before c.Next().
 			if h.IsRevoked != nil {
-				if sid := SessionIdentifier(claims); sid != "" {
-					if h.IsRevoked(c.Request.Context(), sid) {
-						c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
-						return
-					}
+				sid := SessionIdentifier(claims)
+				if sid == "" {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token missing session identifier"})
+					return
+				}
+				if h.IsRevoked(c.Request.Context(), sid) {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
+					return
 				}
 			}
 
@@ -182,13 +194,13 @@ func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...Auth
 
 			if h.OnAuth != nil {
 				fn := h.OnAuth
-				runHook(func(ctx context.Context) { fn(ctx, sub) })
+				runHook(context.WithoutCancel(c.Request.Context()), func(ctx context.Context) { fn(ctx, sub) })
 			}
 
 			if h.OnLogin != nil {
 				fn := h.OnLogin
 				ip, ua := c.ClientIP(), c.Request.UserAgent()
-				runHook(func(ctx context.Context) { fn(ctx, sub, ip, ua) })
+				runHook(context.WithoutCancel(c.Request.Context()), func(ctx context.Context) { fn(ctx, sub, ip, ua) })
 			}
 
 			c.Next()

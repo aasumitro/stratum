@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,6 +55,24 @@ const (
 
 	displayNameSystem  = "System"
 	displayNameWebhook = "Webhook"
+
+	// subscription_history.phase — a scheduled amendment's first history
+	// row gets historyPhaseScheduled; the renewal worker writes a second row
+	// with historyPhaseApplied when it actually applies the amendment.
+	historyPhaseScheduled = "scheduled"
+	historyPhaseApplied   = "applied"
+	historyPhaseUndone    = "undone"
+
+	// actionDowngrade is subscription_history.action for a plan downgrade,
+	// shared by the immediate-trial path, the schedule-at-renewal path, and
+	// the renewal worker's own apply step.
+	actionDowngrade = "downgrade"
+
+	// Shared apperr code/message for ErrCancellationScheduled, classified
+	// identically everywhere it's returned (plan downgrade and addon
+	// scheduling both reject the same way against the same condition).
+	cancellationScheduledCode = "CANCELLATION_SCHEDULED"
+	cancellationScheduledMsg  = "subscription is scheduled to cancel; undo that first"
 )
 
 var (
@@ -65,11 +84,13 @@ var (
 	ErrAddonNotFound               = errors.New("addon not found")
 	ErrUnknownPlan                 = errors.New("unknown plan")
 	ErrSubscriptionNotExtendable   = errors.New("subscription is not in an extendable state")
-	ErrExtensionAlreadyPending     = errors.New("an extension invoice is already pending payment")
+	ErrExtensionAlreadyPending     = errors.New("an invoice is already pending payment for this subscription")
 	ErrExtensionExceedsMaxDuration = errors.New("extension would exceed the maximum subscription duration")
 	ErrAlreadyYearly               = errors.New("subscription is already on the yearly cycle")
 	ErrSubscriptionNotTrialing     = errors.New("subscription is not currently trialing")
 	ErrSubscriptionNotResumable    = errors.New("subscription is not in a resumable state")
+	ErrPlanChangeNotAllowed        = errors.New("subscription is not in a state that allows plan changes")
+	ErrNoScheduledCancellation     = errors.New("no scheduled cancellation to undo")
 )
 
 func calculateTax(subtotalCents int64, taxRateBPS int) int64 {
@@ -129,7 +150,7 @@ func (s *service) findAddonByID(ctx context.Context, id string) (*addonRecord, e
 func (s *service) planCatalog(ctx context.Context, id string) (*contracts.PlanInfo, error) {
 	p, err := s.findPlanByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.planCatalog: %w", err)
 	}
 	return planToInfo(p), nil
 }
@@ -137,7 +158,7 @@ func (s *service) planCatalog(ctx context.Context, id string) (*contracts.PlanIn
 func (s *service) plansCatalog(ctx context.Context) ([]contracts.PlanInfo, error) {
 	plans, err := s.listPlansRecords(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.plansCatalog: %w", err)
 	}
 	out := make([]contracts.PlanInfo, len(plans))
 	for i := range plans {
@@ -149,7 +170,7 @@ func (s *service) plansCatalog(ctx context.Context) ([]contracts.PlanInfo, error
 func (s *service) addonCatalog(ctx context.Context, id string) (*contracts.AddonInfo, error) {
 	a, err := s.findAddonByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.addonCatalog: %w", err)
 	}
 	return addonToInfo(a), nil
 }
@@ -157,7 +178,7 @@ func (s *service) addonCatalog(ctx context.Context, id string) (*contracts.Addon
 func (s *service) addonsCatalog(ctx context.Context) ([]contracts.AddonInfo, error) {
 	addons, err := s.listAddonsRecords(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.addonsCatalog: %w", err)
 	}
 	out := make([]contracts.AddonInfo, len(addons))
 	for i := range addons {
@@ -166,10 +187,29 @@ func (s *service) addonsCatalog(ctx context.Context) ([]contracts.AddonInfo, err
 	return out, nil
 }
 
+// scopeCatalogPrices trims a plan/addon's full multi-currency Prices map
+// down to a single currency — the org-scoped catalog counterpart of
+// scopeAddonPrice (attached addons) and reference.scopedPrices (the
+// pre-org-creation, GeoIP-resolved catalog): currency here is always the
+// caller's own already-fixed sub.Currency, never resolved from a request.
+// Falls back to USD if that currency has no entry, matching
+// contracts.ResolveCurrency's own fallback semantics.
+func scopeCatalogPrices(prices map[string]contracts.PlanPrices, currency string) map[string]contracts.PlanPrices {
+	amount, ok := prices[currency]
+	if !ok {
+		amount, ok = prices[contracts.CurrencyUSD]
+		currency = contracts.CurrencyUSD
+	}
+	if !ok {
+		return map[string]contracts.PlanPrices{}
+	}
+	return map[string]contracts.PlanPrices{currency: amount}
+}
+
 func (s *service) featureCatalog(ctx context.Context) ([]contracts.FeatureInfo, error) {
 	features, err := s.listFeaturesRecords(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.featureCatalog: %w", err)
 	}
 	out := make([]contracts.FeatureInfo, len(features))
 	for i, f := range features {
@@ -244,4 +284,29 @@ func prorate(now, periodStart, periodEnd time.Time, oldPriceCents, newPriceCents
 	ratio := oldPricePerDay / newPricePerDay
 	newRemaining := time.Duration(float64(remaining) * ratio)
 	return now.Add(newRemaining)
+}
+
+// computeAddonIncreaseProration prices an addon quantity increase for the
+// fraction of the current billing period remaining — full-price credit for
+// a same-day request, shrinking linearly to near-zero for a request made
+// the day before renewal. delta is the additional quantity being requested
+// (newQty - liveQty), unitPriceCents is the addon's normal full-cycle
+// per-unit price. The reference length is the period's own real span
+// (periodEnd - periodStart), not a fixed 30/365-day assumption — a fixed
+// reference would over-charge in a 31-day month and under-charge in a
+// 28-day one, even for a same-day request that should cost exactly
+// unitPriceCents * delta. Unlike prorate() (which shifts period_end for a
+// plan change), this returns a cash amount for a period that isn't moving —
+// the renewal that follows still bills the full new quantity at its normal
+// full-cycle price; this invoice only covers the partial period.
+func computeAddonIncreaseProration(periodStart, now, periodEnd time.Time, delta int, unitPriceCents int64) int64 {
+	remaining := periodEnd.Sub(now)
+	if remaining <= 0 {
+		return 0
+	}
+	total := periodEnd.Sub(periodStart)
+	if total <= 0 {
+		return 0
+	}
+	return int64(float64(unitPriceCents) * float64(delta) * (remaining.Seconds() / total.Seconds()))
 }

@@ -1,11 +1,7 @@
 import type { PlanPrices } from "@/types/reference"
 
 export type SubscriptionStatus =
-  | "trialing"
-  | "active"
-  | "cancelled"
-  | "past_due"
-  | "expired"
+  "trialing" | "active" | "cancelled" | "past_due" | "expired"
 export type BillingCycle = "monthly" | "yearly"
 export type CancelReason =
   | "too_expensive"
@@ -23,6 +19,7 @@ export type HistoryAction =
   | "resume"
   | "expire"
   | "extend"
+  | "addon_change"
 
 export interface Subscription {
   id: string
@@ -42,6 +39,13 @@ export interface Subscription {
   // the extend endpoint itself enforces) so the frontend never re-derives
   // it from period_end/created_at and risks disagreeing by a day.
   max_extendable_months: number
+  // A plan downgrade or cancellation on a non-trialing subscription defers
+  // to renewal instead of applying immediately — these three fields are set
+  // while an amendment is scheduled and clear once the renewal worker
+  // applies (or the owner undoes) it.
+  scheduled_plan?: string
+  scheduled_cycle?: BillingCycle
+  scheduled_cancel_at?: string
   created_at: string
   updated_at: string
 }
@@ -56,7 +60,7 @@ export interface Invoice {
   tax_cents: number
   currency: string
   status: InvoiceStatus
-  kind: "subscription" | "extension"
+  kind: "subscription" | "extension" | "activation" | "addon_increase"
   // Only meaningful on an "extension" invoice — whether paying it also
   // converts the subscription's cycle to yearly (applied by the backend on
   // payment confirmation, not when the invoice is created).
@@ -109,6 +113,18 @@ export interface SubscriptionHistory {
   changed_by_kind: "user" | "system" | "webhook"
   changed_at: string
   metadata?: unknown
+  // phase distinguishes a scheduled-but-not-yet-applied change from one
+  // that already took effect, or one that was scheduled and then undone
+  // before it ever applied — undefined for an action with no phase concept
+  // (upgrade, extend, activate, resume, expire, immediate/trial addon change).
+  phase?: "scheduled" | "applied" | "undone"
+  // effective_at is when a scheduled/applied/undone row took (or will take)
+  // effect — distinct from changed_at, which is always when the row itself
+  // was written (e.g. the moment a downgrade was scheduled, not when it
+  // applies at renewal).
+  effective_at?: string
+  from_cycle?: BillingCycle
+  to_cycle?: BillingCycle
 }
 
 export interface UsageMetric {
@@ -145,6 +161,17 @@ export interface AttachedAddon {
   name: string
   quantity: number
   prices: Record<string, PlanPrices>
+  // Set while a quantity decrease (or removal, quantity 0) is scheduled for
+  // renewal instead of applied immediately; both clear together once applied
+  // or undone.
+  scheduled_quantity?: number
+  scheduled_requested_at?: string
+  // Set while an increase (or a brand-new attach) is awaiting payment — the
+  // opposite direction from scheduled_quantity: quantity only rises to
+  // pending_quantity once pending_invoice_id's invoice is confirmed paid.
+  // Both clear together once applied or superseded by a newer request.
+  pending_quantity?: number
+  pending_invoice_id?: string
 }
 
 // Coupon is the shape returned by GET .../billing/coupons (eligible-coupon
@@ -192,11 +219,6 @@ export interface InvoicePreview {
       allowed: number
       auto_select_removals: string[]
     }
-    storage?: {
-      current: number
-      allowed: number
-      auto_select_removals: string[]
-    }
   }
 }
 
@@ -208,8 +230,6 @@ export interface InvoicePreview {
 export interface OverageResolution {
   removed_member_auth_subs: string[]
   auto_selected_member_subs: string[]
-  removed_file_ids: string[]
-  auto_selected_file_ids: string[]
 }
 
 export interface DowngradeResult {

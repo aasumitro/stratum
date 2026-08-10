@@ -33,8 +33,7 @@ export interface Plan {
   features: string[] | null
   sort_order: number
   // Raw config_value JSON for this plan's type="config" features
-  // (e.g. api_rate_limit), keyed by feature id. Added alongside sort_order
-  // in the catalog integration rework — see CATALOG.md.
+  // (e.g. api_rate_limit), keyed by feature id.
   config_values: Record<string, unknown>
   active: boolean
   created_at: string

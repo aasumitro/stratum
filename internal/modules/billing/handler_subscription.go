@@ -34,7 +34,7 @@ type subscriptionWithCoupon struct {
 	ActiveCoupon *string `json:"active_coupon,omitempty"`
 	// MaxExtendableMonths lets the frontend gate the Extend flow's counter,
 	// "Switch to Annual" option, and entry point without re-deriving the
-	// 24-month lifetime cap from raw dates itself (see maxExtendableMonths
+	// 24-month runway cap from raw dates itself (see maxExtendableMonths
 	// in service_subscription_billing.go for why that's rejected). 0 for a
 	// subscription with no current period (e.g. still trialing) — nothing
 	// to extend.
@@ -67,9 +67,32 @@ func (h *handler) getSubscription(c *gin.Context) {
 		resp.ActiveCoupon = &redemption.CouponCode
 	}
 	if sub.PeriodEnd != nil {
-		resp.MaxExtendableMonths = maxExtendableMonths(sub.CreatedAt, *sub.PeriodEnd, time.Now())
+		resp.MaxExtendableMonths = maxExtendableMonths(*sub.PeriodEnd, time.Now())
 	}
 	response.Success(resp).JSON(c, http.StatusOK)
+}
+
+// listPlansCatalog godoc
+// @Summary      List the plan catalog, scoped to this subscription's currency
+// @Description  Same catalog as GET /references/plans, but prices are scoped to the
+// @Description  subscription's own already-fixed currency instead of the caller's GeoIP-resolved
+// @Description  one — correct for an existing subscription, which never changes currency.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Success      200             {object}  response.Payload{data=[]contracts.PlanInfo}
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/plans/catalog [get]
+func (h *handler) listPlansCatalog(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	plans, err := h.svc.listPlansCatalog(c.Request.Context(), ws.ID)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.List(plans, int64(len(plans))).JSON(c, http.StatusOK)
 }
 
 type changePlanRequest struct {
@@ -139,7 +162,6 @@ type downgradeSubscriptionRequest struct {
 	Plan                    string   `json:"plan" binding:"required"`
 	Cycle                   string   `json:"cycle" binding:"required,oneof=monthly yearly"`
 	PreferredMemberAuthSubs []string `json:"preferred_member_auth_subs"`
-	PreferredFileIDs        []string `json:"preferred_file_ids"`
 }
 
 // downgradeSubscriptionResponse carries the OverageResolution alongside the
@@ -178,15 +200,63 @@ func (h *handler) downgradeSubscription(c *gin.Context) {
 		return
 	}
 
-	audit.SetAfter(c, map[string]any{"target_plan": req.Plan, "target_cycle": req.Cycle, "preferred_member_auth_subs": req.PreferredMemberAuthSubs, "preferred_file_ids": req.PreferredFileIDs})
+	audit.SetAfter(c, map[string]any{"target_plan": req.Plan, "target_cycle": req.Cycle, "preferred_member_auth_subs": req.PreferredMemberAuthSubs})
 
-	updated, overage, err := h.svc.downgradeSubscription(c.Request.Context(), subjectTypeOrganization, ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), req.PreferredMemberAuthSubs, req.PreferredFileIDs)
+	updated, overage, err := h.svc.downgradeSubscription(c.Request.Context(), subjectTypeOrganization, ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), req.PreferredMemberAuthSubs)
 	if err != nil {
 		response.FromError(c, err)
 		return
 	}
 	audit.SetAfter(c, map[string]any{auditKeyPlan: updated.Plan, auditKeyCycle: updated.Cycle, auditKeyStatus: updated.Status})
 	response.Success(downgradeSubscriptionResponse{Subscription: updated, Overage: overage}).JSON(c, http.StatusOK)
+}
+
+// undoDowngrade godoc
+// @Summary      Undo a scheduled plan downgrade
+// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Success      200             {object}  response.Payload{data=subscriptionRecord}
+// @Failure      422             {object}  response.Payload  "nothing scheduled to undo"
+// @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/downgrade/undo [post]
+func (h *handler) undoDowngrade(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	sub, err := h.svc.undoScheduledPlanDowngrade(
+		c.Request.Context(), subjectTypeOrganization, ws.ID, reqctx.Subject(c))
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.Success(sub).JSON(c, http.StatusOK)
+}
+
+// undoCancellation godoc
+// @Summary      Undo a scheduled cancellation
+// @Description  Owner only.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Success      200             {object}  response.Payload{data=subscriptionRecord}
+// @Failure      422             {object}  response.Payload  "nothing scheduled to undo"
+// @Failure      403             {object}  response.Payload  "owner role required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/cancel/undo [post]
+func (h *handler) undoCancellation(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	sub, err := h.svc.undoScheduledCancellation(
+		c.Request.Context(), subjectTypeOrganization, ws.ID, reqctx.Subject(c))
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.Success(sub).JSON(c, http.StatusOK)
 }
 
 type cancelSubscriptionRequest struct {

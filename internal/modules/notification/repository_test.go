@@ -380,6 +380,82 @@ func TestIntegration_ListNotifications_OrganizationScoped(t *testing.T) {
 	}
 }
 
+// TestIntegration_ListNotifications_ExplicitPageFullPage_ReturnsTotalNotCursor
+// proves a request that explicitly asks for page-based pagination stays in
+// the page-mode response shape (data + total) even when its result count
+// exactly fills the page, instead of silently switching to the cursor
+// shape, which would drop total and break a client that only understands
+// page-based pagination.
+func TestIntegration_ListNotifications_ExplicitPageFullPage_ReturnsTotalNotCursor(t *testing.T) {
+	pool := testPoolNotif(t)
+	const orgID = "00000000-0000-0000-0000-000000000e0d"
+	const authSub = "integ_sub_notif_pagefill"
+	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
+
+	for range 2 {
+		if _, err := pool.Exec(t.Context(), `
+			INSERT INTO notification.messages (organization_id, auth_sub, kind, channel, body)
+			VALUES ($1, $2, 'in_app', 'welcome', 'test message')`,
+			orgID, authSub); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
+
+	e := notification.NewModuleEngine(pool, authSub)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodGet, "/api/me/notifications?organization_id="+orgID+"&limit=2&page=1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list notifications: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, hasCursor := resp["next_cursor"]; hasCursor {
+		t.Errorf("explicit page-mode request that exactly fills the page must not switch to cursor shape, got next_cursor in response: %v", resp)
+	}
+	messages, _ := resp["data"].([]any)
+	if len(messages) != 2 {
+		t.Errorf("want 2 messages, got %d", len(messages))
+	}
+}
+
+// TestIntegration_ListNotifications_DefaultModeFullPage_StaysCursorForLoadMore
+// proves that a request sending neither cursor nor page (the product's own
+// notification feed's first request) still gets next_cursor back when the
+// page comes back full — the feed's "Load more" only ever reads
+// next_cursor off the response, never sends an explicit page param, so
+// losing next_cursor here would silently break loading anything past the
+// first page.
+func TestIntegration_ListNotifications_DefaultModeFullPage_StaysCursorForLoadMore(t *testing.T) {
+	pool := testPoolNotif(t)
+	const orgID = "00000000-0000-0000-0000-000000000e0e"
+	const authSub = "integ_sub_notif_defaultfill"
+	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
+
+	for range 2 {
+		if _, err := pool.Exec(t.Context(), `
+			INSERT INTO notification.messages (organization_id, auth_sub, kind, channel, body)
+			VALUES ($1, $2, 'in_app', 'welcome', 'test message')`,
+			orgID, authSub); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
+
+	e := notification.NewModuleEngine(pool, authSub)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodGet, "/api/me/notifications?organization_id="+orgID+"&limit=2", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list notifications: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	cursor, _ := resp["next_cursor"].(string)
+	if cursor == "" {
+		t.Errorf("default-mode request (no cursor, no page) that fills the page must still return next_cursor, got: %v", resp)
+	}
+}
+
 func TestIntegration_MarkRead_UpdatesOnlyTargetMessage(t *testing.T) {
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0000-000000000e03"
@@ -461,9 +537,9 @@ func TestIntegration_MarkRead_UpdatesOnlyTargetMessage(t *testing.T) {
 }
 
 // TestIntegration_MarkRead_ScopedToOwnAuthSub confirms markRead cannot be used
-// to flip another user's notification — a real authorization gap found while
-// building mark-all-read: the id-only WHERE clause let any authenticated
-// caller mark any notification read by guessing its id.
+// to flip another user's notification: the id-only WHERE clause would
+// otherwise let any authenticated caller mark any notification read by
+// guessing its id.
 func TestIntegration_MarkRead_ScopedToOwnAuthSub(t *testing.T) {
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0000-000000000e03"

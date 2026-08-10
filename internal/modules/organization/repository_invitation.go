@@ -2,6 +2,7 @@ package organization
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -20,8 +21,10 @@ type invitationRecord struct {
 }
 
 func (r *repository) deleteExpiredInvitations(ctx context.Context, q db.Querier) error {
-	_, err := q.Exec(ctx, `DELETE FROM organization.invitations WHERE expires_at < now()`)
-	return err
+	if _, err := q.Exec(ctx, `DELETE FROM organization.invitations WHERE expires_at < now()`); err != nil {
+		return fmt.Errorf("organization.deleteExpiredInvitations: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) insertInvitation(
@@ -43,7 +46,10 @@ func (r *repository) insertInvitation(
 		organizationID, email, role, token, invitedBy, expiresAt,
 	).Scan(&inv.ID, &inv.OrganizationID, &inv.Email, &inv.Role, &inv.Token,
 		&inv.InvitedBy, &inv.Status, &inv.ExpiresAt, &inv.CreatedAt)
-	return inv, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertInvitation: %w", err)
+	}
+	return inv, nil
 }
 
 func (r *repository) findInvitationByToken(ctx context.Context, q db.Querier, token string) (*invitationRecord, error) {
@@ -55,7 +61,10 @@ func (r *repository) findInvitationByToken(ctx context.Context, q db.Querier, to
 		token,
 	).Scan(&inv.ID, &inv.OrganizationID, &inv.Email, &inv.Role, &inv.Token,
 		&inv.InvitedBy, &inv.Status, &inv.ExpiresAt, &inv.CreatedAt)
-	return inv, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.findInvitationByToken: %w", err)
+	}
+	return inv, nil
 }
 
 func (r *repository) acceptInvitation(ctx context.Context, q db.Querier, id string) error {
@@ -63,7 +72,10 @@ func (r *repository) acceptInvitation(ctx context.Context, q db.Querier, id stri
 		UPDATE organization.invitations SET status = 'accepted' WHERE id = $1`,
 		id,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.acceptInvitation: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) listInvitations(ctx context.Context, q db.Querier, organizationID string) ([]invitationRecord, error) {
@@ -75,7 +87,7 @@ func (r *repository) listInvitations(ctx context.Context, q db.Querier, organiza
 		organizationID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listInvitations: %w", err)
 	}
 	defer rows.Close()
 
@@ -84,16 +96,21 @@ func (r *repository) listInvitations(ctx context.Context, q db.Querier, organiza
 		var inv invitationRecord
 		if err := rows.Scan(&inv.ID, &inv.OrganizationID, &inv.Email, &inv.Role, &inv.Token,
 			&inv.InvitedBy, &inv.Status, &inv.ExpiresAt, &inv.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listInvitations: scan: %w", err)
 		}
 		out = append(out, inv)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listInvitations: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) deleteInvitation(ctx context.Context, q db.Querier, id string) error {
-	_, err := q.Exec(ctx, `DELETE FROM organization.invitations WHERE id = $1`, id)
-	return err
+	if _, err := q.Exec(ctx, `DELETE FROM organization.invitations WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("organization.deleteInvitation: %w", err)
+	}
+	return nil
 }
 
 type myInvitationRecord struct {
@@ -130,7 +147,7 @@ func (r *repository) listInvitationsByEmail(ctx context.Context, q db.Querier, e
 		email,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listInvitationsByEmail: %w", err)
 	}
 	defer rows.Close()
 
@@ -139,9 +156,12 @@ func (r *repository) listInvitationsByEmail(ctx context.Context, q db.Querier, e
 		var inv myInvitationRecord
 		if err := rows.Scan(&inv.ID, &inv.OrganizationID, &inv.OrganizationName, &inv.Email,
 			&inv.Role, &inv.InvitedBy, &inv.Token, &inv.ExpiresAt, &inv.CreatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listInvitationsByEmail: scan: %w", err)
 		}
 		out = append(out, inv)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listInvitationsByEmail: %w", err)
+	}
+	return out, nil
 }

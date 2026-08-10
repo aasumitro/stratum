@@ -28,6 +28,10 @@ export function RegenerateButton({ invoiceId, organizationId }: Props) {
       "pay",
       "regenerate"
     ),
+    // Fresh key per click, not per mount — a stable key would make every
+    // click after the first replay the server's 24h-cached first response,
+    // i.e. "Regenerate" would stop actually regenerating anything.
+    headers: () => ({ "Idempotency-Key": crypto.randomUUID() }),
     options: {
       onMutate: () => {
         setOpening(true)

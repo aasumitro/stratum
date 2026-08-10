@@ -13,7 +13,7 @@ Wails v3 with a Go 1.25+ backend and a React 19 / TypeScript / Vite frontend (Ta
 ## What it does
 - **Project registry** — add/edit/delete managed projects, with inline DSN connection tests and color accents.
 - **Cross-project overview** — home cards showing health, active organizations, subscriptions, and MRR per project at a glance.
-- **Dashboard** — per-project metrics: organizations, members, subscriptions by status, MRR/ARR, storage, top plans.
+- **Dashboard** — per-project metrics: organizations, members, subscriptions by status, MRR/ARR, storage (always zero since organization-level file storage was removed 2026-08-05 — the stat card itself wasn't), top plans.
 - **Queue monitor** — browse all queues or dead-letter only; inspect messages, requeue (FIFO), purge.
 - **Reference data** — full CRUD for countries and currencies, with delete guards (you can't delete a currency an active subscription uses).
 - **Catalog management** — CRUD for plans, features, coupons, and add-ons, plus entitlement and coupon-target management, with delete guards.

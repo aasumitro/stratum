@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar"
-import { useUploadLogo } from "@/features/organization/hooks"
+import { useUploadLogo } from "@/features/organization/hooks/use-organization"
 import type { Organization } from "@/types/organization"
 
 interface OrganizationLogoFormProps {

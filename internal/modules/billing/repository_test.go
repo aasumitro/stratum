@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
@@ -88,6 +89,40 @@ func setupBillingTest(t *testing.T, pool *pgxpool.Pool, orgID string) {
 	t.Helper()
 	cleanupBillingByOrganization(pool, orgID)
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, orgID) })
+}
+
+// testAddonID is a second, independently-tracked addon several amendment
+// tests need to prove per-addon bookkeeping doesn't cross-contaminate — the
+// real catalog only has one addon (extra-seat). Mapped to the "workspaces"
+// feature (metered, unrelated to members) rather than a made-up feature, so
+// tests asserting independent per-metric deltas still exercise a real,
+// distinct metric.
+const testAddonID = "extra-workspace"
+
+// seedTestAddonCatalogRow inserts testAddonID into the billing catalog for
+// tests that need a second real addon ID, and cleans it up afterward. Must
+// be called before setupBillingTest/seedActiveOrgNoSchedule so t.Cleanup's
+// LIFO order runs the subscription/subscription_addons cleanup first,
+// clearing the FK reference before this row is deleted.
+func seedTestAddonCatalogRow(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO billing.addons (id, name, description, prices) VALUES
+		($1, 'Test +1 Workspace', 'Test-only addon for integration tests.',
+		 '{"USD": {"monthly": 100, "yearly": 1000}, "IDR": {"monthly": 10000, "yearly": 100000}}')
+		ON CONFLICT (id) DO NOTHING`, testAddonID); err != nil {
+		t.Fatalf("seed test addon catalog row: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO billing.addon_features (addon_id, feature_id, limit_value) VALUES ($1, 'workspaces', 1)
+		ON CONFLICT (addon_id, feature_id) DO NOTHING`, testAddonID); err != nil {
+		t.Fatalf("seed test addon_features row: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM billing.addon_features WHERE addon_id = $1`, testAddonID)
+		pool.Exec(context.Background(), `DELETE FROM billing.addons WHERE id = $1`, testAddonID)
+	})
 }
 
 // seedInvoice inserts a pending invoice for a subscription and returns its ID.
@@ -181,6 +216,40 @@ func getSubscriptionID(pool *pgxpool.Pool, orgID string) string {
 	return id
 }
 
+// forceHistoryInsertFailure installs a trigger that raises an error on any
+// INSERT into billing.subscription_history for subscriptionID, so a caller
+// can prove a preceding write (e.g. updateSubscriptionStatus) rolls back
+// when insertHistory fails inside the same transaction. CREATE TRIGGER
+// doesn't support query parameters, so subscriptionID (already validated as
+// a UUID) is inlined directly rather than passed as a bind argument.
+func forceHistoryInsertFailure(t *testing.T, pool *pgxpool.Pool, subscriptionID string) {
+	t.Helper()
+	if _, err := uuid.Parse(subscriptionID); err != nil {
+		t.Fatalf("forceHistoryInsertFailure: not a UUID: %v", err)
+	}
+	ctx := t.Context()
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_force_history_insert_failure() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'test-induced history insert failure';
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE TRIGGER trg_test_force_history_insert_failure
+		BEFORE INSERT ON billing.subscription_history
+		FOR EACH ROW WHEN (NEW.subscription_id = '`+subscriptionID+`')
+		EXECUTE FUNCTION test_force_history_insert_failure()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`DROP TRIGGER IF EXISTS trg_test_force_history_insert_failure ON billing.subscription_history`)
+		pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS test_force_history_insert_failure()`)
+	})
+}
+
 // getSubscriptionExpectedEnd returns the subscription's current trial_end (if
 // trialing) or period_end — the value HandleSubscriptionRemind/AutoInvoice's
 // staleness guard compares a delayed SubscriptionCheck's ExpectedEnd against.
@@ -205,6 +274,21 @@ func seedBillingOrganization(pool *pgxpool.Pool, orgID, ownerID string) {
 		VALUES ($1, $2, $2, $3, 'active')
 		ON CONFLICT DO NOTHING`,
 		orgID, "billing-test-"+orgID[len(orgID)-4:], ownerID)
+}
+
+// payProvisioningInvoice marks a freshly-provisioned subscription's own
+// pending invoice paid directly (not via a webhook round trip) so
+// extendSubscription's pending-invoice guard no longer sees it. Safe as a
+// no-op setup step for tests exercising Extend afterward: the provisioning
+// invoice's kind is "activation", whose payment never mutates period_end
+// (see handleWebhook's kind switch) — only the webhook path applies period
+// side effects, and this bypasses that path entirely.
+func payProvisioningInvoice(pool *pgxpool.Pool, orgID string) {
+	pool.Exec(context.Background(), `
+		UPDATE billing.invoices SET status = 'paid', paid_at = now()
+		WHERE status = 'pending' AND subscription_id = (
+			SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1
+		)`, orgID)
 }
 
 func TestIntegration_ProvisionAndGetSubscription(t *testing.T) {
@@ -287,6 +371,37 @@ func TestIntegration_IdempotentProvision(t *testing.T) {
 	}
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), body); err != nil {
 		t.Fatalf("second provision (idempotent): %v", err)
+	}
+}
+
+// TestIntegration_ProvisionSubscription_PlanCatalogFailurePropagates is a
+// regression test: provisionSubscription's plan catalog lookup reads via
+// the pool, not the transaction-scoped querier, so a failure there isn't
+// caught by Postgres aborting the transaction the way
+// every other write in this function is — it must be propagated explicitly.
+// Before the fix, this call's error was swallowed (`planInfo, _ = ...`),
+// leaving subtotal at 0 and silently skipping invoice creation with no
+// error at all — a silently free, unbilled subscription. Simulated via a
+// redelivery carrying an unknown plan value: insertSubscription's
+// ON CONFLICT DO NOTHING skips the FK check for the conflicting
+// (already-provisioned) row, so this exercises the exact same "everything
+// else in the transaction succeeds, only the plan lookup fails" path a
+// transient lookup failure would.
+func TestIntegration_ProvisionSubscription_PlanCatalogFailurePropagates(t *testing.T) {
+	pool := testPoolBilling(t)
+
+	const orgID = "00000000-0000-0000-0000-000000000b06"
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, orgID) })
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+		encodeOrganizationCreatedEventWithPlan(orgID, testAuthSubBilling, "solo", "monthly")); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+
+	badPlanBody := encodeOrganizationCreatedEventWithPlan(orgID, testAuthSubBilling, "does-not-exist", "monthly")
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), badPlanBody); err == nil {
+		t.Fatal("redelivery with an unknown plan: want an error from the plan catalog lookup, got nil")
 	}
 }
 
@@ -406,8 +521,8 @@ func TestIntegration_ListAddons_Catalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAddons: %v", err)
 	}
-	if len(addons) < 2 {
-		t.Errorf("want >= 2 seeded addons, got %d", len(addons))
+	if len(addons) < 1 {
+		t.Errorf("want >= 1 seeded addon, got %d", len(addons))
 	}
 
 	var extraSeat *int

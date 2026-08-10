@@ -98,7 +98,7 @@ export function usePollTask(taskId: string | null) {
 }
 
 export function useSessions(cursor?: string) {
-  const params = new URLSearchParams({ limit: "50" })
+  const params = new URLSearchParams({ limit: "3" })
   if (cursor) params.set("cursor", cursor)
   return useHTTPQuery<LoginEvent[]>({
     queryKey: queryKeys.account.sessions(cursor),

@@ -2,6 +2,9 @@ package middleware
 
 import (
 	"log/slog"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -11,6 +14,31 @@ import (
 )
 
 const requestIDHeader = "X-Request-ID"
+
+// maxRequestIDLen bounds a caller-supplied X-Request-ID before it's echoed
+// back, logged, or used as a span attribute — an upstream gateway's own IDs
+// are always well under this, so it only ever trims an adversarial value.
+const maxRequestIDLen = 64
+
+// sanitizeRequestID strips non-printable/control characters and caps length
+// on a caller-supplied X-Request-ID. The header is attacker-reachable
+// (unauthenticated, arrives before any auth middleware) and flows straight
+// into structured logs and the response — an unsanitized value could inject
+// control characters into log output or bloat every log line for a request.
+// Truncates by rune, not byte, so a multi-byte character straddling the
+// limit isn't split into invalid UTF-8.
+func sanitizeRequestID(id string) string {
+	clean := strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, id)
+	if utf8.RuneCountInString(clean) <= maxRequestIDLen {
+		return clean
+	}
+	return string([]rune(clean)[:maxRequestIDLen])
+}
 
 // NewRequestIDMiddleware generates a request ID (or reuses one supplied
 // by the caller/an upstream proxy in the X-Request-ID header — common
@@ -27,7 +55,7 @@ const requestIDHeader = "X-Request-ID"
 // the enriched logger.
 func NewRequestIDMiddleware(baseLogger *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		requestID := c.GetHeader(requestIDHeader)
+		requestID := sanitizeRequestID(c.GetHeader(requestIDHeader))
 		if requestID == "" {
 			requestID = uuid.New().String()
 		}

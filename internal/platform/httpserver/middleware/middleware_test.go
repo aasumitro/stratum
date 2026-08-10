@@ -266,9 +266,14 @@ func TestOrganizationMiddleware_OrganizationNotFound(t *testing.T) {
 	}
 }
 
+// Uses "deleted", not "suspended" — a suspended organization's GET routes
+// are deliberately exempt (its shell stays navigable so members can still
+// see it, per isSuspensionExempt), so that status wouldn't isolate the
+// active-check this test is named for. A valid role is given too, so a
+// 403 can only come from the active check, not the member check below it.
 func TestOrganizationMiddleware_OrganizationNotActive(t *testing.T) {
-	ws := &contracts.OrganizationInfo{ID: "ws-01", Status: "suspended"}
-	e := makeOrganizationEngine(stubWsReader{ws: ws})
+	ws := &contracts.OrganizationInfo{ID: "ws-01", Status: "deleted"}
+	e := makeOrganizationEngine(stubWsReader{ws: ws, role: "member"})
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/organizations/ws-01/test", nil))
 	if w.Code != http.StatusForbidden {
@@ -276,10 +281,9 @@ func TestOrganizationMiddleware_OrganizationNotActive(t *testing.T) {
 	}
 }
 
-// Regression test for a bug found during live-DB verification: the
-// active-only check blocked every scoped route for a suspended
-// organization, including /unsuspend itself — making a suspended
-// organization permanently unrecoverable via the API.
+// Confirms the active-only check does not block /unsuspend itself for a
+// suspended organization — otherwise a suspended organization would be
+// permanently unrecoverable via the API.
 func TestOrganizationMiddleware_Suspended_UnsuspendStaysReachable(t *testing.T) {
 	ws := &contracts.OrganizationInfo{ID: "ws-01", Status: "suspended"}
 	e := makeOrganizationEngine(stubWsReader{ws: ws, role: "owner"})

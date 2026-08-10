@@ -122,13 +122,18 @@ func (s *service) syncEmail(ctx context.Context, authSub, email string) error {
 		slog.WarnContext(ctx, "account.syncEmail: audit log insert failed", "auth_sub", authSub, "error", err)
 	}
 
-	events.Publish(ctx, s.pub, events.ExchangeAccount, events.RoutingKeyUserEmailChanged, "account", "", events.UserEmailChanged{
-		UserID:    u.ID,
-		AuthSub:   authSub,
-		OldEmail:  oldEmail,
-		NewEmail:  email,
-		ChangedAt: u.UpdatedAt,
-	})
+	events.Publish(ctx,
+		s.pub, events.ExchangeAccount,
+		events.RoutingKeyUserEmailChanged,
+		"account", "",
+		events.UserEmailChanged{
+			UserID:    u.ID,
+			AuthSub:   authSub,
+			OldEmail:  oldEmail,
+			NewEmail:  email,
+			ChangedAt: u.UpdatedAt,
+		},
+	)
 	return nil
 }
 
@@ -138,7 +143,7 @@ func (s *service) requestDeleteAccount(ctx context.Context, authSub string) (*ta
 	}
 	owned, err := s.orgReader.CountActiveOwnedOrganizations(ctx, authSub)
 	if err != nil {
-		return nil, apperr.Validation("ACCOUNT_DELETE_FAILED", err.Error())
+		return nil, apperr.Internal("ACCOUNT_DELETE_FAILED", "failed to request account deletion", err)
 	}
 	if owned > 0 {
 		return nil, apperr.Validation("ACCOUNT_DELETE_FAILED", "transfer or delete your organizations before deleting your account")
@@ -146,7 +151,7 @@ func (s *service) requestDeleteAccount(ctx context.Context, authSub string) (*ta
 
 	task, err := s.repo.insertTask(ctx, s.pool, authSub, "delete_account")
 	if err != nil {
-		return nil, apperr.Validation("ACCOUNT_DELETE_FAILED", err.Error())
+		return nil, apperr.Internal("ACCOUNT_DELETE_FAILED", "failed to request account deletion", err)
 	}
 
 	events.Publish(ctx, s.pub, events.ExchangeAccount, events.RoutingKeyUserDeleteRequest, "account", "",
@@ -177,6 +182,25 @@ func (s *service) requestExportData(ctx context.Context, authSub string) (*taskR
 func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub string) error {
 	_ = s.repo.markTaskProcessing(ctx, s.pool, taskID)
 
+	failedSteps := s.runDeleteAccountCleanupSteps(ctx, authSub)
+
+	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
+		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
+		return fmt.Errorf("account.executeDeleteAccount: %w", err)
+	}
+
+	s.bestEffortDeleteSupabaseUser(ctx, authSub)
+
+	return s.completeDeleteAccountTask(ctx, taskID, failedSteps)
+}
+
+// runDeleteAccountCleanupSteps runs every best-effort cross-schema cleanup
+// step (plus wiping the avatar blob) and returns the names of the ones that
+// failed. Each failure is logged and reported here rather than silently
+// discarded, so a partial deletion is visible instead of silent — see the
+// executeDeleteAccount doc comment above for why this can't be a single
+// cross-schema transaction.
+func (s *service) runDeleteAccountCleanupSteps(ctx context.Context, authSub string) []string {
 	steps := []struct {
 		name string
 		run  func() error
@@ -205,6 +229,12 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 		{"login_events", func() error {
 			return s.repo.deleteLoginEvents(ctx, s.pool, authSub)
 		}},
+		{"avatar", func() error {
+			if s.store == nil {
+				return nil
+			}
+			return s.store.Delete(ctx, "users", authSub+"/avatar")
+		}},
 	}
 
 	var failedSteps []string
@@ -215,26 +245,24 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 			failedSteps = append(failedSteps, step.name)
 		}
 	}
+	return failedSteps
+}
 
-	// Best-effort: wipe avatar blob before removing the DB record.
-	if s.store != nil {
-		_ = s.store.Delete(ctx, "users", authSub+"/avatar")
+// bestEffortDeleteSupabaseUser removes the Supabase auth user so they cannot
+// log back in. A failure here is logged but does not roll back the
+// already-completed DB deletion.
+func (s *service) bestEffortDeleteSupabaseUser(ctx context.Context, authSub string) {
+	if s.adminURL == "" || s.serviceRoleKey == "" {
+		return
 	}
-
-	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
-		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
-		return err
+	if err := s.deleteSupabaseUser(ctx, authSub); err != nil {
+		slog.WarnContext(ctx, "account.executeDeleteAccount: supabase user deletion failed",
+			"auth_sub", authSub, "error", err)
 	}
+}
 
-	// Best-effort: remove Supabase auth user so they cannot log back in.
-	// A failure here is logged but does not roll back the already-completed DB deletion.
-	if s.adminURL != "" && s.serviceRoleKey != "" {
-		if err := s.deleteSupabaseUser(ctx, authSub); err != nil {
-			slog.WarnContext(ctx, "account.executeDeleteAccount: supabase user deletion failed",
-				"auth_sub", authSub, "error", err)
-		}
-	}
-
+// completeDeleteAccountTask marshals the delete result and marks the task complete.
+func (s *service) completeDeleteAccountTask(ctx context.Context, taskID string, failedSteps []string) error {
 	result := struct {
 		Deleted     bool     `json:"deleted"`
 		FailedSteps []string `json:"failed_steps,omitempty"`
@@ -243,7 +271,6 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 	if err != nil {
 		return fmt.Errorf("account.executeDeleteAccount: marshal result: %w", err)
 	}
-
 	return s.repo.completeTask(ctx, s.pool, taskID, resultJSON)
 }
 
@@ -330,7 +357,7 @@ func (s *service) executeExportData(ctx context.Context, taskID, authSub string)
 	data, err := s.buildExportData(ctx, authSub)
 	if err != nil {
 		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
-		return err
+		return fmt.Errorf("account.executeExportData: %w", err)
 	}
 
 	result, err := json.Marshal(data)
@@ -469,7 +496,7 @@ func (s *service) revokeAllSessions(ctx context.Context, authSub, sessionID stri
 				"auth_sub", authSub, "error", err)
 		}
 	}
-	if sessionID == "" {
+	if sessionID == "" || s.revokedNS == nil {
 		return nil
 	}
 	ttl := time.Until(exp)
@@ -483,7 +510,8 @@ func (s *service) revokeAllSessions(ctx context.Context, authSub, sessionID stri
 }
 
 func (s *service) revokeSupabaseSessions(ctx context.Context, authSub string) error {
-	resp, err := s.supabaseAdminRequest(ctx, "account.revokeSupabaseSessions", http.MethodPost, "/admin/users/"+authSub+"/logout?scope=global")
+	resp, err := s.supabaseAdminRequest(ctx, "account.revokeSupabaseSessions",
+		http.MethodPost, "/admin/users/"+authSub+"/logout?scope=global")
 	if err != nil {
 		return err
 	}
@@ -517,16 +545,28 @@ func (s *service) exportAuditLog(ctx context.Context, authSub string, from, to *
 // recordLoginEvent inserts a login event, rate-gated to once per 30 minutes
 // per user to avoid a DB write on every single authenticated request. The
 // same gated window also refreshes mfa_enabled from Supabase — see
-// syncMFAStatusOnLogin.
+// syncMFAStatusOnLogin. Fails closed on a Redis error (skips the write
+// entirely) rather than treating an unreadable gate as "not gated yet" —
+// this hook runs on every authenticated request, so failing open during a
+// Redis outage would turn a brief blip into a DB insert storm plus one
+// Supabase Admin API call per request.
 func (s *service) recordLoginEvent(ctx context.Context, authSub, ip, ua string) {
 	if s.revokedNS == nil {
 		return
 	}
 	gateKey := "login_gate:" + authSub
-	if exists, _ := s.revokedNS.Exists(ctx, gateKey); exists {
+	exists, err := s.revokedNS.Exists(ctx, gateKey)
+	if err != nil {
+		slog.ErrorContext(ctx, "account.recordLoginEvent: rate-gate check failed, skipping to avoid DB/API spam", "error", err)
 		return
 	}
-	_ = s.revokedNS.Set(ctx, gateKey, 1, 30*time.Minute)
+	if exists {
+		return
+	}
+	if err := s.revokedNS.Set(ctx, gateKey, 1, 30*time.Minute); err != nil {
+		slog.ErrorContext(ctx, "account.recordLoginEvent: rate-gate set failed, skipping to avoid DB/API spam", "error", err)
+		return
+	}
 	_ = s.repo.insertLoginEvent(ctx, s.pool, authSub, ip, ua)
 	s.syncMFAStatusOnLogin(ctx, authSub)
 }
@@ -551,12 +591,12 @@ func (s *service) syncMFAStatusOnLogin(ctx context.Context, authSub string) {
 		syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := s.fetchAndPersistMFAStatus(syncCtx, authSub); err != nil {
-			slog.WarnContext(ctx, "account.syncMFAStatusOnLogin: mfa status sync failed", "auth_sub", authSub, "error", err)
+			slog.WarnContext(syncCtx, "account.syncMFAStatusOnLogin: mfa status sync failed", "auth_sub", authSub, "error", err)
 		}
 	}()
 }
 
-func (s *service) uploadAvatar(ctx context.Context, authSub string, r io.Reader, _ int64, contentType string) (*userRecord, error) {
+func (s *service) uploadAvatar(ctx context.Context, authSub string, r io.Reader, contentType string) (*userRecord, error) {
 	if s.store == nil {
 		return nil, apperr.Internal("AVATAR_UPLOAD_FAILED", "failed to upload avatar",
 			fmt.Errorf("account.uploadAvatar: storage not configured"))

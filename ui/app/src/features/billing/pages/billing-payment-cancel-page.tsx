@@ -23,6 +23,7 @@ export function BillingPaymentCancelPage() {
       {activeOrganizationId ? (
         <Button
           variant="outline"
+          nativeButton={false}
           render={
             <Link
               to="/organization/$organizationId/billing"
@@ -33,7 +34,11 @@ export function BillingPaymentCancelPage() {
           {t("billing.payment.viewBilling")}
         </Button>
       ) : (
-        <Button variant="outline" render={<Link to="/organizations" />}>
+        <Button
+          variant="outline"
+          nativeButton={false}
+          render={<Link to="/organizations" />}
+        >
           {t("billing.payment.goToOrganizations")}
         </Button>
       )}

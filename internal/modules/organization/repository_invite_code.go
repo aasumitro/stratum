@@ -2,6 +2,7 @@ package organization
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
@@ -14,7 +15,10 @@ func (r *repository) findOrganizationByInviteCode(ctx context.Context, q db.Quer
 		WHERE invite_code = $1 AND invite_code_enabled = true AND status = 'active'`,
 		code,
 	).Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &t.OwnerID, &t.InviteCode, &t.InviteCodeEnabled, &t.Timezone, &t.Locale, &t.CountryCode, &t.SuspendedAt, &t.SuspendedReason, &t.Settings, &t.CreatedAt, &t.UpdatedAt)
-	return t, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.findOrganizationByInviteCode: %w", err)
+	}
+	return t, nil
 }
 
 func (r *repository) updateInviteCode(ctx context.Context, q db.Querier, organizationID, code string, enabled bool) error {
@@ -23,5 +27,8 @@ func (r *repository) updateInviteCode(ctx context.Context, q db.Querier, organiz
 		WHERE id = $1`,
 		organizationID, code, enabled,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.updateInviteCode: %w", err)
+	}
+	return nil
 }

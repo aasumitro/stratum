@@ -1,5 +1,9 @@
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
+import { IconArrowBackUp } from "@tabler/icons-react"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { useUndoScheduledDowngrade } from "@/features/billing/hooks"
 import { cn } from "@/lib/ui"
 import type { Subscription } from "@/types/billing"
 
@@ -23,13 +27,27 @@ function formatDate(s?: string) {
 interface Props {
   sub: Subscription
   daysLeft: number | null
+  organizationId: string
+  isOwner: boolean
   children?: ReactNode
 }
 
-export function SubscriptionDetailsGrid({ sub, daysLeft, children }: Props) {
+export function SubscriptionDetailsGrid({
+  sub,
+  daysLeft,
+  organizationId,
+  isOwner,
+  children,
+}: Props) {
   const { t } = useTranslation()
+  const { mutate: undoDowngrade, isPending: undoingDowngrade } =
+    useUndoScheduledDowngrade(organizationId)
   return (
-    <div className="grid gap-6 lg:grid-cols-4">
+    // 2 columns below lg (not 1) — a single narrow column stacked all 3-4
+    // groups full-height with a large gap between each, wasting the mobile
+    // viewport's unused horizontal half and making a handful of short facts
+    // (plan, status, cycle, two dates) scroll like a much longer page.
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 lg:gap-6">
       <div className="lg:border-r lg:pr-6">
         <div className="space-y-4">
           <div className="space-y-1">
@@ -37,6 +55,29 @@ export function SubscriptionDetailsGrid({ sub, daysLeft, children }: Props) {
               {t("billing.subscription.plan")}
             </p>
             <p className="text-2xl font-bold capitalize">{sub.plan}</p>
+            {sub.scheduled_plan && (
+              <div className="flex items-center gap-1.5">
+                <Badge variant="outline">
+                  {t("billing.downgrade.scheduledBadge", {
+                    plan: sub.scheduled_plan,
+                    date: formatDate(sub.period_end),
+                  })}
+                </Badge>
+                {isOwner && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6"
+                    title={t("common.undo")}
+                    aria-label={t("common.undo")}
+                    disabled={undoingDowngrade}
+                    onClick={() => undoDowngrade()}
+                  >
+                    <IconArrowBackUp className="size-3.5" />
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
           {daysLeft !== null && (
             <div>

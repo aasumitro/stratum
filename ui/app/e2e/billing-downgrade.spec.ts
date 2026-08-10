@@ -1,7 +1,10 @@
 import { test, expect, type Page } from "@playwright/test"
 import { loginAsTestAccount } from "./helpers/login"
 
-async function mockBillingAPIs(page: Page) {
+async function mockBillingAPIs(
+  page: Page,
+  opts: { status?: "active" | "trialing" } = {}
+) {
   // Wildcard fallback to prevent "Unable to connect"
   await page.route("**/v1/**", async (route) => {
     if (route.request().method() !== "GET") return route.continue()
@@ -58,7 +61,7 @@ async function mockBillingAPIs(page: Page) {
         data: {
           plan: "growth",
           cycle: "monthly",
-          status: "active",
+          status: opts.status ?? "active",
           currency: "USD",
           period_end: "2027-01-01T00:00:00Z",
           max_extendable_months: 24,
@@ -157,21 +160,31 @@ test("downgrade with no overage skips selection", async ({ page }) => {
   ).toBeVisible()
   await page.getByRole("button", { name: /continue/i }).click()
 
-  // Verify review step is shown directly (no selection step)
+  // Verify review step is shown directly (no selection step) — active
+  // subscriptions defer to renewal, so this is the plain scheduled-effective
+  // note, not the destructive/feature-loss copy that only trialing
+  // (immediate-apply) downgrades show.
   await expect(
     page.getByRole("heading", { name: /Review Downgrade/i })
   ).toBeVisible()
-  await expect(page.getByText(/feature loss/i)).toBeVisible()
+  await expect(page.getByText(/no charge today/i)).toBeVisible()
+  await expect(page.getByText(/takes effect at renewal/i)).toBeVisible()
 })
 
-test("downgrade with overage shows disclosure and candidates", async ({
+// Trialing is the one status where a downgrade still applies immediately
+// and can leave the subscription over its new plan's limits — so it's the
+// only status where the selection/disclosure/candidates step still exists.
+// An active subscription always defers to renewal (see the test above) and
+// never shows this step regardless of overage; its overage warning is a
+// page-level OverageWarningCard, covered separately.
+test("trialing downgrade with overage shows disclosure and candidates", async ({
   page,
 }) => {
   test.skip(
     !process.env.TEST_ACCOUNT_OWNER_EMAIL,
     "TEST_ACCOUNT_OWNER_EMAIL not set"
   )
-  await mockBillingAPIs(page)
+  await mockBillingAPIs(page, { status: "trialing" })
   await loginAsTestAccount(page)
 
   // Mock preview (WITH overage)
@@ -194,7 +207,6 @@ test("downgrade with overage shows disclosure and candidates", async ({
                 allowed: 1,
                 auto_select_removals: ["user-2", "user-3"],
               },
-              storage: { current: 0, allowed: 1000, auto_select_removals: [] },
             },
           },
           status: { error: false },

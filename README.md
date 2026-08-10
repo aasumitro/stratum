@@ -10,7 +10,7 @@ A working B2B SaaS reference stack — multi-tenancy, billing, notifications, au
 - **Multi-tenant organizations** — memberships, roles (owner / admin / member), RBAC, invitations, invite codes, suspension
 - **Auth** — JWT/JWKS validation (Supabase), no passwords to manage
 - **Billing** — subscriptions, free trial, multi-currency (USD / IDR), proration, invoices with tax, PDF export, Stripe + Xendit payment links, webhooks, auto-renewal, usage metering, plan feature gates, dunning flow
-- **File storage** — avatar upload, organization logo, organization file CRUD (upload / download / delete) via Supabase Storage; usage metered against billing plan
+- **File storage** — avatar upload, organization logo via Supabase Storage
 - **Notifications** — in-app messages + SMTP email (bilingual EN / ID templates), per-channel preferences, dunning and lifecycle emails
 - **GDPR / PDPC** — async account deletion and data export with task tracking
 - **Audit log** — auto-logged mutations and auth failures, configurable retention, CSV export
@@ -65,7 +65,7 @@ Details live in [`docs/`](docs/README.md):
 - `docs/08-api-reference.md` — every endpoint with request/response examples
 - `docs/09-testing.md` — test architecture, helpers, coverage
 - `docs/10-web-ui.md` — React frontend structure, routing, state, conventions
-- `docs/11-file-storage.md` — avatar, logo, and organization file upload/download
+- `docs/11-file-storage.md` — avatar and organization logo upload
 - `docs/12-operations.md` — deployment topology, backups, secrets, RTO/RPO, health endpoints
 - `docs/13-studio.md` — Stratum Studio: what it is, how it connects, features
 

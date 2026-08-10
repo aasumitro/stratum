@@ -5,6 +5,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/modules/billing"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
@@ -44,6 +45,28 @@ func NewModuleEngine(pool *pgxpool.Pool) *gin.Engine {
 	mod := New(pool)
 	catalogMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil)
 	mod.SetCatalogReader(catalogMod)
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: "sub_test"})
+		c.Next()
+	}
+	noopMW := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW})
+	return e
+}
+
+// NewModuleEngineWithCountryResolver is NewModuleEngine plus a GeoIP
+// resolver wired in — use for integration tests proving listPlans/listAddons
+// derive currency from the caller's real IP (resolver.CountryCode) rather
+// than any client-supplied query string, matching NewAPIModules' real wiring
+// (refMod.SetCountryResolver).
+func NewModuleEngineWithCountryResolver(pool *pgxpool.Pool, r *geoip.Resolver) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	mod := New(pool)
+	catalogMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil)
+	mod.SetCatalogReader(catalogMod)
+	mod.SetCountryResolver(r)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: "sub_test"})

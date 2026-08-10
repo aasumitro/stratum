@@ -13,24 +13,36 @@ function formatDate(s?: string) {
   })
 }
 
+// Date.now() must not be called inline in the component body (impure
+// during render, see subscription-card.tsx's identically-shaped
+// trialDaysLeft) — a plain top-level function keeps it out of render.
+function daysUntil(iso?: string): number {
+  if (!iso) return Infinity
+  return (new Date(iso).getTime() - Date.now()) / 86_400_000
+}
+
+// Renewal within this many days counts as "coming up soon" for this bar's
+// second trigger condition, below.
+const NEAR_RENEWAL_DAYS = 30
+
 interface Props {
   organizationId: string
   nextInvoiceDate?: string
   isOwner: boolean
+  hasPendingInvoice: boolean
 }
 
-// "The cart, without a cart": whenever the subscription's live
-// plan+addon+coupon composition includes more than the bare plan price,
-// show what the next invoice will actually total, with a breakdown.
-// Attached addons or an active coupon are the only things that CAN make
-// the next invoice differ from a plain plan-only one, so their presence is
-// used as the trigger signal rather than diffing against a specific
-// historical invoice row (which could differ for unrelated reasons like a
-// tax-rate change).
+// A heads-up on what's about to be charged, shown only when it's actually
+// relevant: there's already an unpaid invoice, or renewal is coming up soon
+// (NEAR_RENEWAL_DAYS) — not merely because add-ons/a coupon are attached,
+// which could be true for the entire lifetime of the subscription. The
+// breakdown content itself (plan + addon lines + coupon) still comes from
+// the live preview regardless of which condition triggered it.
 export function PendingChangesBar({
   organizationId,
   nextInvoiceDate,
   isOwner,
+  hasPendingInvoice,
 }: Props) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
@@ -43,17 +55,28 @@ export function PendingChangesBar({
   const preview = data?.data
 
   if (!isOwner || !preview) return null
-  const hasAddons = (preview.addon_lines?.length ?? 0) > 0
+  const isNearRenewal = daysUntil(nextInvoiceDate) <= NEAR_RENEWAL_DAYS
+  if (!hasPendingInvoice && !isNearRenewal) return null
   const hasCoupon = !!preview.coupon_code
-  if (!hasAddons && !hasCoupon) return null
 
+  // The date only means "at your next renewal" when that's actually why
+  // this is showing — a pending invoice can exist long before renewal
+  // (e.g. a new org's first unpaid invoice), so pairing it with a
+  // far-future renewal date would misattribute it, the same wrong-date
+  // confusion already fixed once on the plan-change wizards.
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-sm text-blue-700 dark:text-blue-400">
       <div className="flex flex-wrap items-center gap-2">
-        <b>{t("billing.pendingChanges.title")}</b>
-        <span className="text-blue-600/70 dark:text-blue-500/70">
-          {formatDate(nextInvoiceDate)}
-        </span>
+        {isNearRenewal ? (
+          <>
+            <b>{t("billing.pendingChanges.title")}</b>
+            <span className="text-blue-600/70 dark:text-blue-500/70">
+              {formatDate(nextInvoiceDate)}
+            </span>
+          </>
+        ) : (
+          <b>{t("billing.pendingChanges.titlePendingInvoice")}</b>
+        )}
         <span className="flex-1" />
         <b>{formatMoney(preview.total_cents, preview.currency)}</b>
         <button

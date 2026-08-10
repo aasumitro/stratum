@@ -18,7 +18,7 @@ import { parseApiError } from "@/lib/api/error"
 import {
   useInviteCodePreview,
   useJoinOrganization,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-invitations"
 
 interface Props {
   open: boolean
@@ -89,8 +89,7 @@ export function JoinOrganizationDialog({ open, onOpenChange }: Props) {
     checkedCode && previewError?.status?.code === "JOIN_ALREADY_MEMBER"
       ? (
           previewError.status.details as
-            | { organization_id?: string }
-            | undefined
+            { organization_id?: string } | undefined
         )?.organization_id
       : undefined
 
@@ -186,7 +185,7 @@ export function JoinOrganizationDialog({ open, onOpenChange }: Props) {
                   setCode(e.target.value)
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && code.trim().length === 8)
+                  if (e.key === "Enter" && code.trim().length === 16)
                     setCheckedCode(code.trim())
                 }}
               />
@@ -203,7 +202,7 @@ export function JoinOrganizationDialog({ open, onOpenChange }: Props) {
             <DialogFooter>
               <Button
                 type="button"
-                disabled={code.trim().length !== 8 || checking}
+                disabled={code.trim().length !== 16 || checking}
                 onClick={() => setCheckedCode(code.trim())}
               >
                 {checking && (

@@ -11,7 +11,7 @@ func TestRequireWebhookSecretsOutsideDev(t *testing.T) {
 		return config.Config{
 			Env:    "production",
 			Stripe: config.StripeConfig{WebhookSecret: "s"},
-			Xendit: config.XenditConfig{CallbackToken: "x"},
+			Xendit: config.XenditConfig{CallbackToken: "x", AllowedCIDRs: []string{"192.0.2.0/24"}},
 			Auth:   config.AuthConfig{WebhookSecret: "a"},
 		}
 	}
@@ -36,6 +36,7 @@ func TestRequireWebhookSecretsOutsideDev(t *testing.T) {
 	}{
 		{"missing stripe secret", func(c *config.Config) { c.Stripe.WebhookSecret = "" }},
 		{"missing xendit token", func(c *config.Config) { c.Xendit.CallbackToken = "" }},
+		{"missing xendit cidrs", func(c *config.Config) { c.Xendit.AllowedCIDRs = nil }},
 		{"missing supabase secret", func(c *config.Config) { c.Auth.WebhookSecret = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -46,4 +47,27 @@ func TestRequireWebhookSecretsOutsideDev(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRequireGeoIPDBOutsideDev(t *testing.T) {
+	t.Run("development skips the check entirely", func(t *testing.T) {
+		cfg := config.Config{Env: "development"}
+		if err := cfg.RequireGeoIPDBOutsideDev(); err != nil {
+			t.Errorf("unexpected error in development: %v", err)
+		}
+	})
+
+	t.Run("production with GEOIP_DB_PATH set passes", func(t *testing.T) {
+		cfg := config.Config{Env: "production", GeoIPDBPath: "/data/GeoLite2-Country.mmdb"}
+		if err := cfg.RequireGeoIPDBOutsideDev(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("production with GEOIP_DB_PATH unset fails", func(t *testing.T) {
+		cfg := config.Config{Env: "production"}
+		if err := cfg.RequireGeoIPDBOutsideDev(); err == nil {
+			t.Error("expected an error, got nil")
+		}
+	})
 }

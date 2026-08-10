@@ -60,7 +60,7 @@ func NewPublisher(conn *Connection, logger *slog.Logger) (*Publisher, error) {
 	p := &Publisher{conn: conn, logger: logger}
 
 	if err := p.openChannel(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("messaging.NewPublisher: %w", err)
 	}
 
 	go p.watchReconnect()
@@ -71,7 +71,7 @@ func NewPublisher(conn *Connection, logger *slog.Logger) (*Publisher, error) {
 func (p *Publisher) openChannel() error {
 	ch, err := p.conn.Channel()
 	if err != nil {
-		return fmt.Errorf("opening publisher channel: %w", err)
+		return fmt.Errorf("messaging.openChannel: %w", err)
 	}
 	if err := ch.Confirm(false); err != nil {
 		return fmt.Errorf("enabling confirm mode: %w", err)

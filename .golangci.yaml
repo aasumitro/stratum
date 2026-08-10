@@ -33,7 +33,6 @@ linters:
         # uses crypto/rand. Exclusion is currently a no-op, kept in case a
         # future non-secret use (e.g. jitter/backoff) needs math/rand.
         - G404
-        - G101
     lll:
       line-length: 450
   exclusions:

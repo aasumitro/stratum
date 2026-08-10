@@ -33,8 +33,8 @@ export function useSignIn() {
       }
 
       const pending = localStorage.getItem("post_login_redirect")
-      if (pending) {
-        localStorage.removeItem("post_login_redirect")
+      localStorage.removeItem("post_login_redirect")
+      if (pending && pending.startsWith("/")) {
         await navigate({ to: pending as never })
         return
       }

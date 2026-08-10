@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
 // Invitation-accept sentinels — kept distinguishable end-to-end (unlike
@@ -22,6 +24,16 @@ var (
 	ErrInvitationEmailMismatch = errors.New("invitation email mismatch")
 	ErrInvitationAlreadyMember = errors.New("already a member")
 )
+
+// ErrInvitationOrganizationNotActive means the invited organization was
+// suspended (or deleted) after the invitation was sent — accept is the one
+// invitation route that actually creates a membership, and this route isn't
+// scoped under /organizations/:organizationID, so it never passes through
+// the organization middleware's own active-status gate the way every other
+// member-adding route does. Checked only in acceptInvitation, not
+// validateInvitationForClaim: preview/decline neither create membership nor
+// need blocking, and shouldn't change behavior as a side effect of this fix.
+var ErrInvitationOrganizationNotActive = errors.New("organization is not active")
 
 const invitationStatusAccepted = "accepted"
 
@@ -68,12 +80,12 @@ func (s *service) createInvitation(
 
 	token, err := generateToken(32)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createInvitation: %w", err)
 	}
 	expiresAt := time.Now().AddDate(0, 0, 7)
 	inv, err = s.repo.insertInvitation(ctx, s.pool, organizationID, email, role, token, invitedBy, expiresAt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.createInvitation: %w", err)
 	}
 
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberInvited, "organization", organizationID,
@@ -109,64 +121,49 @@ type acceptInvitationResult struct {
 func (s *service) acceptInvitation(
 	ctx context.Context, token, authSub, email string, emailVerified bool,
 ) (acceptInvitationResult, error) {
-	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
+	inv, err := s.validateInvitationForClaim(ctx, token, email, emailVerified)
 	if err != nil {
-		return acceptInvitationResult{}, ErrInvitationNotFound
-	}
-	// Any authenticated user could otherwise accept a token issued for a
-	// different email — the invitation only ever meant to grant access to
-	// the address it was sent to. Fail closed: a caller whose token has no
-	// email claim (phone/anonymous/SSO-without-email signups) or an
-	// unverified one can't prove they own the invited address, so they're
-	// rejected the same as a caller with the wrong email — the random
-	// 32-byte token alone isn't treated as sufficient proof.
-	if !emailVerified || !strings.EqualFold(inv.Email, email) {
-		return acceptInvitationResult{InvitedEmail: inv.Email}, ErrInvitationEmailMismatch
-	}
-	// Idempotent: already accepted means the user is already a member.
-	if inv.Status == invitationStatusAccepted {
-		return acceptInvitationResult{OrganizationID: inv.OrganizationID}, ErrInvitationAlreadyMember
-	}
-	if time.Now().After(inv.ExpiresAt) {
-		return acceptInvitationResult{}, ErrInvitationExpired
-	}
-	if s.billingReader != nil {
-		current, limit, err := s.billingReader.CheckUsageLimit(ctx, inv.OrganizationID, "members")
-		if err == nil && limit >= 0 && current >= int64(limit) {
-			return acceptInvitationResult{}, ErrPlanLimitReached
+		switch {
+		case errors.Is(err, ErrInvitationEmailMismatch):
+			return acceptInvitationResult{InvitedEmail: inv.Email}, err
+		case errors.Is(err, ErrInvitationAlreadyMember):
+			return acceptInvitationResult{OrganizationID: inv.OrganizationID}, err
+		default:
+			return acceptInvitationResult{}, err
 		}
 	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return acceptInvitationResult{}, err
+		return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// SAVEPOINT guards against a 23505 unique violation aborting the whole
-	// transaction — PostgreSQL marks a tx as aborted on any error, so without
-	// a savepoint the subsequent acceptInvitation UPDATE would also fail.
-	if _, err := tx.Exec(ctx, "SAVEPOINT sp_insert_member"); err != nil {
+	// Locked (and the limit/status re-checked against a live read) before
+	// the insert below, so two near-simultaneous accepts for the same
+	// organization can't both pass the check against a stale/equal count
+	// and both succeed past the plan's seat limit, and an org suspended in
+	// the moment between validateInvitationForClaim above and this point
+	// can't still get a membership inserted into it.
+	if err := s.repo.lockOrganizationForUpdate(ctx, tx, inv.OrganizationID); err != nil {
 		return acceptInvitationResult{}, err
 	}
-	alreadyMember := false
-	if _, err := s.repo.insertMembership(ctx, tx, inv.OrganizationID, authSub, inv.Role); err != nil {
-		// Unique violation = user is already a member (joined via another path).
-		// Still mark the invitation as accepted so it is not dangling.
-		if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != "23505" {
-			return acceptInvitationResult{}, err
-		}
-		// Roll back to savepoint to restore the transaction to a usable state.
-		if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT sp_insert_member"); rbErr != nil {
-			return acceptInvitationResult{}, rbErr
-		}
-		alreadyMember = true
+	if status, err := s.repo.getOrganizationStatus(ctx, tx, inv.OrganizationID); err != nil || status != "active" {
+		return acceptInvitationResult{OrganizationID: inv.OrganizationID}, ErrInvitationOrganizationNotActive
+	}
+	if err := s.checkMemberLimitLocked(ctx, tx, inv.OrganizationID); err != nil {
+		return acceptInvitationResult{}, err
+	}
+
+	alreadyMember, err := s.insertMembershipIdempotent(ctx, tx, inv.OrganizationID, authSub, inv.Role)
+	if err != nil {
+		return acceptInvitationResult{}, err
 	}
 	if err := s.repo.acceptInvitation(ctx, tx, inv.ID); err != nil {
 		return acceptInvitationResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return acceptInvitationResult{}, err
+		return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: commit tx: %w", err)
 	}
 	s.syncMemberUsage(ctx, inv.OrganizationID)
 	if alreadyMember {
@@ -175,17 +172,83 @@ func (s *service) acceptInvitation(
 	return acceptInvitationResult{OrganizationID: inv.OrganizationID}, nil
 }
 
+// validateInvitationForClaim runs the checks shared by acceptInvitation,
+// previewInvitation, and declineInvitation before any of them act on an
+// invitation: the token must resolve to a real row, the caller's verified
+// email must match the invitation's target address, it must not already be
+// accepted, and it must not have expired. Returns the resolved invitation
+// alongside a non-nil error too (except on ErrInvitationNotFound, where
+// there's no row to return) — callers need inv.Email/inv.OrganizationID to
+// build their own error response.
+//
+// Any authenticated user could otherwise accept/preview/decline a token
+// issued for a different email — the invitation only ever meant to grant
+// access to the address it was sent to. Fail closed: a caller whose token
+// has no email claim (phone/anonymous/SSO-without-email signups) or an
+// unverified one can't prove they own the invited address, so they're
+// rejected the same as a caller with the wrong email — the random 32-byte
+// token alone isn't treated as sufficient proof.
+func (s *service) validateInvitationForClaim(
+	ctx context.Context, token, email string, emailVerified bool,
+) (*invitationRecord, error) {
+	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
+	if err != nil {
+		return nil, ErrInvitationNotFound
+	}
+	if !emailVerified || !strings.EqualFold(inv.Email, email) {
+		return inv, ErrInvitationEmailMismatch
+	}
+	// Idempotent: already accepted means the user is already a member.
+	if inv.Status == invitationStatusAccepted {
+		return inv, ErrInvitationAlreadyMember
+	}
+	if time.Now().After(inv.ExpiresAt) {
+		return inv, ErrInvitationExpired
+	}
+	return inv, nil
+}
+
+// insertMembershipIdempotent inserts a membership row inside tx, tolerating
+// the case where authSub is already a member (joined via another path
+// between the invitation being validated and this insert) instead of
+// aborting the whole accept — the invitation is still marked accepted by the
+// caller so it doesn't dangle. Must run inside the same transaction as the
+// caller's other work.
+func (s *service) insertMembershipIdempotent(
+	ctx context.Context, tx db.Querier, organizationID, authSub, role string,
+) (alreadyMember bool, err error) {
+	// SAVEPOINT guards against a 23505 unique violation aborting the whole
+	// transaction — PostgreSQL marks a tx as aborted on any error, so without
+	// a savepoint the subsequent acceptInvitation UPDATE would also fail.
+	if _, err := tx.Exec(ctx, "SAVEPOINT sp_insert_member"); err != nil {
+		return false, fmt.Errorf("organization.insertMembershipIdempotent: savepoint: %w", err)
+	}
+	if _, err := s.repo.insertMembership(ctx, tx, organizationID, authSub, role); err != nil {
+		// Unique violation = user is already a member (joined via another path).
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != "23505" {
+			return false, fmt.Errorf("organization.insertMembershipIdempotent: %w", err)
+		}
+		// Roll back to savepoint to restore the transaction to a usable state.
+		if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT sp_insert_member"); rbErr != nil {
+			return false, fmt.Errorf("organization.insertMembershipIdempotent: rollback to savepoint: %w", rbErr)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // invitationPreview is the read-only projection shown before the caller
 // commits to accepting (the "valid" confirm card — "Join Acme Corp?
 // mark@acme.com invited you as Member").
 type invitationPreview struct {
-	OrganizationID   string
-	OrganizationName string
-	Role             string
-	InvitedByEmail   string
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name"`
+	Role             string `json:"role"`
+	InvitedByEmail   string `json:"invited_by_email,omitempty"`
+	InvitedByName    string `json:"invited_by_name,omitempty"`
 	// InvitedEmail is only populated on an ErrInvitationEmailMismatch
 	// return — the address the invitation actually targets.
-	InvitedEmail string
+	InvitedEmail string `json:"invited_email,omitempty"`
 }
 
 // previewInvitation runs the same validation acceptInvitation does (found,
@@ -195,20 +258,16 @@ type invitationPreview struct {
 func (s *service) previewInvitation(
 	ctx context.Context, token, email string, emailVerified bool,
 ) (invitationPreview, error) {
-	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
+	inv, err := s.validateInvitationForClaim(ctx, token, email, emailVerified)
 	if err != nil {
-		return invitationPreview{}, ErrInvitationNotFound
-	}
-	// Same fail-closed rule as acceptInvitation — see there for why a
-	// missing or unverified email is treated as a mismatch, not skipped.
-	if !emailVerified || !strings.EqualFold(inv.Email, email) {
-		return invitationPreview{InvitedEmail: inv.Email}, ErrInvitationEmailMismatch
-	}
-	if inv.Status == invitationStatusAccepted {
-		return invitationPreview{OrganizationID: inv.OrganizationID}, ErrInvitationAlreadyMember
-	}
-	if time.Now().After(inv.ExpiresAt) {
-		return invitationPreview{}, ErrInvitationExpired
+		switch {
+		case errors.Is(err, ErrInvitationEmailMismatch):
+			return invitationPreview{InvitedEmail: inv.Email}, err
+		case errors.Is(err, ErrInvitationAlreadyMember):
+			return invitationPreview{OrganizationID: inv.OrganizationID}, err
+		default:
+			return invitationPreview{}, err
+		}
 	}
 
 	preview := invitationPreview{OrganizationID: inv.OrganizationID, Role: inv.Role}
@@ -218,6 +277,7 @@ func (s *service) previewInvitation(
 	if s.userReader != nil {
 		if u, err := s.userReader.GetUserByAuthSub(ctx, inv.InvitedBy); err == nil && u != nil {
 			preview.InvitedByEmail = u.Email
+			preview.InvitedByName = u.Name
 		}
 	}
 	return preview, nil
@@ -229,21 +289,12 @@ func (s *service) previewInvitation(
 // are (token + verified matching email), not an org role, since a
 // pre-membership invitee holds no role to check yet.
 func (s *service) declineInvitation(ctx context.Context, token, email string, emailVerified bool) error {
-	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
+	inv, err := s.validateInvitationForClaim(ctx, token, email, emailVerified)
 	if err != nil {
-		return ErrInvitationNotFound
-	}
-	if !emailVerified || !strings.EqualFold(inv.Email, email) {
-		return ErrInvitationEmailMismatch
-	}
-	if inv.Status == invitationStatusAccepted {
-		return ErrInvitationAlreadyMember
-	}
-	if time.Now().After(inv.ExpiresAt) {
-		return ErrInvitationExpired
+		return err
 	}
 	if err := s.repo.deleteInvitation(ctx, s.pool, inv.ID); err != nil {
-		return err
+		return fmt.Errorf("organization.declineInvitation: %w", err)
 	}
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyInvitationDeclined, "organization", inv.OrganizationID,
 		events.InvitationDeclined{OrganizationID: inv.OrganizationID, InvitedBy: inv.InvitedBy, InviteeEmail: inv.Email})
@@ -272,10 +323,21 @@ func (s *service) listMyInvitations(ctx context.Context, email string) ([]myInvi
 // requestNewInvitation notifies the ORIGINAL inviter (not the requester)
 // that an expired/lost invitation needs resending — the requester has no
 // permission to re-invite themselves. Looked up by token regardless of
-// status/expiry so this works precisely on the expired-invitation case.
-func (s *service) requestNewInvitation(ctx context.Context, token string) error {
+// status/expiry so this works precisely on the expired-invitation case;
+// unlike acceptInvitation/previewInvitation/declineInvitation it therefore
+// can't route through validateInvitationForClaim (which rejects expired
+// tokens). The caller's verified email must still match the invitation's
+// target address — otherwise any authenticated user who knows or intercepts
+// a token could trigger a resend notification for an invitation that isn't
+// theirs. A mismatch returns the same "not found" error as a nonexistent
+// token so this endpoint can't be used to probe whether a given token is
+// valid but belongs to someone else.
+func (s *service) requestNewInvitation(ctx context.Context, token, email string, emailVerified bool) error {
 	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
 	if err != nil {
+		return apperr.Validation("INVITATION_NOT_FOUND", "invitation not found")
+	}
+	if !emailVerified || !strings.EqualFold(inv.Email, email) {
 		return apperr.Validation("INVITATION_NOT_FOUND", "invitation not found")
 	}
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyInvitationRequested, "organization", inv.OrganizationID,

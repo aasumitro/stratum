@@ -3,6 +3,8 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
@@ -56,6 +58,13 @@ func (s *service) removeAllMemberships(ctx context.Context, authSub string) erro
 func (s *service) addMember(
 	ctx context.Context, organizationID, authSub, role string,
 ) (rec *membershipRecord, err error) {
+	if role != contracts.RoleAdmin && role != contracts.RoleMember {
+		return nil, apperr.Validation("INVALID_ROLE", "role must be admin or member")
+	}
+	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+		return nil, apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
+	}
+
 	defer func() {
 		if err == nil {
 			return
@@ -71,23 +80,37 @@ func (s *service) addMember(
 		}
 	}()
 
-	if s.billingReader != nil {
-		current, limit, err := s.billingReader.CheckUsageLimit(ctx, organizationID, "members")
-		if err == nil && limit >= 0 && current >= int64(limit) {
-			return nil, ErrPlanLimitReached
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if lockErr := s.repo.lockOrganizationForUpdate(ctx, tx, organizationID); lockErr != nil {
+			return lockErr
 		}
-	}
-	rec, err = s.repo.insertMembership(ctx, s.pool, organizationID, authSub, role)
+		if limitErr := s.checkMemberLimitLocked(ctx, tx, organizationID); limitErr != nil {
+			return limitErr
+		}
+		var insertErr error
+		rec, insertErr = s.repo.insertMembership(ctx, tx, organizationID, authSub, role)
+		return insertErr
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.addMember: %w", err)
 	}
 	s.syncMemberUsage(ctx, organizationID)
 	return rec, nil
 }
 
 func (s *service) removeMember(ctx context.Context, organizationID, authSub string) error {
-	if err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
+	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+		return apperr.Forbidden("CANNOT_REMOVE_OWNER", "cannot remove the organization owner")
+	}
+	removed, err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub)
+	if err != nil {
 		return apperr.Internal("MEMBER_REMOVE_FAILED", "failed to remove member", err)
+	}
+	// Idempotent: removing a member who's already gone succeeds without
+	// re-syncing usage or publishing a second MemberRemoved for a removal
+	// that didn't actually happen here.
+	if !removed {
+		return nil
 	}
 	s.syncMemberUsage(ctx, organizationID)
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
@@ -96,6 +119,13 @@ func (s *service) removeMember(ctx context.Context, organizationID, authSub stri
 }
 
 func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub, role string) error {
+	if role != contracts.RoleAdmin && role != contracts.RoleMember {
+		return apperr.Validation("INVALID_ROLE", "role must be admin or member")
+	}
+	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+		return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
+	}
+
 	if err := s.repo.updateMemberRole(ctx, s.pool, organizationID, authSub, role); err != nil {
 		return apperr.Internal("MEMBER_ROLE_UPDATE_FAILED", "failed to update member role", err)
 	}
@@ -106,6 +136,32 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 
 func (s *service) getMemberRole(ctx context.Context, organizationID, authSub string) (string, error) {
 	return s.repo.getMemberRole(ctx, s.pool, organizationID, authSub)
+}
+
+// checkMemberLimitLocked re-checks the organization's plan member limit
+// against a live count from q, not the async billing.usage cache
+// CheckUsageLimit normally reads for cheap, non-authoritative checks. Call
+// only while holding organizationID's row lock (lockOrganizationForUpdate)
+// so two concurrent callers serialize on this check instead of both reading
+// "under limit" and both inserting past the plan's seat limit. Fails open
+// (no billingReader, a lookup error, or an unlimited plan) the same way
+// every other optional billingReader call in this module does.
+func (s *service) checkMemberLimitLocked(ctx context.Context, q db.Querier, organizationID string) error {
+	if s.billingReader == nil {
+		return nil
+	}
+	_, limit, err := s.billingReader.CheckUsageLimit(ctx, organizationID, "members")
+	if err != nil || limit < 0 {
+		return nil
+	}
+	current, err := s.repo.countActiveMembers(ctx, q, organizationID)
+	if err != nil {
+		return fmt.Errorf("organization.checkMemberLimitLocked: %w", err)
+	}
+	if current >= int64(limit) {
+		return ErrPlanLimitReached
+	}
+	return nil
 }
 
 // syncMemberUsage records the current active-member count for organizationID
@@ -124,6 +180,11 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 	// caller, corrupting pgx's per-connection statement cache.
 	ctx = db.WithoutQuerier(context.WithoutCancel(ctx))
 	go func() {
+		// Bounds the background write so a congested DB connection or a
+		// hanging cross-module billing call can't leak this goroutine
+		// indefinitely — context.WithoutCancel alone has no deadline.
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
 		count, err := s.repo.countActiveMembers(ctx, s.pool, organizationID)
 		if err != nil {
 			return
@@ -135,6 +196,9 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 // leaveOrganization and transferOwnership both map every failure to a 422
 // carrying the raw err.Error() text — matches the pre-migration handler,
 // which passed err.Error() straight through unconditionally for these two.
+// Their internal `return err` sites are deliberately NOT wrapped with
+// fmt.Errorf("organization.Op: %w", ...) like the rest of this module — a
+// wrap's prefix would leak into this user-facing message text via err.Error().
 func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub string) (err error) {
 	defer func() {
 		if err != nil {
@@ -149,7 +213,7 @@ func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub
 	if role == contracts.RoleOwner {
 		return errors.New("owner cannot leave — transfer ownership first")
 	}
-	if err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
+	if _, err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
 		return err
 	}
 	s.syncMemberUsage(ctx, organizationID)

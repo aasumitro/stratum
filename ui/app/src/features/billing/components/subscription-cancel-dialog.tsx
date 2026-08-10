@@ -15,12 +15,18 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import {
-  usePlans,
+  useOrgPlansCatalog,
   useCancelSubscription,
   useResumeSubscription,
+  useUndoScheduledCancellation,
 } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import type { BillingCycle, CancelReason } from "@/types/billing"
+import type {
+  BillingCycle,
+  CancelReason,
+  SubscriptionStatus,
+} from "@/types/billing"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -45,6 +51,7 @@ interface Props {
   cycle: BillingCycle
   currency: string
   periodEnd?: string
+  status: SubscriptionStatus
   canCancel: boolean
 }
 
@@ -56,6 +63,7 @@ export function SubscriptionCancelDialog({
   cycle,
   currency,
   periodEnd,
+  status,
   canCancel,
 }: Props) {
   const { t } = useTranslation()
@@ -63,19 +71,31 @@ export function SubscriptionCancelDialog({
   const [step, setStep] = useState<Step>("reason")
   const [reason, setReason] = useState<CancelReason | "">("")
   const [details, setDetails] = useState("")
+  // Trialing has no paid period to protect, so cancellation applies
+  // immediately and flips status to "cancelled" — every other status defers
+  // to renewal instead, leaving status untouched, so the success step here
+  // must offer "undo the schedule" rather than "resume an ended subscription".
+  const isTrialing = status === "trialing"
 
   const { mutate: cancel, isPending: cancelling } =
     useCancelSubscription(organizationId)
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
-  const { data: plansData } = usePlans()
+  const { mutate: undoCancellation, isPending: undoingCancellation } =
+    useUndoScheduledCancellation(organizationId)
+  const { data: plansData } = useOrgPlansCatalog(organizationId)
+  const { hasPendingInvoice } = usePermissions()
 
   const planInfo = (plansData?.data ?? []).find((p) => p.id === plan)
-  const prices = planInfo?.prices[currency] ?? planInfo?.prices["USD"]
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself, rather than the `currency` prop, so
+  // this never depends on the two staying in sync.
+  const displayCurrency = Object.keys(planInfo?.prices ?? {})[0] ?? currency
+  const prices = planInfo?.prices[displayCurrency]
   const priceLabel = prices
     ? formatPrice(
         cycle === "monthly" ? prices.monthly : prices.yearly,
-        currency,
+        displayCurrency,
         cycle,
         t
       )
@@ -112,11 +132,19 @@ export function SubscriptionCancelDialog({
       <Dialog open={open} onOpenChange={handleClose}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("billing.cancel.successTitle")}</DialogTitle>
+            <DialogTitle>
+              {isTrialing
+                ? t("billing.cancel.successTitle")
+                : t("billing.cancel.scheduledSuccessTitle")}
+            </DialogTitle>
             <DialogDescription>
-              {t("billing.cancel.successDescription", {
-                date: formatDate(periodEnd),
-              })}
+              {isTrialing
+                ? t("billing.cancel.successDescription", {
+                    date: formatDate(periodEnd),
+                  })
+                : t("billing.cancel.scheduledSuccessDescription", {
+                    date: formatDate(periodEnd),
+                  })}
             </DialogDescription>
           </DialogHeader>
 
@@ -141,16 +169,22 @@ export function SubscriptionCancelDialog({
           <DialogFooter>
             <Button
               variant="outline"
-              disabled={resuming}
-              onClick={() => resume()}
+              disabled={isTrialing ? resuming : undoingCancellation}
+              onClick={() =>
+                isTrialing
+                  ? resume()
+                  : undoCancellation(undefined, { onSuccess: handleClose })
+              }
             >
-              {resuming && (
+              {(isTrialing ? resuming : undoingCancellation) && (
                 <IconLoader2
                   data-icon="inline-start"
                   className="animate-spin"
                 />
               )}
-              {t("billing.subscription.resume")}
+              {isTrialing
+                ? t("billing.subscription.resume")
+                : t("billing.states.scheduledCancelUndo")}
             </Button>
             <Button onClick={handleClose}>{t("common.done")}</Button>
           </DialogFooter>
@@ -190,6 +224,12 @@ export function SubscriptionCancelDialog({
             </div>
           </div>
 
+          {hasPendingInvoice && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+              {t("billing.cancel.pendingInvoiceNote")}
+            </div>
+          )}
+
           <div className="flex flex-col gap-3 py-2 text-sm text-muted-foreground">
             <p>{t("billing.cancel.reviewAfterPeriodEnd")}</p>
             <div className="rounded-md border p-3">
@@ -204,8 +244,9 @@ export function SubscriptionCancelDialog({
                 </li>
                 <li>
                   <Link
-                    to="/organization/$organizationId/audit-log"
+                    to="/organization/$organizationId/settings"
                     params={{ organizationId }}
+                    search={{ panel: "audit-log" }}
                     className="underline"
                   >
                     {t("billing.cancel.exportOrganizationData")}

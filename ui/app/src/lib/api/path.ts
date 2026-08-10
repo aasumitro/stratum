@@ -17,7 +17,4 @@ export const API = {
   eligibleCouponsForNewOrg: () => "/v1/billing/coupons/eligible",
 
   references: (resource: string) => `/v1/references/${resource}`,
-
-  files: (organizationId: string, ...rest: string[]) =>
-    `/v1/organizations/${organizationId}/files${rest.length ? `/${rest.join("/")}` : ""}`,
 } as const

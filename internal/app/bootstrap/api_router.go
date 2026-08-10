@@ -56,9 +56,14 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 		return nil, fmt.Errorf("configuring cors: %w", err)
 	}
 
-	engine := httpserver.New(cfg.ServiceName, infra.Log, ginMode)
-	engine.Use(corsMW, middleware.MaxBodySize(50<<20))
-	httpserver.RegisterHealth(engine, httpserver.HealthDeps{Pool: infra.Pool, Redis: infra.Redis, MQ: infra.MQConn, StatsToken: cfg.StatsToken})
+	engine, err := httpserver.New(cfg.ServiceName, infra.Log, ginMode, cfg.TrustedProxies)
+	if err != nil {
+		auditWriter.Stop()
+		return nil, fmt.Errorf("configuring http server: %w", err)
+	}
+	engine.Use(corsMW, middleware.SecureHeaders(), middleware.MaxBodySize(52<<20)) // 52 MB > 50 MB file cap
+	httpserver.RegisterHealth(engine, httpserver.HealthDeps{Pool: infra.Pool,
+		Redis: infra.Redis, MQ: infra.MQConn, StatsToken: cfg.StatsToken})
 	if cfg.Env == EnvDevelopment {
 		httpserver.RegisterSwagger(engine)
 	}
@@ -87,7 +92,10 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 
 	webhooks := engine.Group("/webhooks")
 	webhooks.Use(webhookRateMW)
-	mods.Billing.RegisterWebhooks(webhooks)
+	if err := mods.Billing.RegisterWebhooks(webhooks); err != nil {
+		auditWriter.Stop()
+		return nil, fmt.Errorf("registering billing webhooks: %w", err)
+	}
 	mods.Account.RegisterWebhooks(webhooks)
 
 	return &APIRouter{

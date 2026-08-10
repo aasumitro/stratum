@@ -1,5 +1,5 @@
 import { useParams } from "@tanstack/react-router"
-import { useOrganizations } from "@/features/organization/hooks"
+import { useOrganizations } from "@/features/organization/hooks/use-organization"
 import type { OrganizationView } from "@/types/organization"
 
 interface ActiveOrganization {

@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,7 +22,11 @@ type Module struct {
 	cfg    ProviderConfig
 }
 
-func New(pool *pgxpool.Pool, pub messaging.EventPublisher, cfg ProviderConfig, taxReader contracts.CountryTaxReader, orgSuspender contracts.OrganizationSuspender) *Module {
+func New(
+	pool *pgxpool.Pool, pub messaging.EventPublisher,
+	cfg ProviderConfig, taxReader contracts.CountryTaxReader,
+	orgSuspender contracts.OrganizationSuspender,
+) *Module {
 	svc := &service{repo: &repository{}, pool: pool, pub: pub, provider: cfg, taxReader: taxReader, orgSuspender: orgSuspender}
 	return &Module{svc: svc, Worker: &Worker{svc: svc}, cfg: cfg}
 }
@@ -106,10 +111,12 @@ func addonToInfo(a *addonRecord) *contracts.AddonInfo {
 }
 
 // GetSubscriptionBySubject implements contracts.BillingReader.
-func (m *Module) GetSubscriptionBySubject(ctx context.Context, subjectType, subjectID string) (*contracts.SubscriptionInfo, error) {
+func (m *Module) GetSubscriptionBySubject(
+	ctx context.Context, subjectType, subjectID string,
+) (*contracts.SubscriptionInfo, error) {
 	s, err := m.svc.getSubscription(ctx, subjectType, subjectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.GetSubscriptionBySubject: %w", err)
 	}
 	return &contracts.SubscriptionInfo{
 		ID:          s.ID,
@@ -125,7 +132,10 @@ func (m *Module) GetSubscriptionBySubject(ctx context.Context, subjectType, subj
 // CheckUsageLimit implements contracts.BillingReader.
 func (m *Module) CheckUsageLimit(ctx context.Context, organizationID, metric string) (int64, int, error) {
 	current, limit, err := m.svc.checkUsageLimit(ctx, organizationID, metric)
-	return current, limit, err
+	if err != nil {
+		return current, limit, fmt.Errorf("billing.CheckUsageLimit: %w", err)
+	}
+	return current, limit, nil
 }
 
 // CheckFeatureAccess implements contracts.BillingReader.
@@ -149,7 +159,9 @@ func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 //	GET    /organizations/:organizationID/billing
 //	PATCH  /organizations/:organizationID/billing/plan
 //	POST   /organizations/:organizationID/billing/downgrade
+//	POST   /organizations/:organizationID/billing/downgrade/undo
 //	POST   /organizations/:organizationID/billing/cancel
+//	POST   /organizations/:organizationID/billing/cancel/undo
 //	POST   /organizations/:organizationID/billing/resume
 //	POST   /organizations/:organizationID/billing/extend
 //	POST   /organizations/:organizationID/billing/activate
@@ -165,7 +177,10 @@ func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 //	POST   /organizations/:organizationID/billing/coupons/redeem
 //	POST   /organizations/:organizationID/billing/addons
 //	DELETE /organizations/:organizationID/billing/addons/:addonID
+//	POST   /organizations/:organizationID/billing/addons/:addonID/undo
 //	GET    /organizations/:organizationID/billing/addons
+//	GET    /organizations/:organizationID/billing/plans/catalog
+//	GET    /organizations/:organizationID/billing/addons/catalog
 //	GET    /organizations/:organizationID/billing/preview
 //	GET    /organizations/:organizationID/billing/coupons
 //	GET    /billing/coupons/eligible — same eligibility check, before an organization exists
@@ -196,16 +211,20 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billing.GET("/usage", h.getUsage)
 		billing.GET("/features", h.listFeatures)
 		billing.GET("/addons", h.listAddons)
+		billing.GET("/plans/catalog", h.listPlansCatalog)
+		billing.GET("/addons/catalog", h.listAddonsCatalog)
 		billing.GET("/preview", h.previewInvoice)
 		billing.GET("/coupons", h.listEligibleCoupons)
 
 		billing.PATCH("/plan", ownerOnly, deps.MFA, h.changePlan)
 		billing.POST("/downgrade", ownerOnly, deps.MFA, h.downgradeSubscription)
+		billing.POST("/downgrade/undo", ownerOnly, deps.MFA, h.undoDowngrade)
 		billing.POST("/cancel", ownerOnly, h.cancelSubscription)
+		billing.POST("/cancel/undo", ownerOnly, h.undoCancellation)
 		billing.POST("/usage", ownerOnly, h.recordUsage)
 		billing.POST("/coupons/redeem", ownerOnly, h.redeemCoupon)
-		billing.POST("/addons", ownerOnly, deps.MFA, h.attachAddon)
 		billing.DELETE("/addons/:addonID", ownerOnly, deps.MFA, h.detachAddon)
+		billing.POST("/addons/:addonID/undo", ownerOnly, deps.MFA, h.undoAddonQuantityChange)
 	}
 
 	// billingPay deliberately excludes deps.RLS. Every route here can make a
@@ -227,6 +246,11 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billingPay.POST("/activate", ownerOnly, deps.MFA, h.activateTrialNow)
 		billingPay.POST("/invoices/:invoiceID/pay", ownerOnly, deps.Idempotency, h.createPaymentLink)
 		billingPay.POST("/invoices/:invoiceID/pay/regenerate", ownerOnly, deps.Idempotency, h.regeneratePaymentLink)
+		// attachAddon moved here from the RLS group above: a non-trialing
+		// increase now creates a gating invoice and makes the same blocking
+		// payment-link HTTP call every other route in this group makes —
+		// see attachAddon/requestAddonIncrease (service_addon.go).
+		billingPay.POST("/addons", ownerOnly, deps.MFA, h.attachAddon)
 	}
 }
 
@@ -234,8 +258,14 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 //
 //	POST /webhooks/stripe
 //	POST /webhooks/xendit
-func (m *Module) RegisterWebhooks(r *gin.RouterGroup) {
+func (m *Module) RegisterWebhooks(r *gin.RouterGroup) error {
 	h := &handler{svc: m.svc, stripeSecret: m.cfg.StripeWebhookSecret, xenditToken: m.cfg.XenditCallbackToken}
 	r.POST("/stripe", h.handleStripeWebhook)
-	r.POST("/xendit", h.handleXenditWebhook)
+
+	ipAllowlist, err := middleware.NewIPAllowlistMiddleware(m.cfg.XenditAllowedCIDRs)
+	if err != nil {
+		return fmt.Errorf("billing.RegisterWebhooks: %w", err)
+	}
+	r.POST("/xendit", ipAllowlist, h.handleXenditWebhook)
+	return nil
 }

@@ -16,7 +16,15 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Skeleton } from "@/components/ui/skeleton"
-import { usePlans, useExtendSubscription } from "@/features/billing/hooks"
+import {
+  useOrgPlansCatalog,
+  useExtendSubscription,
+  useAttachedAddons,
+} from "@/features/billing/hooks"
+import {
+  computeExtensionAddonSubtotal,
+  computeExtensionSubtotal,
+} from "@/features/billing/proration"
 import { formatMoney } from "@/lib/format"
 import type { Invoice, Subscription } from "@/types/billing"
 
@@ -33,21 +41,6 @@ function addMonths(from: string | undefined, months: number): Date | null {
   const d = new Date(from)
   d.setMonth(d.getMonth() + months)
   return d
-}
-
-// Mirrors computeExtensionSubtotal (service_subscription_billing.go): every
-// full 12-month block bills at the plan's yearly price, any remainder at
-// the monthly price. months < 12 collapses to blocks == 0, today's flat
-// calculation — same formula handles both, matching the backend exactly so
-// this pre-commit estimate never disagrees with what's actually charged.
-function computeExtensionSubtotal(
-  prices: { monthly: number; yearly: number } | undefined,
-  months: number
-): number {
-  if (!prices) return 0
-  const blocks = Math.floor(months / 12)
-  const remainder = months % 12
-  return blocks * prices.yearly + remainder * prices.monthly
 }
 
 interface Props {
@@ -69,7 +62,9 @@ export function SubscriptionExtendDialog({
   const [months, setMonths] = useState(1)
   const [result, setResult] = useState<Invoice | null>(null)
 
-  const { data: plansData, isLoading: plansLoading } = usePlans()
+  const { data: plansData, isLoading: plansLoading } =
+    useOrgPlansCatalog(organizationId)
+  const { data: addonsData } = useAttachedAddons(organizationId)
   const { mutate: extend, isPending: extending } =
     useExtendSubscription(organizationId)
 
@@ -77,8 +72,15 @@ export function SubscriptionExtendDialog({
   const planInfo = (plansData?.data ?? []).find(
     (p) => p.id === subscription.plan
   )
-  const prices =
-    planInfo?.prices[subscription.currency] ?? planInfo?.prices["USD"]
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself, rather than subscription.currency,
+  // so this never depends on the two staying in sync.
+  const prices = planInfo?.prices[Object.keys(planInfo?.prices ?? {})[0] ?? ""]
+
+  // Only currently-attached addons are charged on extend — same "live
+  // quantity only, ignore scheduled/pending" rule the backend applies
+  // (extendSubscription / computeExtensionAddonSubtotal).
+  const attachedAddons = (addonsData?.data ?? []).filter((a) => a.quantity > 0)
 
   // Every option this component offers is only reachable through here — no
   // separate cap enforcement to keep in sync with the backend's own.
@@ -88,16 +90,42 @@ export function SubscriptionExtendDialog({
 
   const blocks = Math.floor(months / 12)
   const remainder = months % 12
-  const monthsSubtotal = computeExtensionSubtotal(prices, months)
-  const flatMonthlyTotal = (prices?.monthly ?? 0) * months
+  const planMonthsSubtotal = computeExtensionSubtotal(prices, months)
+  const addonMonthsSubtotal = computeExtensionAddonSubtotal(
+    attachedAddons,
+    subscription.currency,
+    months
+  )
+  const monthsSubtotal = planMonthsSubtotal + addonMonthsSubtotal
+  const flatMonthlyTotal =
+    (prices?.monthly ?? 0) * months +
+    attachedAddons.reduce(
+      (sum, a) =>
+        sum + (a.prices[subscription.currency]?.monthly ?? 0) * a.quantity,
+      0
+    ) *
+      months
   const monthsSavings = flatMonthlyTotal - monthsSubtotal
   const monthsSavingsPercent =
     flatMonthlyTotal > 0
       ? Math.round((monthsSavings / flatMonthlyTotal) * 100)
       : 0
 
-  const annualSubtotal = prices?.yearly ?? 0
-  const annualFlatTotal = (prices?.monthly ?? 0) * 12
+  const planAnnualSubtotal = prices?.yearly ?? 0
+  const addonAnnualSubtotal = computeExtensionAddonSubtotal(
+    attachedAddons,
+    subscription.currency,
+    12
+  )
+  const annualSubtotal = planAnnualSubtotal + addonAnnualSubtotal
+  const annualFlatTotal =
+    (prices?.monthly ?? 0) * 12 +
+    attachedAddons.reduce(
+      (sum, a) =>
+        sum + (a.prices[subscription.currency]?.monthly ?? 0) * a.quantity,
+      0
+    ) *
+      12
   const annualSavings = annualFlatTotal - annualSubtotal
   const annualSavingsPercent =
     annualFlatTotal > 0
@@ -261,39 +289,135 @@ export function SubscriptionExtendDialog({
               )}
             </div>
 
-            <div className="rounded-lg border p-3 text-sm">
+            <div className="flex flex-col gap-1.5 rounded-lg border p-3 text-sm">
               {plansLoading ? (
                 <Skeleton className="h-6 w-full" />
+              ) : mode === "annual" ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">
+                    {t("billing.extend.lineTwelveMonthsYearly")}
+                  </span>
+                  <span>
+                    {formatMoney(planAnnualSubtotal, subscription.currency)}
+                  </span>
+                </div>
               ) : (
                 <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">
-                      {t("billing.extend.amountLabel")}
-                    </span>
-                    <span className="font-semibold">
-                      {t("billing.extend.subtotal", {
-                        amount: formatMoney(
-                          mode === "annual" ? annualSubtotal : monthsSubtotal,
-                          subscription.currency
-                        ),
-                      })}{" "}
-                      <span className="font-normal text-muted-foreground">
-                        {t("billing.extend.plusTax")}
+                  {blocks >= 1 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        {t("billing.extend.lineYearlyBlocks", { blocks })}
                       </span>
+                      <span>
+                        {formatMoney(
+                          blocks * (prices?.yearly ?? 0),
+                          subscription.currency
+                        )}
+                      </span>
+                    </div>
+                  )}
+                  {(blocks === 0 || remainder > 0) && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        {t("billing.extend.lineMonthlyRemainder", {
+                          count: blocks === 0 ? months : remainder,
+                        })}
+                      </span>
+                      <span>
+                        {formatMoney(
+                          (blocks === 0 ? months : remainder) *
+                            (prices?.monthly ?? 0),
+                          subscription.currency
+                        )}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!plansLoading &&
+                attachedAddons.map((addon) => {
+                  const addonPrices = addon.prices[subscription.currency]
+                  if (!addonPrices) return null
+                  return (
+                    <div key={addon.addon_id} className="contents">
+                      {mode === "annual" ? (
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">
+                            {t("billing.extend.addonLineTwelveMonthsYearly", {
+                              name: addon.name,
+                              quantity: addon.quantity,
+                            })}
+                          </span>
+                          <span>
+                            {formatMoney(
+                              addonPrices.yearly * addon.quantity,
+                              subscription.currency
+                            )}
+                          </span>
+                        </div>
+                      ) : (
+                        <>
+                          {blocks >= 1 && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                {t("billing.extend.addonLineYearlyBlocks", {
+                                  name: addon.name,
+                                  quantity: addon.quantity,
+                                  blocks,
+                                })}
+                              </span>
+                              <span>
+                                {formatMoney(
+                                  blocks * addonPrices.yearly * addon.quantity,
+                                  subscription.currency
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {(blocks === 0 || remainder > 0) && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                {t("billing.extend.addonLineMonthlyRemainder", {
+                                  name: addon.name,
+                                  quantity: addon.quantity,
+                                  count: blocks === 0 ? months : remainder,
+                                })}
+                              </span>
+                              <span>
+                                {formatMoney(
+                                  (blocks === 0 ? months : remainder) *
+                                    addonPrices.monthly *
+                                    addon.quantity,
+                                  subscription.currency
+                                )}
+                              </span>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
+
+              {!plansLoading && (
+                <>
+                  <div className="flex items-center justify-between border-t pt-1.5 font-medium">
+                    <span>{t("billing.extend.subtotalLabel")}</span>
+                    <span>
+                      {formatMoney(
+                        mode === "annual" ? annualSubtotal : monthsSubtotal,
+                        subscription.currency
+                      )}
                     </span>
                   </div>
-                  {mode === "months" && blocks >= 1 && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {remainder > 0
-                        ? t("billing.extend.tieredBreakdownWithRemainder", {
-                            blocks,
-                            remainder,
-                          })
-                        : t("billing.extend.tieredBreakdownBlocksOnly", {
-                            blocks,
-                          })}
-                    </p>
-                  )}
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>{t("billing.extend.taxLabel")}</span>
+                    <span>{t("billing.extend.taxAtCheckout")}</span>
+                  </div>
+                  <p className="pt-1 text-xs text-muted-foreground">
+                    {t("billing.extend.finalAmountNote")}
+                  </p>
                 </>
               )}
             </div>

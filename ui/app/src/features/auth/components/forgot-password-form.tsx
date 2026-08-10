@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/components/auth-provider"
+import { createEmailSchema, fieldValidator } from "@/lib/validation/schemas"
 
 export function ForgotPasswordForm() {
   const { t } = useTranslation()
@@ -74,12 +75,12 @@ export function ForgotPasswordForm() {
         <form.Field
           name="email"
           validators={{
-            onChange: ({ value }) => {
-              if (!value) return t("auth.forgotPassword.emailRequired")
-              if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
-                return t("auth.forgotPassword.emailInvalid")
-              return undefined
-            },
+            onChange: fieldValidator(
+              createEmailSchema({
+                required: t("auth.forgotPassword.emailRequired"),
+                invalid: t("auth.forgotPassword.emailInvalid"),
+              })
+            ),
           }}
         >
           {(field) => (

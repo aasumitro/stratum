@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 )
 
 // CORSConfig holds the allowed origins for CORS. Empty allows all — only
@@ -52,7 +54,12 @@ func NewCORSMiddleware(cfg CORSConfig) (gin.HandlerFunc, error) {
 		}
 
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Organization-ID, X-Request-ID")
+		// X-Debug-Country-Code is only ever honored server-side in development
+		// (geoip.Resolver.CountryCode) — allowed here in every environment
+		// regardless, since CORS only governs what a browser may attach
+		// cross-origin, not what the server trusts; a stray header on a
+		// staging/production request is silently ignored either way.
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Organization-ID, X-Request-ID, Idempotency-Key, "+geoip.DebugCountryCodeHeader)
 		c.Header("Access-Control-Expose-Headers", "X-Request-ID")
 		c.Header("Access-Control-Max-Age", "86400")
 

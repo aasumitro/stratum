@@ -24,31 +24,6 @@ export interface OrganizationSettings {
   logo_url?: string
 }
 
-export interface OrganizationFile {
-  id: string
-  organization_id: string
-  folder_id?: string
-  name: string
-  path: string
-  size_bytes: number
-  mime_type?: string
-  created_by: string
-  deleted_at?: string
-  created_at: string
-}
-
-// Folder — the API returns a flat list; the frontend assembles the tree
-// client-side from parent_folder_id.
-export interface Folder {
-  id: string
-  organization_id: string
-  parent_folder_id?: string
-  name: string
-  created_by: string
-  created_at: string
-  updated_at: string
-}
-
 export interface OrganizationView {
   id: string
   slug: string
@@ -108,6 +83,7 @@ export interface InvitationPreview {
   organization_name: string
   role: OrganizationRole
   invited_by_email?: string
+  invited_by_name?: string
 }
 
 /** GET /organizations/join/preview — read-only organization + owner details
@@ -179,7 +155,6 @@ export interface WebhookDelivery {
 export type PermissionFeature =
   | "members"
   | "invitations"
-  | "files"
   | "webhooks"
   | "auditLog"
   | "billing"

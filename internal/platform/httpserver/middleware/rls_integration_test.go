@@ -123,3 +123,68 @@ func TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit(t *testing.T
 		t.Errorf("fired = %v, want exactly [\"succeed\"]", fired)
 	}
 }
+
+// TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack covers
+// bufferedWriter's cap: a handler writing more than responseBufferCap must
+// fail the request (500) with the transaction rolled back — proven the
+// same way TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit
+// proves rollback above: a db.QueueEvent callback queued during the
+// request must never fire.
+func TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack(t *testing.T) {
+	pool := rlsTestPool(t)
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws_rls_cap_test"})
+		c.Next()
+	})
+	e.Use(middleware.NewRLSTxMiddleware(pool))
+
+	var fired []string
+	e.GET("/toolarge", func(c *gin.Context) {
+		db.QueueEvent(c.Request.Context(), func() { fired = append(fired, "toolarge") })
+		c.Status(http.StatusOK)
+		oversized := make([]byte, 6<<20) // 6MB > the 5MB cap
+		_, _ = c.Writer.Write(oversized)
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/toolarge", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("response exceeding the buffer cap: want 500, got %d", w.Code)
+	}
+	if len(fired) != 0 {
+		t.Fatalf("event queued on a cap-exceeded (rolled-back) request must not fire, fired = %v", fired)
+	}
+}
+
+func TestIntegration_RLSTxMiddleware_CommitFailure(t *testing.T) {
+	pool := rlsTestPool(t)
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws_rls_test_commit_fail"})
+		c.Next()
+	})
+	e.Use(middleware.NewRLSTxMiddleware(pool))
+	e.GET("/commit-fail", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+		c.Writer.Write([]byte(`{"success":true}`))
+
+		// Force the transaction to an aborted state so Commit() fails.
+		tx := db.QuerierFromContext(c.Request.Context(), nil)
+		_, _ = tx.Exec(c.Request.Context(), "SELECT 1/0")
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/commit-fail", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when commit fails, got %d", w.Code)
+	}
+	expectedBody := `{"error":"database error"}`
+	if w.Body.String() != expectedBody {
+		t.Fatalf("expected %q, got %q", expectedBody, w.Body.String())
+	}
+}

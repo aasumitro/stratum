@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/aasumitro/stratum/internal/platform/httpserver/reqctx"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/request"
@@ -21,20 +22,75 @@ import (
 // number of long-lived Redis subscriptions and goroutines.
 const maxConcurrentSSEStreamsPerSubject = 3
 
+// sseSlotTTL and sseSlotRefreshInterval are vars, not consts, so tests can
+// shrink them (see export_test.go) and observe a refresh without waiting
+// out the real multi-minute cadence.
+var (
+	// sseSlotTTL bounds how long an open stream's counter slot survives
+	// without a refresh — see the TTL refresh in streamNotifications below
+	// for why this needs to keep being pushed out for the life of a
+	// long-lived connection.
+	sseSlotTTL = 10 * time.Minute
+	// sseSlotRefreshInterval keeps wide margin under sseSlotTTL so a slow
+	// tick or a brief Redis hiccup can't let the slot expire while the
+	// stream is still open.
+	sseSlotRefreshInterval = 2 * time.Minute
+)
+
 type handler struct {
 	svc *service
 }
 
+// sseOpenKey is the Redis counter key tracking how many notification
+// streams a subject currently has open — shared between
+// ConcurrentSSELimitMiddleware (which increments/decrements it) and
+// streamNotifications (which periodically refreshes its TTL) so both stay
+// in sync on the exact same key.
+func sseOpenKey(subject string) string {
+	return "sse:open:" + subject
+}
+
+// ConcurrentSSELimitMiddleware rejects a stream request once the caller
+// already has max notification streams open, tracked via a Redis counter
+// keyed per subject. Only mounted on routes registered with a non-nil Redis
+// client (see module.go), so a Redis error here is an infra hiccup, not a
+// missing dependency — fails open (lets the request through unmetered)
+// rather than blocking streaming over it.
+func ConcurrentSSELimitMiddleware(redisClient *goredis.Client, maxStreams int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key := sseOpenKey(reqctx.Subject(c))
+		n, err := redisClient.Incr(c.Request.Context(), key).Result()
+		if err != nil {
+			c.Next()
+			return
+		}
+		// TTL is a safety net only, in case a connection ever ends without
+		// the deferred Decr running (e.g. the process is killed mid-stream).
+		// streamNotifications refreshes this same TTL periodically for as
+		// long as the stream stays open, so a legitimately long-lived
+		// stream never has its slot expire out from under it.
+		redisClient.Expire(c.Request.Context(), key, sseSlotTTL)
+		if n > int64(maxStreams) {
+			redisClient.Decr(c.Request.Context(), key)
+			response.Error("TOO_MANY_STREAMS", "too many concurrent notification streams open").JSON(c, http.StatusTooManyRequests)
+			c.Abort()
+			return
+		}
+		defer redisClient.Decr(context.WithoutCancel(c.Request.Context()), key)
+		c.Next()
+	}
+}
+
 // listNotifications godoc
 // @Summary      List notifications
-// @Description  Returns the caller's notifications. Page-based (limit/page) unless a cursor is supplied, in which case it switches to cursor pagination.
+// @Description  Returns the caller's notifications. Cursor pagination (response carries next_cursor, no total) once a cursor is supplied, or by default when neither cursor nor page is given and another page exists. Sending an explicit page forces page-based pagination (response carries total) even on a full page.
 // @Tags         notification
 // @Produce      json
 // @Security     BearerAuth
 // @Param        organization_id  query     string  false  "filter by organization"
 // @Param        channel          query     string  false  "filter by channel"
 // @Param        limit            query     int     false  "max results (default 20, max 100)"
-// @Param        page             query     int     false  "page number, ignored once cursor is set (default 1)"
+// @Param        page             query     int     false  "page number; sending this forces page-based pagination (default 1)"
 // @Param        cursor           query     string  false  "pagination cursor from a previous response; switches to cursor mode"
 // @Success      200              {object}  response.Payload{data=[]messageRecord}
 // @Failure      401              {object}  response.Payload  "missing/invalid auth token"
@@ -42,6 +98,7 @@ type handler struct {
 func (h *handler) listNotifications(c *gin.Context) {
 	limit := queryIntClamped(c, "limit", 20, 100)
 	cursor := c.Query("cursor")
+	pageRequested := c.Query("page") != ""
 
 	var offset int
 	if cursor == "" {
@@ -57,12 +114,13 @@ func (h *handler) listNotifications(c *gin.Context) {
 		cursor,
 		limit,
 		offset,
+		pageRequested,
 	)
 	if err != nil {
 		response.FromError(c, err)
 		return
 	}
-	if cursor != "" || result.NextCursor != "" {
+	if result.CursorMode {
 		response.CursorList(result.Messages, result.NextCursor).JSON(c, http.StatusOK)
 		return
 	}
@@ -82,25 +140,6 @@ func (h *handler) listNotifications(c *gin.Context) {
 func (h *handler) streamNotifications(c *gin.Context) {
 	subject := reqctx.Subject(c)
 
-	if h.svc.redis != nil {
-		key := "sse:open:" + subject
-		n, err := h.svc.redis.Incr(c.Request.Context(), key).Result()
-		if err == nil {
-			// TTL is a safety net only, in case a connection ever ends
-			// without the deferred Decr running (e.g. the process is
-			// killed mid-stream) — refreshed on every open so a
-			// legitimately long-lived stream never has its slot expire
-			// out from under it.
-			h.svc.redis.Expire(c.Request.Context(), key, 10*time.Minute)
-			if n > maxConcurrentSSEStreamsPerSubject {
-				h.svc.redis.Decr(c.Request.Context(), key)
-				response.Error("TOO_MANY_STREAMS", "too many concurrent notification streams open").JSON(c, http.StatusTooManyRequests)
-				return
-			}
-			defer h.svc.redis.Decr(context.WithoutCancel(c.Request.Context()), key)
-		}
-	}
-
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -110,6 +149,15 @@ func (h *handler) streamNotifications(c *gin.Context) {
 	sub := h.svc.redis.Subscribe(ctx, "notif:"+subject)
 	defer sub.Close()
 
+	// ConcurrentSSELimitMiddleware sets this same key's TTL once at open;
+	// without a periodic refresh here, a stream held open longer than that
+	// TTL would have its counter slot expire while still active, letting the
+	// concurrency limit be bypassed and risking a negative counter when this
+	// stream eventually closes and its own deferred Decr still runs.
+	slotKey := sseOpenKey(subject)
+	ticker := time.NewTicker(sseSlotRefreshInterval)
+	defer ticker.Stop()
+
 	ch := sub.Channel()
 	c.Stream(func(_ io.Writer) bool {
 		select {
@@ -118,6 +166,9 @@ func (h *handler) streamNotifications(c *gin.Context) {
 				return false
 			}
 			c.SSEvent("notification", gin.H{"type": "new"})
+			return true
+		case <-ticker.C:
+			h.svc.redis.Expire(ctx, slotKey, sseSlotTTL)
 			return true
 		case <-ctx.Done():
 			return false

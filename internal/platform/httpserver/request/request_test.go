@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"strings"
 	"testing"
 
 	"github.com/go-playground/validator/v10"
@@ -47,87 +46,30 @@ func TestValidationError_BuildsFieldMap(t *testing.T) {
 	if p.Status.Code != "VALIDATION_FAILED" {
 		t.Fatalf("code = %q, want VALIDATION_FAILED", p.Status.Code)
 	}
-	fields, ok := p.Status.Details.(map[string][]string)
+	fields, ok := p.Status.Details.(map[string][]FieldError)
 	if !ok {
-		t.Fatalf("details type = %T, want map[string][]string", p.Status.Details)
+		t.Fatalf("details type = %T, want map[string][]FieldError", p.Status.Details)
 	}
-	if len(fields["name"]) == 0 {
-		t.Error("expected errors for field 'name'")
+	if len(fields["name"]) == 0 || fields["name"][0].Code != "required" {
+		t.Errorf("name errors = %+v, want a single required FieldError", fields["name"])
 	}
-	if len(fields["email"]) == 0 {
-		t.Error("expected errors for field 'email'")
+	// Email fails both "required" (empty) and "email" (invalid format) —
+	// go-playground/validator only reports the first failed tag per field.
+	if len(fields["email"]) == 0 || fields["email"][0].Code != "required" {
+		t.Errorf("email errors = %+v, want a single required FieldError", fields["email"])
 	}
 }
 
-// --- message (all switch branches) ---
-
-func TestMessage_Tags(t *testing.T) {
-	v := validator.New()
-
-	// fe returns the first FieldError for the given struct value.
-	fe := func(obj any) validator.FieldError {
-		t.Helper()
-		err := v.Struct(obj)
-		if err == nil {
-			t.Fatal("expected validation error, got nil")
-		}
-		return err.(validator.ValidationErrors)[0]
+func TestValidationError_CarriesParam(t *testing.T) {
+	type req struct {
+		Name string `validate:"min=3"`
 	}
+	v := validator.New()
+	p := ValidationError(v.Struct(req{Name: "ab"}))
 
-	type strField struct{ F string }
-	type intField struct{ F int }
-
-	for _, tc := range []struct {
-		tag  string
-		fe   validator.FieldError
-		want string // substring expected in message
-	}{
-		{"required", fe(&struct {
-			F string `validate:"required"`
-		}{}), "required"},
-		{"email", fe(&struct {
-			F string `validate:"email"`
-		}{F: "notanemail"}), "valid email"},
-		{"min", fe(&struct {
-			F string `validate:"min=3"`
-		}{F: "ab"}), "at least 3"},
-		{"max", fe(&struct {
-			F string `validate:"max=2"`
-		}{F: "abc"}), "greater than 2"},
-		{"oneof", fe(&struct {
-			F string `validate:"oneof=foo bar"`
-		}{F: "baz"}), "Must be one of"},
-		{"url", fe(&struct {
-			F string `validate:"url"`
-		}{F: "not-url"}), "valid URL"},
-		{"uuid", fe(&struct {
-			F string `validate:"uuid"`
-		}{F: "not-uuid"}), "valid UUID"},
-		{"len", fe(&struct {
-			F string `validate:"len=5"`
-		}{F: "ab"}), "exactly 5"},
-		{"gt", fe(&struct {
-			F int `validate:"gt=5"`
-		}{F: 5}), "greater than 5"},
-		{"gte", fe(&struct {
-			F int `validate:"gte=5"`
-		}{F: 4}), "at least 5"},
-		{"lt", fe(&struct {
-			F int `validate:"lt=5"`
-		}{F: 5}), "less than 5"},
-		{"lte", fe(&struct {
-			F int `validate:"lte=5"`
-		}{F: 6}), "greater than 5"},
-		{"default", fe(&struct {
-			F string `validate:"alpha"`
-		}{F: "123"}), "invalid"},
-	} {
-		_ = strField{}
-		_ = intField{}
-		got := message(tc.fe)
-		if !strings.Contains(got, tc.want) {
-			t.Errorf("tag=%s: message=%q, want contains %q", tc.tag, got, tc.want)
-		}
+	fields := p.Status.Details.(map[string][]FieldError)
+	if got := fields["name"]; len(got) != 1 || got[0].Code != "min" || got[0].Param != "3" {
+		t.Errorf("name errors = %+v, want [{Code:min Param:3}]", got)
 	}
 }
 

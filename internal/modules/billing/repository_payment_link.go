@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -47,7 +48,10 @@ func (r *repository) insertPaymentLink(
 		invoiceID, provider, currency, amountCents, externalID, url, expiresAt,
 	).Scan(&pl.ID, &pl.InvoiceID, &pl.Provider, &pl.Currency, &pl.AmountCents,
 		&pl.ExternalID, &pl.URL, &pl.Status, &pl.ExpiresAt, &pl.CreatedAt)
-	return &pl, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.insertPaymentLink: %w", err)
+	}
+	return &pl, nil
 }
 
 func (r *repository) findPaymentLinkByExternalID(
@@ -62,7 +66,10 @@ func (r *repository) findPaymentLinkByExternalID(
 		externalID,
 	).Scan(&pl.ID, &pl.InvoiceID, &pl.Provider, &pl.Currency, &pl.AmountCents,
 		&pl.ExternalID, &pl.URL, &pl.Status, &pl.ExpiresAt, &pl.CreatedAt)
-	return &pl, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.findPaymentLinkByExternalID: %w", err)
+	}
+	return &pl, nil
 }
 
 // findPaymentLinkWithSubjectByExternalID joins payment_links → invoices → subscriptions
@@ -80,7 +87,37 @@ func (r *repository) findPaymentLinkWithSubjectByExternalID(
 		WHERE pl.external_id = $1`,
 		externalID,
 	).Scan(&p.linkID, &p.invoiceID, &p.subscriptionID, &p.status, &p.subjectType, &p.subjectID)
-	return &p, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.findPaymentLinkWithSubjectByExternalID: %w", err)
+	}
+	return &p, nil
+}
+
+// findPaymentLinkWithSubjectByInvoiceID is findPaymentLinkWithSubjectByExternalID's
+// counterpart keyed by invoice_id instead of external_id — used for Stripe
+// event types whose data object is a PaymentIntent (payment_intent.*),
+// which carries a different ID namespace (pi_...) than the Checkout
+// Session ID (cs_...) stored in external_id, so external_id can never
+// match for those events. Most recent link wins if more than one exists
+// for the invoice (mirrors findActivePaymentLinkByInvoice's ordering).
+func (r *repository) findPaymentLinkWithSubjectByInvoiceID(
+	ctx context.Context, q db.Querier,
+	invoiceID string,
+) (*paymentLinkSubject, error) {
+	var p paymentLinkSubject
+	err := q.QueryRow(ctx, `
+		SELECT pl.id, pl.invoice_id, s.id, pl.status, s.subject_type, s.subject_id
+		FROM billing.payment_links pl
+		JOIN billing.invoices i ON i.id = pl.invoice_id
+		JOIN billing.subscriptions s ON s.id = i.subscription_id
+		WHERE pl.invoice_id = $1
+		ORDER BY pl.created_at DESC LIMIT 1`,
+		invoiceID,
+	).Scan(&p.linkID, &p.invoiceID, &p.subscriptionID, &p.status, &p.subjectType, &p.subjectID)
+	if err != nil {
+		return nil, fmt.Errorf("billing.findPaymentLinkWithSubjectByInvoiceID: %w", err)
+	}
+	return &p, nil
 }
 
 func (r *repository) listActivePaymentLinks(
@@ -98,7 +135,7 @@ func (r *repository) listActivePaymentLinks(
 		subscriptionID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listActivePaymentLinks: %w", err)
 	}
 	defer rows.Close()
 
@@ -109,11 +146,14 @@ func (r *repository) listActivePaymentLinks(
 			&pl.ID, &pl.InvoiceID, &pl.Provider, &pl.Currency, &pl.AmountCents,
 			&pl.ExternalID, &pl.URL, &pl.Status, &pl.ExpiresAt, &pl.CreatedAt,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.listActivePaymentLinks: scan: %w", err)
 		}
 		out = append(out, pl)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listActivePaymentLinks: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) findActivePaymentLinkByInvoice(
@@ -131,7 +171,10 @@ func (r *repository) findActivePaymentLinkByInvoice(
 		invoiceID,
 	).Scan(&pl.ID, &pl.InvoiceID, &pl.Provider, &pl.Currency, &pl.AmountCents,
 		&pl.ExternalID, &pl.URL, &pl.Status, &pl.ExpiresAt, &pl.CreatedAt)
-	return &pl, err
+	if err != nil {
+		return nil, fmt.Errorf("billing.findActivePaymentLinkByInvoice: %w", err)
+	}
+	return &pl, nil
 }
 
 func (r *repository) expirePendingPaymentLinks(ctx context.Context, q db.Querier, invoiceID string) error {
@@ -140,7 +183,10 @@ func (r *repository) expirePendingPaymentLinks(ctx context.Context, q db.Querier
 		WHERE invoice_id = $1 AND status = 'pending'`,
 		invoiceID,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.expirePendingPaymentLinks: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) updatePaymentLinkStatus(ctx context.Context, q db.Querier, id, status string) error {
@@ -148,7 +194,10 @@ func (r *repository) updatePaymentLinkStatus(ctx context.Context, q db.Querier, 
 		UPDATE billing.payment_links SET status = $2 WHERE id = $1`,
 		id, status,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.updatePaymentLinkStatus: %w", err)
+	}
+	return nil
 }
 
 // markWebhookProcessed inserts (provider, eventID) into billing.webhook_events.
@@ -158,7 +207,7 @@ func (r *repository) markWebhookProcessed(ctx context.Context, q db.Querier, pro
 		`INSERT INTO billing.webhook_events (provider, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		provider, eventID)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("billing.markWebhookProcessed: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
 }

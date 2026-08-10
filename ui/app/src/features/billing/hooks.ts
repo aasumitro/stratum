@@ -33,7 +33,11 @@ export function useBillingSubscription(organizationId: string) {
   return useHTTPQuery<Subscription>({
     queryKey: queryKeys.billing.subscription(organizationId),
     url: API.billing(organizationId),
-    options: { retry: false },
+    // Payment happens on a separate hosted-checkout tab, confirmed async via
+    // webhook — refetch on window focus (overriding the app-wide dev-mode
+    // suppression) so returning to this tab after paying shows the result
+    // without a manual reload.
+    options: { retry: false, refetchOnWindowFocus: true },
   })
 }
 
@@ -41,7 +45,7 @@ export function useInvoices(organizationId: string, enabled = true) {
   return useHTTPQuery<Invoice[]>({
     queryKey: queryKeys.billing.invoices(organizationId),
     url: API.billing(organizationId, "invoices"),
-    options: { retry: false, enabled },
+    options: { retry: false, enabled, refetchOnWindowFocus: true },
   })
 }
 
@@ -69,19 +73,14 @@ export function useUsage(organizationId: string) {
   })
 }
 
-// countryCode, when passed, scopes the response to that country's currency
-// only (server-side — see reference.scopedPrices) instead of every currency
-// the catalog stores. Omitting it keeps today's full-currency-map behavior,
-// so existing callers (billing settings' plan/addon pickers, which already
-// know the org's real currency from its subscription record) are unaffected.
-export function usePlans(countryCode?: string) {
+// The backend always scopes prices to exactly one currency now, resolved
+// server-side from the caller's real IP (GeoIP) — never a client-supplied
+// value, so there's nothing left for a caller to pass here.
+export function usePlans(enabled = true) {
   return useHTTPQuery<Plan[]>({
-    queryKey: countryCode
-      ? [...queryKeys.references.plans(), countryCode]
-      : queryKeys.references.plans(),
-    url: countryCode
-      ? `${API.references("plans")}?country_code=${countryCode}`
-      : API.references("plans"),
+    queryKey: queryKeys.references.plans(),
+    url: API.references("plans"),
+    options: { enabled },
   })
 }
 
@@ -92,14 +91,33 @@ export function useFeatures() {
   })
 }
 
-export function useAddonsCatalog(countryCode?: string) {
+export function useAddonsCatalog(enabled = true) {
   return useHTTPQuery<Addon[]>({
-    queryKey: countryCode
-      ? [...queryKeys.references.addons(), countryCode]
-      : queryKeys.references.addons(),
-    url: countryCode
-      ? `${API.references("addons")}?country_code=${countryCode}`
-      : API.references("addons"),
+    queryKey: queryKeys.references.addons(),
+    url: API.references("addons"),
+    options: { enabled },
+  })
+}
+
+// useOrgPlansCatalog/useOrgAddonsCatalog are the existing-subscription
+// counterparts of usePlans/useAddonsCatalog: same response shape, but prices
+// are scoped to the subscription's own already-fixed currency instead of the
+// caller's GeoIP-resolved one, which may not match what the org is actually
+// billed in (a different real IP, VPN, travel). Use these instead of
+// usePlans/useAddonsCatalog wherever an organizationId already exists.
+export function useOrgPlansCatalog(organizationId: string, enabled = true) {
+  return useHTTPQuery<Plan[]>({
+    queryKey: queryKeys.billing.plansCatalog(organizationId),
+    url: API.billing(organizationId, "plans", "catalog"),
+    options: { enabled },
+  })
+}
+
+export function useOrgAddonsCatalog(organizationId: string, enabled = true) {
+  return useHTTPQuery<Addon[]>({
+    queryKey: queryKeys.billing.addonsCatalog(organizationId),
+    url: API.billing(organizationId, "addons", "catalog"),
+    options: { enabled },
   })
 }
 
@@ -107,7 +125,11 @@ export function useAttachedAddons(organizationId: string) {
   return useHTTPQuery<AttachedAddon[]>({
     queryKey: queryKeys.billing.addons(organizationId),
     url: API.billing(organizationId, "addons"),
-    options: { retry: false },
+    // An addon increase is confirmed async via webhook on a separate
+    // checkout tab, same as useBillingSubscription/useInvoices — refetch on
+    // window focus so returning here after paying shows pending_quantity
+    // folded into quantity without a manual reload.
+    options: { retry: false, refetchOnWindowFocus: true },
   })
 }
 
@@ -125,12 +147,7 @@ export function useInvoicePreview(
   if (cycle) params.set("cycle", cycle)
   const qs = params.toString()
   return useHTTPQuery<InvoicePreview>({
-    queryKey: [
-      ...queryKeys.billing.subscription(organizationId),
-      "preview",
-      plan,
-      cycle,
-    ],
+    queryKey: [...queryKeys.billing.preview(organizationId), plan, cycle],
     url: `${API.billing(organizationId, "preview")}${qs ? `?${qs}` : ""}`,
     options: { retry: false, enabled },
   })
@@ -166,6 +183,9 @@ export function useCancelSubscription(organizationId: string) {
         toast.success(t("billing.subscription.cancelled"))
         void queryClient.invalidateQueries({
           queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
         })
       },
       onError: (error) =>
@@ -293,7 +313,6 @@ export function useDowngradeSubscription(organizationId: string) {
       plan: string
       cycle: string
       preferred_member_auth_subs?: string[]
-      preferred_file_ids?: string[]
     }
   >({
     url: API.billing(organizationId, "downgrade"),
@@ -317,10 +336,65 @@ export function useDowngradeSubscription(organizationId: string) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.billing.history(organizationId),
         })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
       },
       onError: (error) =>
         toast.error(
           parseApiError(error, t("billing.subscription.downgradeFailed"))
+        ),
+    },
+  })
+}
+
+// useUndoScheduledDowngrade clears a scheduled plan downgrade before it
+// applies at renewal — the live plan/cycle were never touched, so only the
+// subscription (and its preview, which reads scheduled_plan) need refreshing.
+export function useUndoScheduledDowngrade(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<Subscription, void>({
+    url: API.billing(organizationId, "downgrade", "undo"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("billing.subscription.downgradeUndone"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+      },
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.downgradeUndoFailed"))
+        ),
+    },
+  })
+}
+
+// useUndoScheduledCancellation clears a scheduled cancellation before it
+// applies at renewal — status was never touched by scheduling it, so only
+// the subscription (scheduled_cancel_at) and its preview need refreshing.
+export function useUndoScheduledCancellation(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<Subscription, void>({
+    url: API.billing(organizationId, "cancel", "undo"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("billing.subscription.cancellationUndone"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+      },
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.subscription.cancellationUndoFailed"))
         ),
     },
   })
@@ -345,7 +419,10 @@ export function useBillingFeatures(organizationId: string) {
 export function useAttachAddon(organizationId: string) {
   const queryClient = useQueryClient()
   const { t } = useTranslation()
-  return useHTTPActionPost<void, { addon_id: string; quantity: number }>({
+  return useHTTPActionPost<
+    AttachedAddon,
+    { addon_id: string; quantity: number }
+  >({
     url: API.billing(organizationId, "addons"),
     options: {
       onSuccess: () => {
@@ -361,6 +438,16 @@ export function useAttachAddon(organizationId: string) {
             ...queryKeys.billing.subscription(organizationId),
             "features",
           ],
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+        // An increase on a non-trialing subscription creates a new pending
+        // invoice — refresh the invoices list too, or a freshly attached
+        // addon's Pay button has nothing to point at until some other
+        // mutation happens to invalidate it first.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.invoices(organizationId),
         })
       },
       onError: (error) =>
@@ -389,9 +476,42 @@ export function useDetachAddon(organizationId: string) {
             "features",
           ],
         })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
       },
       onError: (error) =>
         toast.error(parseApiError(error, t("billing.addons.detachFailed"))),
+    },
+  })
+}
+
+// useUndoScheduledAddonChange clears a scheduled addon quantity change (a
+// decrease or a scheduled removal) before it applies at renewal — the live
+// quantity was never touched, so this never affects the subscription's own
+// query, only the addon list, its usage-driven limits, and the preview.
+export function useUndoScheduledAddonChange(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<AttachedAddon, string>({
+    url: (addonId) => API.billing(organizationId, "addons", addonId, "undo"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("billing.addons.scheduledChangeUndone"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.addons(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.usage(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.preview(organizationId),
+        })
+      },
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("billing.addons.scheduledChangeUndoFailed"))
+        ),
     },
   })
 }

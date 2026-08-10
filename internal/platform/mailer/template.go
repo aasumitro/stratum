@@ -68,7 +68,7 @@ func readTemplateFile(base, lang string) ([]byte, error) {
 		filename = fmt.Sprintf("templates/%s.en.html", base)
 		raw, err = templateFS.ReadFile(filename)
 		if err != nil {
-			return nil, fmt.Errorf("template %s not found", base)
+			return nil, fmt.Errorf("mailer.readTemplateFile: template %s not found", base)
 		}
 	}
 	return raw, nil
@@ -84,7 +84,7 @@ func loadParsedEmail(name, lang string) (*parsedEmail, error) {
 
 	raw, err := readTemplateFile(name, lang)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("mailer.loadParsedEmail: %w", err)
 	}
 	content := string(raw)
 
@@ -106,7 +106,7 @@ func loadParsedEmail(name, lang string) (*parsedEmail, error) {
 
 	bodyTmpl, err := template.New(name).Parse(content)
 	if err != nil {
-		return nil, fmt.Errorf("parsing template %s: %w", name, err)
+		return nil, fmt.Errorf("mailer.loadParsedEmail: parsing template %s: %w", name, err)
 	}
 
 	parsed := &parsedEmail{subjectRaw: subject, subjectTmpl: subjectTmpl, body: bodyTmpl}
@@ -123,11 +123,11 @@ func loadLayout(lang string) (*template.Template, error) {
 
 	layoutRaw, err := readTemplateFile("_layout", lang)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("mailer.loadLayout: %w", err)
 	}
 	layoutTmpl, err := template.New("layout").Parse(string(layoutRaw))
 	if err != nil {
-		return nil, fmt.Errorf("parsing layout: %w", err)
+		return nil, fmt.Errorf("mailer.loadLayout: parsing layout: %w", err)
 	}
 
 	layoutCache.Store(lang, layoutTmpl)
@@ -143,7 +143,7 @@ func RenderTemplate(name, lang string, data TemplateData) (string, string, error
 
 	parsed, err := loadParsedEmail(name, lang)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("mailer.RenderTemplate: %w", err)
 	}
 
 	subject := parsed.subjectRaw
@@ -156,7 +156,7 @@ func RenderTemplate(name, lang string, data TemplateData) (string, string, error
 
 	var bodyBuf bytes.Buffer
 	if err := parsed.body.Execute(&bodyBuf, data); err != nil {
-		return "", "", fmt.Errorf("rendering template %s: %w", name, err)
+		return "", "", fmt.Errorf("mailer.RenderTemplate: rendering template %s: %w", name, err)
 	}
 
 	// Wrap the rendered (already-escaped) body in the shared layout. The
@@ -164,7 +164,7 @@ func RenderTemplate(name, lang string, data TemplateData) (string, string, error
 	// in it was already escaped by the html/template Execute call above.
 	layoutTmpl, err := loadLayout(lang)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("mailer.RenderTemplate: %w", err)
 	}
 
 	var htmlBuf bytes.Buffer
@@ -172,7 +172,7 @@ func RenderTemplate(name, lang string, data TemplateData) (string, string, error
 	// up — this isn't raw/untrusted input, it's that same output being composed into the
 	// outer layout, the standard html/template layout-wrapping pattern.
 	if err := layoutTmpl.Execute(&htmlBuf, layoutData{TemplateData: data, Body: template.HTML(bodyBuf.String())}); err != nil {
-		return "", "", fmt.Errorf("rendering layout: %w", err)
+		return "", "", fmt.Errorf("mailer.RenderTemplate: rendering layout: %w", err)
 	}
 
 	return subject, htmlBuf.String(), nil

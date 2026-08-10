@@ -88,7 +88,7 @@ async function mockBillingAPIs(page: Page) {
             sort_order: 20,
             active: true,
             features: ["priority_support", "advanced_analytics"],
-            limits: { members: 15, storage: 1073741824 },
+            limits: { members: 15, workspaces: 25 },
             prices: { USD: { monthly: 2900, yearly: 29000 } },
           },
         ],
@@ -124,10 +124,10 @@ async function mockBillingAPIs(page: Page) {
             active: true,
           },
           {
-            id: "storage",
-            name: "Storage",
+            id: "workspaces",
+            name: "Workspaces",
             type: "metered",
-            metric_key: "storage_bytes",
+            metric_key: "workspaces",
             active: true,
           },
         ],
@@ -197,10 +197,10 @@ test("upgrading to a higher plan shows new features then requires terms agreemen
   ).toBeVisible()
   await expect(changesDialog.getByText(/priority support/i)).toBeVisible()
   await expect(changesDialog.getByText(/advanced analytics/i)).toBeVisible()
-  // Limits use the real feature catalog's name/metric_key, not the plan's
-  // raw limit key ("storage", not "storage_bytes") — must render as
-  // "Storage: 1 GB", not an untranslated "storage: 1073741824".
-  await expect(changesDialog.getByText(/storage: 1 gb/i)).toBeVisible()
+  // Limits use the real feature catalog's name, not the plan's raw limit
+  // key — must render as "Workspaces: 25", not an untranslated
+  // "workspaces: 25" or the raw key itself.
+  await expect(changesDialog.getByText(/workspaces: 25/i)).toBeVisible()
   await expect(changesDialog.getByText(/members: 15/i)).toBeVisible()
 
   await page.getByRole("button", { name: /continue/i }).click()

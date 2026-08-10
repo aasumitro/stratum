@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Golden-response check for the item-13 apperr/response.FromError migration:
-// the JSON shape/code/message for an unwired catalog reader must stay
+// Golden-response check for the apperr/response.FromError migration: the
+// JSON shape/code/message for an unwired catalog reader must stay
 // byte-identical to what the pre-migration handler produced by hand.
 func TestListPlans_CatalogNotWired_GoldenResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)

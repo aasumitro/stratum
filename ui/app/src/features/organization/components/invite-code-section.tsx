@@ -10,11 +10,11 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
 import {
-  useOrganization,
   useGenerateInviteCode,
   useToggleInviteCode,
-} from "@/features/organization/hooks"
+} from "@/features/organization/hooks/use-invitations"
 
 interface Props {
   organizationId: string
@@ -88,21 +88,28 @@ export function InviteCodeSection({
       )}
 
       {organization?.invite_code && (
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">
-            {t("organization.inviteCode.expiresJoinsAsMember")}
-          </span>
-          <Switch
-            checked={organization.invite_code_enabled}
-            onCheckedChange={(v) => toggle({ enabled: v })}
-            disabled={toggling}
-            aria-label={t("organization.inviteCode.title")}
-          />
-          <span className="text-xs text-muted-foreground">
-            {organization.invite_code_enabled
-              ? t("organization.inviteCode.active")
-              : t("organization.inviteCode.disabled")}
-          </span>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">
+              {t("organization.inviteCode.expiresJoinsAsMember")}
+            </span>
+            <Switch
+              checked={organization.invite_code_enabled}
+              onCheckedChange={(v) => toggle({ enabled: v })}
+              disabled={toggling}
+              aria-label={t("organization.inviteCode.title")}
+            />
+            <span className="text-xs text-muted-foreground">
+              {organization.invite_code_enabled
+                ? t("organization.inviteCode.active")
+                : t("organization.inviteCode.disabled")}
+            </span>
+          </div>
+          {bare && (
+            <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+              {t("organization.inviteCode.description")}
+            </p>
+          )}
         </div>
       )}
     </div>

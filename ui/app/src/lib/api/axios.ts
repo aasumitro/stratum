@@ -29,6 +29,21 @@ if (DEV_MODE) {
   })
 }
 
+// Lets billing country/currency be simulated from the browser in local dev —
+// the backend's GeoIP resolver can never resolve a loopback address, and
+// X-Debug-Country-Code is the only way around that (backend:
+// internal/platform/geoip; dev-only, ignored entirely outside
+// APP_ENV=development, so this header has no effect anywhere else). Set it
+// from the browser console: localStorage.setItem("debug_country_code", "ID")
+// — clear with removeItem to go back to the real ("US" fallback) behavior.
+if (DEV_MODE) {
+  api.interceptors.request.use((config) => {
+    const debugCountry = localStorage.getItem("debug_country_code")
+    if (debugCountry) config.headers["X-Debug-Country-Code"] = debugCountry
+    return config
+  })
+}
+
 // For FormData uploads, block dispatchRequest from setting Content-Type to
 // 'application/x-www-form-urlencoded'. Setting it to null marks it as "present"
 // (preventing the override) while null is filtered from serialized headers,

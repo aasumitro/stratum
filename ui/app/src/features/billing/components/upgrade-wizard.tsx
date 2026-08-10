@@ -14,13 +14,14 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  usePlans,
+  useOrgPlansCatalog,
   useFeatures,
   useChangePlan,
   useInvoicePreview,
 } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import { formatMoney, formatBytes } from "@/lib/format"
+import { formatMoney } from "@/lib/format"
 import type { BillingCycle, InvoicePreview } from "@/types/billing"
 import { InvoicePreviewNote } from "./invoice-preview-note"
 
@@ -33,15 +34,7 @@ function formatDate(s?: string) {
   })
 }
 
-// Plan.limits is keyed by Feature.id (e.g. "storage"), which is distinct
-// from Feature.metric_key (e.g. "storage_bytes") — the id identifies the
-// catalog row, the metric_key identifies the unit/format. Byte-formatting
-// must key off metric_key, not id.
-function formatLimitValue(
-  metricKey: string | undefined,
-  value: number
-): string {
-  if (metricKey === "storage_bytes") return formatBytes(value)
+function formatLimitValue(value: number): string {
   return value.toLocaleString()
 }
 
@@ -83,8 +76,16 @@ export function UpgradeWizard({
   // that race.
   const [confirmedPreview, setConfirmedPreview] =
     useState<InvoicePreview | null>(null)
+  // Same freeze-at-confirm reasoning as confirmedPreview above, but for
+  // whether a pending invoice existed going in — changePlanWithMetadata
+  // (backend) voids it and issues a fresh one when it does, so the success
+  // copy must reflect that instead of the plain proration/charge text.
+  const [hadPendingInvoiceAtConfirm, setHadPendingInvoiceAtConfirm] =
+    useState(false)
 
-  const { data: plansData, isLoading: plansLoading } = usePlans()
+  const { hasPendingInvoice } = usePermissions()
+  const { data: plansData, isLoading: plansLoading } =
+    useOrgPlansCatalog(organizationId)
   const { data: catalogData } = useFeatures()
   const { mutate: changePlan, isPending: changing } =
     useChangePlan(organizationId)
@@ -99,10 +100,12 @@ export function UpgradeWizard({
   const plans = plansData?.data ?? []
   const targetPlanInfo = plans.find((p) => p.id === targetPlan)
   const currentPlanInfo = plans.find((p) => p.id === currentPlan)
-  // Falls back to USD same as PlanSelector's own picker list, in case the
-  // org's currency isn't a key in this plan's price map.
-  const targetPrices =
-    targetPlanInfo?.prices[currency] ?? targetPlanInfo?.prices["USD"]
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself, rather than the `currency` prop, so
+  // this never depends on the two staying in sync.
+  const displayCurrency =
+    Object.keys(targetPlanInfo?.prices ?? {})[0] ?? currency
+  const targetPrices = targetPlanInfo?.prices[displayCurrency]
   const featureCatalog = new Map(
     (catalogData?.data ?? []).map((f) => [f.id, f])
   )
@@ -121,6 +124,7 @@ export function UpgradeWizard({
       setStep("changes")
       setTermsAgreed(false)
       setConfirmedPreview(null)
+      setHadPendingInvoiceAtConfirm(false)
     }, 300)
   }
 
@@ -131,6 +135,7 @@ export function UpgradeWizard({
       {
         onSuccess: () => {
           setConfirmedPreview(preview ?? null)
+          setHadPendingInvoiceAtConfirm(hasPendingInvoice)
           setStep("success")
         },
       }
@@ -167,7 +172,16 @@ export function UpgradeWizard({
                 {t(`billing.plans.${targetCycle}`)}
               </span>
             </div>
-            {confirmedPreview?.new_period_end ? (
+            {hadPendingInvoiceAtConfirm && confirmedPreview ? (
+              <p className="pt-1 text-xs text-muted-foreground">
+                {t("billing.upgrade.successNewInvoiceIssued", {
+                  amount: formatMoney(
+                    confirmedPreview.total_cents,
+                    confirmedPreview.currency
+                  ),
+                })}
+              </p>
+            ) : confirmedPreview?.new_period_end ? (
               <p className="pt-1 text-xs text-muted-foreground">
                 {t("billing.plans.noChargeToday")}{" "}
                 {t("billing.upgrade.successRenewsOn", {
@@ -208,31 +222,38 @@ export function UpgradeWizard({
           <div className="flex flex-col gap-2 rounded-lg bg-muted p-3 text-sm">
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">
-                {t("billing.upgrade.planLabel")}
+                {t("billing.upgrade.currentPlanLabel")}
               </span>
               <span className="font-medium">
-                {planChanged
-                  ? `${currentPlanInfo?.name ?? currentPlan} → ${targetPlanInfo?.name ?? targetPlan}`
-                  : (targetPlanInfo?.name ?? targetPlan)}
+                {currentPlanInfo?.name ?? currentPlan}
               </span>
             </div>
-            {cycleChanged && (
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">
-                  {t("billing.upgrade.cycleLabel")}
-                </span>
-                <span className="font-medium">
-                  {t(`billing.plans.${currentCycle}`)} →{" "}
-                  {t(`billing.plans.${targetCycle}`)}
-                </span>
-              </div>
-            )}
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.upgrade.selectedPlanLabel")}
+              </span>
+              <span className="font-medium">
+                {targetPlanInfo?.name ?? targetPlan}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t("billing.upgrade.cycleLabel")}
+              </span>
+              <span className="font-medium">
+                {cycleChanged
+                  ? `${t(`billing.plans.${currentCycle}`)} → ${t(`billing.plans.${targetCycle}`)}`
+                  : t(`billing.plans.${targetCycle}`)}
+              </span>
+            </div>
           </div>
 
           <InvoicePreviewNote
             preview={preview}
             loading={previewLoading}
             currentPeriodEnd={currentPeriodEnd}
+            planName={targetPlanInfo?.name ?? targetPlan}
+            hasPendingInvoice={hasPendingInvoice}
           />
 
           <div className="flex items-start gap-2 py-2">
@@ -318,10 +339,7 @@ export function UpgradeWizard({
                       ([featureId, value]) => (
                         <li key={featureId}>
                           {featureCatalog.get(featureId)?.name ?? featureId}:{" "}
-                          {formatLimitValue(
-                            featureCatalog.get(featureId)?.metric_key,
-                            value
-                          )}
+                          {formatLimitValue(value)}
                         </li>
                       )
                     )}
@@ -348,7 +366,7 @@ export function UpgradeWizard({
                         targetCycle === "monthly"
                           ? targetPrices.monthly
                           : targetPrices.yearly,
-                        currency,
+                        displayCurrency,
                         targetCycle,
                         t
                       ),

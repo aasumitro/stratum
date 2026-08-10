@@ -28,8 +28,7 @@ func TestResolveDowngradeOverage(t *testing.T) {
 
 	t.Run("owner always excluded and foreign IDs silently ignored", func(t *testing.T) {
 		res, err := mod.ResolveDowngradeOverage(t.Context(), orgID,
-			[]string{"owner_sub", "foreign_sub", "mem_2"}, 1,
-			nil, -1, false)
+			[]string{"owner_sub", "foreign_sub", "mem_2"}, 1, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -66,14 +65,14 @@ func TestResolveDowngradeOverage(t *testing.T) {
 
 		// Run dry run
 		resDry, err := mod.ResolveDowngradeOverage(t.Context(), orgID2,
-			nil, 2, nil, -1, true)
+			nil, 2, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
 		// Run actual
 		resReal, err := mod.ResolveDowngradeOverage(t.Context(), orgID2,
-			nil, 2, nil, -1, false)
+			nil, 2, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -91,7 +90,7 @@ func TestResolveDowngradeOverage(t *testing.T) {
 	t.Run("unlimited (-1) skips removal", func(t *testing.T) {
 		orgID3 := setupOrgWithMembers(t, pool, "test-downgrade-3")
 		res, err := mod.ResolveDowngradeOverage(t.Context(), orgID3,
-			[]string{"mem_1"}, -1, nil, -1, false)
+			[]string{"mem_1"}, -1, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -104,12 +103,11 @@ func TestResolveDowngradeOverage(t *testing.T) {
 	// (the downgrade endpoint and the preview dry-run both return it) — a
 	// nil Go slice here becomes JSON null, not [], which crashed the
 	// frontend's success screen the moment it tried to .map() over a
-	// dimension nothing was removed from (files, in every scenario this
-	// plan's own tests ever exercised, since none of them touch storage).
+	// dimension nothing was removed from.
 	t.Run("untouched dimensions return empty slices, not nil", func(t *testing.T) {
 		orgID4 := setupOrgWithMembers(t, pool, "test-downgrade-4")
 		res, err := mod.ResolveDowngradeOverage(t.Context(), orgID4,
-			nil, -1, nil, -1, false)
+			nil, -1, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -119,25 +117,18 @@ func TestResolveDowngradeOverage(t *testing.T) {
 		if res.AutoSelectedMemberSubs == nil {
 			t.Error("AutoSelectedMemberSubs is nil, want an empty (non-nil) slice")
 		}
-		if res.RemovedFileIDs == nil {
-			t.Error("RemovedFileIDs is nil, want an empty (non-nil) slice")
-		}
-		if res.AutoSelectedFileIDs == nil {
-			t.Error("AutoSelectedFileIDs is nil, want an empty (non-nil) slice")
-		}
 	})
 
-	// Edge case: if there aren't enough removable
-	// members/files to fully close the gap, the downgrade still proceeds,
-	// leaving the org over-limit on that dimension." Never actually
-	// exercised until now — setupOrgWithMembers gives exactly 3 removable
-	// members; asking for a limit of 0 (need to remove all 4, including
-	// the un-removable owner) is the case where even removing every
-	// removable member still leaves the org over limit.
+	// Edge case: if there aren't enough removable members to fully close the
+	// gap, the downgrade still proceeds, leaving the org over-limit. Never
+	// actually exercised until now — setupOrgWithMembers gives exactly 3
+	// removable members; asking for a limit of 0 (need to remove all 4,
+	// including the un-removable owner) is the case where even removing
+	// every removable member still leaves the org over limit.
 	t.Run("not enough removable members still succeeds, leaves org over limit", func(t *testing.T) {
 		orgID5 := setupOrgWithMembers(t, pool, "test-downgrade-5")
 		res, err := mod.ResolveDowngradeOverage(t.Context(), orgID5,
-			nil, 0, nil, -1, false)
+			nil, 0, false)
 		if err != nil {
 			t.Fatalf("expected success even when the gap can't be fully closed, got error: %v", err)
 		}
@@ -153,12 +144,38 @@ func TestResolveDowngradeOverage(t *testing.T) {
 			t.Errorf("want 1 member left (the un-removable owner, still over the limit of 0), got %d", remaining)
 		}
 	})
+
+	// Regression: filterRemovableMembers used to return matches in
+	// arbitrary DB order, so validPreferred[:overage]'s truncation silently
+	// dropped whichever of the owner's picks the DB happened to list last —
+	// not necessarily their lowest-priority ones. With the caller's order
+	// preserved, truncating to the overage must keep exactly the caller's
+	// first N picks.
+	t.Run("preferred longer than overage keeps the caller's first N picks in order", func(t *testing.T) {
+		orgID6 := setupOrgWithMembers(t, pool, "test-downgrade-6")
+		// setupOrgWithMembers seeds mem_1/mem_2/mem_3 with joined_at
+		// ascending — a DB ORDER BY joined_at (or primary-key) would return
+		// them as mem_1, mem_2, mem_3, the opposite of this preferred list.
+		res, err := mod.ResolveDowngradeOverage(t.Context(), orgID6,
+			[]string{"mem_3", "mem_1", "mem_2"}, 2, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"mem_3", "mem_1"}
+		if len(res.RemovedMemberAuthSubs) != len(want) {
+			t.Fatalf("want %d removed, got %d: %v", len(want), len(res.RemovedMemberAuthSubs), res.RemovedMemberAuthSubs)
+		}
+		for i, sub := range want {
+			if res.RemovedMemberAuthSubs[i] != sub {
+				t.Errorf("want removed[%d] = %q (caller's order), got %q", i, sub, res.RemovedMemberAuthSubs[i])
+			}
+		}
+	})
 }
 
-// TestResolveDowngradeOverage_PublishesMemberRemovedEvents guards against
-// the gap flagged as needing confirmation during implementation:
-// the bulk removal path must publish organization.member.removed once per
-// removed member (matching removeMember's single-member path), not skip
+// TestResolveDowngradeOverage_PublishesMemberRemovedEvents confirms the
+// bulk removal path publishes organization.member.removed once per removed
+// member (matching removeMember's single-member path), not skip
 // notification entirely just because the removal happened in bulk.
 func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	pool := testPool(t)
@@ -170,7 +187,7 @@ func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	pub := &capturingPublisher{}
 	mod := organization.New(pool, pub)
 
-	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, nil, -1, false)
+	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -213,9 +230,9 @@ func (f *fakeCacheInvalidator) InvalidateMemberRole(_ context.Context, organizat
 	f.invalidatedRoles = append(f.invalidatedRoles, struct{ organizationID, authSub string }{organizationID, authSub})
 }
 
-// TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache guards
-// against a gap found live: removeMember's single-member path invalidates
-// the removed member's cached RBAC role immediately
+// TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache confirms
+// the bulk downgrade path invalidates a removed member's cached RBAC role
+// too: removeMember's single-member path invalidates it immediately
 // (handler_member.go's h.invalidateRole), via the HTTP handler layer. The
 // bulk downgrade path never goes through that handler at all — it's called
 // service-to-service from billing — so without this, a bulk-removed member
@@ -232,7 +249,7 @@ func TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache(t *testing.T
 	mod := organization.New(pool, messaging.NoopPublisher{})
 	mod.SetCacheInvalidator(inv)
 
-	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, nil, -1, false)
+	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

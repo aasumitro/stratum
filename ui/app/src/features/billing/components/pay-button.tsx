@@ -59,6 +59,9 @@ export function PayButton({
 
   const { mutate } = useHTTPActionPost<PaymentLink>({
     url: API.billing(organizationId, "invoices", invoiceId, "pay"),
+    // Fresh key per click, not per mount — a stable key would make every
+    // click after the first replay the server's 24h-cached first response.
+    headers: () => ({ "Idempotency-Key": crypto.randomUUID() }),
     options: {
       onMutate: () => {
         setOpening(true)

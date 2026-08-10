@@ -1,4 +1,5 @@
 import { IconLoader2 } from "@tabler/icons-react"
+import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import {
   Pagination as PaginationRoot,
@@ -31,6 +32,8 @@ interface CursorPaginationProps {
 export function DataTablePagination(
   props: PagePaginationProps | CursorPaginationProps
 ) {
+  const { t } = useTranslation()
+
   if (props.mode === "cursor") {
     if (!props.hasMore) return null
     return (
@@ -44,7 +47,7 @@ export function DataTablePagination(
           {props.isLoadingMore && (
             <IconLoader2 data-icon="inline-start" className="animate-spin" />
           )}
-          {props.loadMoreLabel ?? "Load more"}
+          {props.loadMoreLabel ?? t("common.loadMore")}
         </Button>
       </div>
     )

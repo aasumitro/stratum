@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { CreateOrganizationForm } from "@/features/organization/components/create-organization-form"
 import { PendingInvitationCard } from "@/features/organization/components/pending-invitation-card"
 import { JoinOrganizationForm } from "./join-organization-form"
-import { useMyInvitations } from "@/features/organization/hooks"
+import { useMyInvitations } from "@/features/organization/hooks/use-invitations"
 import { useCompleteOnboarding } from "@/features/onboarding/hooks/use-complete-onboarding"
 
 type View = "list" | "create"

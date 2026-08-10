@@ -2,6 +2,7 @@ package notification
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,19 +37,37 @@ func (r *repository) insertMessage(
 	organizationID string, authSub *string,
 	kind, channel, subject, body string,
 	payload json.RawMessage,
+	status string, sentAt *time.Time,
 ) (*messageRecord, error) {
 	m := new(messageRecord)
 	err := q.QueryRow(ctx, `
 		INSERT INTO notification.messages
-		    (organization_id, auth_sub, kind, channel, subject, body, payload)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		    (organization_id, auth_sub, kind, channel, subject, body, payload, status, sent_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, organization_id, auth_sub, kind, channel, subject, body,
 		          payload, status, sent_at, read_at, created_at, updated_at`,
-		organizationID, authSub, kind, channel, subject, body, payload,
+		organizationID, authSub, kind, channel, subject, body, payload, status, sentAt,
 	).Scan(&m.ID, &m.OrganizationID, &m.AuthSub, &m.Kind, &m.Channel,
 		&m.Subject, &m.Body, &m.Payload, &m.Status, &m.SentAt, &m.ReadAt,
 		&m.CreatedAt, &m.UpdatedAt)
-	return m, err
+	if err != nil {
+		return nil, fmt.Errorf("notification.insertMessage: %w", err)
+	}
+	return m, nil
+}
+
+// markEventProcessed inserts eventID into notification.processed_events.
+// Returns true when the row was newly inserted, false when it already
+// existed (a redelivery of an event this worker already handled). Mirrors
+// billing's markWebhookProcessed — same dedup shape, different source.
+func (r *repository) markEventProcessed(ctx context.Context, q db.Querier, eventID string) (bool, error) {
+	tag, err := q.Exec(ctx,
+		`INSERT INTO notification.processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+		eventID)
+	if err != nil {
+		return false, fmt.Errorf("notification.markEventProcessed: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // insertMessages bulk-inserts one message per authSub — used by the
@@ -61,17 +80,18 @@ func (r *repository) insertMessages(
 	organizationID string, authSubs []string,
 	kind, channel, subject, body string,
 	payload json.RawMessage,
+	status string, sentAt *time.Time,
 ) ([]messageRecord, error) {
 	rows, err := q.Query(ctx, `
 		INSERT INTO notification.messages
-		    (organization_id, auth_sub, kind, channel, subject, body, payload)
-		SELECT $1, sub, $3, $4, $5, $6, $7 FROM unnest($2::text[]) AS sub
+		    (organization_id, auth_sub, kind, channel, subject, body, payload, status, sent_at)
+		SELECT $1, sub, $3, $4, $5, $6, $7, $8, $9 FROM unnest($2::text[]) AS sub
 		RETURNING id, organization_id, auth_sub, kind, channel, subject, body,
 		          payload, status, sent_at, read_at, created_at, updated_at`,
-		organizationID, authSubs, kind, channel, subject, body, payload,
+		organizationID, authSubs, kind, channel, subject, body, payload, status, sentAt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("notification.insertMessages: %w", err)
 	}
 	defer rows.Close()
 
@@ -81,18 +101,21 @@ func (r *repository) insertMessages(
 		if err := rows.Scan(&m.ID, &m.OrganizationID, &m.AuthSub, &m.Kind, &m.Channel,
 			&m.Subject, &m.Body, &m.Payload, &m.Status, &m.SentAt, &m.ReadAt,
 			&m.CreatedAt, &m.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("notification.insertMessages: scan: %w", err)
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notification.insertMessages: %w", err)
+	}
+	return out, nil
 }
 
-func (r *repository) listMessages(
-	ctx context.Context, q db.Querier,
-	authSub, organizationID, channel, cursor string,
-	limit, offset int,
-) ([]messageRecord, error) {
+// buildListMessagesFilters builds the shared WHERE-clause fragment for a
+// user's in_app messages — organizationID/channel/cursor are all optional
+// filters, used by both listMessages (paginated feed) and countTotal (the
+// matching count for offset pagination, which never has a cursor).
+func buildListMessagesFilters(authSub, organizationID, channel, cursor string) ([]string, *db.Args, error) {
 	conds := []string{"kind = 'in_app'", "auth_sub = $1"}
 	args := db.NewArgs(authSub)
 
@@ -103,15 +126,39 @@ func (r *repository) listMessages(
 		conds = append(conds, fmt.Sprintf("channel = $%d", args.Add(channel)))
 	}
 	if cursor != "" {
-		conds = append(conds, fmt.Sprintf("id < $%d", args.Add(cursor)))
+		b, err := base64.StdEncoding.DecodeString(cursor)
+		if err != nil {
+			return nil, nil, fmt.Errorf("notification.listMessages: invalid cursor: %w", err)
+		}
+		parts := strings.SplitN(string(b), "|", 2)
+		if len(parts) != 2 {
+			return nil, nil, fmt.Errorf("notification.listMessages: invalid cursor format")
+		}
+		ts, err := time.Parse(time.RFC3339Nano, parts[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("notification.listMessages: invalid cursor timestamp: %w", err)
+		}
+		conds = append(conds, fmt.Sprintf("(created_at, id) < ($%d, $%d)", args.Add(ts), args.Add(parts[1])))
+	}
+	return conds, args, nil
+}
+
+func (r *repository) listMessages(
+	ctx context.Context, q db.Querier,
+	authSub, organizationID, channel, cursor string,
+	limit, offset int,
+) ([]messageRecord, error) {
+	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, cursor)
+	if err != nil {
+		return nil, err
 	}
 
 	var tail string
 	if cursor != "" {
-		tail = fmt.Sprintf(` ORDER BY id DESC LIMIT $%d`, args.Add(limit))
+		tail = fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, args.Add(limit))
 	} else {
 		limitN, offsetN := args.Add(limit), args.Add(offset)
-		tail = fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, limitN, offsetN)
+		tail = fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`, limitN, offsetN)
 	}
 
 	query := `SELECT id, organization_id, auth_sub, kind, channel, subject, body,
@@ -120,7 +167,7 @@ func (r *repository) listMessages(
 
 	rows, err := q.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("notification.listMessages: %w", err)
 	}
 	defer rows.Close()
 
@@ -132,11 +179,14 @@ func (r *repository) listMessages(
 			&m.Subject, &m.Body, &m.Payload, &m.Status, &m.SentAt, &m.ReadAt,
 			&m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("notification.listMessages: scan: %w", err)
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notification.listMessages: %w", err)
+	}
+	return out, nil
 }
 
 // listForExport returns up to limit of a user's most recent notification
@@ -156,7 +206,7 @@ func (r *repository) listForExport(
 		authSub, limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("notification.listForExport: %w", err)
 	}
 	defer rows.Close()
 
@@ -168,31 +218,32 @@ func (r *repository) listForExport(
 			&m.Subject, &m.Body, &m.Payload, &m.Status, &m.SentAt, &m.ReadAt,
 			&m.CreatedAt, &m.UpdatedAt,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("notification.listForExport: scan: %w", err)
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notification.listForExport: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) countTotal(
 	ctx context.Context, q db.Querier,
 	authSub, organizationID, channel string,
 ) (int64, error) {
-	conds := []string{"kind = 'in_app'", "auth_sub = $1"}
-	args := db.NewArgs(authSub)
-
-	if organizationID != "" {
-		conds = append(conds, fmt.Sprintf("organization_id = $%d", args.Add(organizationID)))
-	}
-	if channel != "" {
-		conds = append(conds, fmt.Sprintf("channel = $%d", args.Add(channel)))
+	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, "")
+	if err != nil {
+		return 0, err
 	}
 
 	var total int64
-	return total, q.QueryRow(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT COUNT(*) FROM notification.messages WHERE `+strings.Join(conds, " AND "),
-		args.Values()...).Scan(&total)
+		args.Values()...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("notification.countTotal: %w", err)
+	}
+	return total, nil
 }
 
 func (r *repository) countUnread(
@@ -200,21 +251,29 @@ func (r *repository) countUnread(
 	authSub, organizationID string,
 ) (int64, error) {
 	var n int64
+	var err error
 	if organizationID != "" {
-		return n, q.QueryRow(ctx,
+		err = q.QueryRow(ctx,
 			`SELECT COUNT(*) FROM notification.messages WHERE kind = 'in_app' AND auth_sub = $1 AND organization_id = $2 AND read_at IS NULL`,
 			authSub, organizationID).Scan(&n)
+	} else {
+		err = q.QueryRow(ctx,
+			`SELECT COUNT(*) FROM notification.messages WHERE kind = 'in_app' AND auth_sub = $1 AND read_at IS NULL`,
+			authSub).Scan(&n)
 	}
-	return n, q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM notification.messages WHERE kind = 'in_app' AND auth_sub = $1 AND read_at IS NULL`,
-		authSub).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("notification.countUnread: %w", err)
+	}
+	return n, nil
 }
 
 // deleteAllForUser deletes every notification message addressed to a user —
 // used by the GDPR account-deletion flow.
 func (r *repository) deleteAllForUser(ctx context.Context, q db.Querier, authSub string) error {
-	_, err := q.Exec(ctx, `DELETE FROM notification.messages WHERE auth_sub = $1`, authSub)
-	return err
+	if _, err := q.Exec(ctx, `DELETE FROM notification.messages WHERE auth_sub = $1`, authSub); err != nil {
+		return fmt.Errorf("notification.deleteAllForUser: %w", err)
+	}
+	return nil
 }
 
 // markRead is scoped to auth_sub so a caller can only mark their own
@@ -226,26 +285,33 @@ func (r *repository) markRead(ctx context.Context, q db.Querier, authSub, id str
 		WHERE id = $1 AND auth_sub = $2 AND kind = 'in_app' AND read_at IS NULL`,
 		id, authSub,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("notification.markRead: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) markAllRead(ctx context.Context, q db.Querier, authSub, organizationID string) error {
+	var err error
 	if organizationID != "" {
-		_, err := q.Exec(ctx, `
+		_, err = q.Exec(ctx, `
 			UPDATE notification.messages
 			SET read_at = now(), updated_at = now()
 			WHERE auth_sub = $1 AND organization_id = $2 AND kind = 'in_app' AND read_at IS NULL`,
 			authSub, organizationID,
 		)
-		return err
+	} else {
+		_, err = q.Exec(ctx, `
+			UPDATE notification.messages
+			SET read_at = now(), updated_at = now()
+			WHERE auth_sub = $1 AND kind = 'in_app' AND read_at IS NULL`,
+			authSub,
+		)
 	}
-	_, err := q.Exec(ctx, `
-		UPDATE notification.messages
-		SET read_at = now(), updated_at = now()
-		WHERE auth_sub = $1 AND kind = 'in_app' AND read_at IS NULL`,
-		authSub,
-	)
-	return err
+	if err != nil {
+		return fmt.Errorf("notification.markAllRead: %w", err)
+	}
+	return nil
 }
 
 type preferenceRecord struct {
@@ -266,7 +332,7 @@ func (r *repository) listPreferences(ctx context.Context, q db.Querier, authSub 
 		authSub,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("notification.listPreferences: %w", err)
 	}
 	defer rows.Close()
 
@@ -274,11 +340,14 @@ func (r *repository) listPreferences(ctx context.Context, q db.Querier, authSub 
 	for rows.Next() {
 		var p preferenceRecord
 		if err := rows.Scan(&p.ID, &p.Channel, &p.EventType, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("notification.listPreferences: scan: %w", err)
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notification.listPreferences: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) upsertPreference(
@@ -294,7 +363,10 @@ func (r *repository) upsertPreference(
 		RETURNING id, channel, event_type, enabled, created_at, updated_at`,
 		authSub, channel, eventType, enabled,
 	).Scan(&p.ID, &p.Channel, &p.EventType, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
-	return p, err
+	if err != nil {
+		return nil, fmt.Errorf("notification.upsertPreference: %w", err)
+	}
+	return p, nil
 }
 
 // isPreferenceEnabled returns true by default when no explicit preference row exists (opt-out model).
@@ -311,7 +383,10 @@ func (r *repository) isPreferenceEnabled(
 	if errors.Is(err, pgx.ErrNoRows) {
 		return true, nil
 	}
-	return enabled, err
+	if err != nil {
+		return false, fmt.Errorf("notification.isPreferenceEnabled: %w", err)
+	}
+	return enabled, nil
 }
 
 // listDisabledAuthSubs is the batched counterpart to isPreferenceEnabled —
@@ -328,7 +403,7 @@ func (r *repository) listDisabledAuthSubs(
 		authSubs, channel, eventType,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("notification.listDisabledAuthSubs: %w", err)
 	}
 	defer rows.Close()
 
@@ -336,9 +411,12 @@ func (r *repository) listDisabledAuthSubs(
 	for rows.Next() {
 		var sub string
 		if err := rows.Scan(&sub); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("notification.listDisabledAuthSubs: scan: %w", err)
 		}
 		disabled[sub] = true
 	}
-	return disabled, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notification.listDisabledAuthSubs: %w", err)
+	}
+	return disabled, nil
 }

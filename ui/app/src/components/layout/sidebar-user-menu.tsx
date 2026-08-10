@@ -18,7 +18,7 @@ export function SidebarUserMenu() {
           triggerClassName="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-sidebar-foreground transition-colors group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
         >
           <Avatar className="size-7 shrink-0 rounded-lg">
-            <AvatarImage src={profile?.avatar_url} alt="" />
+            <AvatarImage src={profile?.avatar_url || undefined} alt="" />
             <AvatarFallback className="rounded-lg bg-sidebar-accent text-xs text-sidebar-accent-foreground">
               {userInitials}
             </AvatarFallback>

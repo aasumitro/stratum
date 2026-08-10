@@ -2,6 +2,7 @@ package notification
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,7 +43,10 @@ func New(
 // notification message addressed to a user. Called by the account module's
 // GDPR delete-account flow.
 func (m *Module) DeleteAllForUser(ctx context.Context, authSub string) error {
-	return m.svc.deleteAllForUser(ctx, authSub)
+	if err := m.svc.deleteAllForUser(ctx, authSub); err != nil {
+		return fmt.Errorf("notification.DeleteAllForUser: %w", err)
+	}
+	return nil
 }
 
 // ListForUser implements contracts.NotificationReader. Called by the
@@ -50,7 +54,7 @@ func (m *Module) DeleteAllForUser(ctx context.Context, authSub string) error {
 func (m *Module) ListForUser(ctx context.Context, authSub string, limit int) ([]contracts.MessageInfo, error) {
 	msgs, err := m.svc.listForExport(ctx, authSub, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("notification.ListForUser: %w", err)
 	}
 	out := make([]contracts.MessageInfo, len(msgs))
 	for i, msg := range msgs {
@@ -77,7 +81,8 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 	// set the Authorization header, and every other route must not accept
 	// the cookie (see RouteDeps.AuthSSE).
 	if m.svc.redis != nil {
-		r.GET("/me/notifications/stream", deps.AuthSSE, deps.RateLimit, h.streamNotifications)
+		r.GET("/me/notifications/stream", deps.AuthSSE, deps.RateLimit,
+			ConcurrentSSELimitMiddleware(m.svc.redis, maxConcurrentSSEStreamsPerSubject), h.streamNotifications)
 	}
 
 	g := r.Group("/me/notifications")

@@ -5,18 +5,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 )
 
 const (
-	maxLogoSize       = 2 << 20  // 2 MB
-	maxFileSize       = 50 << 20 // 50 MB
+	maxLogoSize       = 2 << 20 // 2 MB
 	settingAllowedIPs = "allowed_ips"
 )
 
 type handler struct {
-	svc        *service
-	pool       *pgxpool.Pool
-	cacheInval contracts.OrganizationCacheInvalidator
+	svc             *service
+	pool            *pgxpool.Pool
+	cacheInval      contracts.OrganizationCacheInvalidator
+	countryResolver *geoip.Resolver
 }
 
 func (h *handler) invalidateOrg(c *gin.Context, organizationID string) {

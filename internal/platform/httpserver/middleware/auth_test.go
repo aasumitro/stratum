@@ -178,6 +178,36 @@ func TestAuth_RevokedToken_401(t *testing.T) {
 	}
 }
 
+// TestAuth_EmptySessionIdentifier_401 is the regression test for the
+// fail-closed behavior SessionIdentifier's own doc comment describes: a
+// token carrying neither session_id nor jti (SessionIdentifier returns "")
+// must be rejected outright when a revocation check is configured, not let
+// the check silently no-op.
+func TestAuth_EmptySessionIdentifier_401(t *testing.T) {
+	key, srv := jwksFixture(t)
+	checked := false
+	hooks := middleware.AuthHooks{
+		IsRevoked: func(_ context.Context, _ string) bool {
+			checked = true
+			return false
+		},
+	}
+	e := authEngine(t, srv.URL, hooks)
+
+	token := signToken(t, key, jwtgo.MapClaims{"sub": "u", "exp": time.Now().Add(time.Hour).Unix()})
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("token with no session_id/jti claim: want 401, got %d: %s", w.Code, w.Body)
+	}
+	if checked {
+		t.Error("IsRevoked must not be called with an empty session identifier — the request should be rejected before that")
+	}
+}
+
 // TestAuth_RevokedToken_BySessionID_401 regression-tests revocation on a
 // token shaped like a real Supabase access token — session_id, not jti
 // (confirmed by decoding a real token issued for this project's test

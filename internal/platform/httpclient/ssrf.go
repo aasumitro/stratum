@@ -74,24 +74,55 @@ func SSRFSafeClient() *http.Client {
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				host, port, err := net.SplitHostPort(addr)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("httpclient.SSRFSafeClient: split host/port: %w", err)
 				}
 				ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("httpclient.SSRFSafeClient: resolve %q: %w", host, err)
 				}
-				for _, ip := range ips {
-					if blockedIP(ip) {
-						return nil, fmt.Errorf("httpclient: refusing to dial non-routable address %s", ip)
-					}
-				}
-				// Dial the already-validated IP directly rather than the
-				// hostname again, so a second DNS lookup between here and
-				// the actual connect can't swap in a different answer.
-				return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+				return dialValidated(ctx, dialer.DialContext, network, port, ips)
 			},
 		},
 	}
+}
+
+// dialValidated rejects the whole candidate set if any resolved address is
+// non-routable (an attacker with one public and one private DNS answer
+// can't bypass the check by getting lucky on fallback order), then dials
+// the validated IPs directly in order — not the hostname again, so a
+// second DNS lookup between here and the actual connect can't swap in a
+// different answer — falling back through the list on a dial failure so a
+// dead first address (e.g. a stale/unreachable AAAA record) doesn't fail
+// the whole request when a later resolved address would have worked.
+// Extracted from SSRFSafeClient's DialContext closure so both the
+// empty-slice guard and the fallback behavior are unit-testable with a
+// fake dial func, without a real network dial.
+func dialValidated(
+	ctx context.Context,
+	dial func(ctx context.Context, network, addr string) (net.Conn, error),
+	network, port string,
+	ips []net.IP,
+) (net.Conn, error) {
+	if len(ips) == 0 {
+		// LookupIP can return a nil error with zero addresses under some
+		// resolver configurations — indexing ips[0] unchecked would panic
+		// instead of failing the dial.
+		return nil, fmt.Errorf("httpclient: no IP addresses resolved")
+	}
+	for _, ip := range ips {
+		if blockedIP(ip) {
+			return nil, fmt.Errorf("httpclient: refusing to dial non-routable address %s", ip)
+		}
+	}
+	var dialErr error
+	for _, ip := range ips {
+		conn, err := dial(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		dialErr = err
+	}
+	return nil, dialErr
 }
 
 func blockedIP(ip net.IP) bool {

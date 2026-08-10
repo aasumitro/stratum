@@ -17,9 +17,9 @@ export function BillingOverviewPage() {
       <SubscriptionCard organizationId={organizationId} />
       <div className="grid gap-4 lg:grid-cols-2">
         <UsageMeters organizationId={organizationId} />
-        <InvoicesTable organizationId={organizationId} />
+        <AddonsSection organizationId={organizationId} />
       </div>
-      <AddonsSection organizationId={organizationId} />
+      <InvoicesTable organizationId={organizationId} />
     </div>
   )
 }

@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { useAuth } from "@/components/auth-provider"
 import { usePollTask, useDeleteAccount } from "@/features/account/hooks"
-import { useOrganizations } from "@/features/organization/hooks"
+import { useOrganizations } from "@/features/organization/hooks/use-organization"
 
 export function DeleteSection() {
   const { t } = useTranslation()
@@ -29,9 +29,9 @@ export function DeleteSection() {
   const { mutate: deleteAccount, isPending } = useDeleteAccount()
   const { data: orgsData } = useOrganizations()
 
-  // Delete pre-check runs BEFORE the confirm dialog even opens (2f) —
-  // owning any organization blocks deletion outright, with a deep link to
-  // transfer or delete it first, instead of failing after the user commits.
+  // Delete pre-check runs BEFORE the confirm dialog even opens — owning any
+  // organization blocks deletion outright, with a deep link to transfer or
+  // delete it first, instead of failing after the user commits.
   const ownedOrgs = (orgsData?.data ?? []).filter((o) => o.role === "owner")
 
   const taskStatus = deleteTask?.data?.status

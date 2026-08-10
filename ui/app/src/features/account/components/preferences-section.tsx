@@ -37,7 +37,7 @@ const detectedTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 const TIMEZONES = Intl.supportedValuesOf("timeZone")
 
 // All options visible at once (radio-group semantics, not a cycling
-// button) — every change saves instantly with a toast, no Save button (AC1).
+// button) — every change saves instantly with a toast, no Save button.
 export function PreferencesSection() {
   const { t, i18n: i18nHook } = useTranslation()
   const { theme, setTheme } = useTheme()

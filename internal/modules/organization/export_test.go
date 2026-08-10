@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
@@ -48,7 +49,7 @@ func NewHandlerEngineWith(ownerID, callerRole string) *gin.Engine {
 		c.Set("organization.role", callerRole)
 		c.Next()
 	})
-	h := &handler{svc: nil, pool: nil, cacheInval: nil}
+	h := &handler{svc: nil, pool: nil, cacheInval: nil, countryResolver: nil}
 	ownerOnly := middleware.RequireRole(contracts.RoleOwner)
 	adminUp := middleware.RequireRole(contracts.RoleOwner, contracts.RoleAdmin)
 	// organization CRUD
@@ -88,6 +89,14 @@ func NewHandlerEngineWith(ownerID, callerRole string) *gin.Engine {
 // NewModuleForTest creates a Module with a real pool and noop publisher.
 func NewModuleForTest(pool *pgxpool.Pool) *Module {
 	return New(pool, messaging.NoopPublisher{})
+}
+
+// RemoveMemberForTest calls the service's removeMember directly, bypassing
+// the HTTP handler's own (Redis-cached) owner check entirely — use to prove
+// the service-level live owner check rejects removing the current owner on
+// its own, regardless of what a stale upstream cache believes.
+func (m *Module) RemoveMemberForTest(ctx context.Context, organizationID, authSub string) error {
+	return m.svc.removeMember(ctx, organizationID, authSub)
 }
 
 // NewModuleEngine creates a full gin.Engine backed by a real DB module.
@@ -166,6 +175,25 @@ func NewModuleEngineWithUnverifiedEmail(pool *pgxpool.Pool, authSub, email strin
 	return e
 }
 
+// NewModuleEngineWithBillingReaderAndEmail is NewModuleEngineWithEmail plus a
+// billing reader wired in — use for invitation-accept concurrency tests that
+// need both a verified-email caller and plan member-limit enforcement.
+func NewModuleEngineWithBillingReaderAndEmail(pool *pgxpool.Pool, authSub, email string, br contracts.BillingReader) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	mod := New(pool, messaging.NoopPublisher{})
+	mod.SetBillingReader(br)
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"email": email, "user_metadata": map[string]any{"email_verified": true}}})
+		c.Next()
+	}
+	orgMW := middleware.NewOrganizationMiddleware(mod)
+	noopGate := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
+	return e
+}
+
 // NewModuleEngineWithWriter creates a full gin.Engine backed by a real DB module
 // with a billing writer wired in — use for usage-recording integration tests.
 func NewModuleEngineWithWriter(pool *pgxpool.Pool, authSub string, bw contracts.BillingWriter) *gin.Engine {
@@ -203,6 +231,26 @@ func NewModuleEngineWithWriterAndEmail(pool *pgxpool.Pool, authSub, email string
 	return e
 }
 
+// NewModuleEngineWithUserReaderAndEmail is NewModuleEngineWithUserReader plus
+// a verified JWT "email"/"user_metadata.email_verified" claim — use for
+// invitation-preview/accept tests that need both a resolvable inviter
+// profile (name/email) and a caller identity matching the invitation.
+func NewModuleEngineWithUserReaderAndEmail(pool *pgxpool.Pool, authSub, email string, ur contracts.UserReader) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	mod := New(pool, messaging.NoopPublisher{})
+	mod.SetUserReader(ur)
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"email": email, "user_metadata": map[string]any{"email_verified": true}}})
+		c.Next()
+	}
+	orgMW := middleware.NewOrganizationMiddleware(mod)
+	noopGate := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
+	return e
+}
+
 // NewModuleEngineWithCatalogReader creates a full gin.Engine backed by a
 // real DB module with a catalog reader wired in — use for plan-validation
 // integration tests on organization creation.
@@ -210,6 +258,28 @@ func NewModuleEngineWithCatalogReader(pool *pgxpool.Pool, authSub string, cr con
 	gin.SetMode(gin.TestMode)
 	mod := New(pool, messaging.NoopPublisher{})
 	mod.SetCatalogReader(cr)
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: authSub})
+		c.Next()
+	}
+	orgMW := middleware.NewOrganizationMiddleware(mod)
+	noopGate := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
+	return e
+}
+
+// NewModuleEngineWithCountryResolver creates a full gin.Engine backed by a
+// real DB module with a GeoIP resolver wired in — use for integration tests
+// proving createOrganization derives billing country/currency from the
+// caller's IP (resolver.CountryCode) rather than any client-supplied
+// request field, matching NewAPIModules' real wiring
+// (organizationMod.SetCountryResolver).
+func NewModuleEngineWithCountryResolver(pool *pgxpool.Pool, authSub string, r *geoip.Resolver) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	mod := New(pool, messaging.NoopPublisher{})
+	mod.SetCountryResolver(r)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})

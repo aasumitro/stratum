@@ -47,8 +47,10 @@ func (m *Mailer) IsConfigured() bool {
 	return m.host != ""
 }
 
-// Send delivers an email via SMTP.
-func (m *Mailer) Send(msg Message) error {
+// Send delivers an email via SMTP, bounded by ctx — both connecting and the
+// SMTP conversation that follows fail once ctx is done, instead of blocking
+// on the OS's default TCP timeout (minutes) if the server never responds.
+func (m *Mailer) Send(ctx context.Context, msg Message) error {
 	if !m.IsConfigured() {
 		return nil
 	}
@@ -94,48 +96,81 @@ func (m *Mailer) Send(msg Message) error {
 	addr := fmt.Sprintf("%s:%d", m.host, m.port)
 	auth := smtp.PlainAuth("", m.username, m.password, m.host)
 
+	var conn net.Conn
+	var err error
 	if m.port == 465 {
-		return m.sendTLS(addr, auth, m.fromAddr, msg.To, []byte(body.String()))
+		conn, err = m.dialTLS(ctx, addr)
+	} else {
+		conn, err = (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	}
-	return smtp.SendMail(addr, auth, m.fromAddr, []string{msg.To}, []byte(body.String()))
-}
-
-// sendTLS handles implicit TLS (port 465).
-func (m *Mailer) sendTLS(addr string, auth smtp.Auth, from, to string, body []byte) error {
-	dialer := &tls.Dialer{Config: &tls.Config{ServerName: m.host, MinVersion: tls.VersionTLS12}}
-	conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("tls dial: %w", err)
+		return fmt.Errorf("mailer.Send: dial: %w", err)
 	}
 	defer conn.Close()
 
+	// DialContext only bounds connecting; the SMTP conversation that follows
+	// talks over plain conn.Read/Write, which net/smtp doesn't accept a
+	// context for — a deadline on the conn itself is what actually bounds it.
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return fmt.Errorf("mailer.Send: set deadline: %w", err)
+		}
+	}
+
+	return deliver(conn, addr, auth, m.fromAddr, msg.To, []byte(body.String()))
+}
+
+// dialTLS handles implicit TLS (port 465).
+func (m *Mailer) dialTLS(ctx context.Context, addr string) (net.Conn, error) {
+	dialer := &tls.Dialer{Config: &tls.Config{ServerName: m.host, MinVersion: tls.VersionTLS12}}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("mailer.dialTLS: tls dial: %w", err)
+	}
+	return conn, nil
+}
+
+// deliver runs the SMTP conversation over an already-dialed conn, upgrading
+// to STARTTLS when the server advertises it — mirrors net/smtp.SendMail's own
+// internal sequence, replacing it so the plain (STARTTLS) and implicit-TLS
+// (port 465) paths share one conversation instead of net/smtp doing its own,
+// separately unbounded, dial for the former.
+func deliver(conn net.Conn, addr string, auth smtp.Auth, from, to string, body []byte) error {
 	host, _, _ := net.SplitHostPort(addr)
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		return fmt.Errorf("smtp client: %w", err)
+		return fmt.Errorf("mailer.deliver: smtp client: %w", err)
 	}
 	defer client.Close()
 
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("mailer.deliver: starttls: %w", err)
+		}
+	}
 	if err := client.Auth(auth); err != nil {
-		return fmt.Errorf("smtp auth: %w", err)
+		return fmt.Errorf("mailer.deliver: smtp auth: %w", err)
 	}
 	if err := client.Mail(from); err != nil {
-		return err
+		return fmt.Errorf("mailer.deliver: mail from: %w", err)
 	}
 	if err := client.Rcpt(to); err != nil {
-		return err
+		return fmt.Errorf("mailer.deliver: rcpt to: %w", err)
 	}
 	w, err := client.Data()
 	if err != nil {
-		return err
+		return fmt.Errorf("mailer.deliver: data: %w", err)
 	}
 	if _, err := w.Write(body); err != nil {
-		return err
+		return fmt.Errorf("mailer.deliver: write body: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return fmt.Errorf("mailer.deliver: close writer: %w", err)
 	}
-	return client.Quit()
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("mailer.deliver: quit: %w", err)
+	}
+	return nil
 }
 
 var crlfReplacer = strings.NewReplacer("\r", "", "\n", "")

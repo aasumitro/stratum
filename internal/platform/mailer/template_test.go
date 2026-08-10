@@ -17,17 +17,16 @@ func TestRenderTemplate_SubjectInterpolated(t *testing.T) {
 	}
 }
 
-func TestRenderTemplate_SubjectWithAmountAndDate(t *testing.T) {
-	// invoice_created subject: "Invoice ready — {{.Amount}} due {{.DueDate}}"
-	subject, _, err := mailer.RenderTemplate("invoice_created", "en", mailer.TemplateData{
-		Amount:  "$99.00",
-		DueDate: "Jul 1, 2026",
+func TestRenderTemplate_SubjectWithAmount(t *testing.T) {
+	// invoice_paid subject: "Payment received — {{.Amount}}"
+	subject, _, err := mailer.RenderTemplate("invoice_paid", "en", mailer.TemplateData{
+		Amount: "$99.00",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(subject, "$99.00") || !strings.Contains(subject, "Jul 1, 2026") {
-		t.Errorf("subject %q: missing amount or due date", subject)
+	if !strings.Contains(subject, "$99.00") {
+		t.Errorf("subject %q: missing amount", subject)
 	}
 }
 

@@ -119,8 +119,8 @@ func TestIntegration_Addons_HTTPEndpoint(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	data, _ := resp["data"].([]any)
-	if len(data) < 2 {
-		t.Errorf("want >= 2 addons in response, got %d", len(data))
+	if len(data) < 1 {
+		t.Errorf("want >= 1 addon in response, got %d", len(data))
 	}
 }
 

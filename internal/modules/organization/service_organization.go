@@ -3,13 +3,17 @@ package organization
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/logger"
 )
 
@@ -32,7 +36,7 @@ type addonSelection struct {
 	Quantity int
 }
 
-// ErrIPAllowlistLocksOutCaller: saving this CIDR list would reject
+// ErrIPAllowlistLocksOutCaller - saving this CIDR list would reject
 // the caller's own current IP on the very next request.
 var ErrIPAllowlistLocksOutCaller = errors.New("this allowlist would lock out your own IP address")
 
@@ -78,36 +82,12 @@ func (s *service) createOrganization(
 		}
 	}()
 
-	if s.catalogReader != nil {
-		if _, err := s.catalogReader.GetPlanByID(ctx, plan); err != nil {
-			return nil, ErrUnknownPlan
-		}
-		for _, a := range addons {
-			if _, err := s.catalogReader.GetAddonByID(ctx, a.AddonID); err != nil {
-				return nil, ErrUnknownAddon
-			}
-		}
-		if couponCode != "" {
-			if err := s.catalogReader.ValidateCouponCode(ctx, couponCode, ownerID); err != nil {
-				return nil, ErrInvalidCoupon
-			}
-		}
+	if err := s.validateCatalogSelections(ctx, plan, addons, couponCode, ownerID); err != nil {
+		return nil, err
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	t, err := s.insertOrganizationWithOwner(ctx, slug, name, ownerID, countryCode)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	t, err := s.repo.insertOrganization(ctx, tx, slug, name, ownerID, countryCode)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.repo.insertOwnerMembership(ctx, tx, t.ID, ownerID); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
@@ -122,6 +102,60 @@ func (s *service) createOrganization(
 			CountryCode: t.CountryCode, Plan: plan, Cycle: cycle,
 			Addons: eventAddons, CouponCode: couponCode, CreatedAt: t.CreatedAt,
 		})
+	return t, nil
+}
+
+// validateCatalogSelections checks plan, every addon ID, and a non-empty
+// coupon code against the live catalog before any DB write happens, so a
+// bad selection never leaves a half-created organization (or one whose
+// subscription-provisioning event fails forever) behind. A no-op when no
+// catalogReader is wired — catalog validation is optional, matching every
+// other call site of this dependency in this module.
+func (s *service) validateCatalogSelections(
+	ctx context.Context, plan string, addons []addonSelection, couponCode, ownerID string,
+) error {
+	if s.catalogReader == nil {
+		return nil
+	}
+	if _, err := s.catalogReader.GetPlanByID(ctx, plan); err != nil {
+		return ErrUnknownPlan
+	}
+	for _, a := range addons {
+		if _, err := s.catalogReader.GetAddonByID(ctx, a.AddonID); err != nil {
+			return ErrUnknownAddon
+		}
+	}
+	if couponCode != "" {
+		if err := s.catalogReader.ValidateCouponCode(ctx, couponCode, ownerID); err != nil {
+			return ErrInvalidCoupon
+		}
+	}
+	return nil
+}
+
+// insertOrganizationWithOwner creates the organization row and its owner
+// membership row atomically — either both exist or neither does, since a
+// membership-less organization would leave its owner unable to access what
+// they just created.
+func (s *service) insertOrganizationWithOwner(
+	ctx context.Context, slug, name, ownerID, countryCode string,
+) (*organizationRecord, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	t, err := s.repo.insertOrganization(ctx, tx, slug, name, ownerID, countryCode)
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: %w", err)
+	}
+	if err := s.repo.insertOwnerMembership(ctx, tx, t.ID, ownerID); err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: commit tx: %w", err)
+	}
 	return t, nil
 }
 
@@ -178,32 +212,67 @@ func (s *service) deleteOrganization(ctx context.Context, id string) (err error)
 	}()
 
 	if err := s.repo.softDeleteOrganization(ctx, s.pool, id); err != nil {
-		return err
+		return fmt.Errorf("organization.deleteOrganization: %w", err)
 	}
 
-	// Best-effort storage cleanup — wipe logo and all uploaded files.
-	// Errors are non-fatal: organization is already marked deleted in DB.
-	if s.store != nil {
-		_ = s.store.Delete(ctx, "organization", id+"/logo")
-
-		if paths, err := s.repo.deleteAllFilesForOrganization(ctx, s.pool, id); err == nil {
-			for _, p := range paths {
-				_ = s.store.Delete(ctx, "organization-files", p)
-			}
-		}
-	}
-
+	// Logo cleanup used to run synchronously here — moved off the request
+	// path to HandleOrganizationDeleted (service_organization.go, same file,
+	// below), a worker consumer of the same OrganizationDeleted event
+	// published just below. The organization is already soft-deleted by this
+	// point, so the gap between this publish and the worker picking it up is
+	// invisible to callers — the organization middleware already rejects
+	// every request against a soft-deleted org.
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOrganizationDeleted, "organization", id,
 		events.OrganizationDeleted{OrganizationID: id, DeletedAt: time.Now()})
 	return nil
 }
 
+// HandleOrganizationDeleted performs the logo cleanup deleteOrganization
+// used to do inline on the request path (see the comment there) — moved off
+// that path so the request doesn't wait on an object-storage round trip.
+// Naturally idempotent against RabbitMQ's at-least-once redelivery: a
+// repeated storage Delete on an already-missing object is a safe no-op — no
+// dedup tracking needed here, unlike notification's worker.
+func (w *WebhookWorker) HandleOrganizationDeleted(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.OrganizationDeleted](body)
+	if err != nil {
+		w.log.Warn("organization deleted: malformed event", "error", err)
+		return nil // don't re-queue a bad envelope
+	}
+	if w.store == nil {
+		return nil
+	}
+
+	_ = w.store.Delete(ctx, "organization", evt.OrganizationID+"/logo")
+	return nil
+}
+
+func (s *service) uploadLogo(ctx context.Context, organizationID string, r io.Reader, contentType string) (err error) {
+	defer func() {
+		if err != nil {
+			err = apperr.Internal("LOGO_UPLOAD_FAILED", "failed to upload logo", err)
+		}
+	}()
+
+	if s.store == nil {
+		return fmt.Errorf("organization.uploadLogo: storage not configured")
+	}
+	path := organizationID + "/logo"
+	if err := s.store.Upload(ctx, "organization", path, r, contentType); err != nil {
+		return fmt.Errorf("organization.uploadLogo: %w", err)
+	}
+	logoURL := fmt.Sprintf("%s/storage/v1/object/public/organization/%s", strings.TrimSuffix(s.store.BaseURL(), "/"), path)
+	return s.repo.updateLogoURL(ctx, s.pool, organizationID, logoURL)
+}
+
 func (s *service) updateSettings(
 	ctx context.Context,
 	organizationID, timezone, locale, callerIP string,
-	allowedIPs []string,
+	allowedIPs *[]string,
 ) error {
-	if ipLocksOutCaller(callerIP, allowedIPs) {
+	// A nil allowedIPs means the field was omitted from the request — nothing
+	// to lock anyone out of, since the allowlist isn't changing.
+	if allowedIPs != nil && ipLocksOutCaller(callerIP, *allowedIPs) {
 		return apperr.Validation("IP_ALLOWLIST_LOCKS_OUT_CALLER", ErrIPAllowlistLocksOutCaller.Error())
 	}
 	if err := s.repo.updateSettings(ctx, s.pool, organizationID, timezone, locale, allowedIPs); err != nil {
@@ -217,7 +286,10 @@ func (s *service) updateSettings(
 // anyone out. callerIP that fails to parse (shouldn't happen — Gin's
 // ClientIP() always returns a valid address) is treated as locked-out, the
 // safe default: reject the save rather than risk silently letting an
-// unparseable IP through a CIDR check.
+// unparseable IP through a CIDR check. Per-entry matching delegates to
+// middleware.IPEntryMatches — the same comparison the request-time allowlist
+// gate uses, so this pre-save check can never approve a save that the gate
+// would then reject.
 func ipLocksOutCaller(callerIP string, allowedIPs []string) bool {
 	if len(allowedIPs) == 0 {
 		return false
@@ -226,16 +298,8 @@ func ipLocksOutCaller(callerIP string, allowedIPs []string) bool {
 	if ip == nil {
 		return true
 	}
-	for _, cidr := range allowedIPs {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			// A bare IP (no /suffix) is also a valid allowlist entry.
-			if entryIP := net.ParseIP(cidr); entryIP != nil && entryIP.Equal(ip) {
-				return false
-			}
-			continue
-		}
-		if network.Contains(ip) {
+	for _, entry := range allowedIPs {
+		if middleware.IPEntryMatches(ip, entry) {
 			return false
 		}
 	}
@@ -293,7 +357,7 @@ func (s *service) selfUnsuspendOrganization(ctx context.Context, organizationID 
 
 	ws, err := s.getOrganization(ctx, organizationID)
 	if err != nil {
-		return err
+		return fmt.Errorf("organization.selfUnsuspendOrganization: %w", err)
 	}
 	if ws.SuspendedReason != suspendReasonSelfService {
 		return ErrCannotSelfUnsuspendBillingHold

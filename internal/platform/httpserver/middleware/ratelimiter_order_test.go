@@ -1,10 +1,9 @@
 package middleware_test
 
-// Regression test for the F1 fix (backend-fixes-plan.md): the rate limiter
-// must run after auth so ByAuthenticatedSubject sees the JWT subject
-// instead of silently falling back to client IP. Requires a real Redis —
-// skips like every other Redis-backed test in this codebase (see
-// platform/cache/cache_test.go) when TEST_REDIS_URL isn't set.
+// Confirms the rate limiter runs after auth, so ByAuthenticatedSubject sees
+// the JWT subject instead of silently falling back to client IP. Requires a
+// real Redis — skips like every other Redis-backed test in this codebase
+// (see platform/cache/cache_test.go) when TEST_REDIS_URL isn't set.
 
 import (
 	"net/http"

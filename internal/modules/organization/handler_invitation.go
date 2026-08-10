@@ -19,7 +19,7 @@ type createInvitationRequest struct {
 
 // createInvitation godoc
 // @Summary      Invite a member by email
-// @Tags         organization
+// @Tags         invitations
 // @Accept       json
 // @Produce      json
 // @Security     BearerAuth
@@ -51,7 +51,7 @@ func (h *handler) createInvitation(c *gin.Context) {
 
 // listInvitations godoc
 // @Summary      List organization invitations
-// @Tags         organization
+// @Tags         invitations
 // @Produce      json
 // @Security     BearerAuth
 // @Param        organizationID  path      string  true  "Organization ID"
@@ -72,7 +72,7 @@ func (h *handler) listInvitations(c *gin.Context) {
 
 // revokeInvitation godoc
 // @Summary      Revoke an invitation
-// @Tags         organization
+// @Tags         invitations
 // @Security     BearerAuth
 // @Param        organizationID  path  string  true  "Organization ID"
 // @Param        invitationID    path  string  true  "Invitation ID"
@@ -97,12 +97,12 @@ type acceptInvitationRequest struct {
 // acceptInvitation godoc
 // @Summary      Accept an invitation
 // @Description  Accepts an invitation token for the caller's own (authenticated) email; the token must match the caller's email.
-// @Tags         organization
+// @Tags         invitations
 // @Accept       json
 // @Security     BearerAuth
 // @Param        body  body  acceptInvitationRequest  true  "Invitation token"
 // @Success      204   "no content"
-// @Failure      422   {object}  response.Payload  "invitation not found, expired, email mismatch, already a member, or plan limit reached"
+// @Failure      422   {object}  response.Payload  "invitation not found, expired, email mismatch, already a member, plan limit reached, or organization not active"
 // @Failure      401   {object}  response.Payload  "missing/invalid auth token"
 // @Router       /invitations/accept [post]
 func (h *handler) acceptInvitation(c *gin.Context) {
@@ -130,6 +130,9 @@ func (h *handler) acceptInvitation(c *gin.Context) {
 	case errors.Is(err, ErrInvitationAlreadyMember):
 		response.Error("INVITATION_ALREADY_MEMBER", "you are already a member of this organization",
 			map[string]string{detailKeyOrganizationID: result.OrganizationID}).JSON(c, http.StatusUnprocessableEntity)
+	case errors.Is(err, ErrInvitationOrganizationNotActive):
+		response.Error("INVITATION_ORGANIZATION_NOT_ACTIVE", "this organization is not currently active",
+			map[string]string{detailKeyOrganizationID: result.OrganizationID}).JSON(c, http.StatusUnprocessableEntity)
 	case errors.Is(err, ErrPlanLimitReached):
 		response.Error("PLAN_LIMIT_REACHED", "organization has reached its member limit").JSON(c, http.StatusUnprocessableEntity)
 	default:
@@ -144,7 +147,7 @@ type declineInvitationRequest struct {
 // declineInvitation godoc
 // @Summary      Decline an invitation
 // @Description  Declines and deletes an invitation for the caller's own (authenticated) email; the original inviter is notified in-app.
-// @Tags         organization
+// @Tags         invitations
 // @Accept       json
 // @Security     BearerAuth
 // @Param        body  body  declineInvitationRequest  true  "Invitation token"
@@ -182,7 +185,7 @@ func (h *handler) declineInvitation(c *gin.Context) {
 // previewInvitation godoc
 // @Summary      Preview an invitation
 // @Description  Read-only invitation details (organization name, role, inviter) for the caller's own email, before committing to accept.
-// @Tags         organization
+// @Tags         invitations
 // @Produce      json
 // @Security     BearerAuth
 // @Param        token  query     string  true  "Invitation token"
@@ -221,7 +224,7 @@ func (h *handler) previewInvitation(c *gin.Context) {
 // listMyInvitations godoc
 // @Summary      List the caller's pending invitations
 // @Description  Returns pending invitations sent to the caller's authenticated email, across every organization.
-// @Tags         organization
+// @Tags         invitations
 // @Produce      json
 // @Security     BearerAuth
 // @Success      200  {object}  response.Payload{data=[]myInvitationRecord}
@@ -249,7 +252,7 @@ type requestNewInvitationRequest struct {
 // requestNewInvitation godoc
 // @Summary      Request a fresh invitation
 // @Description  Notifies the original inviter that the caller's invitation (identified by an expired/invalid token) needs to be resent — does not resend automatically.
-// @Tags         organization
+// @Tags         invitations
 // @Accept       json
 // @Security     BearerAuth
 // @Param        body  body  requestNewInvitationRequest  true  "Expired/invalid invitation token"
@@ -262,7 +265,9 @@ func (h *handler) requestNewInvitation(c *gin.Context) {
 	if !request.Bind(c, &req) {
 		return
 	}
-	if err := h.svc.requestNewInvitation(c.Request.Context(), req.Token); err != nil {
+	email := reqctx.Email(c)
+	emailVerified := reqctx.EmailVerified(c)
+	if err := h.svc.requestNewInvitation(c.Request.Context(), req.Token, email, emailVerified); err != nil {
 		response.FromError(c, err)
 		return
 	}

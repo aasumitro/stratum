@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/ui"
 
@@ -31,6 +32,10 @@ const STATUS_TONE: Record<string, StatusTone> = {
   processing: "info",
   delivered: "success",
   completed: "success",
+  // Subscription history phase (billing/components/subscription-history-sheet.tsx).
+  scheduled: "warning",
+  applied: "success",
+  undone: "neutral",
 }
 
 interface StatusBadgeProps {
@@ -40,6 +45,7 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, label, className }: StatusBadgeProps) {
+  const { t } = useTranslation()
   const tone = STATUS_TONE[status] ?? "neutral"
   return (
     <Badge
@@ -50,7 +56,10 @@ export function StatusBadge({ status, label, className }: StatusBadgeProps) {
         className
       )}
     >
-      {label ?? status.replace(/_/g, " ")}
+      {label ??
+        t(`common.status.${status}`, {
+          defaultValue: status.replace(/_/g, " "),
+        })}
     </Badge>
   )
 }

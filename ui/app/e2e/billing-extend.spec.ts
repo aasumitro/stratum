@@ -4,6 +4,7 @@ import { loginAsTestAccount } from "./helpers/login"
 interface SubscriptionOverrides {
   cycle?: "monthly" | "yearly"
   max_extendable_months?: number
+  hasPendingInvoice?: boolean
 }
 
 async function mockBillingAPIs(page: Page, sub: SubscriptionOverrides = {}) {
@@ -71,6 +72,37 @@ async function mockBillingAPIs(page: Page, sub: SubscriptionOverrides = {}) {
     })
   })
 
+  await page.route(
+    "**/v1/organizations/org-1/billing/invoices",
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: sub.hasPendingInvoice
+            ? [
+                {
+                  id: "inv-pending-activation",
+                  subscription_id: "sub-1",
+                  amount_cents: 900,
+                  tax_rate_bps: 0,
+                  tax_cents: 0,
+                  currency: "USD",
+                  status: "pending",
+                  kind: "activation",
+                  switch_to_annual: false,
+                  created_at: "2027-01-01T00:00:00Z",
+                  updated_at: "2027-01-01T00:00:00Z",
+                },
+              ]
+            : [],
+          status: { error: false },
+        }),
+      })
+    }
+  )
+
   await page.route("**/v1/references/plans*", async (route) => {
     if (route.request().method() !== "GET") return route.continue()
     return route.fulfill({
@@ -92,6 +124,32 @@ async function mockBillingAPIs(page: Page, sub: SubscriptionOverrides = {}) {
       }),
     })
   })
+
+  // PendingChangesBar (rendered above every billing page) reads this as an
+  // object, not the `**/v1/**` wildcard's array fallback above — without an
+  // explicit mock here it crashes formatMoney() on an undefined currency
+  // the moment hasPendingInvoice is true, tripping this file's own error
+  // boundary before any assertion below ever runs.
+  await page.route(
+    "**/v1/organizations/org-1/billing/preview*",
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            plan: "solo",
+            cycle: sub.cycle ?? "monthly",
+            currency: "USD",
+            plan_line_cents: 900,
+            total_cents: 900,
+          },
+          status: { error: false },
+        }),
+      })
+    }
+  )
 }
 
 async function openExtendDialog(page: Page) {
@@ -312,5 +370,22 @@ test("a failed extend request stays on the review step", async ({ page }) => {
   ).toBeVisible()
   await expect(
     page.getByRole("heading", { name: /extension invoice created/i })
+  ).not.toBeVisible()
+})
+
+test("the Extend entry point is hidden while an invoice is still pending payment, even on an active subscription", async ({
+  page,
+}) => {
+  test.skip(
+    !process.env.TEST_ACCOUNT_OWNER_EMAIL,
+    "TEST_ACCOUNT_OWNER_EMAIL not set"
+  )
+  await mockBillingAPIs(page, { hasPendingInvoice: true })
+  await loginAsTestAccount(page)
+
+  await page.goto("/organization/org-1/billing")
+  await expect(page.getByRole("button", { name: /change plan/i })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: /^extend$/i })
   ).not.toBeVisible()
 })

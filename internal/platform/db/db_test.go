@@ -114,6 +114,48 @@ func TestWithTx_RollsBackOnError(t *testing.T) {
 	}
 }
 
+// TestWithTx_RollsBackOnPanic guards against a regression where fn
+// panicking unwound past the error-handling rollback entirely — neither
+// Commit nor Rollback ran, leaking the leased pool connection even though
+// an outer recovery middleware (in the real server) catches the panic and
+// the request survives.
+func TestWithTx_RollsBackOnPanic(t *testing.T) {
+	pool := testPool(t)
+	ctx := t.Context()
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS public.db_tx_test (id text primary key)`); err != nil {
+		t.Fatalf("create test table: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.db_tx_test`) })
+
+	func() {
+		defer func() {
+			if p := recover(); p == nil {
+				t.Error("WithTx should re-panic after rolling back, recovered nothing")
+			}
+		}()
+		_ = db.WithTx(ctx, pool, func(tx db.Querier) error {
+			if _, e := tx.Exec(ctx, `INSERT INTO public.db_tx_test (id) VALUES ('panic-1')`); e != nil {
+				return e
+			}
+			panic("boom")
+		})
+	}()
+
+	var n int
+	pool.QueryRow(ctx, `SELECT count(*) FROM public.db_tx_test WHERE id = 'panic-1'`).Scan(&n)
+	if n != 0 {
+		t.Errorf("row must be rolled back after a panic, count = %d", n)
+	}
+
+	// The connection WithTx leased for the panicking transaction must have
+	// been returned to the pool (via Rollback), not leaked — a fresh query
+	// on the same pool proves it isn't stuck mid-transaction/exhausted.
+	var one int
+	if err := pool.QueryRow(ctx, "SELECT 1").Scan(&one); err != nil {
+		t.Errorf("pool unusable after a panicking WithTx: %v", err)
+	}
+}
+
 func TestQueueEvent_RunsOnFlushNotBefore(t *testing.T) {
 	ctx := db.WithPendingEvents(context.Background())
 

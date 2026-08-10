@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -49,7 +50,7 @@ func (r *repository) findCouponByCode(ctx context.Context, q db.Querier, code st
 		&c.DurationCount, &c.ValidFrom, &c.ValidUntil, &c.MaxRedemptions, &c.RedeemedCount, &c.Active,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.findCouponByCode: %w", err)
 	}
 	return &c, nil
 }
@@ -70,7 +71,10 @@ func (r *repository) isCouponRedeemableBySubject(
 		               OR (subject_type = 'user' AND subject_id = $3))
 		    )`, code, organizationID, authSub,
 	).Scan(&ok)
-	return ok, err
+	if err != nil {
+		return false, fmt.Errorf("billing.isCouponRedeemableBySubject: %w", err)
+	}
+	return ok, nil
 }
 
 // listEligibleCoupons returns every coupon this organization/user could
@@ -101,7 +105,7 @@ func (r *repository) listEligibleCoupons(
 		ORDER BY c.code`, organizationID, authSub,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listEligibleCoupons: %w", err)
 	}
 	defer rows.Close()
 
@@ -112,27 +116,39 @@ func (r *repository) listEligibleCoupons(
 			&c.Code, &c.Name, &c.DiscountType, &c.AmountCents, &c.PercentOff, &c.Currency, &c.Cadence,
 			&c.DurationCount, &c.ValidFrom, &c.ValidUntil, &c.MaxRedemptions, &c.RedeemedCount, &c.Active,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("billing.listEligibleCoupons: scan: %w", err)
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listEligibleCoupons: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) insertCouponRedemption(ctx context.Context, q db.Querier, code, subscriptionID string) error {
 	_, err := q.Exec(ctx,
 		`INSERT INTO billing.coupon_redemptions (coupon_id, subscription_id) VALUES ($1, $2)`,
 		code, subscriptionID)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.insertCouponRedemption: %w", err)
+	}
+	return nil
 }
 
-// incrementCouponRedeemedCount is best-effort accounting on the coupon
-// itself (billing.coupons.redeemed_count vs max_redemptions) — no
-// SELECT FOR UPDATE: a race here means at most a slightly-over-redeemed
-// coupon, not a correctness break.
-func (r *repository) incrementCouponRedeemedCount(ctx context.Context, q db.Querier, code string) error {
-	_, err := q.Exec(ctx, `UPDATE billing.coupons SET redeemed_count = redeemed_count + 1 WHERE code = $1`, code)
-	return err
+// tryIncrementCouponRedeemedCount atomically increments the redemption count
+// if the coupon hasn't reached its max_redemptions. It returns true if
+// incremented, false if exhausted.
+func (r *repository) tryIncrementCouponRedeemedCount(ctx context.Context, q db.Querier, code string) (bool, error) {
+	ct, err := q.Exec(ctx, `
+		UPDATE billing.coupons
+		SET redeemed_count = redeemed_count + 1
+		WHERE code = $1
+		  AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)`, code)
+	if err != nil {
+		return false, fmt.Errorf("billing.tryIncrementCouponRedeemedCount: %w", err)
+	}
+	return ct.RowsAffected() == 1, nil
 }
 
 // listCouponRedemptionsForSubscription returns every redemption for
@@ -150,24 +166,33 @@ func (r *repository) listCouponRedemptionsForSubscription(
 		WHERE cr.subscription_id = $1 AND c.active = true
 		ORDER BY cr.redeemed_at DESC`, subscriptionID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.listCouponRedemptionsForSubscription: %w", err)
 	}
 	defer rows.Close()
 
 	var out []couponRedemptionRecord
 	for rows.Next() {
 		var cr couponRedemptionRecord
-		if err := rows.Scan(&cr.CouponCode, &cr.DiscountType, &cr.AmountCents, &cr.PercentOff, &cr.Cadence, &cr.AppliedCount, &cr.DurationCount); err != nil {
-			return nil, err
+		if err := rows.Scan(
+			&cr.CouponCode, &cr.DiscountType, &cr.AmountCents,
+			&cr.PercentOff, &cr.Cadence, &cr.AppliedCount, &cr.DurationCount,
+		); err != nil {
+			return nil, fmt.Errorf("billing.listCouponRedemptionsForSubscription: scan: %w", err)
 		}
 		out = append(out, cr)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listCouponRedemptionsForSubscription: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) incrementCouponRedemptionApplied(ctx context.Context, q db.Querier, subscriptionID, couponCode string) error {
 	_, err := q.Exec(ctx,
 		`UPDATE billing.coupon_redemptions SET applied_count = applied_count + 1 WHERE subscription_id = $1 AND coupon_id = $2`,
 		subscriptionID, couponCode)
-	return err
+	if err != nil {
+		return fmt.Errorf("billing.incrementCouponRedemptionApplied: %w", err)
+	}
+	return nil
 }

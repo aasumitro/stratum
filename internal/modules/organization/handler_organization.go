@@ -1,12 +1,12 @@
 package organization
 
 import (
-	"cmp"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/aasumitro/stratum/internal/platform/audit"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/reqctx"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/request"
@@ -16,9 +16,8 @@ import (
 // --- organization routes ---
 
 type createOrganizationRequest struct {
-	Slug        string `json:"slug" binding:"required,min=1,max=63"`
-	Name        string `json:"name" binding:"required,min=1,max=100"`
-	CountryCode string `json:"country_code" binding:"omitempty,len=2"`
+	Slug string `json:"slug" binding:"required,min=1,max=63"`
+	Name string `json:"name" binding:"required,min=1,max=100"`
 	// Plan is required and validated dynamically against the billing
 	// catalog (service.createOrganization, via refReader.GetPlanByID) —
 	// no oneof here, same reasoning as billing.changePlanRequest.Plan: a
@@ -42,9 +41,18 @@ type createOrganizationAddonRequest struct {
 	Quantity int    `json:"quantity" binding:"omitempty,min=1"`
 }
 
+// resolveCountryCode derives the organization's billing country/currency
+// from the caller's real IP via GeoIP instead of trusting a client-supplied
+// value — country_code used to be a request field here, but a client could
+// simply declare a cheaper country/currency at signup with no exploit
+// tooling required. See internal/platform/geoip.
+func (h *handler) resolveCountryCode(c *gin.Context) string {
+	return h.countryResolver.Resolve(c.Request.Context(), c.ClientIP(), c.GetHeader(geoip.DebugCountryCodeHeader))
+}
+
 // createOrganization godoc
 // @Summary      Create an organization
-// @Description  Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog.
+// @Description  Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog. Billing country/currency is resolved server-side from the caller's IP, not client-supplied.
 // @Tags         organization
 // @Accept       json
 // @Produce      json
@@ -59,7 +67,6 @@ func (h *handler) createOrganization(c *gin.Context) {
 	if !request.Bind(c, &req) {
 		return
 	}
-	req.CountryCode = cmp.Or(req.CountryCode, "US")
 
 	addons := make([]addonSelection, len(req.Addons))
 	for i, a := range req.Addons {
@@ -71,7 +78,7 @@ func (h *handler) createOrganization(c *gin.Context) {
 	}
 
 	t, err := h.svc.createOrganization(c.Request.Context(), req.Slug, req.Name,
-		reqctx.Subject(c), req.CountryCode, req.Plan, req.Cycle, addons, req.CouponCode)
+		reqctx.Subject(c), h.resolveCountryCode(c), req.Plan, req.Cycle, addons, req.CouponCode)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -244,9 +251,14 @@ func (h *handler) unsuspendOrganization(c *gin.Context) {
 }
 
 type updateSettingsRequest struct {
-	Timezone   string   `json:"timezone" binding:"required"`
-	Locale     string   `json:"locale" binding:"required"`
-	AllowedIPs []string `json:"allowed_ips"`
+	Timezone string `json:"timezone" binding:"required"`
+	Locale   string `json:"locale" binding:"required"`
+	// AllowedIPs is a pointer so an absent field (nil) preserves the existing
+	// allowlist, while an explicit "allowed_ips": [] clears it — the two
+	// General Settings and Security settings tabs each PATCH this endpoint
+	// with only their own fields, so omission must never wipe the other
+	// tab's setting.
+	AllowedIPs *[]string `json:"allowed_ips"`
 }
 
 // updateSettings godoc
@@ -278,5 +290,45 @@ func (h *handler) updateSettings(c *gin.Context) {
 	}
 	audit.SetAfter(c, map[string]any{"timezone": req.Timezone, "locale": req.Locale, settingAllowedIPs: req.AllowedIPs})
 	h.invalidateOrg(c, ws.ID)
+	c.Status(http.StatusNoContent)
+}
+
+// uploadLogo godoc
+// @Summary      Upload organization logo
+// @Description  Admin/owner only. Max 2MB, image/* content type.
+// @Tags         organization
+// @Accept       multipart/form-data
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Param        logo            formData  file    true  "Logo image file"
+// @Success      204             "no content"
+// @Failure      422             {object}  response.Payload  "missing file, too large, or not an image"
+// @Failure      403             {object}  response.Payload  "admin role required"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/logo [post]
+func (h *handler) uploadLogo(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	file, header, err := c.Request.FormFile("logo")
+	if err != nil {
+		response.Error("LOGO_MISSING", "logo file is required").JSON(c, http.StatusUnprocessableEntity)
+		return
+	}
+	defer file.Close()
+
+	if header.Size > maxLogoSize {
+		response.Error("LOGO_TOO_LARGE", "logo must be under 2 MB").JSON(c, http.StatusUnprocessableEntity)
+		return
+	}
+	ct, ok := request.SniffImageType(file)
+	if !ok {
+		response.Error("LOGO_INVALID_TYPE", "logo must be an image").JSON(c, http.StatusUnprocessableEntity)
+		return
+	}
+
+	if err := h.svc.uploadLogo(c.Request.Context(), ws.ID, file, ct); err != nil {
+		response.FromError(c, err)
+		return
+	}
 	c.Status(http.StatusNoContent)
 }

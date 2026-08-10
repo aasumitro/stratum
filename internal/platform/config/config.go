@@ -6,6 +6,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,19 @@ type Config struct {
 	ServiceVersion string `env:"SERVICE_VERSION" envDefault:"dev"`
 	CORSOrigins    string `env:"CORS_ORIGINS"` // comma-separated, empty = allow all
 
+	// TrustedProxies lists the CIDR ranges of reverse proxies/load balancers
+	// this service sits directly behind (an ingress controller's pod CIDR,
+	// an ALB/GCLB's subnet, Cloudflare's published ranges, ...). Only hops
+	// in this list are trusted to supply X-Forwarded-For/X-Real-IP; empty
+	// means "trust nobody", so gin's Context.ClientIP() — and everything
+	// keyed on it, including NewIPAllowlistMiddleware and the webhook rate
+	// limiter's ByClientIP — falls back to the raw TCP peer address. Set
+	// this whenever a real proxy/LB/ingress terminates connections before
+	// they reach this process, or every forwarded request resolves to the
+	// proxy's own IP instead of the real client's (breaking IP allowlists
+	// and letting a spoofed header evade per-IP rate limiting).
+	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
+
 	AuditRetentionDays int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
 
 	// StatsToken gates GET /health/stats (goroutine/heap/pool internals —
@@ -31,6 +45,14 @@ type Config struct {
 	// webhook secrets below — fine for local dev, but every non-dev
 	// deployment should set this. Studio sends it back as X-Stats-Token.
 	StatsToken string `env:"STATS_TOKEN"`
+
+	// GeoIPDBPath is the filesystem path to a MaxMind GeoLite2/GeoIP2
+	// Country .mmdb file (internal/platform/geoip) — the trusted source for
+	// an organization's billing country/currency, resolved from the
+	// request's IP instead of a client-supplied field. Empty is only valid
+	// in development, where geoip.Resolver substitutes an
+	// X-Debug-Country-Code header instead (see RequireGeoIPDBOutsideDev).
+	GeoIPDBPath string `env:"GEOIP_DB_PATH"`
 
 	Postgres PostgresConfig
 	Redis    RedisConfig
@@ -90,8 +112,9 @@ type StripeConfig struct {
 }
 
 type XenditConfig struct {
-	APIKey        string `env:"XENDIT_API_KEY"`
-	CallbackToken string `env:"XENDIT_CALLBACK_TOKEN"`
+	APIKey        string   `env:"XENDIT_API_KEY"`
+	CallbackToken string   `env:"XENDIT_CALLBACK_TOKEN"`
+	AllowedCIDRs  []string `env:"XENDIT_ALLOWED_CIDRS" envSeparator:","`
 }
 
 type SMTPConfig struct {
@@ -106,6 +129,14 @@ type StorageConfig struct {
 	URL string `env:"STORAGE_URL"`
 }
 
+// envDevelopment is Config.Env's "relax production-only checks" value —
+// bootstrap.EnvDevelopment holds the same string for callers outside this
+// package (api.go/worker.go, which can't import this unexported constant),
+// but every check inside this package itself (Load's validation, both
+// Require*OutsideDev methods) compares against this local constant instead
+// of repeating the literal.
+const envDevelopment = "development"
+
 // Load reads environment variables into a Config, returning an error
 // (not a panic) so main.go decides how to fail.
 func Load() (*Config, error) {
@@ -113,6 +144,13 @@ func Load() (*Config, error) {
 	if err := env.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
+
+	switch cfg.Env {
+	case envDevelopment, "staging", "production":
+	default:
+		return nil, fmt.Errorf("config: invalid APP_ENV %q (want development|staging|production)", cfg.Env)
+	}
+
 	return cfg, nil
 }
 
@@ -124,7 +162,7 @@ func Load() (*Config, error) {
 // mutate real state (payment status, account email). Call this right after
 // Load() so a missing secret fails startup instead of serving.
 func (c *Config) RequireWebhookSecretsOutsideDev() error {
-	if c.Env == "development" {
+	if c.Env == envDevelopment {
 		return nil
 	}
 	var missing []string
@@ -134,11 +172,31 @@ func (c *Config) RequireWebhookSecretsOutsideDev() error {
 	if c.Xendit.CallbackToken == "" {
 		missing = append(missing, "XENDIT_CALLBACK_TOKEN")
 	}
+	if len(c.Xendit.AllowedCIDRs) == 0 {
+		missing = append(missing, "XENDIT_ALLOWED_CIDRS")
+	}
 	if c.Auth.WebhookSecret == "" {
 		missing = append(missing, "SUPABASE_WEBHOOK_SECRET")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required webhook secret(s) outside development: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// RequireGeoIPDBOutsideDev enforces that a real GeoIP Country database is
+// configured once Env isn't "development". Outside development, billing
+// currency/tax resolution (POST /organizations, GET /references/plans|addons)
+// depends on a working GeoIP lookup — geoip.Resolver's development-only
+// X-Debug-Country-Code override doesn't apply there, so an unset path would
+// silently resolve every request to the same empty-lookup fallback. Call
+// this right after Load(), alongside RequireWebhookSecretsOutsideDev.
+func (c *Config) RequireGeoIPDBOutsideDev() error {
+	if c.Env == envDevelopment {
+		return nil
+	}
+	if c.GeoIPDBPath == "" {
+		return errors.New("config: GEOIP_DB_PATH required outside development")
 	}
 	return nil
 }

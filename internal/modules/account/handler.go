@@ -1,7 +1,6 @@
 package account
 
 import (
-	"crypto/hmac"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -405,7 +404,7 @@ func (h *handler) uploadAvatar(c *gin.Context) {
 		return
 	}
 
-	u, err := h.svc.uploadAvatar(c.Request.Context(), reqctx.Subject(c), file, header.Size, ct)
+	u, err := h.svc.uploadAvatar(c.Request.Context(), reqctx.Subject(c), file, ct)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -492,5 +491,5 @@ func verifyWebhookSecret(headerSecret, configSecret string) bool {
 	if configSecret == "" {
 		return true
 	}
-	return hmac.Equal([]byte(headerSecret), []byte(configSecret))
+	return middleware.SecureCompare(headerSecret, configSecret)
 }

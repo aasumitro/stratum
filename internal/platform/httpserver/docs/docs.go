@@ -73,7 +73,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Accept an invitation",
                 "parameters": [
@@ -98,7 +98,7 @@ const docTemplate = `{
                         }
                     },
                     "422": {
-                        "description": "invitation not found, expired, email mismatch, already a member, or plan limit reached",
+                        "description": "invitation not found, expired, email mismatch, already a member, plan limit reached, or organization not active",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -118,7 +118,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Decline an invitation",
                 "parameters": [
@@ -163,7 +163,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Preview an invitation",
                 "parameters": [
@@ -221,7 +221,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Request a fresh invitation",
                 "parameters": [
@@ -750,7 +750,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "List the caller's pending invitations",
                 "responses": {
@@ -839,7 +839,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the caller's notifications. Page-based (limit/page) unless a cursor is supplied, in which case it switches to cursor pagination.",
+                "description": "Returns the caller's notifications. Cursor pagination (response carries next_cursor, no total) once a cursor is supplied, or by default when neither cursor nor page is given and another page exists. Sending an explicit page forces page-based pagination (response carries total) even on a full page.",
                 "produces": [
                     "application/json"
                 ],
@@ -868,7 +868,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "page number, ignored once cursor is set (default 1)",
+                        "description": "page number; sending this forces page-based pagination (default 1)",
                         "name": "page",
                         "in": "query"
                     },
@@ -1494,7 +1494,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog.",
+                "description": "Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog. Billing country/currency is resolved server-side from the caller's IP, not client-supplied.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2140,6 +2140,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Each addon's prices map holds exactly one currency — the subscription's own\n(sub.Currency), never every currency the catalog stores.",
                 "produces": [
                     "application/json"
                 ],
@@ -2192,8 +2193,11 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled. On a\ntrialing subscription the requested quantity applies immediately. On any other\nsubscription status, an increase (including a brand-new attach) instead creates a\nday-prorated invoice and returns the addon record with pending_quantity/\npending_invoice_id set — the live quantity only rises once that invoice is\nconfirmed paid. A decrease still schedules for the next renewal.",
                 "consumes": [
+                    "application/json"
+                ],
+                "produces": [
                     "application/json"
                 ],
                 "tags": [
@@ -2219,8 +2223,23 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "204": {
-                        "description": "no content"
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/attachedAddonRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
                     },
                     "401": {
                         "description": "missing/invalid auth token",
@@ -2236,6 +2255,61 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/addons/catalog": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same catalog as GET /references/addons (unattached options, not what's already\non this subscription), but prices are scoped to the subscription's own\nalready-fixed currency instead of the caller's GeoIP-resolved one.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "List the addon catalog, scoped to this subscription's currency",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/AddonInfo"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -2283,6 +2357,77 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/addons/{addonID}/undo": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Undo a scheduled addon quantity change",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Addon ID",
+                        "name": "addonID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/attachedAddonRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "nothing scheduled to undo",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -2359,6 +2504,70 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/cancel/undo": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Undo a scheduled cancellation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/subscriptionRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "nothing scheduled to undo",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -2547,6 +2756,70 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/downgrade/undo": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "Undo a scheduled plan downgrade",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/subscriptionRecord"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "nothing scheduled to undo",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -3166,6 +3439,61 @@ const docTemplate = `{
                 }
             }
         },
+        "/organizations/{organizationID}/billing/plans/catalog": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same catalog as GET /references/plans, but prices are scoped to the\nsubscription's own already-fixed currency instead of the caller's GeoIP-resolved\none — correct for an existing subscription, which never changes currency.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "List the plan catalog, scoped to this subscription's currency",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/PlanInfo"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
         "/organizations/{organizationID}/billing/preview": {
             "get": {
                 "security": [
@@ -3398,877 +3726,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/organizations/{organizationID}/files": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Cursor-paginated file listing, optionally scoped to a folder or filtered by search. Admin/owner only.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "List files",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "filter by folder",
-                        "name": "folder_id",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "filter by name",
-                        "name": "search",
-                        "in": "query"
-                    },
-                    {
-                        "type": "boolean",
-                        "description": "search across all folders instead of just folder_id",
-                        "name": "search_all",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "pagination cursor from a previous response",
-                        "name": "cursor",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "max results (default 20, max 100)",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "type": "object",
-                                            "properties": {
-                                                "items": {
-                                                    "type": "array",
-                                                    "items": {
-                                                        "$ref": "#/definitions/fileRecord"
-                                                    }
-                                                },
-                                                "next_cursor": {
-                                                    "type": "string"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Admin/owner only. Max 50MB.",
-                "consumes": [
-                    "multipart/form-data"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Upload a file",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "file",
-                        "description": "File to upload",
-                        "name": "file",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Destination folder ID (root if omitted)",
-                        "name": "folder_id",
-                        "in": "formData"
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "$ref": "#/definitions/fileRecord"
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "422": {
-                        "description": "missing file or too large",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/bulk-delete": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Admin/owner only.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Bulk soft-delete files",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "File IDs to delete",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/bulkDeleteFilesRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "type": "object",
-                                            "properties": {
-                                                "deleted_count": {
-                                                    "type": "integer"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "422": {
-                        "description": "validation failed",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/folders": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "List folders",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "type": "array",
-                                            "items": {
-                                                "$ref": "#/definitions/folderRecord"
-                                            }
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Create a folder",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Folder fields",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/createFolderRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "$ref": "#/definitions/folderRecord"
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "422": {
-                        "description": "validation failed",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/folders/{folderID}": {
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Delete a folder",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Folder ID",
-                        "name": "folderID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "no content"
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            },
-            "patch": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Rename and/or move a folder. parent_folder_id is only applied when the field is explicitly present in the body (null moves to root; omitted leaves the parent unchanged). Admin/owner only.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Update a folder",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Folder ID",
-                        "name": "folderID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Fields to update",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/updateFolderRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "$ref": "#/definitions/folderRecord"
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "422": {
-                        "description": "validation failed",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/trash": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Returns up to the 50 most recently soft-deleted files. Admin/owner only.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "List deleted files",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "type": "array",
-                                            "items": {
-                                                "$ref": "#/definitions/fileRecord"
-                                            }
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/{fileID}": {
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Moves a file to trash. Admin/owner only.",
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Soft-delete a file",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "File ID",
-                        "name": "fileID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "no content"
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            },
-            "patch": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Changes a file's folder (null moves it to root). Admin/owner only.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Move a file",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "File ID",
-                        "name": "fileID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Destination folder",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/moveFileRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "$ref": "#/definitions/fileRecord"
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "422": {
-                        "description": "validation failed",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/{fileID}/download": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Redirects to a short-lived signed download URL. Admin/owner only.",
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Download a file",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "File ID",
-                        "name": "fileID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "302": {
-                        "description": "redirect to signed URL"
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "404": {
-                        "description": "file not found",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/{fileID}/permanent": {
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Irreversibly deletes a soft-deleted file and its stored object. Admin/owner only.",
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Permanently delete a file",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "File ID",
-                        "name": "fileID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "no content"
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
-        "/organizations/{organizationID}/files/{fileID}/restore": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "organization"
-                ],
-                "summary": "Restore a file from trash",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "File ID",
-                        "name": "fileID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "$ref": "#/definitions/fileRecord"
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "admin role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
         "/organizations/{organizationID}/invitations": {
             "get": {
                 "security": [
@@ -4280,7 +3737,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "List organization invitations",
                 "parameters": [
@@ -4341,7 +3798,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Invite a member by email",
                 "parameters": [
@@ -4410,7 +3867,7 @@ const docTemplate = `{
                     }
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Revoke an invitation",
                 "parameters": [
@@ -5863,7 +5320,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the billing addon catalog; delegated to the billing module's catalog reader. Pass country_code to scope each addon's prices down to the currency that country is actually billed in — omit it to get every currency.",
+                "description": "Returns the billing addon catalog; delegated to the billing module's catalog reader. Prices are scoped server-side to the currency the caller's real (GeoIP-resolved) country is billed in.",
                 "produces": [
                     "application/json"
                 ],
@@ -5871,14 +5328,6 @@ const docTemplate = `{
                     "reference"
                 ],
                 "summary": "List billing addons",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "ISO country code — scopes prices to that country's currency",
-                        "name": "country_code",
-                        "in": "query"
-                    }
-                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -6055,7 +5504,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the billing plan catalog (pricing, limits, features); delegated to the billing module's catalog reader. Pass country_code to scope each plan's prices down to the currency that country is actually billed in — omit it to get every currency.",
+                "description": "Returns the billing plan catalog (pricing, limits, features); delegated to the billing module's catalog reader. Prices are scoped server-side to the currency the caller's real (GeoIP-resolved) country is billed in.",
                 "produces": [
                     "application/json"
                 ],
@@ -6063,14 +5512,6 @@ const docTemplate = `{
                     "reference"
                 ],
                 "summary": "List billing plans",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "ISO country code — scopes prices to that country's currency",
-                        "name": "country_code",
-                        "in": "query"
-                    }
-                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -6348,21 +5789,8 @@ const docTemplate = `{
         "OverageResolution": {
             "type": "object",
             "properties": {
-                "auto_selected_file_ids": {
-                    "description": "subset of RemovedFileIDs",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
                 "auto_selected_member_subs": {
                     "description": "subset of RemovedMemberAuthSubs",
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "removed_file_ids": {
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -6530,6 +5958,13 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "pending_invoice_id": {
+                    "type": "string"
+                },
+                "pending_quantity": {
+                    "description": "PendingQuantity/PendingInvoiceID mirror ScheduledQuantity/ScheduledRequestedAt's shape but\nfor the opposite direction — an increase awaiting payment, not a decrease deferred to\nrenewal. Set together, cleared together (see ck_subscription_addons_pending_consistent).",
+                    "type": "integer"
+                },
                 "prices": {
                     "type": "object",
                     "additionalProperties": {
@@ -6538,21 +5973,12 @@ const docTemplate = `{
                 },
                 "quantity": {
                     "type": "integer"
-                }
-            }
-        },
-        "bulkDeleteFilesRequest": {
-            "type": "object",
-            "required": [
-                "file_ids"
-            ],
-            "properties": {
-                "file_ids": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "string"
-                    }
+                },
+                "scheduled_quantity": {
+                    "type": "integer"
+                },
+                "scheduled_requested_at": {
+                    "type": "string"
                 }
             }
         },
@@ -6670,22 +6096,6 @@ const docTemplate = `{
                 }
             }
         },
-        "createFolderRequest": {
-            "type": "object",
-            "required": [
-                "name"
-            ],
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "maxLength": 255,
-                    "minLength": 1
-                },
-                "parent_folder_id": {
-                    "type": "string"
-                }
-            }
-        },
         "createInvitationRequest": {
             "type": "object",
             "required": [
@@ -6735,9 +6145,6 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/createOrganizationAddonRequest"
                     }
-                },
-                "country_code": {
-                    "type": "string"
                 },
                 "coupon_code": {
                     "type": "string",
@@ -6836,12 +6243,6 @@ const docTemplate = `{
                 "plan": {
                     "type": "string"
                 },
-                "preferred_file_ids": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
                 "preferred_member_auth_subs": {
                     "type": "array",
                     "items": {
@@ -6915,67 +6316,6 @@ const docTemplate = `{
                 }
             }
         },
-        "fileRecord": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "string"
-                },
-                "deleted_at": {
-                    "type": "string"
-                },
-                "folder_id": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "mime_type": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "organization_id": {
-                    "type": "string"
-                },
-                "path": {
-                    "type": "string"
-                },
-                "size_bytes": {
-                    "type": "integer"
-                }
-            }
-        },
-        "folderRecord": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string"
-                },
-                "created_by": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "organization_id": {
-                    "type": "string"
-                },
-                "parent_folder_id": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                }
-            }
-        },
         "historyView": {
             "type": "object",
             "properties": {
@@ -7001,6 +6341,12 @@ const docTemplate = `{
                 "currency": {
                     "type": "string"
                 },
+                "effective_at": {
+                    "type": "string"
+                },
+                "from_cycle": {
+                    "type": "string"
+                },
                 "from_plan": {
                     "type": "string"
                 },
@@ -7008,12 +6354,16 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "metadata": {
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                    "description": "json.RawMessage (not []byte) so encoding/json embeds the jsonb\ncolumn's content verbatim instead of base64-encoding it; the\nswaggertype override is needed because swag still resolves the\nunderlying []byte and would otherwise document this as an integer\narray instead of an object.",
+                    "type": "object"
+                },
+                "phase": {
+                    "type": "string"
                 },
                 "subscription_id": {
+                    "type": "string"
+                },
+                "to_cycle": {
                     "type": "string"
                 },
                 "to_plan": {
@@ -7067,17 +6417,20 @@ const docTemplate = `{
         "invitationPreview": {
             "type": "object",
             "properties": {
-                "invitedByEmail": {
+                "invited_by_email": {
                     "type": "string"
                 },
-                "invitedEmail": {
+                "invited_by_name": {
+                    "type": "string"
+                },
+                "invited_email": {
                     "description": "InvitedEmail is only populated on an ErrInvitationEmailMismatch\nreturn — the address the invitation actually targets.",
                     "type": "string"
                 },
-                "organizationID": {
+                "organization_id": {
                     "type": "string"
                 },
-                "organizationName": {
+                "organization_name": {
                     "type": "string"
                 },
                 "role": {
@@ -7192,6 +6545,10 @@ const docTemplate = `{
                 },
                 "due_at": {
                     "type": "string"
+                },
+                "extension_months": {
+                    "description": "ExtensionMonths is set only for kind=\"extension\" invoices — the exact\nmonths purchased, read back by applyExtensionPayment instead of\nre-derived by summing line items (service_webhook.go).",
+                    "type": "integer"
                 },
                 "id": {
                     "type": "string"
@@ -7392,14 +6749,6 @@ const docTemplate = `{
                 }
             }
         },
-        "moveFileRequest": {
-            "type": "object",
-            "properties": {
-                "folder_id": {
-                    "type": "string"
-                }
-            }
-        },
         "myInvitationRecord": {
             "type": "object",
             "properties": {
@@ -7525,9 +6874,6 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "members": {
-                    "$ref": "#/definitions/metricOverage"
-                },
-                "storage": {
                     "$ref": "#/definitions/metricOverage"
                 }
             }
@@ -7686,7 +7032,9 @@ const docTemplate = `{
                 "auto_disabled_at": {
                     "type": "string"
                 },
-                "created_at": {},
+                "created_at": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
                 },
@@ -7705,7 +7053,9 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
-                "updated_at": {},
+                "updated_at": {
+                    "type": "string"
+                },
                 "url": {
                     "type": "string"
                 }
@@ -7733,6 +7083,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "plan": {
+                    "type": "string"
+                },
+                "scheduled_cancel_at": {
+                    "type": "string"
+                },
+                "scheduled_cycle": {
+                    "type": "string"
+                },
+                "scheduled_plan": {
                     "type": "string"
                 },
                 "status": {
@@ -7771,7 +7130,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "max_extendable_months": {
-                    "description": "MaxExtendableMonths lets the frontend gate the Extend flow's counter,\n\"Switch to Annual\" option, and entry point without re-deriving the\n24-month lifetime cap from raw dates itself (see maxExtendableMonths\nin service_subscription_billing.go for why that's rejected). 0 for a\nsubscription with no current period (e.g. still trialing) — nothing\nto extend.",
+                    "description": "MaxExtendableMonths lets the frontend gate the Extend flow's counter,\n\"Switch to Annual\" option, and entry point without re-deriving the\n24-month runway cap from raw dates itself (see maxExtendableMonths\nin service_subscription_billing.go for why that's rejected). 0 for a\nsubscription with no current period (e.g. still trialing) — nothing\nto extend.",
                     "type": "integer"
                 },
                 "period_end": {
@@ -7781,6 +7140,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "plan": {
+                    "type": "string"
+                },
+                "scheduled_cancel_at": {
+                    "type": "string"
+                },
+                "scheduled_cycle": {
+                    "type": "string"
+                },
+                "scheduled_plan": {
                     "type": "string"
                 },
                 "status": {
@@ -7888,18 +7256,6 @@ const docTemplate = `{
                 }
             }
         },
-        "updateFolderRequest": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string"
-                },
-                "parent_folder_id": {
-                    "description": "ParentFolderID is only applied when explicitly present in the JSON\nbody — moveToParent distinguishes \"move to root\" (field present,\nnull) from \"don't touch the parent\" (field absent entirely).",
-                    "type": "string"
-                }
-            }
-        },
         "updateMemberRoleRequest": {
             "type": "object",
             "required": [
@@ -7951,6 +7307,7 @@ const docTemplate = `{
             ],
             "properties": {
                 "allowed_ips": {
+                    "description": "AllowedIPs is a pointer so an absent field (nil) preserves the existing\nallowlist, while an explicit \"allowed_ips\": [] clears it — the two\nGeneral Settings and Security settings tabs each PATCH this endpoint\nwith only their own fields, so omission must never wipe the other\ntab's setting.",
                     "type": "array",
                     "items": {
                         "type": "string"

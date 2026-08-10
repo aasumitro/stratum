@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
@@ -20,7 +21,16 @@ var (
 )
 
 type handler struct {
-	svc *service
+	svc             *service
+	countryResolver *geoip.Resolver
+}
+
+// resolveCountryCode resolves the caller's trusted billing country the same
+// way organization.handler.createOrganization does (geoip.Resolver.Resolve)
+// — GeoIP on their real IP, with development's debug-header override and
+// the shared "US" fallback baked into Resolve itself.
+func (h *handler) resolveCountryCode(c *gin.Context) string {
+	return h.countryResolver.Resolve(c.Request.Context(), c.ClientIP(), c.GetHeader(geoip.DebugCountryCodeHeader))
 }
 
 // listCountries godoc
@@ -61,16 +71,15 @@ func (h *handler) listCurrencies(c *gin.Context) {
 
 // listPlans godoc
 // @Summary      List billing plans
-// @Description  Returns the billing plan catalog (pricing, limits, features); delegated to the billing module's catalog reader. Pass country_code to scope each plan's prices down to the currency that country is actually billed in — omit it to get every currency.
+// @Description  Returns the billing plan catalog (pricing, limits, features); delegated to the billing module's catalog reader. Prices are scoped server-side to the currency the caller's real (GeoIP-resolved) country is billed in.
 // @Tags         reference
 // @Produce      json
 // @Security     BearerAuth
-// @Param        country_code  query  string  false  "ISO country code — scopes prices to that country's currency"
 // @Success      200  {object}  response.Payload{data=[]contracts.PlanInfo}
 // @Failure      401  {object}  response.Payload  "missing/invalid auth token"
 // @Router       /references/plans [get]
 func (h *handler) listPlans(c *gin.Context) {
-	plans, err := h.svc.listPlans(c.Request.Context(), c.Query("country_code"))
+	plans, err := h.svc.listPlans(c.Request.Context(), h.resolveCountryCode(c))
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -98,16 +107,15 @@ func (h *handler) listFeatures(c *gin.Context) {
 
 // listAddons godoc
 // @Summary      List billing addons
-// @Description  Returns the billing addon catalog; delegated to the billing module's catalog reader. Pass country_code to scope each addon's prices down to the currency that country is actually billed in — omit it to get every currency.
+// @Description  Returns the billing addon catalog; delegated to the billing module's catalog reader. Prices are scoped server-side to the currency the caller's real (GeoIP-resolved) country is billed in.
 // @Tags         reference
 // @Produce      json
 // @Security     BearerAuth
-// @Param        country_code  query  string  false  "ISO country code — scopes prices to that country's currency"
 // @Success      200  {object}  response.Payload{data=[]contracts.AddonInfo}
 // @Failure      401  {object}  response.Payload  "missing/invalid auth token"
 // @Router       /references/addons [get]
 func (h *handler) listAddons(c *gin.Context) {
-	addons, err := h.svc.listAddons(c.Request.Context(), c.Query("country_code"))
+	addons, err := h.svc.listAddons(c.Request.Context(), h.resolveCountryCode(c))
 	if err != nil {
 		response.FromError(c, err)
 		return

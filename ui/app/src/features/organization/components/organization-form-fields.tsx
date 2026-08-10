@@ -3,13 +3,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { formatPrice } from "@/features/billing/utils"
 import { slugify } from "@/lib/format"
 import { cn } from "@/lib/ui"
@@ -26,14 +19,13 @@ interface Props {
 }
 
 /**
- * Shared name/slug/country/plan fields for organization creation — rendered
+ * Shared name/slug/plan fields for organization creation — rendered
  * inside both the onboarding step and the "create another organization"
  * sheet. See use-organization-create-form.ts for why this is shared.
  */
 export function OrganizationFormFields({ formState, section = "all" }: Props) {
   const { t } = useTranslation()
-  const { form, countries, plans, plansLoading, isFirstOrganization } =
-    formState
+  const { form, plans, plansLoading, isFirstOrganization } = formState
   const showDetails = section === "details" || section === "all"
   const showPlan = section === "plan" || section === "all"
 
@@ -113,33 +105,6 @@ export function OrganizationFormFields({ formState, section = "all" }: Props) {
               </div>
             )}
           </form.Field>
-
-          <form.Field name="country_code">
-            {(field) => (
-              <div className="flex flex-col gap-1.5">
-                <Label>{t("organization.settings.countryLabel")}</Label>
-                <Select
-                  value={field.state.value}
-                  onValueChange={(v) => field.handleChange(v ?? "")}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue
-                      placeholder={t(
-                        "organization.settings.countryPlaceholder"
-                      )}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {countries.map((c) => (
-                      <SelectItem key={c.code} value={c.code}>
-                        {c.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </form.Field>
         </>
       )}
 
@@ -207,10 +172,10 @@ export function OrganizationFormFields({ formState, section = "all" }: Props) {
                         className="flex flex-col gap-2"
                       >
                         {plans.map((plan) => {
-                          // The API scopes `prices` down to a single
-                          // currency when country_code is passed (see
-                          // usePlans in billing/hooks.ts) — read whichever
-                          // one it sent back instead of assuming "USD".
+                          // The API always scopes `prices` down to a single,
+                          // server-resolved currency (see usePlans in
+                          // billing/hooks.ts) — read whichever one it sent
+                          // back instead of assuming "USD".
                           const [currency, prices] = Object.entries(
                             plan.prices
                           )[0] ?? ["USD", undefined]

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { Suspense, lazy, useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
   Dialog,
@@ -10,13 +10,31 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
+import { useOrgPlansCatalog, useInvoicePreview } from "@/features/billing/hooks"
+import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import type { BillingCycle } from "@/types/billing"
+import type { BillingCycle, SubscriptionStatus } from "@/types/billing"
 import { cn } from "@/lib/ui"
-import { DowngradeWizard } from "./downgrade-wizard"
-import { UpgradeWizard } from "./upgrade-wizard"
 import { InvoicePreviewNote } from "./invoice-preview-note"
+
+function formatDate(s?: string) {
+  if (!s) return "—"
+  return new Date(s).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}
+
+// Only entered once the user picks a downgrade/upgrade target and hits
+// Continue — kept out of this dialog's chunk so opening the plan picker
+// itself doesn't pull either wizard in.
+const DowngradeWizard = lazy(() =>
+  import("./downgrade-wizard").then((m) => ({ default: m.DowngradeWizard }))
+)
+const UpgradeWizard = lazy(() =>
+  import("./upgrade-wizard").then((m) => ({ default: m.UpgradeWizard }))
+)
 
 interface Props {
   organizationId: string
@@ -24,6 +42,7 @@ interface Props {
   currentCycle: BillingCycle
   currentPeriodEnd?: string
   currency: string
+  subscriptionStatus: SubscriptionStatus
   open: boolean
   onOpenChange: (open: boolean) => void
 }
@@ -40,6 +59,7 @@ export function PlanSelector({
   currentCycle,
   currentPeriodEnd,
   currency,
+  subscriptionStatus,
   open,
   onOpenChange,
 }: Props) {
@@ -47,13 +67,18 @@ export function PlanSelector({
   const [cycle, setCycle] = useState<BillingCycle>(currentCycle)
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
-  const { data, isLoading } = usePlans()
+  const { hasPendingInvoice } = usePermissions()
+  const { data, isLoading } = useOrgPlansCatalog(organizationId)
 
   const plans = (data?.data ?? [])
     .filter((p) => p.active)
     .sort((a, b) => a.sort_order - b.sort_order)
   const selected = plans.find((p) => p.id === selectedPlan)
   const current = plans.find((p) => p.id === currentPlan)
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself for display, rather than the
+  // `currency` prop, so this never depends on the two staying in sync.
+  const displayCurrency = Object.keys(plans[0]?.prices ?? {})[0] ?? currency
 
   const isChanging = selectedPlan !== currentPlan || cycle !== currentCycle
   const isDowngrade =
@@ -94,35 +119,40 @@ export function PlanSelector({
   // success step ever gets a chance to render.
   if (showDowngradeWizard) {
     return (
-      <DowngradeWizard
-        organizationId={organizationId}
-        open={open}
-        onOpenChange={handleOpenChange}
-        targetPlan={selectedPlan}
-        targetCycle={cycle}
-        currentPlan={currentPlan}
-        currentCycle={currentCycle}
-        currentPeriodEnd={currentPeriodEnd}
-        currency={currency}
-        onBackToPlans={() => setShowDowngradeWizard(false)}
-      />
+      <Suspense fallback={null}>
+        <DowngradeWizard
+          organizationId={organizationId}
+          open={open}
+          onOpenChange={handleOpenChange}
+          targetPlan={selectedPlan}
+          targetCycle={cycle}
+          currentPlan={currentPlan}
+          currentCycle={currentCycle}
+          currentPeriodEnd={currentPeriodEnd}
+          currency={currency}
+          subscriptionStatus={subscriptionStatus}
+          onBackToPlans={() => setShowDowngradeWizard(false)}
+        />
+      </Suspense>
     )
   }
 
   if (showUpgradeWizard) {
     return (
-      <UpgradeWizard
-        organizationId={organizationId}
-        open={open}
-        onOpenChange={handleOpenChange}
-        targetPlan={selectedPlan}
-        targetCycle={cycle}
-        currentPlan={currentPlan}
-        currentCycle={currentCycle}
-        currentPeriodEnd={currentPeriodEnd}
-        currency={currency}
-        onBackToPlans={() => setShowUpgradeWizard(false)}
-      />
+      <Suspense fallback={null}>
+        <UpgradeWizard
+          organizationId={organizationId}
+          open={open}
+          onOpenChange={handleOpenChange}
+          targetPlan={selectedPlan}
+          targetCycle={cycle}
+          currentPlan={currentPlan}
+          currentCycle={currentCycle}
+          currentPeriodEnd={currentPeriodEnd}
+          currency={currency}
+          onBackToPlans={() => setShowUpgradeWizard(false)}
+        />
+      </Suspense>
     )
   }
 
@@ -166,7 +196,7 @@ export function PlanSelector({
             {plans.map((plan) => {
               const isCustom = plan.id === "custom"
               const isCurrent = plan.id === currentPlan
-              const prices = plan.prices[currency] ?? plan.prices["USD"]
+              const prices = plan.prices[displayCurrency]
               const amount = prices
                 ? cycle === "monthly"
                   ? prices.monthly
@@ -199,7 +229,7 @@ export function PlanSelector({
                       </span>
                     ) : (
                       <span className="text-muted-foreground">
-                        {formatPrice(amount, currency, cycle, t)}
+                        {formatPrice(amount, displayCurrency, cycle, t)}
                       </span>
                     )}
                   </div>
@@ -214,13 +244,26 @@ export function PlanSelector({
           </div>
         )}
 
-        {isChanging && selectedPlan !== "custom" && (
-          <InvoicePreviewNote
-            preview={preview}
-            loading={previewLoading}
-            currentPeriodEnd={currentPeriodEnd}
-          />
-        )}
+        {isChanging &&
+          selectedPlan !== "custom" &&
+          (isDowngrade && subscriptionStatus !== "trialing" ? (
+            <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+              <b className="text-foreground">
+                {t("billing.plans.noChargeToday")}
+              </b>{" "}
+              {t("billing.downgrade.scheduledReviewNote", {
+                date: formatDate(currentPeriodEnd),
+              })}
+            </p>
+          ) : (
+            <InvoicePreviewNote
+              preview={preview}
+              loading={previewLoading}
+              currentPeriodEnd={currentPeriodEnd}
+              planName={selected?.name ?? selectedPlan}
+              hasPendingInvoice={hasPendingInvoice}
+            />
+          ))}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => handleOpenChange(false)}>

@@ -49,7 +49,10 @@ func (r *repository) insertWebhookDelivery(
 		RETURNING `+webhookDeliveryColumns,
 		endpointID, eventID, eventType,
 	), rec)
-	return rec, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertWebhookDelivery: %w", err)
+	}
+	return rec, nil
 }
 
 // recordWebhookAttempt appends one entry to attempts_log and updates the
@@ -69,7 +72,10 @@ func (r *repository) recordWebhookAttempt(
 		WHERE id = $1`,
 		id, status, attempts, lastError, statusCode, responseBody, latencyMS, deliveredAt, logEntry,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.recordWebhookAttempt: %w", err)
+	}
+	return nil
 }
 
 type webhookDeliveryFilter struct {
@@ -107,7 +113,7 @@ func (r *repository) listWebhookDeliveries(
 	if cursor != "" {
 		ts, err := time.Parse(time.RFC3339Nano, cursor)
 		if err != nil {
-			return nil, "", fmt.Errorf("invalid cursor: %w", err)
+			return nil, "", fmt.Errorf("organization.listWebhookDeliveries: invalid cursor: %w", err)
 		}
 		conds = append(conds, fmt.Sprintf("created_at < $%d", args.Add(ts)))
 	}
@@ -117,7 +123,7 @@ func (r *repository) listWebhookDeliveries(
 
 	rows, err := q.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("organization.listWebhookDeliveries: %w", err)
 	}
 	defer rows.Close()
 
@@ -125,12 +131,12 @@ func (r *repository) listWebhookDeliveries(
 	for rows.Next() {
 		var rec webhookDeliveryRecord
 		if err := scanWebhookDelivery(rows, &rec); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("organization.listWebhookDeliveries: scan: %w", err)
 		}
 		recs = append(recs, rec)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("organization.listWebhookDeliveries: %w", err)
 	}
 
 	nextCursor := ""
@@ -155,7 +161,7 @@ func (r *repository) listFailedWebhookDeliveries(
 		endpointID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listFailedWebhookDeliveries: %w", err)
 	}
 	defer rows.Close()
 
@@ -163,11 +169,14 @@ func (r *repository) listFailedWebhookDeliveries(
 	for rows.Next() {
 		var rec webhookDeliveryRecord
 		if err := scanWebhookDelivery(rows, &rec); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listFailedWebhookDeliveries: scan: %w", err)
 		}
 		recs = append(recs, rec)
 	}
-	return recs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listFailedWebhookDeliveries: %w", err)
+	}
+	return recs, nil
 }
 
 func (r *repository) findWebhookDelivery(
@@ -181,5 +190,8 @@ func (r *repository) findWebhookDelivery(
 		WHERE id = $1`,
 		deliveryID,
 	), rec)
-	return rec, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.findWebhookDelivery: %w", err)
+	}
+	return rec, nil
 }

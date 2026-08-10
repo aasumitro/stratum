@@ -1,6 +1,30 @@
 import axios, { AxiosError } from "axios"
 import { toast } from "sonner"
-import type { HTTPResponse } from "./response"
+import i18n from "@/lib/i18n"
+import type {
+  HTTPResponse,
+  ResponsePagination,
+  ResponseStatus,
+} from "./response"
+
+// Real Error instance carrying the backend's HTTPResponse envelope, so
+// `instanceof Error` / `.stack` work while `.status.code` / `.status.message`
+// keep working for every existing call site that reads them off the raw shape.
+export class ApiError extends Error {
+  readonly data: unknown
+  readonly status?: ResponseStatus
+  readonly pagination?: ResponsePagination
+  readonly next_cursor?: string
+
+  constructor(response: Partial<HTTPResponse<unknown>>) {
+    super(response.status?.message ?? "Request failed with server response")
+    this.name = "ApiError"
+    this.data = response.data
+    this.status = response.status
+    this.pagination = response.pagination
+    this.next_cursor = response.next_cursor
+  }
+}
 
 export function isHTTPResponse<T>(obj: unknown): obj is HTTPResponse<T> {
   return typeof obj === "object" && obj !== null && "status" in obj
@@ -15,10 +39,13 @@ export const SERVER_ERROR = {
 
 export function parseApiError(err: unknown, fallback: string): string {
   const e = err as {
-    response?: { data?: { status?: { message?: string } } }
-    status?: { message?: string }
+    response?: { data?: { status?: { code?: string; message?: string } } }
+    status?: { code?: string; message?: string }
   }
-  return e?.status?.message ?? e?.response?.data?.status?.message ?? fallback
+  const status = e?.status ?? e?.response?.data?.status
+  const message = status?.message ?? fallback
+  if (!status?.code) return message
+  return i18n.t(`errors.codes.${status.code}`, { defaultValue: message })
 }
 
 export const catchHTTPError = (error: unknown) => {
@@ -27,7 +54,7 @@ export const catchHTTPError = (error: unknown) => {
     const data = error.response.data
     // If backend returns your HTTPResponse shape
     if (data && typeof data === "object") {
-      throw data
+      throw new ApiError(data as Partial<HTTPResponse<unknown>>)
     }
     throw new Error("Request failed with server response")
   }

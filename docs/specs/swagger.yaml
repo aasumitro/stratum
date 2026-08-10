@@ -73,17 +73,8 @@ definitions:
     type: object
   OverageResolution:
     properties:
-      auto_selected_file_ids:
-        description: subset of RemovedFileIDs
-        items:
-          type: string
-        type: array
       auto_selected_member_subs:
         description: subset of RemovedMemberAuthSubs
-        items:
-          type: string
-        type: array
-      removed_file_ids:
         items:
           type: string
         type: array
@@ -203,22 +194,24 @@ definitions:
         type: string
       name:
         type: string
+      pending_invoice_id:
+        type: string
+      pending_quantity:
+        description: |-
+          PendingQuantity/PendingInvoiceID mirror ScheduledQuantity/ScheduledRequestedAt's shape but
+          for the opposite direction — an increase awaiting payment, not a decrease deferred to
+          renewal. Set together, cleared together (see ck_subscription_addons_pending_consistent).
+        type: integer
       prices:
         additionalProperties:
           $ref: '#/definitions/PlanPrices'
         type: object
       quantity:
         type: integer
-    type: object
-  bulkDeleteFilesRequest:
-    properties:
-      file_ids:
-        items:
-          type: string
-        minItems: 1
-        type: array
-    required:
-    - file_ids
+      scheduled_quantity:
+        type: integer
+      scheduled_requested_at:
+        type: string
     type: object
   cancelSubscriptionRequest:
     properties:
@@ -305,17 +298,6 @@ definitions:
       valid_until:
         type: string
     type: object
-  createFolderRequest:
-    properties:
-      name:
-        maxLength: 255
-        minLength: 1
-        type: string
-      parent_folder_id:
-        type: string
-    required:
-    - name
-    type: object
   createInvitationRequest:
     properties:
       email:
@@ -352,8 +334,6 @@ definitions:
         items:
           $ref: '#/definitions/createOrganizationAddonRequest'
         type: array
-      country_code:
-        type: string
       coupon_code:
         maxLength: 64
         type: string
@@ -428,10 +408,6 @@ definitions:
         type: string
       plan:
         type: string
-      preferred_file_ids:
-        items:
-          type: string
-        type: array
       preferred_member_auth_subs:
         items:
           type: string
@@ -486,46 +462,6 @@ definitions:
       switch_to_annual:
         type: boolean
     type: object
-  fileRecord:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      folder_id:
-        type: string
-      id:
-        type: string
-      mime_type:
-        type: string
-      name:
-        type: string
-      organization_id:
-        type: string
-      path:
-        type: string
-      size_bytes:
-        type: integer
-    type: object
-  folderRecord:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      id:
-        type: string
-      name:
-        type: string
-      organization_id:
-        type: string
-      parent_folder_id:
-        type: string
-      updated_at:
-        type: string
-    type: object
   historyView:
     properties:
       action:
@@ -543,15 +479,27 @@ definitions:
         type: string
       currency:
         type: string
+      effective_at:
+        type: string
+      from_cycle:
+        type: string
       from_plan:
         type: string
       id:
         type: string
       metadata:
-        items:
-          type: integer
-        type: array
+        description: |-
+          json.RawMessage (not []byte) so encoding/json embeds the jsonb
+          column's content verbatim instead of base64-encoding it; the
+          swaggertype override is needed because swag still resolves the
+          underlying []byte and would otherwise document this as an integer
+          array instead of an object.
+        type: object
+      phase:
+        type: string
       subscription_id:
+        type: string
+      to_cycle:
         type: string
       to_plan:
         type: string
@@ -586,16 +534,18 @@ definitions:
     type: object
   invitationPreview:
     properties:
-      invitedByEmail:
+      invited_by_email:
         type: string
-      invitedEmail:
+      invited_by_name:
+        type: string
+      invited_email:
         description: |-
           InvitedEmail is only populated on an ErrInvitationEmailMismatch
           return — the address the invitation actually targets.
         type: string
-      organizationID:
+      organization_id:
         type: string
-      organizationName:
+      organization_name:
         type: string
       role:
         type: string
@@ -674,6 +624,12 @@ definitions:
         type: string
       due_at:
         type: string
+      extension_months:
+        description: |-
+          ExtensionMonths is set only for kind="extension" invoices — the exact
+          months purchased, read back by applyExtensionPayment instead of
+          re-derived by summing line items (service_webhook.go).
+        type: integer
       id:
         type: string
       invoice_number:
@@ -804,11 +760,6 @@ definitions:
       current:
         type: integer
     type: object
-  moveFileRequest:
-    properties:
-      folder_id:
-        type: string
-    type: object
   myInvitationRecord:
     properties:
       created_at:
@@ -897,8 +848,6 @@ definitions:
   overagePreview:
     properties:
       members:
-        $ref: '#/definitions/metricOverage'
-      storage:
         $ref: '#/definitions/metricOverage'
     type: object
   pagination:
@@ -1002,7 +951,8 @@ definitions:
     properties:
       auto_disabled_at:
         type: string
-      created_at: {}
+      created_at:
+        type: string
       enabled:
         type: boolean
       health:
@@ -1015,7 +965,8 @@ definitions:
         items:
           type: string
         type: array
-      updated_at: {}
+      updated_at:
+        type: string
       url:
         type: string
     type: object
@@ -1034,6 +985,12 @@ definitions:
       period_start:
         type: string
       plan:
+        type: string
+      scheduled_cancel_at:
+        type: string
+      scheduled_cycle:
+        type: string
+      scheduled_plan:
         type: string
       status:
         type: string
@@ -1062,7 +1019,7 @@ definitions:
         description: |-
           MaxExtendableMonths lets the frontend gate the Extend flow's counter,
           "Switch to Annual" option, and entry point without re-deriving the
-          24-month lifetime cap from raw dates itself (see maxExtendableMonths
+          24-month runway cap from raw dates itself (see maxExtendableMonths
           in service_subscription_billing.go for why that's rejected). 0 for a
           subscription with no current period (e.g. still trialing) — nothing
           to extend.
@@ -1072,6 +1029,12 @@ definitions:
       period_start:
         type: string
       plan:
+        type: string
+      scheduled_cancel_at:
+        type: string
+      scheduled_cycle:
+        type: string
+      scheduled_plan:
         type: string
       status:
         type: string
@@ -1141,17 +1104,6 @@ definitions:
     required:
     - auth_sub
     type: object
-  updateFolderRequest:
-    properties:
-      name:
-        type: string
-      parent_folder_id:
-        description: |-
-          ParentFolderID is only applied when explicitly present in the JSON
-          body — moveToParent distinguishes "move to root" (field present,
-          null) from "don't touch the parent" (field absent entirely).
-        type: string
-    type: object
   updateMemberRoleRequest:
     properties:
       role:
@@ -1185,6 +1137,12 @@ definitions:
   updateSettingsRequest:
     properties:
       allowed_ips:
+        description: |-
+          AllowedIPs is a pointer so an absent field (nil) preserves the existing
+          allowlist, while an explicit "allowed_ips": [] clears it — the two
+          General Settings and Security settings tabs each PATCH this endpoint
+          with only their own fields, so omission must never wipe the other
+          tab's setting.
         items:
           type: string
         type: array
@@ -1363,14 +1321,14 @@ paths:
             $ref: '#/definitions/Payload'
         "422":
           description: invitation not found, expired, email mismatch, already a member,
-            or plan limit reached
+            plan limit reached, or organization not active
           schema:
             $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Accept an invitation
       tags:
-      - organization
+      - invitations
   /invitations/decline:
     post:
       consumes:
@@ -1400,7 +1358,7 @@ paths:
       - BearerAuth: []
       summary: Decline an invitation
       tags:
-      - organization
+      - invitations
   /invitations/preview:
     get:
       description: Read-only invitation details (organization name, role, inviter)
@@ -1436,7 +1394,7 @@ paths:
       - BearerAuth: []
       summary: Preview an invitation
       tags:
-      - organization
+      - invitations
   /invitations/request-new:
     post:
       consumes:
@@ -1465,7 +1423,7 @@ paths:
       - BearerAuth: []
       summary: Request a fresh invitation
       tags:
-      - organization
+      - invitations
   /me:
     delete:
       description: Queues an async GDPR account-deletion task. Requires step-up MFA
@@ -1783,7 +1741,7 @@ paths:
       - BearerAuth: []
       summary: List the caller's pending invitations
       tags:
-      - organization
+      - invitations
   /me/mfa/sync:
     post:
       description: Re-fetches MFA enrollment status from Supabase and persists it.
@@ -1813,8 +1771,11 @@ paths:
       - account
   /me/notifications:
     get:
-      description: Returns the caller's notifications. Page-based (limit/page) unless
-        a cursor is supplied, in which case it switches to cursor pagination.
+      description: Returns the caller's notifications. Cursor pagination (response
+        carries next_cursor, no total) once a cursor is supplied, or by default when
+        neither cursor nor page is given and another page exists. Sending an explicit
+        page forces page-based pagination (response carries total) even on a full
+        page.
       parameters:
       - description: filter by organization
         in: query
@@ -1828,7 +1789,8 @@ paths:
         in: query
         name: limit
         type: integer
-      - description: page number, ignored once cursor is set (default 1)
+      - description: page number; sending this forces page-based pagination (default
+          1)
         in: query
         name: page
         type: integer
@@ -2218,7 +2180,8 @@ paths:
       consumes:
       - application/json
       description: Creates a new organization owned by the caller. Plan and cycle
-        are required and validated against the billing catalog.
+        are required and validated against the billing catalog. Billing country/currency
+        is resolved server-side from the caller's IP, not client-supplied.
       parameters:
       - description: Organization fields
         in: body
@@ -2540,6 +2503,9 @@ paths:
       - billing
   /organizations/{organizationID}/billing/addons:
     get:
+      description: |-
+        Each addon's prices map holds exactly one currency — the subscription's own
+        (sub.Currency), never every currency the catalog stores.
       parameters:
       - description: Organization ID
         in: path
@@ -2572,7 +2538,13 @@ paths:
     post:
       consumes:
       - application/json
-      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      description: |-
+        Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled. On a
+        trialing subscription the requested quantity applies immediately. On any other
+        subscription status, an increase (including a brand-new attach) instead creates a
+        day-prorated invoice and returns the addon record with pending_quantity/
+        pending_invoice_id set — the live quantity only rises once that invoice is
+        confirmed paid. A decrease still schedules for the next renewal.
       parameters:
       - description: Organization ID
         in: path
@@ -2585,9 +2557,18 @@ paths:
         required: true
         schema:
           $ref: '#/definitions/attachAddonRequest'
+      produces:
+      - application/json
       responses:
-        "204":
-          description: no content
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/attachedAddonRecord'
+              type: object
         "401":
           description: missing/invalid auth token
           schema:
@@ -2635,6 +2616,84 @@ paths:
       summary: Detach an addon
       tags:
       - billing
+  /organizations/{organizationID}/billing/addons/{addonID}/undo:
+    post:
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Addon ID
+        in: path
+        name: addonID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/attachedAddonRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: nothing scheduled to undo
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Undo a scheduled addon quantity change
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/addons/catalog:
+    get:
+      description: |-
+        Same catalog as GET /references/addons (unattached options, not what's already
+        on this subscription), but prices are scoped to the subscription's own
+        already-fixed currency instead of the caller's GeoIP-resolved one.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/AddonInfo'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List the addon catalog, scoped to this subscription's currency
+      tags:
+      - billing
   /organizations/{organizationID}/billing/cancel:
     post:
       consumes:
@@ -2679,6 +2738,44 @@ paths:
       security:
       - BearerAuth: []
       summary: Cancel the subscription
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/cancel/undo:
+    post:
+      description: Owner only.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/subscriptionRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: nothing scheduled to undo
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Undo a scheduled cancellation
       tags:
       - billing
   /organizations/{organizationID}/billing/coupons:
@@ -2793,6 +2890,44 @@ paths:
       security:
       - BearerAuth: []
       summary: Downgrade the subscription plan and resolve overage
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/downgrade/undo:
+    post:
+      description: Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  $ref: '#/definitions/subscriptionRecord'
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: nothing scheduled to undo
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Undo a scheduled plan downgrade
       tags:
       - billing
   /organizations/{organizationID}/billing/extend:
@@ -3162,6 +3297,41 @@ paths:
       summary: Change the subscription plan
       tags:
       - billing
+  /organizations/{organizationID}/billing/plans/catalog:
+    get:
+      description: |-
+        Same catalog as GET /references/plans, but prices are scoped to the
+        subscription's own already-fixed currency instead of the caller's GeoIP-resolved
+        one — correct for an existing subscription, which never changes currency.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/PlanInfo'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List the plan catalog, scoped to this subscription's currency
+      tags:
+      - billing
   /organizations/{organizationID}/billing/preview:
     get:
       description: Read-only proration preview. With no query params, previews the
@@ -3303,545 +3473,6 @@ paths:
       summary: Record a manual usage correction
       tags:
       - billing
-  /organizations/{organizationID}/files:
-    get:
-      description: Cursor-paginated file listing, optionally scoped to a folder or
-        filtered by search. Admin/owner only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: filter by folder
-        in: query
-        name: folder_id
-        type: string
-      - description: filter by name
-        in: query
-        name: search
-        type: string
-      - description: search across all folders instead of just folder_id
-        in: query
-        name: search_all
-        type: boolean
-      - description: pagination cursor from a previous response
-        in: query
-        name: cursor
-        type: string
-      - description: max results (default 20, max 100)
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  properties:
-                    items:
-                      items:
-                        $ref: '#/definitions/fileRecord'
-                      type: array
-                    next_cursor:
-                      type: string
-                  type: object
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: List files
-      tags:
-      - organization
-    post:
-      consumes:
-      - multipart/form-data
-      description: Admin/owner only. Max 50MB.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: File to upload
-        in: formData
-        name: file
-        required: true
-        type: file
-      - description: Destination folder ID (root if omitted)
-        in: formData
-        name: folder_id
-        type: string
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  $ref: '#/definitions/fileRecord'
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-        "422":
-          description: missing file or too large
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Upload a file
-      tags:
-      - organization
-  /organizations/{organizationID}/files/{fileID}:
-    delete:
-      description: Moves a file to trash. Admin/owner only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: File ID
-        in: path
-        name: fileID
-        required: true
-        type: string
-      responses:
-        "204":
-          description: no content
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Soft-delete a file
-      tags:
-      - organization
-    patch:
-      consumes:
-      - application/json
-      description: Changes a file's folder (null moves it to root). Admin/owner only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: File ID
-        in: path
-        name: fileID
-        required: true
-        type: string
-      - description: Destination folder
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/moveFileRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  $ref: '#/definitions/fileRecord'
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-        "422":
-          description: validation failed
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Move a file
-      tags:
-      - organization
-  /organizations/{organizationID}/files/{fileID}/download:
-    get:
-      description: Redirects to a short-lived signed download URL. Admin/owner only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: File ID
-        in: path
-        name: fileID
-        required: true
-        type: string
-      responses:
-        "302":
-          description: redirect to signed URL
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-        "404":
-          description: file not found
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Download a file
-      tags:
-      - organization
-  /organizations/{organizationID}/files/{fileID}/permanent:
-    delete:
-      description: Irreversibly deletes a soft-deleted file and its stored object.
-        Admin/owner only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: File ID
-        in: path
-        name: fileID
-        required: true
-        type: string
-      responses:
-        "204":
-          description: no content
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Permanently delete a file
-      tags:
-      - organization
-  /organizations/{organizationID}/files/{fileID}/restore:
-    post:
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: File ID
-        in: path
-        name: fileID
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  $ref: '#/definitions/fileRecord'
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Restore a file from trash
-      tags:
-      - organization
-  /organizations/{organizationID}/files/bulk-delete:
-    post:
-      consumes:
-      - application/json
-      description: Admin/owner only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: File IDs to delete
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/bulkDeleteFilesRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  properties:
-                    deleted_count:
-                      type: integer
-                  type: object
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-        "422":
-          description: validation failed
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Bulk soft-delete files
-      tags:
-      - organization
-  /organizations/{organizationID}/files/folders:
-    get:
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  items:
-                    $ref: '#/definitions/folderRecord'
-                  type: array
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: List folders
-      tags:
-      - organization
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: Folder fields
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/createFolderRequest'
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  $ref: '#/definitions/folderRecord'
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-        "422":
-          description: validation failed
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Create a folder
-      tags:
-      - organization
-  /organizations/{organizationID}/files/folders/{folderID}:
-    delete:
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: Folder ID
-        in: path
-        name: folderID
-        required: true
-        type: string
-      responses:
-        "204":
-          description: no content
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Delete a folder
-      tags:
-      - organization
-    patch:
-      consumes:
-      - application/json
-      description: Rename and/or move a folder. parent_folder_id is only applied when
-        the field is explicitly present in the body (null moves to root; omitted leaves
-        the parent unchanged). Admin/owner only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: Folder ID
-        in: path
-        name: folderID
-        required: true
-        type: string
-      - description: Fields to update
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/updateFolderRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  $ref: '#/definitions/folderRecord'
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-        "422":
-          description: validation failed
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Update a folder
-      tags:
-      - organization
-  /organizations/{organizationID}/files/trash:
-    get:
-      description: Returns up to the 50 most recently soft-deleted files. Admin/owner
-        only.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  items:
-                    $ref: '#/definitions/fileRecord'
-                  type: array
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: admin role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: List deleted files
-      tags:
-      - organization
   /organizations/{organizationID}/invitations:
     get:
       parameters:
@@ -3876,7 +3507,7 @@ paths:
       - BearerAuth: []
       summary: List organization invitations
       tags:
-      - organization
+      - invitations
     post:
       consumes:
       - application/json
@@ -3920,7 +3551,7 @@ paths:
       - BearerAuth: []
       summary: Invite a member by email
       tags:
-      - organization
+      - invitations
   /organizations/{organizationID}/invitations/{invitationID}:
     delete:
       parameters:
@@ -3949,7 +3580,7 @@ paths:
       - BearerAuth: []
       summary: Revoke an invitation
       tags:
-      - organization
+      - invitations
   /organizations/{organizationID}/invite-code:
     patch:
       consumes:
@@ -4907,13 +4538,8 @@ paths:
   /references/addons:
     get:
       description: Returns the billing addon catalog; delegated to the billing module's
-        catalog reader. Pass country_code to scope each addon's prices down to the
-        currency that country is actually billed in — omit it to get every currency.
-      parameters:
-      - description: ISO country code — scopes prices to that country's currency
-        in: query
-        name: country_code
-        type: string
+        catalog reader. Prices are scoped server-side to the currency the caller's
+        real (GeoIP-resolved) country is billed in.
       produces:
       - application/json
       responses:
@@ -5019,14 +4645,8 @@ paths:
   /references/plans:
     get:
       description: Returns the billing plan catalog (pricing, limits, features); delegated
-        to the billing module's catalog reader. Pass country_code to scope each plan's
-        prices down to the currency that country is actually billed in — omit it to
-        get every currency.
-      parameters:
-      - description: ISO country code — scopes prices to that country's currency
-        in: query
-        name: country_code
-        type: string
+        to the billing module's catalog reader. Prices are scoped server-side to the
+        currency the caller's real (GeoIP-resolved) country is billed in.
       produces:
       - application/json
       responses:

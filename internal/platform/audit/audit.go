@@ -142,20 +142,29 @@ func (w *Writer) run() {
 // batching Writer. For call sites outside the /api/v1 middleware chain
 // (e.g. webhook routes) that have no request to hang Middleware off of but
 // still need an audit trail.
-func InsertDirect(ctx context.Context, q db.Querier, actor, action, resource string, statusCode int, metadata []byte) error {
+func InsertDirect(
+	ctx context.Context, q db.Querier,
+	actor, action, resource string,
+	statusCode int, metadata []byte,
+) error {
 	_, err := q.Exec(ctx, `
 		INSERT INTO audit.events (actor, action, resource, status_code, metadata)
 		VALUES ($1, $2, $3, $4, $5)`,
 		actor, action, resource, statusCode, metadata,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("audit.InsertDirect: %w", err)
+	}
+	return nil
 }
 
 // AnonymizeActor replaces actor with a placeholder across a user's audit
 // events — used by the GDPR account-deletion flow.
 func AnonymizeActor(ctx context.Context, pool *pgxpool.Pool, authSub string) error {
-	_, err := pool.Exec(ctx, `UPDATE audit.events SET actor = 'deleted_user' WHERE actor = $1`, authSub)
-	return err
+	if _, err := pool.Exec(ctx, `UPDATE audit.events SET actor = 'deleted_user' WHERE actor = $1`, authSub); err != nil {
+		return fmt.Errorf("audit.AnonymizeActor: %w", err)
+	}
+	return nil
 }
 
 func (w *Writer) cleanup() {
@@ -357,13 +366,16 @@ func (f Filter) apply(query string, args *db.Args) string {
 
 // ListByOrganization returns audit events for an organization, newest first,
 // optionally narrowed by filter.
-func ListByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationID string, limit, offset int, filter Filter) ([]EventRecord, int64, error) {
+func ListByOrganization(
+	ctx context.Context, pool *pgxpool.Pool,
+	organizationID string, limit, offset int, filter Filter,
+) ([]EventRecord, int64, error) {
 	countQuery := `SELECT COUNT(*) FROM audit.events WHERE organization_id = $1`
 	countArgs := db.NewArgs(organizationID)
 	countQuery = filter.apply(countQuery, countArgs)
 	var total int64
 	if err := pool.QueryRow(ctx, countQuery, countArgs.Values()...).Scan(&total); err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("audit.ListByOrganization: count: %w", err)
 	}
 
 	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
@@ -374,7 +386,7 @@ func ListByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationID 
 
 	rows, err := pool.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("audit.ListByOrganization: %w", err)
 	}
 	defer rows.Close()
 
@@ -383,18 +395,24 @@ func ListByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationID 
 		var e EventRecord
 		if err := rows.Scan(&e.ID, &e.OrganizationID, &e.Actor, &e.Action, &e.Resource,
 			&e.StatusCode, &e.Metadata, &e.IP, &e.UserAgent, &e.CreatedAt); err != nil {
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("audit.ListByOrganization: scan: %w", err)
 		}
 		out = append(out, e)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("audit.ListByOrganization: %w", err)
+	}
+	return out, total, nil
 }
 
 // ListByOrganizationCursor returns audit events for an organization using cursor-based pagination,
 // newest first, optionally narrowed by filter. Pass an empty cursor to get
 // the first page. Returns events and the next cursor (empty when there are
 // no more pages).
-func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizationID string, limit int, cursor string, filter Filter) ([]EventRecord, string, error) {
+func ListByOrganizationCursor(
+	ctx context.Context, pool *pgxpool.Pool,
+	organizationID string, limit int, cursor string, filter Filter,
+) ([]EventRecord, string, error) {
 	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
 		FROM audit.events WHERE organization_id = $1`
 	args := db.NewArgs(organizationID)
@@ -402,14 +420,23 @@ func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizat
 	query = filter.apply(query, args)
 
 	if cursor != "" {
-		query += fmt.Sprintf(" AND id < $%d", args.Add(cursor))
+		parts := strings.SplitN(cursor, "_", 2)
+		if len(parts) == 2 {
+			ts, err := time.Parse(time.RFC3339Nano, parts[0])
+			if err != nil {
+				return nil, "", fmt.Errorf("audit.ListByOrganizationCursor: invalid cursor timestamp: %w", err)
+			}
+			query += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d::uuid)", args.Add(ts), args.Add(parts[1]))
+		} else {
+			return nil, "", fmt.Errorf("audit.ListByOrganizationCursor: invalid cursor format")
+		}
 	}
 
-	query += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", args.Add(limit))
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", args.Add(limit))
 
 	rows, err := pool.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("audit.ListByOrganizationCursor: %w", err)
 	}
 	defer rows.Close()
 
@@ -420,17 +447,17 @@ func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizat
 			&e.ID, &e.OrganizationID, &e.Actor, &e.Action, &e.Resource,
 			&e.StatusCode, &e.Metadata, &e.IP, &e.UserAgent, &e.CreatedAt,
 		); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("audit.ListByOrganizationCursor: scan: %w", err)
 		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("audit.ListByOrganizationCursor: %w", err)
 	}
 
 	nextCursor := ""
 	if len(out) == limit {
-		nextCursor = out[len(out)-1].ID
+		nextCursor = fmt.Sprintf("%s_%s", out[len(out)-1].CreatedAt.Format(time.RFC3339Nano), out[len(out)-1].ID)
 	}
 	return out, nextCursor, nil
 }
@@ -446,7 +473,10 @@ func ListByOrganizationCursor(ctx context.Context, pool *pgxpool.Pool, organizat
 // Unlike ListByOrganizationCursor, this paginates by created_at rather than id:
 // audit.events.id is gen_random_uuid() (random v4, not time-ordered), so
 // "ORDER BY id DESC" does not actually mean newest-first.
-func ListByActorCursor(ctx context.Context, pool *pgxpool.Pool, authSub string, limit int, cursor string, from, to *time.Time) ([]EventRecord, string, error) {
+func ListByActorCursor(
+	ctx context.Context, pool *pgxpool.Pool,
+	authSub string, limit int, cursor string, from, to *time.Time,
+) ([]EventRecord, string, error) {
 	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
 		FROM audit.events WHERE actor = $1`
 	args := db.NewArgs(authSub)
@@ -461,7 +491,7 @@ func ListByActorCursor(ctx context.Context, pool *pgxpool.Pool, authSub string, 
 	if cursor != "" {
 		ts, err := time.Parse(time.RFC3339Nano, cursor)
 		if err != nil {
-			return nil, "", fmt.Errorf("invalid cursor: %w", err)
+			return nil, "", fmt.Errorf("audit.ListByActorCursor: invalid cursor: %w", err)
 		}
 		query += fmt.Sprintf(" AND created_at < $%d", args.Add(ts))
 	}
@@ -470,7 +500,7 @@ func ListByActorCursor(ctx context.Context, pool *pgxpool.Pool, authSub string, 
 
 	rows, err := pool.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("audit.ListByActorCursor: %w", err)
 	}
 	defer rows.Close()
 
@@ -481,19 +511,19 @@ func ListByActorCursor(ctx context.Context, pool *pgxpool.Pool, authSub string, 
 			&e.ID, &e.OrganizationID, &e.Actor, &e.Action, &e.Resource,
 			&e.StatusCode, &e.Metadata, &e.IP, &e.UserAgent, &e.CreatedAt,
 		); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("audit.ListByActorCursor: scan: %w", err)
 		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("audit.ListByActorCursor: %w", err)
 	}
 
 	nextCursor := ""
 	if len(out) == limit {
-		// ponytail: cursor keys on created_at alone, not (created_at, id) — two
-		// events landing in the same nanosecond could skip/duplicate one row at
-		// a page boundary. Fine for a personal audit trail; use a composite
+		// Cursor keys on created_at alone, not (created_at, id) — two events
+		// landing in the same nanosecond could skip/duplicate one row at a
+		// page boundary. Fine for a personal audit trail; use a composite
 		// keyset cursor if this ever needs stronger pagination guarantees.
 		nextCursor = out[len(out)-1].CreatedAt.Format(time.RFC3339Nano)
 	}
@@ -525,12 +555,18 @@ func csvSafe(s string) string {
 // Unlike ExportByOrganization, organization_id can be NULL here (e.g. /me routes
 // aren't scoped to an organization) and the actor column is omitted — it's
 // always the same value, so it'd be redundant on every row.
-func ExportByActor(ctx context.Context, pool *pgxpool.Pool, authSub string, from, to *time.Time, w io.Writer) error {
+func ExportByActor(
+	ctx context.Context, pool *pgxpool.Pool,
+	authSub string, from, to *time.Time, w io.Writer,
+) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	if err := cw.Write([]string{"id", "organization_id", "action", "resource", "status_code", "ip", "user_agent", "created_at"}); err != nil {
-		return err
+	if err := cw.Write([]string{
+		"id", "organization_id", "action", "resource",
+		"status_code", "ip", "user_agent", "created_at",
+	}); err != nil {
+		return fmt.Errorf("audit.ExportByActor: write header: %w", err)
 	}
 
 	query := `SELECT id, organization_id, action, resource, status_code, ip, user_agent, created_at FROM audit.events WHERE actor = $1`
@@ -545,7 +581,7 @@ func ExportByActor(ctx context.Context, pool *pgxpool.Pool, authSub string, from
 
 	rows, err := pool.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return err
+		return fmt.Errorf("audit.ExportByActor: %w", err)
 	}
 	defer rows.Close()
 
@@ -555,31 +591,40 @@ func ExportByActor(ctx context.Context, pool *pgxpool.Pool, authSub string, from
 		var code int
 		var ts time.Time
 		if err := rows.Scan(&id, &orgID, &action, &resource, &code, &ip, &ua, &ts); err != nil {
-			return err
+			return fmt.Errorf("audit.ExportByActor: scan: %w", err)
 		}
 		orgCol := ""
 		if orgID != nil {
 			orgCol = *orgID
 		}
 		if err := cw.Write([]string{id, orgCol, csvSafe(action), csvSafe(resource), strconv.Itoa(code), ip, csvSafe(ua), ts.Format(time.RFC3339)}); err != nil {
-			return err
+			return fmt.Errorf("audit.ExportByActor: write row: %w", err)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return fmt.Errorf("audit.ExportByActor: %w", err)
 	}
-	return cw.Error()
+	if err := cw.Error(); err != nil {
+		return fmt.Errorf("audit.ExportByActor: %w", err)
+	}
+	return nil
 }
 
 // ExportByOrganization streams audit events for an organization as CSV to
 // w, honoring the same filter as ListByOrganizationCursor so the export
 // matches whatever the admin currently has on screen.
-func ExportByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationID string, filter Filter, w io.Writer) error {
+func ExportByOrganization(
+	ctx context.Context, pool *pgxpool.Pool,
+	organizationID string, filter Filter, w io.Writer,
+) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	if err := cw.Write([]string{"id", "organization_id", "actor", "action", "resource", "status_code", "ip", "user_agent", "created_at"}); err != nil {
-		return err
+	if err := cw.Write([]string{
+		"id", "organization_id", "actor", "action", "resource",
+		"status_code", "ip", "user_agent", "created_at",
+	}); err != nil {
+		return fmt.Errorf("audit.ExportByOrganization: write header: %w", err)
 	}
 
 	query := `SELECT id, organization_id, actor, action, resource, status_code, ip, user_agent, created_at FROM audit.events WHERE organization_id = $1`
@@ -589,7 +634,7 @@ func ExportByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationI
 
 	rows, err := pool.Query(ctx, query, args.Values()...)
 	if err != nil {
-		return err
+		return fmt.Errorf("audit.ExportByOrganization: %w", err)
 	}
 	defer rows.Close()
 
@@ -598,14 +643,20 @@ func ExportByOrganization(ctx context.Context, pool *pgxpool.Pool, organizationI
 		var code int
 		var ts time.Time
 		if err := rows.Scan(&id, &orgID, &actor, &action, &resource, &code, &ip, &ua, &ts); err != nil {
-			return err
+			return fmt.Errorf("audit.ExportByOrganization: scan: %w", err)
 		}
-		if err := cw.Write([]string{id, orgID, csvSafe(actor), csvSafe(action), csvSafe(resource), strconv.Itoa(code), ip, csvSafe(ua), ts.Format(time.RFC3339)}); err != nil {
-			return err
+		if err := cw.Write([]string{
+			id, orgID, csvSafe(actor), csvSafe(action), csvSafe(resource),
+			strconv.Itoa(code), ip, csvSafe(ua), ts.Format(time.RFC3339),
+		}); err != nil {
+			return fmt.Errorf("audit.ExportByOrganization: write row: %w", err)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return fmt.Errorf("audit.ExportByOrganization: %w", err)
 	}
-	return cw.Error()
+	if err := cw.Error(); err != nil {
+		return fmt.Errorf("audit.ExportByOrganization: %w", err)
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -70,6 +71,18 @@ func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx Querier) error) 
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
+	// Without this, a panic inside fn unwinds past the error-handling
+	// rollback below entirely — neither Commit nor Rollback ever runs, so
+	// the leased pool connection is never released even though an outer
+	// recovery middleware catches the panic and the request survives.
+	// Rolling back here and re-panicking guarantees cleanup without
+	// swallowing the panic itself.
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback(ctx)
+			panic(p)
+		}
+	}()
 
 	if err := fn(tx); err != nil {
 		if rbErr := tx.Rollback(ctx); rbErr != nil {
@@ -86,11 +99,18 @@ func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx Querier) error) 
 
 type pendingEventsKey struct{}
 
+// pendingEventsQueue guards its slice with a mutex — QueueEvent may be
+// called from goroutines spawned within the same request/transaction, and
+// appending to a shared slice without synchronization is a data race.
+type pendingEventsQueue struct {
+	mu     sync.Mutex
+	events []func()
+}
+
 // WithPendingEvents installs an empty pending-events queue into ctx, scoped
 // to one request/transaction. Call once, before the transaction begins.
 func WithPendingEvents(ctx context.Context) context.Context {
-	q := make([]func(), 0)
-	return context.WithValue(ctx, pendingEventsKey{}, &q)
+	return context.WithValue(ctx, pendingEventsKey{}, &pendingEventsQueue{})
 }
 
 // QueueEvent defers fn until FlushPendingEvents runs — used to publish a
@@ -100,21 +120,32 @@ func WithPendingEvents(ctx context.Context) context.Context {
 // carries no queue (no enclosing transaction set one up), fn runs
 // immediately — there's nothing to defer it past.
 func QueueEvent(ctx context.Context, fn func()) {
-	if q, ok := ctx.Value(pendingEventsKey{}).(*[]func()); ok {
-		*q = append(*q, fn)
+	q, ok := ctx.Value(pendingEventsKey{}).(*pendingEventsQueue)
+	if !ok {
+		fn()
 		return
 	}
-	fn()
+	q.mu.Lock()
+	q.events = append(q.events, fn)
+	q.mu.Unlock()
 }
 
 // FlushPendingEvents runs every event queued via QueueEvent, in order, then
 // clears the queue. Call only after a successful commit — never after a
 // rollback, since the queued events describe state that was just discarded.
 func FlushPendingEvents(ctx context.Context) {
-	if q, ok := ctx.Value(pendingEventsKey{}).(*[]func()); ok {
-		for _, fn := range *q {
-			fn()
-		}
-		*q = nil
+	q, ok := ctx.Value(pendingEventsKey{}).(*pendingEventsQueue)
+	if !ok {
+		return
+	}
+	// Copy the queue out and release the lock before running events —
+	// an event running QueueEvent (re-entrant) would otherwise deadlock.
+	q.mu.Lock()
+	events := q.events
+	q.events = nil
+	q.mu.Unlock()
+
+	for _, fn := range events {
+		fn()
 	}
 }

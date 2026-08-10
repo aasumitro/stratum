@@ -3,12 +3,12 @@ import { useTranslation } from "react-i18next"
 import { IconX } from "@tabler/icons-react"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { SidebarCardStack } from "@/components/layout/sidebar-card-stack"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
+import { useWebhooks } from "@/features/organization/hooks/use-webhooks"
 import {
-  useOrganizationMembers,
-  useOrganizationFiles,
-  useWebhooks,
-} from "@/features/organization/hooks"
-import { useBillingSubscription } from "@/features/billing/hooks"
+  useBillingFeatures,
+  useBillingSubscription,
+} from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { cn } from "@/lib/ui"
 
@@ -31,24 +31,28 @@ export function SidebarSetupCards({
   const { t } = useTranslation()
   const perms = usePermissions()
   const { data: subscriptionData } = useBillingSubscription(organizationId)
+  const { data: featuresData } = useBillingFeatures(organizationId)
+  const membersFeature = (featuresData?.data ?? []).find(
+    (f) => f.feature_id === "members"
+  )
+  // -1 is the "unlimited" sentinel (Custom plan); `limit` already includes
+  // purchased add-on seats, same rule as the Settings page Members gate.
+  const isMemberSeatLocked =
+    membersFeature?.limit != null &&
+    membersFeature.limit !== -1 &&
+    membersFeature.limit <= 1
+  const hasWebhooksFeature = (featuresData?.data ?? []).some(
+    (f) => f.feature_id === "webhooks"
+  )
   const { data: membersData } = useOrganizationMembers(organizationId)
   const { data: webhooksData } = useWebhooks(
     organizationId,
     perms.canAccessWebhooks
   )
-  const { data: filesData } = useOrganizationFiles(
-    organizationId,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    perms.canAccessFiles
-  )
   const subscription = subscriptionData?.data
   const trialDays = daysLeft(subscription?.trial_end)
   const memberCount = membersData?.data?.length ?? 0
   const webhookCount = webhooksData?.data?.length ?? 0
-  const filesCount = filesData?.data?.items?.length ?? 0
 
   const [checklistDismissed, setChecklistDismissed] = useState(
     () => localStorage.getItem(`checklist_dismissed_${organizationId}`) === "1"
@@ -61,29 +65,23 @@ export function SidebarSetupCards({
   const checklist = [
     { key: "create", done: true, labelKey: "dashboard.checklist.create" },
     { key: "profile", done: true, labelKey: "dashboard.checklist.profile" },
-    {
-      key: "invite",
-      done: memberCount > 1,
-      labelKey: "dashboard.checklist.invite",
-      href: `/organization/${organizationId}/members`,
-    },
-    ...(perms.canAccessFiles
+    ...(!isMemberSeatLocked
       ? [
           {
-            key: "file",
-            done: filesCount > 0,
-            labelKey: "dashboard.checklist.file",
-            href: `/organization/${organizationId}/files`,
+            key: "invite",
+            done: memberCount > 1,
+            labelKey: "dashboard.checklist.invite",
+            href: `/organization/${organizationId}/settings#members`,
           },
         ]
       : []),
-    ...(perms.canAccessWebhooks
+    ...(perms.canAccessWebhooks && hasWebhooksFeature
       ? [
           {
             key: "webhook",
             done: webhookCount > 0,
             labelKey: "dashboard.checklist.webhook",
-            href: `/organization/${organizationId}/webhooks`,
+            href: `/organization/${organizationId}/settings?panel=webhooks`,
           },
         ]
       : []),
@@ -93,19 +91,28 @@ export function SidebarSetupCards({
 
   const trialCard = subscription?.status === "trialing" &&
     trialDays !== null && (
-      // The sidebar's background is a fixed dark color regardless of the
-      // page's light/dark theme (--sidebar in index.css doesn't flip with
-      // .dark the way the page background does), so this can't rely on a
-      // `dark:` variant tied to that page-level toggle — it needs the
-      // dark-appropriate text color unconditionally, or it goes unreadable
-      // in light mode.
-      <div className="rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
-        {t("dashboard.trialDaysLeft", { count: trialDays })}
-      </div>
+      <Card className="flex flex-col gap-2.5 rounded-xl p-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold">
+            {t("dashboard.freeTrial")}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {t("dashboard.daysLeft", { count: trialDays })}
+          </span>
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+          <div
+            className="h-full bg-primary transition-all"
+            style={{
+              width: `${Math.max(0, Math.min(100, (trialDays / 7) * 100))}%`,
+            }}
+          />
+        </div>
+      </Card>
     )
 
   const checklistCard = showChecklist && (
-    <Card>
+    <Card className="rounded-xl">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">

@@ -22,6 +22,7 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/config"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
+	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
 func encodeUserTaskEvent(routingKey, taskID, authSub string) []byte {
@@ -139,6 +140,66 @@ func TestIntegration_DeleteAccount_Worker_RecordsFailedCleanupSteps(t *testing.T
 	}
 }
 
+// TestIntegration_DeleteAccount_Worker_AvatarDeleteFailure_RecordsFailedStep
+// proves the avatar-blob cleanup step is tracked the same way as the other
+// five best-effort steps: a failing storage backend must show up in
+// failed_steps, not be silently dropped.
+func TestIntegration_DeleteAccount_Worker_AvatarDeleteFailure_RecordsFailedStep(t *testing.T) {
+	const authSub = "integ_profile_delete_worker_avatar_fail"
+	pool := testPool(t)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+	})
+
+	e := account.NewModuleEngine(pool, authSub)
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker-avatar@test.com"}`))
+
+	wDel := httptest.NewRecorder()
+	e.ServeHTTP(wDel, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))
+	if wDel.Code != http.StatusAccepted {
+		t.Fatalf("request delete: want 202, got %d: %s", wDel.Code, wDel.Body)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(wDel.Body).Decode(&resp)
+	taskID := resp["data"].(map[string]any)["id"].(string)
+
+	failingStorage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(failingStorage.Close)
+
+	mod := account.NewModuleForTestWithStore(pool, storage.New(storage.Config{BaseURL: failingStorage.URL}))
+	if err := mod.Worker.HandleDeleteAccount(t.Context(), encodeUserTaskEvent(events.RoutingKeyUserDeleteRequest, taskID, authSub)); err != nil {
+		t.Fatalf("HandleDeleteAccount: %v", err)
+	}
+
+	var status string
+	var result []byte
+	pool.QueryRow(t.Context(), `SELECT status, result FROM account.tasks WHERE id = $1`, taskID).Scan(&status, &result)
+	if status != "completed" {
+		t.Fatalf("task status: want completed (best-effort), got %q", status)
+	}
+
+	var parsed struct {
+		Deleted     bool     `json:"deleted"`
+		FailedSteps []string `json:"failed_steps"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("unmarshal task result: %v", err)
+	}
+	if !slices.Contains(parsed.FailedSteps, "avatar") {
+		t.Errorf(`failed_steps: want "avatar" present after storage delete failure, got %v`, parsed.FailedSteps)
+	}
+
+	var userCount int
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM account.users WHERE auth_sub = $1`, authSub).Scan(&userCount)
+	if userCount != 0 {
+		t.Errorf("user should still be deleted despite the avatar cleanup failure")
+	}
+}
+
 // fakeSupabaseAdmin stands in for Supabase's GET /admin/users/:id endpoint,
 // returning a fixed set of MFA factors for any request.
 func fakeSupabaseAdmin(factors string) *httptest.Server {
@@ -216,7 +277,7 @@ func testRedisAccount(t *testing.T) *goredis.Client {
 	return c
 }
 
-// TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus regression-tests H2's
+// TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus confirms the
 // login-time refresh: a caller whose account.users.mfa_enabled is stale
 // (false, because their client never called POST /me/mfa/sync after they
 // enrolled a factor elsewhere) gets it corrected the next time
@@ -257,6 +318,41 @@ func TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus(t *testing.T) {
 	}
 	if !dbEnabled {
 		t.Error("account.users.mfa_enabled: want true after RecordLoginEvent synced a verified factor, still false")
+	}
+}
+
+// TestIntegration_RecordLoginEvent_FailsClosedOnRedisError guards against a
+// regression where the rate-gate ignored Redis errors (`exists, _ :=
+// ...Exists(...)`) and treated an unreadable gate as "not gated yet" — on
+// every authenticated request. A Redis outage would then turn into a login
+// event insert plus a Supabase Admin API call per request instead of being
+// skipped. Points the client at an address nothing listens on so
+// Exists/Set fail the same way a real outage would, with no real Redis
+// needed.
+func TestIntegration_RecordLoginEvent_FailsClosedOnRedisError(t *testing.T) {
+	const authSub = "integ_login_gate_fail_closed"
+	pool := testPool(t)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM account.login_events WHERE auth_sub = $1`, authSub)
+	})
+
+	unreachable := goredis.NewClient(&goredis.Options{
+		Addr:        "127.0.0.1:1",
+		DialTimeout: 200 * time.Millisecond,
+	})
+	defer unreachable.Close()
+
+	mod := account.NewModuleForTestWithAdminAndRedis(pool, "", "", unreachable)
+	mod.RecordLoginEvent(t.Context(), authSub, "127.0.0.1", "test-agent")
+
+	var count int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM account.login_events WHERE auth_sub = $1`, authSub,
+	).Scan(&count); err != nil {
+		t.Fatalf("count login_events: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("want 0 login_events rows when the rate-gate check errors, got %d", count)
 	}
 }
 

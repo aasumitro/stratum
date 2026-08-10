@@ -141,6 +141,64 @@ func TestIdempotency_InFlightLock_409(t *testing.T) {
 	}
 }
 
+func TestIdempotency_Concurrency(t *testing.T) {
+	ns := cache.NewNamespace(testRedis(t), "idem-conc-"+time.Now().Format("150405.000000"))
+	calls := 0
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.POST("/pay", NewIdempotencyMiddleware(ns), func(c *gin.Context) {
+		calls++
+		time.Sleep(100 * time.Millisecond) // slow handler to guarantee overlap
+		c.JSON(http.StatusOK, gin.H{"charged": true})
+	})
+
+	done := make(chan int, 2)
+	do := func() {
+		req := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{"amount":100}`))
+		req.Header.Set("Idempotency-Key", "key-concurrent")
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+		done <- w.Code
+	}
+
+	go do()
+	go do()
+
+	code1 := <-done
+	code2 := <-done
+
+	if calls != 1 {
+		t.Errorf("handler should only run once concurrently, calls = %d", calls)
+	}
+	if (code1 == http.StatusOK && code2 == http.StatusConflict) || (code2 == http.StatusOK && code1 == http.StatusConflict) {
+		// one succeeded, one got 409 conflict, which is correct
+	} else {
+		t.Errorf("expected one 200 and one 409, got %d and %d", code1, code2)
+	}
+}
+
+func TestIdempotency_RedisError_503(t *testing.T) {
+	rc := testRedis(t)
+	ns := cache.NewNamespace(rc, "idem-err")
+	calls := 0
+	e := idempotencyEngine(ns, &calls)
+
+	// Close the redis client to force a connection error
+	_ = rc.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/pay", strings.NewReader(`{}`))
+	req.Header.Set("Idempotency-Key", "key-err")
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("redis error should fail closed (503), got %d", w.Code)
+	}
+	if calls != 0 {
+		t.Errorf("handler must not run on redis error, calls = %d", calls)
+	}
+}
+
 func TestIdempotencyCacheKey_Scoping(t *testing.T) {
 	a := idempotencyCacheKey("user1", "POST", "/pay", "k")
 	b := idempotencyCacheKey("user2", "POST", "/pay", "k")

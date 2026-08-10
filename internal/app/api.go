@@ -23,6 +23,9 @@ func RunAPI() error {
 	if err := cfg.RequireWebhookSecretsOutsideDev(); err != nil {
 		return fmt.Errorf("validating config: %w", err)
 	}
+	if err := cfg.RequireGeoIPDBOutsideDev(); err != nil {
+		return fmt.Errorf("validating config: %w", err)
+	}
 
 	infra, err := bootstrap.SetupInfra(ctx, cfg)
 	if err != nil {
@@ -37,7 +40,8 @@ func RunAPI() error {
 	// Declare the billing delay exchange so the API can publish delayed messages.
 	// The parking queue is declared by the worker binary.
 	if setupCh, chErr := infra.MQConn.Channel(); chErr == nil {
-		_ = setupCh.ExchangeDeclare("billing.delay", "direct", true, false, false, false, nil)
+		_ = setupCh.ExchangeDeclare("billing.delay", "direct",
+			true, false, false, false, nil)
 		_ = setupCh.Close()
 	}
 
@@ -48,10 +52,9 @@ func RunAPI() error {
 			Key:     cfg.Auth.ServiceRoleKey,
 		})
 		if err := storageClient.EnsureBuckets(ctx, []storage.BucketConfig{
-			{Name: "users", Public: true, FileSizeLimit: 2 << 20},                // 2 MB — avatars
-			{Name: "organization", Public: true, FileSizeLimit: 10 << 20},        // 10 MB — logos
-			{Name: "organization-files", Public: false, FileSizeLimit: 50 << 20}, // 50 MB — organization files
-			{Name: "platform", Public: false},                                    // PDFs — no explicit limit
+			{Name: "users", Public: true, FileSizeLimit: 2 << 20},         // 2 MB — avatars
+			{Name: "organization", Public: true, FileSizeLimit: 10 << 20}, // 10 MB — logos
+			{Name: "platform", Public: false},                             // PDFs — no explicit limit
 		}); err != nil {
 			infra.Log.Warn("storage bucket init failed — uploads may fail until buckets are created", "error", err)
 		}

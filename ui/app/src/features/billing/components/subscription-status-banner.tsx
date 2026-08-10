@@ -21,6 +21,8 @@ interface Props {
   daysLeft: number | null
   resuming: boolean
   onResume: () => void
+  undoingCancellation: boolean
+  onUndoCancellation: () => void
 }
 
 // Every subscription state gets one banner + one action.
@@ -31,8 +33,43 @@ export function SubscriptionStatusBanner({
   daysLeft,
   resuming,
   onResume,
+  undoingCancellation,
+  onUndoCancellation,
 }: Props) {
   const { t } = useTranslation()
+
+  // Deferred cancellation: status never left "active" (the renewal worker
+  // applies it later), so this is a distinct sub-state from the genuine
+  // "cancelled" banner below rather than something status alone captures.
+  if (sub.status === "active" && sub.scheduled_cancel_at) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+        <div>
+          <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+            {t("billing.states.scheduledCancelTitle")}
+          </p>
+          <p className="mt-0.5 text-xs text-amber-600/80 dark:text-amber-500/80">
+            {t("billing.states.scheduledCancelDescription", {
+              date: formatDate(sub.period_end),
+            })}
+          </p>
+        </div>
+        {isOwner && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={undoingCancellation}
+            onClick={onUndoCancellation}
+          >
+            {undoingCancellation && (
+              <IconLoader2 data-icon="inline-start" className="animate-spin" />
+            )}
+            {t("billing.states.scheduledCancelUndo")}
+          </Button>
+        )}
+      </div>
+    )
+  }
 
   if (sub.status === "past_due") {
     return (
@@ -81,29 +118,10 @@ export function SubscriptionStatusBanner({
     )
   }
 
+  // cancelled gets its resume action on the dunning banner at the top of
+  // the page instead (billing-layout.tsx) — same state, one banner.
   if (sub.status === "cancelled") {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-muted px-4 py-3">
-        <p className="text-sm">
-          {t("billing.states.cancelledAccessUntil", {
-            date: formatDate(sub.period_end),
-          })}
-        </p>
-        {isOwner && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={resuming}
-            onClick={onResume}
-          >
-            {resuming && (
-              <IconLoader2 data-icon="inline-start" className="animate-spin" />
-            )}
-            {t("billing.subscription.resume")}
-          </Button>
-        )}
-      </div>
-    )
+    return null
   }
 
   if (sub.status === "trialing") {

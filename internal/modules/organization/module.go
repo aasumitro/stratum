@@ -3,12 +3,14 @@ package organization
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
@@ -19,10 +21,11 @@ import (
 // Implements contracts.OrganizationReader so the organization middleware can
 // resolve organization data without importing this package directly.
 type Module struct {
-	svc        *service
-	pool       *pgxpool.Pool
-	cacheInval contracts.OrganizationCacheInvalidator
-	Worker     *WebhookWorker
+	svc             *service
+	pool            *pgxpool.Pool
+	cacheInval      contracts.OrganizationCacheInvalidator
+	countryResolver *geoip.Resolver
+	Worker          *WebhookWorker
 }
 
 func New(pool *pgxpool.Pool, pub messaging.EventPublisher) *Module {
@@ -70,9 +73,14 @@ func (m *Module) SetBillingWriter(bw contracts.BillingWriter) {
 }
 
 // SetStorageClient wires the storage client after construction.
-// Called from main.go after the storage client is created.
+// Called from main.go after the storage client is created. Also wired onto
+// Worker, not just svc — HandleOrganizationDeleted needs it to purge a
+// deleted organization's logo, and runs in the worker process, which
+// constructs its own storage client (see RunWorker) independently of the
+// API's.
 func (m *Module) SetStorageClient(s *storage.Client) {
 	m.svc.store = s
+	m.Worker.store = s
 }
 
 // SetCatalogReader wires the catalog reader after construction to validate
@@ -80,6 +88,16 @@ func (m *Module) SetStorageClient(s *storage.Client) {
 // billing module is created (billing owns the catalog schema).
 func (m *Module) SetCatalogReader(r contracts.CatalogReader) {
 	m.svc.catalogReader = r
+}
+
+// SetCountryResolver wires the GeoIP resolver after construction — the
+// trusted source for a new organization's billing country/currency (see
+// createOrganization), replacing the client-supplied country_code field
+// this used to accept. Nil-safe like every other optional dependency here:
+// unwired, createOrganization falls back to the same "US" default it always
+// has, just without a GeoIP-informed reason for it.
+func (m *Module) SetCountryResolver(r *geoip.Resolver) {
+	m.countryResolver = r
 }
 
 // SetUserReader wires the user reader after construction to resolve an
@@ -100,7 +118,7 @@ func (m *Module) RemoveAllMemberships(ctx context.Context, authSub string) error
 func (m *Module) GetOrganizationByID(ctx context.Context, organizationID string) (*contracts.OrganizationInfo, error) {
 	t, err := m.svc.getOrganization(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.GetOrganizationByID: %w", err)
 	}
 	var s struct {
 		AllowedIPs []string `json:"allowed_ips"`
@@ -158,7 +176,7 @@ func (m *Module) GetFirstOrganizationIDForMember(ctx context.Context, authSub st
 func (m *Module) ListMembershipsForExport(ctx context.Context, authSub string) ([]contracts.OrgMembershipInfo, error) {
 	views, err := m.svc.listMembershipsForExport(ctx, authSub)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.ListMembershipsForExport: %w", err)
 	}
 	out := make([]contracts.OrgMembershipInfo, len(views))
 	for i, v := range views {
@@ -183,10 +201,9 @@ func (m *Module) CountActiveOwnedOrganizations(ctx context.Context, authSub stri
 func (m *Module) ResolveDowngradeOverage(
 	ctx context.Context, organizationID string,
 	preferredMemberAuthSubs []string, memberLimit int,
-	preferredFileIDs []string, storageLimitBytes int64,
 	dryRun bool,
 ) (contracts.OverageResolution, error) {
-	return m.svc.resolveDowngradeOverage(ctx, organizationID, preferredMemberAuthSubs, memberLimit, preferredFileIDs, storageLimitBytes, dryRun)
+	return m.svc.resolveDowngradeOverage(ctx, organizationID, preferredMemberAuthSubs, memberLimit, dryRun)
 }
 
 // CleanupExpiredInvitations deletes invitations past their expiry. Called by the worker ticker.
@@ -220,7 +237,7 @@ func (m *Module) CleanupExpiredInvitations(ctx context.Context) {
 // aal2-only gate for users who have MFA enabled, see
 // contracts.UserReader.IsMFAEnabled.
 func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
-	h := &handler{svc: m.svc, pool: m.pool, cacheInval: m.cacheInval}
+	h := &handler{svc: m.svc, pool: m.pool, cacheInval: m.cacheInval, countryResolver: m.countryResolver}
 	ownerOnly := middleware.RequireRole(contracts.RoleOwner)
 	adminUp := middleware.RequireRole(contracts.RoleOwner, contracts.RoleAdmin)
 
@@ -275,28 +292,6 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 			}
 
 			scoped.POST("/logo", adminUp, h.uploadLogo)
-
-			files := scoped.Group("/files")
-			files.Use(adminUp)
-			{
-				files.POST("", h.uploadFile)
-				files.GET("", h.listFiles)
-				files.GET("/trash", h.listTrash)
-				files.GET("/:fileID/download", h.downloadFile)
-				files.PATCH("/:fileID", h.moveFile)
-				files.DELETE("/:fileID", h.deleteOrganizationFile)
-				files.POST("/bulk-delete", h.bulkDeleteFiles)
-				files.POST("/:fileID/restore", h.restoreFile)
-				files.DELETE("/:fileID/permanent", h.purgeFile)
-
-				folders := files.Group("/folders")
-				{
-					folders.POST("", h.createFolder)
-					folders.GET("", h.listFolders)
-					folders.PATCH("/:folderID", h.updateFolder)
-					folders.DELETE("/:folderID", h.deleteFolder)
-				}
-			}
 		}
 	}
 

@@ -5,7 +5,6 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
@@ -22,10 +21,8 @@ import {
   AlertDialogTitle,
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
-import {
-  useOrganization,
-  useUpdateOrganizationSettings,
-} from "@/features/organization/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
+import { useUpdateOrganizationSettings } from "@/features/organization/hooks/use-settings"
 
 interface Props {
   organizationId: string
@@ -56,15 +53,16 @@ export function OrganizationIPAllowlistForm({
   const organization = data?.data
   const persisted = organization?.settings?.allowed_ips ?? []
 
-  const [draft, setDraft] = useState<string[] | null>(null)
   const [input, setInput] = useState("")
   const [inputError, setInputError] = useState<string | null>(null)
   const [lockoutDialogOpen, setLockoutDialogOpen] = useState(false)
 
-  const entries = draft ?? persisted
-  const dirty = draft !== null
+  const isInputEmpty = input.trim() === ""
+  const isInputValid = isInputEmpty || validateCIDR(input.trim())
+  const isAddDisabled = isPending || isInputEmpty || !isInputValid
 
-  function addEntry() {
+  function handleAdd(e: React.SubmitEvent<HTMLFormElement>) {
+    e.preventDefault()
     const value = input.trim()
     if (!value) return
     if (!validateCIDR(value)) {
@@ -73,25 +71,36 @@ export function OrganizationIPAllowlistForm({
       )
       return
     }
-    setDraft([...entries, value])
-    setInput("")
-    setInputError(null)
-  }
 
-  function removeEntry(entry: string) {
-    setDraft(entries.filter((e) => e !== entry))
-  }
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
     updateSettings(
       {
         timezone: organization?.timezone ?? "",
         locale: organization?.locale ?? "",
-        allowed_ips: entries,
+        allowed_ips: [...persisted, value],
       },
       {
-        onSuccess: () => setDraft(null),
+        onSuccess: () => {
+          setInput("")
+          setInputError(null)
+        },
+        onError: (err) => {
+          const code = (err as { status?: { code?: string } })?.status?.code
+          if (code === "IP_ALLOWLIST_LOCKS_OUT_CALLER") {
+            setLockoutDialogOpen(true)
+          }
+        },
+      }
+    )
+  }
+
+  function removeEntry(entry: string) {
+    updateSettings(
+      {
+        timezone: organization?.timezone ?? "",
+        locale: organization?.locale ?? "",
+        allowed_ips: persisted.filter((e) => e !== entry),
+      },
+      {
         onError: (err) => {
           const code = (err as { status?: { code?: string } })?.status?.code
           if (code === "IP_ALLOWLIST_LOCKS_OUT_CALLER") {
@@ -120,10 +129,10 @@ export function OrganizationIPAllowlistForm({
           {t("organization.settings.allowedIpsDescription")}
         </CardDescription>
       </CardHeader>
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleAdd}>
         <CardContent className="flex flex-col gap-3">
           <div className="flex flex-wrap gap-2">
-            {entries.map((entry) => (
+            {persisted.map((entry) => (
               <span
                 key={entry}
                 className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 font-mono text-xs"
@@ -132,15 +141,17 @@ export function OrganizationIPAllowlistForm({
                 {isOwner && (
                   <button
                     type="button"
+                    disabled={isPending}
                     onClick={() => removeEntry(entry)}
                     aria-label={t("organization.settings.removeIp", { entry })}
+                    className="disabled:opacity-50"
                   >
                     <IconX className="size-3" />
                   </button>
                 )}
               </span>
             ))}
-            {entries.length === 0 && (
+            {persisted.length === 0 && (
               <span className="text-xs text-muted-foreground">
                 {t("organization.settings.allowedIpsEmpty")}
               </span>
@@ -160,16 +171,18 @@ export function OrganizationIPAllowlistForm({
                     setInput(e.target.value)
                     setInputError(null)
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault()
-                      addEntry()
-                    }
-                  }}
                   className="font-mono text-sm"
                 />
-                <Button type="button" variant="outline" onClick={addEntry}>
-                  {t("common.add")}
+                <Button
+                  type="submit"
+                  variant="outline"
+                  disabled={isAddDisabled}
+                >
+                  {isPending ? (
+                    <IconLoader2 className="size-4 animate-spin" />
+                  ) : (
+                    t("common.add")
+                  )}
                 </Button>
               </div>
               {inputError ? (
@@ -182,19 +195,6 @@ export function OrganizationIPAllowlistForm({
             </div>
           )}
         </CardContent>
-        {isOwner && (
-          <CardFooter>
-            <Button type="submit" disabled={isPending || !dirty}>
-              {isPending && (
-                <IconLoader2
-                  data-icon="inline-start"
-                  className="animate-spin"
-                />
-              )}
-              {t("common.save")}
-            </Button>
-          </CardFooter>
-        )}
       </form>
 
       <AlertDialog open={lockoutDialogOpen} onOpenChange={setLockoutDialogOpen}>

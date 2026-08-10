@@ -23,6 +23,11 @@ import { useUpdatePreferences, useUploadAvatar } from "@/features/account/hooks"
 import { cn } from "@/lib/ui"
 import i18n from "@/lib/i18n"
 import type { UserProfile } from "@/types/account"
+import {
+  createRequiredHandleSchema,
+  createRequiredTextSchema,
+  fieldValidator,
+} from "@/lib/validation/schemas"
 
 const detectedTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
@@ -164,8 +169,9 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
         <form.Field
           name="full_name"
           validators={{
-            onChange: ({ value }) =>
-              !value.trim() ? t("onboarding.profile.nameRequired") : undefined,
+            onChange: fieldValidator(
+              createRequiredTextSchema(t("onboarding.profile.nameRequired"))
+            ),
           }}
         >
           {(field) => {
@@ -205,13 +211,12 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
         <form.Field
           name="display_name"
           validators={{
-            onChange: ({ value }) => {
-              if (value.trim().length < 2)
-                return t("onboarding.profile.displayNameMinLength")
-              if (!/^[A-Za-z0-9._]+$/.test(value))
-                return t("onboarding.profile.displayNameInvalid")
-              return undefined
-            },
+            onChange: fieldValidator(
+              createRequiredHandleSchema({
+                minLength: t("onboarding.profile.displayNameMinLength"),
+                invalid: t("onboarding.profile.displayNameInvalid"),
+              })
+            ),
           }}
         >
           {(field) => {
@@ -269,8 +274,8 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="id">Indonesia</SelectItem>
+                    <SelectItem value="en">{t("language.en")}</SelectItem>
+                    <SelectItem value="id">{t("language.id")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

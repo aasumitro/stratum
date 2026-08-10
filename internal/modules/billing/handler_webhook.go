@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
-
-	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
 // --- webhook routes (public, no auth) ---
@@ -60,6 +60,9 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 			Object struct {
 				ID            string `json:"id"`
 				PaymentStatus string `json:"payment_status"` // "paid" | "unpaid" | "no_payment_required"
+				Metadata      struct {
+					InvoiceID string `json:"invoice_id"`
+				} `json:"metadata"`
 			} `json:"object"`
 		} `json:"data"`
 	}
@@ -71,11 +74,20 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 	// Route by event type — only checkout.session.* and payment_intent.payment_failed are handled.
 	// All other event types are ACK'd immediately to prevent Stripe retries.
 	var status string
+	var invoiceID string
 	switch payload.Type {
 	case "checkout.session.completed":
 		status = normalizeStripeStatus(payload.Data.Object.PaymentStatus)
 	case "checkout.session.expired", "payment_intent.payment_failed":
 		status = statusFailed
+		if payload.Type == "payment_intent.payment_failed" {
+			// The data object here is a PaymentIntent (pi_...), not the
+			// Checkout Session (cs_...) stored in payment_links.external_id
+			// — that lookup would never match, so resolve by invoice_id
+			// instead (set on the PaymentIntent at checkout-session
+			// creation, see createStripeCheckoutSession).
+			invoiceID = payload.Data.Object.Metadata.InvoiceID
+		}
 	default:
 		c.Status(http.StatusOK)
 		return
@@ -92,7 +104,7 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 	// failure here rolls back the marker too — the provider's retry re-runs it cleanly.
 	if err := h.svc.processWebhook(
 		c.Request.Context(), "stripe", payload.ID,
-		payload.Data.Object.ID, status,
+		payload.Data.Object.ID, invoiceID, status,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.Status(http.StatusOK) // unknown link — ACK to stop retries
@@ -152,7 +164,7 @@ func (h *handler) handleXenditWebhook(c *gin.Context) {
 	// same invoice ID are each processed once (terminal states never overlap).
 	if err := h.svc.processWebhook(
 		c.Request.Context(), "xendit",
-		payload.ID+"_"+payload.Status, payload.ID, status,
+		payload.ID+"_"+payload.Status, payload.ID, "", status,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.Status(http.StatusOK)
@@ -215,7 +227,7 @@ func verifyXenditToken(headerToken, configToken string) bool {
 	if configToken == "" {
 		return true
 	}
-	return hmac.Equal([]byte(headerToken), []byte(configToken))
+	return middleware.SecureCompare(headerToken, configToken)
 }
 
 func normalizeStripeStatus(s string) string {

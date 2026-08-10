@@ -7,6 +7,7 @@ import type { UserProfile } from "@/types/account"
 import { needsMfaChallenge } from "@/lib/auth/mfa"
 import { ProtectedLayout } from "@/components/layout/protected-layout"
 import { NotFoundPage } from "@/components/shared/not-found-page"
+import { RouteErrorBoundary } from "@/components/shared/route-error-boundary"
 
 export const Route = createFileRoute("/_protected")({
   beforeLoad: async ({ context }) => {
@@ -48,4 +49,5 @@ export const Route = createFileRoute("/_protected")({
   },
   component: ProtectedLayout,
   notFoundComponent: NotFoundPage,
+  errorComponent: RouteErrorBoundary,
 })

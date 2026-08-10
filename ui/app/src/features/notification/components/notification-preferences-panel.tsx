@@ -15,7 +15,7 @@ import {
   useNotificationPreferences,
   useUpdateNotificationPreference,
 } from "@/features/notification/hooks"
-import { useOrganizations } from "@/features/organization/hooks"
+import { useOrganizations } from "@/features/organization/hooks/use-organization"
 import {
   CATEGORIES,
   CATEGORY_ICON,

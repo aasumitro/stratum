@@ -17,13 +17,14 @@ import {
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/ui"
 import { timeAgo } from "@/lib/format"
+import { notificationDisplayText } from "@/features/notification/notification-text"
 
 interface Props {
   organizationId?: string
 }
 
 export function NotificationBell({ organizationId }: Props) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
 
   const { data: countData } = useNotificationCount()
   const { data: notifData } = useNotifications(undefined, undefined, 5)
@@ -77,6 +78,11 @@ export function NotificationBell({ organizationId }: Props) {
         ) : (
           notifications.map((n) => {
             const isUnread = !n.read_at
+            const { subject, body } = notificationDisplayText(
+              n,
+              t,
+              i18n.exists.bind(i18n)
+            )
             return (
               <DropdownMenuItem
                 key={n.id}
@@ -93,7 +99,7 @@ export function NotificationBell({ organizationId }: Props) {
                       isUnread ? "font-semibold" : "font-medium"
                     )}
                   >
-                    {n.subject}
+                    {subject}
                   </span>
                   <div className="flex shrink-0 items-center gap-1.5">
                     {isUnread && (
@@ -105,7 +111,7 @@ export function NotificationBell({ organizationId }: Props) {
                   </div>
                 </div>
                 <span className="line-clamp-2 text-xs text-muted-foreground">
-                  {n.body}
+                  {body}
                 </span>
               </DropdownMenuItem>
             )

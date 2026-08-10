@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   useBillingFeatures,
-  usePlans,
+  useOrgPlansCatalog,
   useFeatures,
   useBillingSubscription,
 } from "@/features/billing/hooks"
@@ -21,7 +21,7 @@ export function FeaturesSection({ organizationId }: Props) {
   const { data: featData, isLoading: featLoading } =
     useBillingFeatures(organizationId)
   const { data: subData } = useBillingSubscription(organizationId)
-  const { data: plansData } = usePlans()
+  const { data: plansData } = useOrgPlansCatalog(organizationId)
   const { data: catalogData } = useFeatures()
 
   const entitlements = featData?.data ?? []

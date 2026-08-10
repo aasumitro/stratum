@@ -1,5 +1,6 @@
-import { useState, type ReactElement, type ReactNode } from "react"
+import { useRef, useState, type ReactElement, type ReactNode } from "react"
 import { IconLoader2 } from "@tabler/icons-react"
+import { useTranslation } from "react-i18next"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,7 +30,7 @@ interface ConfirmationDialogProps {
   consequences?: string[]
   /** if set, the confirm button stays locked until the user types this exact string */
   confirmPhrase?: string
-  confirmPhraseLabel?: string
+  confirmPhraseLabel?: ReactNode
   confirmLabel: string
   cancelLabel?: string
   destructive?: boolean
@@ -55,15 +56,17 @@ export function ConfirmationDialog({
   confirmPhrase,
   confirmPhraseLabel,
   confirmLabel,
-  cancelLabel = "Cancel",
+  cancelLabel,
   destructive = true,
   onConfirm,
   pending = false,
   open,
   onOpenChange,
 }: ConfirmationDialogProps) {
+  const { t } = useTranslation()
   const [typed, setTyped] = useState("")
   const locked = !!confirmPhrase && typed !== confirmPhrase
+  const cancelRef = useRef<HTMLButtonElement>(null)
 
   return (
     <AlertDialog
@@ -76,7 +79,7 @@ export function ConfirmationDialog({
       <AlertDialogTrigger render={render} nativeButton={nativeButton}>
         {children}
       </AlertDialogTrigger>
-      <AlertDialogContent>
+      <AlertDialogContent initialFocus={cancelRef}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
@@ -93,7 +96,8 @@ export function ConfirmationDialog({
         {confirmPhrase && (
           <div className="flex flex-col gap-1.5 text-left">
             <Label htmlFor="confirm-phrase" className="text-xs">
-              {confirmPhraseLabel ?? `Type "${confirmPhrase}" to confirm`}
+              {confirmPhraseLabel ??
+                t("common.typeToConfirm", { phrase: confirmPhrase })}
             </Label>
             <Input
               id="confirm-phrase"
@@ -106,7 +110,9 @@ export function ConfirmationDialog({
         )}
 
         <AlertDialogFooter>
-          <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
+          <AlertDialogCancel ref={cancelRef}>
+            {cancelLabel ?? t("common.cancel")}
+          </AlertDialogCancel>
           <AlertDialogAction
             variant={destructive ? "destructive" : "default"}
             disabled={locked || pending}

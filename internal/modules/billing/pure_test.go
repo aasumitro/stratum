@@ -172,6 +172,73 @@ func TestProrate(t *testing.T) {
 	})
 }
 
+// --- computeAddonIncreaseProration ---
+
+func TestComputeAddonIncreaseProration(t *testing.T) {
+	t.Run("zero days remaining charges nothing", func(t *testing.T) {
+		periodStart := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+		now := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		got := computeAddonIncreaseProration(periodStart, now, now, 5, 100_00)
+		if got != 0 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 0", got)
+		}
+	})
+
+	t.Run("negative remaining (past periodEnd) charges nothing", func(t *testing.T) {
+		periodStart := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+		now := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := now.AddDate(0, 0, -1)
+		got := computeAddonIncreaseProration(periodStart, now, periodEnd, 5, 100_00)
+		if got != 0 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 0", got)
+		}
+	})
+
+	t.Run("full period remaining charges exactly the full per-unit price", func(t *testing.T) {
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := periodStart.AddDate(0, 1, 0)
+		got := computeAddonIncreaseProration(periodStart, periodStart, periodEnd, 1, 900)
+		if got != 900 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 900", got)
+		}
+	})
+
+	t.Run("full period remaining charges the full per-unit price regardless of month length", func(t *testing.T) {
+		// A same-day request should always cost exactly unitPrice*delta —
+		// the reference length is the period's own real span, not a fixed
+		// 30-day assumption, so a 31-day August period must not overcharge
+		// (the bug this test guards against: was 51_666 instead of 50_000
+		// for delta=5 at unitPrice=10_000 in a real 31-day period).
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC) // August: 31 days
+		periodEnd := periodStart.AddDate(0, 1, 0)
+		got := computeAddonIncreaseProration(periodStart, periodStart, periodEnd, 5, 10_000)
+		if got != 50_000 {
+			t.Errorf("computeAddonIncreaseProration() = %d, want 50000", got)
+		}
+	})
+
+	t.Run("half the period remaining charges roughly half", func(t *testing.T) {
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := periodStart.AddDate(0, 0, 30)
+		now := periodStart.AddDate(0, 0, 15)
+		got := computeAddonIncreaseProration(periodStart, now, periodEnd, 1, 900)
+		want := int64(450) // 900 * (15/30) * 1
+		if got != want {
+			t.Errorf("computeAddonIncreaseProration() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("delta multiplies the per-unit charge", func(t *testing.T) {
+		periodStart := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+		periodEnd := periodStart.AddDate(0, 0, 30)
+		got := computeAddonIncreaseProration(periodStart, periodStart, periodEnd, 5, 900)
+		want := int64(900 * 5)
+		if got != want {
+			t.Errorf("computeAddonIncreaseProration() = %d, want %d", got, want)
+		}
+	})
+}
+
 // --- normalizeStripeStatus ---
 
 func TestNormalizeStripeStatus(t *testing.T) {
@@ -545,43 +612,140 @@ func TestStaleSubscriptionCheck(t *testing.T) {
 // --- maxExtendableMonths ---
 
 func TestMaxExtendableMonths(t *testing.T) {
-	// 2025-01-01: the 24-month window from here (Feb 2025 + Feb 2026) crosses
-	// no leap day, so 24 calendar months == exactly 730 fixed days and lines
-	// up cleanly with RV-001's worked examples. A leap-year anchor (e.g.
-	// 2024-01-01) makes 24 calendar months span 731 days — one more than the
-	// fixed-duration cap — which is exactly the calendar-vs-fixed-duration
-	// drift the plan's own Decision #11 warns about, not a bug in the
-	// function; picking a non-leap-spanning anchor avoids exercising that
-	// drift in a test that's meant to check round numbers.
-	createdAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	now := createdAt // unused by the calculation (anchored to createdAt, not now) but always passed, matching prorate's convention of taking now explicitly rather than calling time.Now() internally.
+	// Runway-cap model: period_end may never sit more than 24 calendar
+	// months ahead of now, full stop — not "24 months since created_at".
+	// 2025-01-01 has no leap day inside its 24-month window, so it lines up
+	// cleanly with round-number worked examples below; the leap-year case
+	// gets its own dedicated test further down.
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name           string
-		monthsElapsed  int // periodEnd = createdAt + monthsElapsed
-		wantExtendable int
+		name            string
+		monthsRemaining int // periodEnd = now + monthsRemaining
+		wantExtendable  int
 	}{
-		// RV-001's own worked examples, used as literal test cases.
-		{"1 month elapsed leaves 23 extendable", 1, 23},
-		{"13 months elapsed leaves 11 extendable", 13, 11},
+		{"1 month remaining leaves 23 extendable", 1, 23},
+		{"13 months remaining leaves 11 extendable", 13, 11},
 		// Boundaries.
-		{"0 months elapsed (brand new sub) leaves the full 24", 0, 24},
-		{"24 months elapsed (already at cap) leaves 0", 24, 0},
-		{"23 months elapsed leaves exactly 1", 23, 1},
+		{"0 months remaining (period ends today) leaves the full 24", 0, 24},
+		{"24 months remaining (already at cap) leaves 0", 24, 0},
+		{"23 months remaining leaves exactly 1", 23, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			periodEnd := createdAt.AddDate(0, c.monthsElapsed, 0)
-			if got := maxExtendableMonths(createdAt, periodEnd, now); got != c.wantExtendable {
+			periodEnd := now.AddDate(0, c.monthsRemaining, 0)
+			if got := maxExtendableMonths(periodEnd, now); got != c.wantExtendable {
 				t.Errorf("maxExtendableMonths() = %d, want %d", got, c.wantExtendable)
 			}
 		})
 	}
 
-	t.Run("never returns more than the 24-month bound regardless of how far in the past periodEnd is", func(t *testing.T) {
-		periodEnd := createdAt.AddDate(0, -100, 0) // pathological: periodEnd long before createdAt
-		if got := maxExtendableMonths(createdAt, periodEnd, now); got > 24 {
+	t.Run("never returns more than the 24-month bound even for an already-expired periodEnd", func(t *testing.T) {
+		periodEnd := now.AddDate(0, -100, 0) // pathological: periodEnd long in the past
+		if got := maxExtendableMonths(periodEnd, now); got > 24 {
 			t.Errorf("maxExtendableMonths() = %d, want <= 24", got)
+		}
+	})
+
+	t.Run("a plan-change-shifted time-of-day doesn't cost a whole month", func(t *testing.T) {
+		// Reproduces a real case: now at 09:04:50, but period_end sits a few
+		// hours later in the day (10:40:05) because a plan change reprorated
+		// the period anchored to time.Now() of that change. 13 months
+		// remaining should still leave 11 extendable exactly like the
+		// clean-timestamp case above — the few hours of same-day drift must
+		// not shave off a 12th.
+		drifted := time.Date(2025, 1, 1, 9, 4, 50, 0, time.UTC)
+		periodEnd := drifted.AddDate(0, 13, 0).Add(95 * time.Minute) // ~10:40 the same day
+		if got := maxExtendableMonths(periodEnd, drifted); got != 11 {
+			t.Errorf("maxExtendableMonths() = %d, want 11", got)
+		}
+	})
+
+	t.Run("a leap day inside the 24-month window no longer costs a whole month", func(t *testing.T) {
+		// Real case that motivated the runway-cap rewrite: an org created
+		// 2026-07-30, still on its first yearly period (period_end
+		// 2027-07-30, 12 months remaining). 2028 is a leap year, so the old
+		// fixed-duration-from-created_at cap (2*365*24h) landed one day
+		// short of a true calendar 2-year horizon and undercounted this as
+		// 11 extendable instead of 12. Calendar arithmetic (AddDate) on both
+		// sides of the comparison must get this right regardless of leap
+		// years.
+		now := time.Date(2026, 7, 30, 14, 48, 45, 0, time.UTC)
+		periodEnd := now.AddDate(0, 12, 0) // 2027-07-30, 12 months remaining
+		if got := maxExtendableMonths(periodEnd, now); got != 12 {
+			t.Errorf("maxExtendableMonths() = %d, want 12", got)
+		}
+	})
+}
+
+// --- periodMonths ---
+
+func TestPeriodMonths(t *testing.T) {
+	periodStart := time.Date(2026, 8, 9, 7, 18, 34, 0, time.UTC)
+
+	cases := []struct {
+		name   string
+		end    time.Time
+		months int
+	}{
+		{"exact 1-month period", periodStart.AddDate(0, 1, 0), 1},
+		{"exact 12-month period", periodStart.AddDate(0, 12, 0), 12},
+		{"exact 24-month period (extendSubscription's own max)", periodStart.AddDate(0, 24, 0), 24},
+		{"13-month period, not cycle-aligned to a year", periodStart.AddDate(0, 13, 0), 13},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := periodMonths(periodStart, c.end); got != c.months {
+				t.Errorf("periodMonths() = %d, want %d", got, c.months)
+			}
+		})
+	}
+
+	t.Run("a few hours short of a whole month still counts, same day as the boundary", func(t *testing.T) {
+		// Mirrors maxExtendableMonths' own time-of-day-drift case: compared
+		// at day granularity, so a period reshaped by prorate()'s day-based
+		// math landing a few hours before a clean AddDate boundary — but on
+		// the same calendar day — must not lose a whole month over it.
+		end := periodStart.AddDate(0, 13, 0).Add(-3 * time.Hour)
+		if got := periodMonths(periodStart, end); got != 13 {
+			t.Errorf("periodMonths() = %d, want 13", got)
+		}
+	})
+
+	t.Run("closer to the lower month rounds down", func(t *testing.T) {
+		// 20 days short of the 13-month mark (periodStart.AddDate(0,13,0) =
+		// 2027-09-09, a 31-day August sitting just before it): closer to the
+		// 12-month mark (2027-08-09, 11 days away) than the 13-month one (20
+		// days away), so this must round down, not up.
+		end := periodStart.AddDate(0, 13, 0).AddDate(0, 0, -20)
+		if got := periodMonths(periodStart, end); got != 12 {
+			t.Errorf("periodMonths() = %d, want 12", got)
+		}
+	})
+
+	t.Run("closer to the upper month rounds up", func(t *testing.T) {
+		// Mirror of the above, 3 days short instead of 20: much closer to
+		// the 13-month mark than the 12-month one.
+		end := periodStart.AddDate(0, 13, 0).AddDate(0, 0, -3)
+		if got := periodMonths(periodStart, end); got != 13 {
+			t.Errorf("periodMonths() = %d, want 13", got)
+		}
+	})
+
+	t.Run("a leap day inside the span doesn't cost a whole month", func(t *testing.T) {
+		// Same rationale as maxExtendableMonths' leap-year case: AddDate on
+		// both sides keeps calendar-month counting exact regardless of
+		// whether Feb 29 falls inside the window.
+		start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+		end := start.AddDate(0, 24, 0) // crosses 2028's Feb 29
+		if got := periodMonths(start, end); got != 24 {
+			t.Errorf("periodMonths() = %d, want 24", got)
+		}
+	})
+
+	t.Run("periodEnd before periodStart returns 0, never negative", func(t *testing.T) {
+		if got := periodMonths(periodStart, periodStart.AddDate(0, 0, -5)); got != 0 {
+			t.Errorf("periodMonths() = %d, want 0", got)
 		}
 	})
 }
@@ -610,6 +774,92 @@ func TestComputeExtensionSubtotal(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := computeExtensionSubtotal(planInfo, "USD", c.months); got != c.want {
 				t.Errorf("computeExtensionSubtotal(%d) = %d, want %d", c.months, got, c.want)
+			}
+		})
+	}
+}
+
+// --- computeExtensionAddonSubtotal ---
+
+func TestComputeExtensionAddonSubtotal(t *testing.T) {
+	seats := attachedAddonRecord{
+		Name: "Extra seats", Quantity: 3,
+		Prices: map[string]contracts.PlanPrices{
+			"USD": {Monthly: 5_00, Yearly: 50_00}, // $5/mo, $50/yr per seat
+		},
+	}
+	storage := attachedAddonRecord{
+		Name: "Extra storage", Quantity: 1,
+		Prices: map[string]contracts.PlanPrices{
+			"USD": {Monthly: 2_00, Yearly: 20_00},
+		},
+	}
+	noUSDPrice := attachedAddonRecord{
+		Name: "EUR-only addon", Quantity: 5,
+		Prices: map[string]contracts.PlanPrices{
+			"EUR": {Monthly: 1_00, Yearly: 10_00},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		addons []attachedAddonRecord
+		months int
+		want   int64
+	}{
+		{"no addons attached", nil, 13, 0},
+		{"single addon, months < 12, flat monthly x months x quantity", []attachedAddonRecord{seats}, 6, 6 * 5_00 * 3},
+		{"single addon, exactly 12 months bills one yearly block x quantity", []attachedAddonRecord{seats}, 12, 50_00 * 3},
+		{"single addon, 13 months = 1 yearly block + 1 month remainder, x quantity", []attachedAddonRecord{seats}, 13, (50_00 + 5_00) * 3},
+		{"multiple addons summed independently", []attachedAddonRecord{seats, storage}, 13, (50_00+5_00)*3 + (20_00+2_00)*1},
+		{"addon missing a price entry for the requested currency contributes 0, not an error", []attachedAddonRecord{noUSDPrice}, 13, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := computeExtensionAddonSubtotal(c.addons, "USD", c.months); got != c.want {
+				t.Errorf("computeExtensionAddonSubtotal(%d) = %d, want %d", c.months, got, c.want)
+			}
+		})
+	}
+}
+
+// --- scopeCatalogPrices ---
+
+func TestScopeCatalogPrices(t *testing.T) {
+	both := map[string]contracts.PlanPrices{
+		"USD": {Monthly: 9_00, Yearly: 90_00},
+		"IDR": {Monthly: 135_000, Yearly: 1_350_000},
+	}
+	eurOnly := map[string]contracts.PlanPrices{
+		"EUR": {Monthly: 8_00, Yearly: 80_00},
+	}
+
+	cases := []struct {
+		name         string
+		prices       map[string]contracts.PlanPrices
+		currency     string
+		wantCurrency string
+		wantEmpty    bool
+	}{
+		{"currency present returns exactly that one entry", both, "IDR", "IDR", false},
+		{"currency present, other branch (USD)", both, "USD", "USD", false},
+		{"currency absent falls back to USD", both, "EUR", "USD", false},
+		{"currency absent and no USD entry returns empty map", eurOnly, "IDR", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := scopeCatalogPrices(c.prices, c.currency)
+			if c.wantEmpty {
+				if len(got) != 0 {
+					t.Errorf("scopeCatalogPrices(%q) = %v, want empty", c.currency, got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("scopeCatalogPrices(%q) = %v, want exactly one currency", c.currency, got)
+			}
+			if _, ok := got[c.wantCurrency]; !ok {
+				t.Errorf("scopeCatalogPrices(%q) = %v, want key %q", c.currency, got, c.wantCurrency)
 			}
 		})
 	}

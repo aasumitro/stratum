@@ -105,38 +105,3 @@ CREATE TABLE organization.webhook_deliveries (
 CREATE INDEX idx_webhook_deliveries_endpoint ON organization.webhook_deliveries (endpoint_id);
 CREATE INDEX idx_webhook_deliveries_endpoint_created ON organization.webhook_deliveries (endpoint_id, created_at DESC);
 
--- Nested folder tree per organization: parent_folder_id is self-referencing,
--- NULL = root-level folder. ON DELETE CASCADE means deleting a folder
--- deletes its subfolders too, but the service layer blocks deleting a
--- non-empty folder (files or subfolders present) before that cascade is
--- ever reached — in practice it only ever fires on an already-empty folder.
-CREATE TABLE organization.folders (
-    id                UUID        PRIMARY KEY DEFAULT uuidv7(),
-    organization_id   UUID        NOT NULL REFERENCES organization.organizations(id) ON DELETE CASCADE,
-    parent_folder_id  UUID        REFERENCES organization.folders(id) ON DELETE CASCADE,
-    name              TEXT        NOT NULL,
-    created_by        TEXT        NOT NULL,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_organization_folders_org_parent ON organization.folders (organization_id, parent_folder_id);
-
-CREATE TABLE organization.files (
-    id              UUID        PRIMARY KEY DEFAULT uuidv7(),
-    organization_id UUID        NOT NULL REFERENCES organization.organizations(id) ON DELETE CASCADE,
-    folder_id       UUID        REFERENCES organization.folders(id) ON DELETE SET NULL,
-    name            TEXT        NOT NULL,
-    path            TEXT        NOT NULL,
-    size_bytes      BIGINT      NOT NULL,
-    mime_type       TEXT,
-    created_by      TEXT        NOT NULL,
-    -- Soft-delete for the 30-day trash. NULL = not deleted. A deleted file
-    -- stops counting against the organization's storage quota immediately
-    -- (syncStorageUsage only sums deleted_at IS NULL rows) — "delete frees
-    -- space, recoverable for 30 days," not bytes-held-until-purged.
-    deleted_at      TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_organization_files_organization_id ON organization.files (organization_id, created_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_organization_files_folder           ON organization.files (organization_id, folder_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_organization_files_trash            ON organization.files (organization_id, deleted_at) WHERE deleted_at IS NOT NULL;

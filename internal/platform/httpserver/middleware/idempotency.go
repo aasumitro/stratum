@@ -87,7 +87,8 @@ func NewIdempotencyMiddleware(ns *cache.Namespace) gin.HandlerFunc {
 			var cached idempotentCached
 			if json.Unmarshal([]byte(raw), &cached) == nil {
 				if cached.BodyHash != bodyHash {
-					c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "idempotency key was already used with a different request body"})
+					c.AbortWithStatusJSON(http.StatusConflict,
+						gin.H{"error": "idempotency key was already used with a different request body"})
 					return
 				}
 				c.Data(cached.Status, "application/json; charset=utf-8", cached.Body)
@@ -98,20 +99,26 @@ func NewIdempotencyMiddleware(ns *cache.Namespace) gin.HandlerFunc {
 
 		lockKey := key + ":lock"
 		acquired, lockErr := ns.SetNX(ctx, lockKey, "1", idempotencyLockTTL)
-		if lockErr == nil {
-			if !acquired {
-				c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "a request with this idempotency key is already in progress"})
-				return
-			}
-			defer func() { _ = ns.Delete(ctx, lockKey) }()
+		if lockErr != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable,
+				gin.H{"error": "could not acquire idempotency lock, please retry"})
+			return
 		}
+		if !acquired {
+			c.AbortWithStatusJSON(http.StatusConflict,
+				gin.H{"error": "a request with this idempotency key is already in progress"})
+			return
+		}
+		defer func() { _ = ns.Delete(ctx, lockKey) }()
 
 		w := &idempotentWriter{ResponseWriter: c.Writer, status: http.StatusOK}
 		c.Writer = w
 		c.Next()
 
 		if w.status >= 200 && w.status < 300 {
-			if raw, err := json.Marshal(idempotentCached{Status: w.status, Body: w.body.Bytes(), BodyHash: bodyHash}); err == nil {
+			if raw, err := json.Marshal(idempotentCached{
+				Status: w.status, Body: w.body.Bytes(), BodyHash: bodyHash,
+			}); err == nil {
 				_ = ns.Set(ctx, key, raw, 24*time.Hour)
 			}
 		}

@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -86,7 +87,7 @@ func (s *service) regeneratePaymentLink(
 	}()
 
 	if err := s.repo.expirePendingPaymentLinks(ctx, s.querier(ctx), invoiceID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.regeneratePaymentLink: %w", err)
 	}
 	return s.createPaymentLink(ctx, subjectType, subjectID, invoiceID)
 }
@@ -120,17 +121,20 @@ func (s *service) getInvoicePDFData(
 
 	inv, err = s.repo.findInvoiceByIDAndSubject(ctx, s.querier(ctx), invoiceID, subjectType, subjectID)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, fmt.Errorf("billing.getInvoicePDFData: find invoice: %w", err)
 	}
 	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, fmt.Errorf("billing.getInvoicePDFData: find subscription: %w", err)
 	}
 	planInfo, err = s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, fmt.Errorf("billing.getInvoicePDFData: plan catalog: %w", err)
 	}
-	lineItems, _ = s.repo.listLineItems(ctx, s.querier(ctx), inv.ID)
+	lineItems, err = s.repo.listLineItems(ctx, s.querier(ctx), inv.ID)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("billing.getInvoicePDFData: list line items: %w", err)
+	}
 	return inv, sub, planInfo, lineItems, nil
 }
 
@@ -158,15 +162,23 @@ func (s *service) createPaymentLink(
 		return existing, nil
 	}
 
-	_ = s.repo.expirePendingPaymentLinks(ctx, s.querier(ctx), invoiceID)
+	if err := s.repo.expirePendingPaymentLinks(ctx, s.querier(ctx), invoiceID); err != nil {
+		return nil, fmt.Errorf("billing.createPaymentLink: expire pending payment links: %w", err)
+	}
+
+	label := invoiceID
+	if inv.InvoiceNumber != nil {
+		label = *inv.InvoiceNumber
+	}
+	items := s.checkoutLineItems(ctx, inv)
 
 	provider := selectProvider(inv.Currency)
 	var result *paymentLinkResult
 	switch provider {
 	case providerXendit:
-		result, err = createXenditInvoice(ctx, s.provider, invoiceID, inv.AmountCents)
+		result, err = createXenditInvoice(ctx, s.provider, invoiceID, label, inv.AmountCents, items)
 	default:
-		result, err = createStripeCheckoutSession(ctx, s.provider, invoiceID, inv.AmountCents, inv.Currency)
+		result, err = createStripeCheckoutSession(ctx, s.provider, invoiceID, label, inv.AmountCents, inv.Currency, items)
 	}
 	if err != nil {
 		return nil, err
@@ -174,6 +186,48 @@ func (s *service) createPaymentLink(
 
 	return s.repo.insertPaymentLink(ctx, s.querier(ctx), invoiceID, provider, inv.Currency,
 		inv.AmountCents, &result.ExternalID, &result.URL, result.ExpiresAt)
+}
+
+// checkoutLineItems builds the hosted checkout page's itemized breakdown
+// from inv's own stored invoice_line_items (plan/addon charges). A lookup
+// failure falls back to nil — the provider functions' own flat-line
+// fallback — same as buildCheckoutLineItems' own empty/unsafe cases below.
+func (s *service) checkoutLineItems(ctx context.Context, inv *invoiceRecord) []checkoutLineItem {
+	lines, err := s.repo.listLineItems(ctx, s.querier(ctx), inv.ID)
+	if err != nil {
+		return nil
+	}
+	return buildCheckoutLineItems(lines, inv.TaxCents)
+}
+
+// buildCheckoutLineItems is checkoutLineItems' pure decision logic, split
+// out so it's unit-testable without a database: given an invoice's stored
+// line items plus its tax, decide whether it's safe to itemize the hosted
+// checkout page and build that list, or bail to nil (the provider
+// functions' own flat "Invoice <label>" fallback). Returns nil whenever
+// itemizing would risk the checkout charging something other than the
+// invoice's real total: no line items at all, or any line item with a
+// non-positive total — the discount line applyInvoiceCharges inserts is
+// always negative, and neither Stripe nor Xendit's page can be trusted to
+// net a negative line against the rest correctly, so the safe choice is not
+// to itemize a discounted invoice at all, not to guess. A positive tax is
+// appended as its own trailing line so the itemized sum still equals the
+// invoice's real total (subtotal + tax), never just the subtotal.
+func buildCheckoutLineItems(lines []lineItemRecord, taxCents int64) []checkoutLineItem {
+	if len(lines) == 0 {
+		return nil
+	}
+	items := make([]checkoutLineItem, 0, len(lines)+1)
+	for _, l := range lines {
+		if l.TotalCents <= 0 {
+			return nil
+		}
+		items = append(items, checkoutLineItem{Name: l.Description, Quantity: l.Quantity, UnitAmountCents: l.UnitPriceCents})
+	}
+	if taxCents > 0 {
+		items = append(items, checkoutLineItem{Name: "Tax", Quantity: 1, UnitAmountCents: taxCents})
+	}
+	return items
 }
 
 // createPaymentLinkForOwner is the handler-facing entry point for
@@ -242,7 +296,6 @@ type metricOverage struct {
 
 type overagePreview struct {
 	Members metricOverage `json:"members"`
-	Storage metricOverage `json:"storage"`
 }
 
 func (s *service) previewInvoice(
@@ -265,7 +318,7 @@ func (s *service) previewInvoice(
 
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("billing.previewInvoice: %w", err)
 	}
 	targetPlan, targetCycle := plan, cycle
 	if targetPlan == "" {
@@ -279,8 +332,11 @@ func (s *service) previewInvoice(
 		return nil, ErrUnknownPlan
 	}
 
-	total, addonLines, couponCode, discountCents := s.composeInvoiceAmount(
+	total, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
 		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, targetCycle)
+	if err != nil {
+		return nil, err
+	}
 
 	preview = &invoicePreview{
 		Plan: targetPlan, Cycle: targetCycle, Currency: sub.Currency,
@@ -293,50 +349,107 @@ func (s *service) previewInvoice(
 	if changingPlan {
 		if oldPlanInfo, err := s.planCatalog(ctx, sub.Plan); err == nil {
 			if sub.PeriodStart != nil && sub.PeriodEnd != nil && sub.Status != statusTrialing {
-				oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
-				newPrice := int(planInfo.Price(sub.Currency, targetCycle))
-				preview.NewPeriodEnd = new(prorate(time.Now(), *sub.PeriodStart,
-					*sub.PeriodEnd, oldPrice, newPrice, sub.Cycle, targetCycle))
+				// Mirrors changePlanWithMetadata's own guard (service_subscription.go):
+				// only an actual plan-tier change re-derives period_end via
+				// price-ratio proration. A pure cycle switch on the same plan
+				// doesn't move period_end — see that function's comment for why
+				// re-pricing already-banked time at the new cycle's rate would be
+				// wrong — so the preview must show the unchanged date, not a
+				// prorated one the real change would never produce.
+				if targetPlan != sub.Plan {
+					oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
+					newPrice := int(planInfo.Price(sub.Currency, targetCycle))
+					preview.NewPeriodEnd = new(prorate(time.Now(), *sub.PeriodStart,
+						*sub.PeriodEnd, oldPrice, newPrice, sub.Cycle, targetCycle))
+				} else {
+					preview.NewPeriodEnd = sub.PeriodEnd
+				}
 			}
 
 			// Dry-run overage resolution if this is a downgrade
 			if planInfo.SortOrder < oldPlanInfo.SortOrder && s.orgCommander != nil {
-				memberLimit, storageLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
-				res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID,
-					nil, memberLimit,
-					nil, storageLimit, true)
-				if err == nil {
-					usages, _ := s.repo.listCurrentUsage(ctx, s.querier(ctx), subjectID)
-					var curMembers, curStorage int
-					for _, u := range usages {
-						switch u.Metric {
-						case "members":
-							curMembers = int(u.Value)
-						case "storage_bytes":
-							curStorage = int(u.Value)
-						}
-					}
-					preview.Overage = &overagePreview{
-						Members: metricOverage{
-							Current:            curMembers,
-							Allowed:            memberLimit,
-							AutoSelectRemovals: res.AutoSelectedMemberSubs,
-						},
-						Storage: metricOverage{
-							Current:            curStorage,
-							Allowed:            int(storageLimit),
-							AutoSelectRemovals: res.AutoSelectedFileIDs,
-						},
-					}
+				if overage, err := s.hypotheticalDowngradeOveragePreview(ctx, subjectID, sub, planInfo); err == nil {
+					preview.Overage = overage
 				} else {
 					slog.Error("previewInvoice: failed to dry-run overage resolution",
 						"organization_id", subjectID, "error", err)
 				}
 			}
 		}
+	} else if s.orgCommander != nil {
+		// Not a hypothetical change — preview whatever is already scheduled
+		// to apply at renewal (a plan downgrade and/or addon decreases).
+		if overage, err := s.scheduledOveragePreview(ctx, subjectID, sub); err != nil {
+			slog.Error("previewInvoice: failed to compute scheduled overage preview",
+				"organization_id", subjectID, "error", err)
+		} else if overage != nil {
+			preview.Overage = overage
+		}
 	}
 
 	return preview, nil
+}
+
+// hypotheticalDowngradeOveragePreview dry-runs member-overage resolution
+// for a hypothetical plan/cycle change that's a downgrade — how many
+// members would need to be removed under the new plan's limit, and which
+// ones ResolveDowngradeOverage would auto-select. Read-only: dryRun=true on
+// the ResolveDowngradeOverage call means nothing is actually removed.
+func (s *service) hypotheticalDowngradeOveragePreview(
+	ctx context.Context, subjectID string, sub *subscriptionRecord, planInfo *contracts.PlanInfo,
+) (*overagePreview, error) {
+	memberLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
+	res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, memberLimit, true)
+	if err != nil {
+		return nil, err
+	}
+	usages, _ := s.repo.listCurrentUsage(ctx, s.querier(ctx), subjectID)
+	var curMembers int
+	for _, u := range usages {
+		if u.Metric == "members" {
+			curMembers = int(u.Value)
+		}
+	}
+	return &overagePreview{
+		Members: metricOverage{
+			Current:            curMembers,
+			Allowed:            memberLimit,
+			AutoSelectRemovals: res.AutoSelectedMemberSubs,
+		},
+	}, nil
+}
+
+// scheduledOveragePreview dry-runs member-overage resolution for whatever
+// amendment is already scheduled to apply at sub's next renewal (a plan
+// downgrade and/or addon decreases), using the same combined future-state
+// computation the renewal worker itself applies from
+// (resolveFutureOveragePreview) — so this preview can never disagree with
+// what actually happens at renewal. Returns (nil, nil), not an error, both
+// when nothing is scheduled and when what's scheduled wouldn't put the
+// organization over its future limit — both are steady states, not
+// failures.
+func (s *service) scheduledOveragePreview(ctx context.Context, subjectID string, sub *subscriptionRecord) (*overagePreview, error) {
+	scheduledAddons, err := s.repo.listScheduledAddonChanges(ctx, s.querier(ctx), sub.ID)
+	if err != nil || (sub.ScheduledPlan == nil && len(scheduledAddons) == 0) {
+		return nil, nil
+	}
+	overage, err := s.resolveFutureOveragePreview(ctx, sub)
+	if err != nil {
+		return nil, fmt.Errorf("compute future overage preview: %w", err)
+	}
+	if overage.MemberLimit < 0 || overage.CurrentMembers <= int64(overage.MemberLimit) {
+		return nil, nil
+	}
+	res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, overage.MemberLimit, true)
+	if err != nil {
+		return nil, fmt.Errorf("dry-run scheduled overage resolution: %w", err)
+	}
+	return &overagePreview{
+		Members: metricOverage{
+			Current: int(overage.CurrentMembers), Allowed: overage.MemberLimit,
+			AutoSelectRemovals: res.AutoSelectedMemberSubs,
+		},
+	}, nil
 }
 
 // lineItemSpec is a single additive charge composeInvoiceAmount resolved
@@ -353,41 +466,55 @@ type lineItemSpec struct {
 // plan price + attached addon charges - any live coupon discount, clamped
 // to >= 0. Centralizes what every invoice-creation call site
 // (provisionSubscription, changePlan, resumeSubscription,
-// HandleSubscriptionAutoInvoice) computes.
+// HandleSubscriptionAutoInvoice) computes. A genuine lookup failure on either
+// the addon pricing or the coupon redemption is propagated rather than
+// swallowed — either one silently succeeding with a wrong subtotal would
+// mean the customer is charged the wrong amount, not just shown a
+// stale/incomplete display. pgx.ErrNoRows from findActiveCouponRedemption
+// (no active coupon) is the expected steady-state case, not an error here.
 func (s *service) composeInvoiceAmount(
 	ctx context.Context, q db.Querier, subscriptionID string,
 	planInfo *contracts.PlanInfo, currency, cycle string,
-) (subtotal int64, addonLines []lineItemSpec, couponCode string, discountCents int64) {
+) (subtotal int64, addonLines []lineItemSpec, couponCode string, discountCents int64, err error) {
 	subtotal = planInfo.Price(currency, cycle)
 
-	if addons, err := s.repo.listAttachedAddonsWithPricing(ctx, q, subscriptionID); err == nil {
-		for _, a := range addons {
-			unitPrice := int64(0)
-			if prices, ok := a.Prices[currency]; ok {
-				unitPrice = int64(prices.Monthly)
-				if cycle == cycleYearly {
-					unitPrice = int64(prices.Yearly)
-				}
+	addons, err := s.repo.listAttachedAddonsWithPricing(ctx, q, subscriptionID)
+	if err != nil {
+		return 0, nil, "", 0, fmt.Errorf("billing.composeInvoiceAmount: list attached addons: %w", err)
+	}
+	for _, a := range addons {
+		unitPrice := int64(0)
+		if prices, ok := a.Prices[currency]; ok {
+			unitPrice = int64(prices.Monthly)
+			if cycle == cycleYearly {
+				unitPrice = int64(prices.Yearly)
 			}
-			total := unitPrice * int64(a.Quantity)
-			subtotal += total
-			addonLines = append(addonLines, lineItemSpec{
-				Description: a.Name, Quantity: a.Quantity,
-				UnitPriceCents: unitPrice, TotalCents: total,
-			})
 		}
+		total := unitPrice * int64(a.Quantity)
+		subtotal += total
+		addonLines = append(addonLines, lineItemSpec{
+			Description: a.Name, Quantity: a.Quantity,
+			UnitPriceCents: unitPrice, TotalCents: total,
+		})
 	}
 
-	if redemption, err := s.findActiveCouponRedemption(ctx, q, subscriptionID); err == nil {
+	redemption, err := s.findActiveCouponRedemption(ctx, q, subscriptionID)
+	switch {
+	case err == nil:
 		discountCents = computeCouponDiscount(redemption.DiscountType,
 			redemption.AmountCents, redemption.PercentOff, subtotal)
 		if discountCents > 0 {
 			subtotal -= discountCents
 			couponCode = redemption.CouponCode
 		}
+	case errors.Is(err, pgx.ErrNoRows):
+		// No active coupon — expected steady state, nothing to apply.
+	default:
+		return 0, nil, "", 0,
+			fmt.Errorf("billing.composeInvoiceAmount: find active coupon redemption: %w", err)
 	}
 
-	return subtotal, addonLines, couponCode, discountCents
+	return subtotal, addonLines, couponCode, discountCents, nil
 }
 
 // applyInvoiceCharges inserts the addon/discount line items
@@ -397,18 +524,25 @@ func (s *service) composeInvoiceAmount(
 func (s *service) applyInvoiceCharges(
 	ctx context.Context, q db.Querier, subscriptionID, invoiceID, currency string,
 	addonLines []lineItemSpec, couponCode string, discountCents int64,
-) {
+) error {
 	sortOrder := 1
 	for _, line := range addonLines {
-		_ = s.repo.insertLineItem(ctx, q, invoiceID, line.Description,
-			currency, line.Quantity, line.UnitPriceCents, line.TotalCents, sortOrder)
+		if err := s.repo.insertLineItem(ctx, q, invoiceID, line.Description,
+			currency, line.Quantity, line.UnitPriceCents, line.TotalCents, sortOrder); err != nil {
+			return err
+		}
 		sortOrder++
 	}
 	if couponCode != "" {
-		_ = s.repo.insertLineItem(ctx, q, invoiceID, "Discount: "+couponCode,
-			currency, 1, -discountCents, -discountCents, sortOrder)
-		_ = s.repo.incrementCouponRedemptionApplied(ctx, q, subscriptionID, couponCode)
+		if err := s.repo.insertLineItem(ctx, q, invoiceID, "Discount: "+couponCode,
+			currency, 1, -discountCents, -discountCents, sortOrder); err != nil {
+			return err
+		}
+		if err := s.repo.incrementCouponRedemptionApplied(ctx, q, subscriptionID, couponCode); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func selectProvider(currency string) string {

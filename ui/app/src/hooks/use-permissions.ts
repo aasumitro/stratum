@@ -1,6 +1,6 @@
 import { useActiveOrganization } from "@/hooks/use-active-organization"
 import { useBillingStatus } from "@/hooks/use-billing-status"
-import { hasPermission } from "@/lib/permissions/matrix"
+import { hasPermission } from "@/lib/permissions-matrix"
 import type { OrganizationRole } from "@/types/organization"
 
 export interface Permissions {
@@ -15,9 +15,9 @@ export interface Permissions {
   canManageMembers: boolean
   canViewBilling: boolean
   canActOnBilling: boolean
-  canAccessFiles: boolean
   canAccessWebhooks: boolean
   canAccessAuditLog: boolean
+  canAccessSecurity: boolean
   canEditSettings: boolean
   canUploadLogo: boolean
   hasPendingInvoice: boolean
@@ -38,9 +38,9 @@ export function usePermissions(): Permissions {
     canManageMembers: hasPermission(role, "members", "manage"),
     canViewBilling: hasPermission(role, "billing", "view"),
     canActOnBilling: hasPermission(role, "billing", "manage"),
-    canAccessFiles: hasPermission(role, "files", "view"),
     canAccessWebhooks: hasPermission(role, "webhooks", "view"),
     canAccessAuditLog: hasPermission(role, "auditLog", "view"),
+    canAccessSecurity: hasPermission(role, "settingsSecurity", "view"),
     canEditSettings: hasPermission(role, "settingsGeneral", "edit"),
     // admin+ (no matching matrix action — settingsGeneral.edit is owner-only, which is narrower than logo upload's real permission)
     canUploadLogo: isAdminUp,

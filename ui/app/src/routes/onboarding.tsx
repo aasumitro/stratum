@@ -7,6 +7,7 @@ import type { HTTPResponse } from "@/lib/api/response"
 import type { UserProfile } from "@/types/account"
 import type { OrganizationView } from "@/types/organization"
 import { needsMfaChallenge } from "@/lib/auth/mfa"
+import { resolveLandingRouteSafe } from "@/lib/resolve-landing-organization"
 import { OnboardingPage } from "@/features/onboarding/pages/onboarding-page"
 
 export const Route = createFileRoute("/onboarding")({
@@ -33,7 +34,7 @@ export const Route = createFileRoute("/onboarding")({
     }
 
     if (profile?.preferences?.onboarding_completed === true) {
-      throw redirect({ to: "/organizations" })
+      throw redirect(await resolveLandingRouteSafe(context.queryClient))
     }
 
     if (!profile?.full_name) return { initialStep: 1 }

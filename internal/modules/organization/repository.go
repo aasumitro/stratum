@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -52,7 +53,10 @@ func (r *repository) insertOrganization(
 		RETURNING id, slug, name, status, owner_id, invite_code, invite_code_enabled, timezone, locale, country_code, suspended_at, suspended_reason, settings, created_at, updated_at`,
 		slug, name, ownerID, countryCode,
 	).Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &t.OwnerID, &t.InviteCode, &t.InviteCodeEnabled, &t.Timezone, &t.Locale, &t.CountryCode, &t.SuspendedAt, &t.SuspendedReason, &t.Settings, &t.CreatedAt, &t.UpdatedAt)
-	return t, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertOrganization: %w", err)
+	}
+	return t, nil
 }
 
 func (r *repository) findOrganizationByID(ctx context.Context, q db.Querier, id string) (*organizationRecord, error) {
@@ -62,7 +66,10 @@ func (r *repository) findOrganizationByID(ctx context.Context, q db.Querier, id 
 		FROM organization.organizations WHERE id = $1`,
 		id,
 	).Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &t.OwnerID, &t.InviteCode, &t.InviteCodeEnabled, &t.Timezone, &t.Locale, &t.CountryCode, &t.SuspendedAt, &t.SuspendedReason, &t.Settings, &t.CreatedAt, &t.UpdatedAt)
-	return t, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.findOrganizationByID: %w", err)
+	}
+	return t, nil
 }
 
 func (r *repository) findOrganizationsByMember(ctx context.Context, q db.Querier, authSub string) ([]organizationView, error) {
@@ -75,7 +82,7 @@ func (r *repository) findOrganizationsByMember(ctx context.Context, q db.Querier
 		authSub,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.findOrganizationsByMember: %w", err)
 	}
 	defer rows.Close()
 
@@ -86,11 +93,14 @@ func (r *repository) findOrganizationsByMember(ctx context.Context, q db.Querier
 			&w.ID, &w.Slug, &w.Name, &w.Status, &w.OwnerID,
 			&w.Role, &w.JoinedAt, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.findOrganizationsByMember: scan: %w", err)
 		}
 		out = append(out, w)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.findOrganizationsByMember: %w", err)
+	}
+	return out, nil
 }
 
 // listMembershipsForExport is findOrganizationsByMember without the
@@ -106,7 +116,7 @@ func (r *repository) listMembershipsForExport(ctx context.Context, q db.Querier,
 		authSub,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listMembershipsForExport: %w", err)
 	}
 	defer rows.Close()
 
@@ -117,11 +127,14 @@ func (r *repository) listMembershipsForExport(ctx context.Context, q db.Querier,
 			&w.ID, &w.Slug, &w.Name, &w.Status, &w.OwnerID,
 			&w.Role, &w.JoinedAt, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listMembershipsForExport: scan: %w", err)
 		}
 		out = append(out, w)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listMembershipsForExport: %w", err)
+	}
+	return out, nil
 }
 
 func (r *repository) updateOrganization(
@@ -138,7 +151,10 @@ func (r *repository) updateOrganization(
 		RETURNING id, slug, name, status, owner_id, invite_code, invite_code_enabled, timezone, locale, country_code, suspended_at, suspended_reason, settings, created_at, updated_at`,
 		id, name, slug,
 	).Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &t.OwnerID, &t.InviteCode, &t.InviteCodeEnabled, &t.Timezone, &t.Locale, &t.CountryCode, &t.SuspendedAt, &t.SuspendedReason, &t.Settings, &t.CreatedAt, &t.UpdatedAt)
-	return t, err
+	if err != nil {
+		return nil, fmt.Errorf("organization.updateOrganization: %w", err)
+	}
+	return t, nil
 }
 
 func (r *repository) softDeleteOrganization(ctx context.Context, q db.Querier, id string) error {
@@ -146,7 +162,10 @@ func (r *repository) softDeleteOrganization(ctx context.Context, q db.Querier, i
 		UPDATE organization.organizations SET status = 'deleted', updated_at = now() WHERE id = $1`,
 		id,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.softDeleteOrganization: %w", err)
+	}
+	return nil
 }
 
 // countActiveOwnedOrganizations counts non-deleted organizations a user
@@ -159,7 +178,10 @@ func (r *repository) countActiveOwnedOrganizations(ctx context.Context, q db.Que
 		WHERE owner_id = $1 AND status != 'deleted'`,
 		authSub,
 	).Scan(&count)
-	return count, err
+	if err != nil {
+		return 0, fmt.Errorf("organization.countActiveOwnedOrganizations: %w", err)
+	}
+	return count, nil
 }
 
 // listOwnedOrganizationIDs returns the IDs of every organization a user
@@ -167,7 +189,7 @@ func (r *repository) countActiveOwnedOrganizations(ctx context.Context, q db.Que
 func (r *repository) listOwnedOrganizationIDs(ctx context.Context, q db.Querier, authSub string) ([]string, error) {
 	rows, err := q.Query(ctx, `SELECT id FROM organization.organizations WHERE owner_id = $1`, authSub)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("organization.listOwnedOrganizationIDs: %w", err)
 	}
 	defer rows.Close()
 
@@ -175,15 +197,55 @@ func (r *repository) listOwnedOrganizationIDs(ctx context.Context, q db.Querier,
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("organization.listOwnedOrganizationIDs: scan: %w", err)
 		}
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("organization.listOwnedOrganizationIDs: %w", err)
+	}
+	return out, nil
 }
 
-func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs []string) error {
-	settingsJSON, _ := json.Marshal(map[string]any{settingAllowedIPs: allowedIPs})
+func (r *repository) getOrganizationOwner(ctx context.Context, q db.Querier, id string) (string, error) {
+	var ownerID string
+	if err := q.QueryRow(ctx, `SELECT owner_id FROM organization.organizations WHERE id = $1`, id).Scan(&ownerID); err != nil {
+		return "", fmt.Errorf("organization.getOrganizationOwner: %w", err)
+	}
+	return ownerID, nil
+}
+
+func (r *repository) getOrganizationStatus(ctx context.Context, q db.Querier, id string) (string, error) {
+	var status string
+	if err := q.QueryRow(ctx, `SELECT status FROM organization.organizations WHERE id = $1`, id).Scan(&status); err != nil {
+		return "", fmt.Errorf("organization.getOrganizationStatus: %w", err)
+	}
+	return status, nil
+}
+
+// lockOrganizationForUpdate takes a row lock on the organization for the
+// rest of the caller's transaction. Used by addMember/acceptInvitation/
+// joinByCode so two concurrent member-adds for the same organization
+// serialize on the member-limit check-then-insert instead of both reading
+// "under limit" and both inserting past the plan's seat limit.
+func (r *repository) lockOrganizationForUpdate(ctx context.Context, q db.Querier, id string) error {
+	var got string
+	if err := q.QueryRow(ctx, `SELECT id FROM organization.organizations WHERE id = $1 FOR UPDATE`, id).Scan(&got); err != nil {
+		return fmt.Errorf("organization.lockOrganizationForUpdate: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs *[]string) error {
+	// Only include allowed_ips in the patch when the caller actually sent
+	// it — jsonb's `||` operator leaves keys absent from the right-hand
+	// operand untouched, so an omitted field never overwrites the existing
+	// allowlist.
+	patch := map[string]any{}
+	if allowedIPs != nil {
+		patch[settingAllowedIPs] = *allowedIPs
+	}
+	settingsJSON, _ := json.Marshal(patch)
 	_, err := q.Exec(ctx, `
 		UPDATE organization.organizations
 		SET timezone = $2, locale = $3,
@@ -192,7 +254,10 @@ func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timez
 		WHERE id = $1`,
 		id, timezone, locale, string(settingsJSON),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.updateSettings: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) suspendOrganization(ctx context.Context, q db.Querier, id, reason string) error {
@@ -202,7 +267,10 @@ func (r *repository) suspendOrganization(ctx context.Context, q db.Querier, id, 
 		WHERE id = $1 AND status = 'active'`,
 		id, reason,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.suspendOrganization: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) unsuspendOrganization(ctx context.Context, q db.Querier, id string) error {
@@ -212,5 +280,20 @@ func (r *repository) unsuspendOrganization(ctx context.Context, q db.Querier, id
 		WHERE id = $1 AND status = 'suspended'`,
 		id,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("organization.unsuspendOrganization: %w", err)
+	}
+	return nil
+}
+
+func (r *repository) updateLogoURL(ctx context.Context, q db.Querier, organizationID, logoURL string) error {
+	logoJSON, _ := json.Marshal(map[string]string{"logo_url": logoURL})
+	_, err := q.Exec(ctx, `
+		UPDATE organization.organizations SET settings = settings || $2::jsonb, updated_at = now() WHERE id = $1`,
+		organizationID, string(logoJSON),
+	)
+	if err != nil {
+		return fmt.Errorf("organization.updateLogoURL: %w", err)
+	}
+	return nil
 }

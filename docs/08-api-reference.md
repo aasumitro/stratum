@@ -28,8 +28,6 @@ MFA enrolment happens against Supabase directly, never through this API.
 
 **Webhooks** `/:id/webhooks`: `POST` (Growth+, optional `subscribed_events`) · `GET` (each row has a `health` object) · `PATCH /:wid` · `DELETE /:wid` · `POST /:wid/rotate-secret` · `POST /:wid/test-event` · `GET /:wid/deliveries` (filters) · `POST /:wid/deliveries/:did/retry` · `POST /:wid/deliveries/retry-failed`.
 
-**Files** `/:id/files`: `POST` · `GET` (`folder_id`/`search`/`search_all`) · `GET /trash` · `GET /:fileId/download` · `PATCH /:fileId` (move) · `DELETE /:fileId` (soft) · `POST /bulk-delete` · `POST /:fileId/restore` · `DELETE /:fileId/permanent` · `POST /folders` · `GET /folders` · `PATCH /folders/:folderId` · `DELETE /folders/:folderId`.
-
 ## Billing — `/organizations/:id/billing`
 Every `GET` is member-visible; every mutation is owner-only.
 `GET /` · `PATCH /plan` (MFA) · `POST /downgrade` (MFA) · `POST /cancel` · `POST /resume` · `POST /extend` (MFA) · `POST /activate` (MFA) · `GET /history` · `GET /invoices` · `GET /invoices/:id/pdf?lang=` · `POST /invoices/:id/pay` · `POST /invoices/:id/pay/regenerate` · `GET /payment-links` · `GET /payments` · `GET /usage` · `POST /usage` · `GET /features` · `GET /preview?plan=&cycle=` · `GET /coupons` · `POST /coupons/redeem` · `GET /addons` · `POST /addons` (MFA) · `DELETE /addons/:id` (MFA).

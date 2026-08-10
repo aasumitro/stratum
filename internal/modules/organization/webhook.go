@@ -20,6 +20,7 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
+	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
 // webhookHTTPClient re-validates the resolved IP on every dial, closing the
@@ -39,12 +40,17 @@ const (
 	webhookHealthWarnThreshold = 70
 )
 
-// WebhookWorker delivers outbound webhook events to customer endpoints.
+// WebhookWorker delivers outbound webhook events to customer endpoints, and
+// — despite the name, kept as-is to avoid an unrelated rename — also owns
+// HandleOrganizationDeleted (see service_organization.go), this module's
+// only other worker-side event consumer. Both need the same
+// repo/pool/log; store is used only by the latter.
 type WebhookWorker struct {
-	repo *repository
-	pool *pgxpool.Pool
-	pub  messaging.EventPublisher
-	log  *slog.Logger
+	repo  *repository
+	pool  *pgxpool.Pool
+	pub   messaging.EventPublisher
+	log   *slog.Logger
+	store *storage.Client
 }
 
 // HandleOutboundEvent receives any billing or organization event envelope and fans
@@ -105,7 +111,11 @@ func (w *WebhookWorker) HandleWebhookRetry(ctx context.Context, body []byte) err
 		return nil
 	}
 
-	if err := deliver(ctx, w.repo, w.pool, ep, del, retryPayload(del, ep.ID)); err != nil {
+	payload, err := retryPayload(del, ep.ID)
+	if err != nil {
+		return fmt.Errorf("webhook retry: payload: %w", err)
+	}
+	if err := deliver(ctx, w.repo, w.pool, ep, del, payload); err != nil {
 		w.log.Warn("webhook retry: delivery failed", "delivery_id", del.ID, "url", ep.URL, "error", err)
 	}
 	w.checkHealth(ctx, ep)
@@ -114,8 +124,7 @@ func (w *WebhookWorker) HandleWebhookRetry(ctx context.Context, body []byte) err
 
 // checkHealth runs the health/auto-disable checks after a real delivery
 // attempt — lazy, on-write computation, not a scheduled worker, since this
-// codebase has no cron-style periodic-sweep infrastructure (same reasoning
-// as the trash-purge sweep in service_file.go's maybePurgeExpiredTrash).
+// codebase has no cron-style periodic-sweep infrastructure.
 func (w *WebhookWorker) checkHealth(ctx context.Context, ep *webhookEndpointRecord) {
 	h, err := w.repo.webhookHealth(ctx, w.pool, ep.ID)
 	if err != nil {
@@ -127,7 +136,8 @@ func (w *WebhookWorker) checkHealth(ctx context.Context, ep *webhookEndpointReco
 	if ep.Enabled && ep.AutoDisabledAt == nil && h.Total3d > 0 && h.Delivered3d == 0 {
 		now := time.Now()
 		if err := w.repo.setWebhookEnabled(ctx, w.pool, ep.ID, false, &now); err == nil {
-			events.Publish(ctx, w.pub, events.ExchangeOrganization, events.RoutingKeyWebhookAutoDisabled, "organization", ep.OrganizationID,
+			events.Publish(ctx, w.pub, events.ExchangeOrganization,
+				events.RoutingKeyWebhookAutoDisabled, "organization", ep.OrganizationID,
 				events.WebhookAutoDisabled{OrganizationID: ep.OrganizationID, EndpointID: ep.ID, URL: ep.URL})
 		}
 		return
@@ -145,7 +155,8 @@ func (w *WebhookWorker) checkHealth(ctx context.Context, ep *webhookEndpointReco
 		return
 	}
 	if err := w.repo.setWebhookHealthWarnedAt(ctx, w.pool, ep.ID, time.Now()); err == nil {
-		events.Publish(ctx, w.pub, events.ExchangeOrganization, events.RoutingKeyWebhookHealthWarning, "organization", ep.OrganizationID,
+		events.Publish(ctx, w.pub, events.ExchangeOrganization,
+			events.RoutingKeyWebhookHealthWarning, "organization", ep.OrganizationID,
 			events.WebhookHealthWarning{OrganizationID: ep.OrganizationID, EndpointID: ep.ID, URL: ep.URL, SuccessPercent: percent})
 	}
 }
@@ -190,13 +201,15 @@ func deliver(
 
 	if statusCode >= 200 && statusCode < 300 {
 		entry := attemptLogEntry(attempts, &statusCode, &latency, nil, attemptedAt)
-		_ = repo.recordWebhookAttempt(ctx, q, del.ID, "delivered", attempts, nil, &statusCode, &bodyStr, &latency, &attemptedAt, entry)
+		_ = repo.recordWebhookAttempt(ctx, q, del.ID, "delivered",
+			attempts, nil, &statusCode, &bodyStr, &latency, &attemptedAt, entry)
 		return nil
 	}
 
 	errMsg := fmt.Sprintf("HTTP %d", statusCode)
 	entry := attemptLogEntry(attempts, &statusCode, &latency, &errMsg, attemptedAt)
-	_ = repo.recordWebhookAttempt(ctx, q, del.ID, "failed", attempts, &errMsg, &statusCode, &bodyStr, &latency, nil, entry)
+	_ = repo.recordWebhookAttempt(ctx, q, del.ID, "failed",
+		attempts, &errMsg, &statusCode, &bodyStr, &latency, nil, entry)
 	return fmt.Errorf("webhook: endpoint returned %d", statusCode)
 }
 
@@ -206,7 +219,8 @@ func recordFailedAttempt(
 ) error {
 	attempts := del.Attempts + 1
 	entry := attemptLogEntry(attempts, statusCode, latency, &errMsg, attemptedAt)
-	_ = repo.recordWebhookAttempt(ctx, q, del.ID, "failed", attempts, &errMsg, statusCode, nil, latency, nil, entry)
+	_ = repo.recordWebhookAttempt(ctx, q, del.ID, "failed",
+		attempts, &errMsg, statusCode, nil, latency, nil, entry)
 	return fmt.Errorf("webhook: %s", errMsg)
 }
 

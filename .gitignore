@@ -31,3 +31,11 @@ coverage.out
 
 # Temp
 tmp/
+
+# GeoIP database (internal/platform/geoip/GEOIP_DB_PATH) — a real
+# GeoLite2-Country.mmdb requires your own MaxMind account/license key
+# (see .env.example) and its license restricts redistribution, so it's
+# never committed. internal/platform/geoip/testdata/'s .mmdb is MaxMind's
+# own public test fixture (not real geolocation data) and stays tracked.
+*.mmdb
+!internal/platform/geoip/testdata/*.mmdb

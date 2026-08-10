@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
-import { useTranslation } from "react-i18next"
-import { IconTrash, IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react"
+import { useTranslation, Trans } from "react-i18next"
+import { IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react"
 import {
   Card,
   CardContent,
@@ -31,14 +31,14 @@ import {
 import { ConfirmationDialog } from "@/components/shared/confirmation-dialog"
 import {
   useDeleteOrganization,
-  useTransferOwnership,
   useSuspendOrganization,
   useUnsuspendOrganization,
+} from "@/features/organization/hooks/use-settings"
+import {
+  useTransferOwnership,
   useOrganizationMembers,
-  useWebhooks,
-} from "@/features/organization/hooks"
-import { useUsage } from "@/features/billing/hooks"
-import { formatBytes } from "@/lib/format"
+} from "@/features/organization/hooks/use-members"
+import { useWebhooks } from "@/features/organization/hooks/use-webhooks"
 
 interface Props {
   organizationId: string
@@ -59,11 +59,8 @@ export function OrganizationDangerZone({
 
   const { data: membersData } = useOrganizationMembers(organizationId)
   const { data: webhooksData } = useWebhooks(organizationId)
-  const { data: usageData } = useUsage(organizationId)
   const members = membersData?.data ?? []
   const webhooks = webhooksData?.data ?? []
-  const storageBytes =
-    usageData?.data?.find((u) => u.metric === "storage_bytes")?.value ?? 0
 
   const [transferOpen, setTransferOpen] = useState(false)
   const [transferTarget, setTransferTarget] = useState("")
@@ -83,7 +80,7 @@ export function OrganizationDangerZone({
   const isSuspended = status === "suspended"
 
   return (
-    <Card className="border-destructive/30">
+    <Card className="border-destructive">
       <CardHeader>
         <CardTitle className="text-destructive">
           {t("organization.danger.title")}
@@ -111,7 +108,7 @@ export function OrganizationDangerZone({
             >
               {t("organization.danger.transferAction")}
             </DialogTrigger>
-            <DialogContent className="sm:max-w-sm">
+            <DialogContent className="sm:max-w-[460px]">
               <DialogHeader>
                 <DialogTitle>
                   {t("organization.danger.transferAction")}
@@ -128,12 +125,22 @@ export function OrganizationDangerZone({
                   value={transferTarget}
                   onValueChange={(v) => setTransferTarget(v ?? "")}
                 >
-                  <SelectTrigger id="transfer-target">
+                  <SelectTrigger id="transfer-target" className="w-full">
                     <SelectValue
                       placeholder={t(
                         "organization.danger.transferSelectPlaceholder"
                       )}
-                    />
+                    >
+                      {transferTarget &&
+                        (() => {
+                          const selected = admins.find(
+                            (a) => a.auth_sub === transferTarget
+                          )
+                          return selected
+                            ? selected.full_name || selected.email
+                            : undefined
+                        })()}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {admins.map((m) => (
@@ -242,17 +249,20 @@ export function OrganizationDangerZone({
               t("organization.danger.deleteConsequenceMembers", {
                 count: members.length,
               }),
-              t("organization.danger.deleteConsequenceStorage", {
-                size: formatBytes(storageBytes),
-              }),
               t("organization.danger.deleteConsequenceWebhooks", {
                 count: webhooks.length,
               }),
             ]}
             confirmPhrase={slug}
-            confirmPhraseLabel={t("organization.danger.deleteTypeToConfirm", {
-              slug,
-            })}
+            confirmPhraseLabel={
+              <Trans
+                i18nKey="organization.danger.deleteTypeToConfirm"
+                values={{ slug }}
+                components={{
+                  b: <strong className="font-semibold text-foreground" />,
+                }}
+              />
+            }
             confirmLabel={t("organization.danger.deleteConfirm")}
             pending={deleting}
             onConfirm={() =>
@@ -261,7 +271,6 @@ export function OrganizationDangerZone({
               })
             }
           >
-            <IconTrash data-icon="inline-start" />
             {t("organization.danger.deleteOrganization")}
           </ConfirmationDialog>
         </div>

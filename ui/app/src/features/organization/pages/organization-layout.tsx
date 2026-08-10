@@ -10,11 +10,9 @@ import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { IconCopy } from "@tabler/icons-react"
 import { useAuth } from "@/components/auth-provider"
-import {
-  useOrganization,
-  useOrganizationMembers,
-  useUnsuspendOrganization,
-} from "@/features/organization/hooks"
+import { useOrganization } from "@/features/organization/hooks/use-organization"
+import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
+import { useUnsuspendOrganization } from "@/features/organization/hooks/use-settings"
 import { usePermissions } from "@/hooks/use-permissions"
 import { Button } from "@/components/ui/button"
 
@@ -65,7 +63,7 @@ export function OrganizationLayout() {
     void navigate({ to: "/organizations" })
   }, [isError, error, navigate, t, session])
 
-  const { isOwner, hasPendingInvoice } = usePermissions()
+  const { isOwner, hasPendingInvoice, role, canViewBilling } = usePermissions()
   const organization = wsData?.data
   const isSuspended = organization?.status === "suspended"
 
@@ -97,6 +95,21 @@ export function OrganizationLayout() {
       params: { organizationId },
     })
   }, [hasPendingInvoice, currentSegment, navigate, organizationId])
+
+  // Top-level segments below a role's threshold (PERMISSION_MATRIX) hide
+  // from the sidebar (sidebar-organization-nav.tsx's ORG_NAV `.filter`),
+  // but the route itself is still reachable by typing the URL directly —
+  // send those visitors to Settings instead, same as a role-gated Settings
+  // section simply not being in the DOM. Segment→allowed mirrors ORG_NAV's
+  // own `allowed` fields, so a future nav item only needs an entry here.
+  const isSegmentAllowed = currentSegment === "billing" ? canViewBilling : true
+  useEffect(() => {
+    if (role === undefined || !currentSegment || isSegmentAllowed) return
+    void navigate({
+      to: "/organization/$organizationId/settings",
+      params: { organizationId },
+    })
+  }, [role, isSegmentAllowed, currentSegment, navigate, organizationId])
 
   return (
     <div className="flex flex-1 flex-col gap-6">
@@ -173,7 +186,12 @@ export function OrganizationLayout() {
         </div>
       )}
 
-      <Outlet />
+      {/* Keyed by organizationId: switching organizations — including
+          editing the URL directly — only changes this param, it doesn't
+          remount the route. Without a key, any local state in a page below
+          here (an open dialog, a pending mutation, a selected id) survives
+          the switch and can end up acting against the new organization. */}
+      <Outlet key={organizationId} />
     </div>
   )
 }

@@ -3,12 +3,8 @@ import { useTranslation } from "react-i18next"
 import {
   IconBuilding,
   IconCreditCard,
-  IconUsers,
   IconSettings2,
   IconHome,
-  IconWebhook,
-  IconFolder,
-  IconHistory,
   IconCodeVariableMinus,
 } from "@tabler/icons-react"
 import {
@@ -36,26 +32,25 @@ interface NavItem {
   allowed: boolean
   /** does a pending-invoice/suspended organization block this item too? */
   billingBlockable: boolean
+  /**
+   * Settings only: the owner already gets a prominent banner (with a
+   * direct link to Billing) elsewhere on the page, so its own amber dot is
+   * redundant for that role.
+   */
+  hideBillingDotForOwner?: boolean
 }
 
 /**
- * 4 of 6 org nav items hide entirely for a role that can't use them at all
- * (Files/Webhooks/Audit Log/Billing); Members/Settings always render
- * since every role has baseline view access to both.
- * Billing-blocked items (Members/Files/Webhooks) get an amber dot instead — a separate,
- * org-state axis, independent of role.
+ * 2-item flat nav (Billing/Settings) — both always render since every role
+ * has baseline access. Billing-blocked items (Settings as an aggregate —
+ * Members and/or Webhooks inside it may be blocked) get an amber dot
+ * instead — a separate, org-state axis, independent of role.
  */
 export function SidebarOrganizationNav() {
   const { t } = useTranslation()
   const { location } = useRouterState()
   const { organizationId, organization } = useActiveOrganization()
-  const {
-    isBillingBlocked,
-    canAccessFiles,
-    canAccessWebhooks,
-    canAccessAuditLog,
-    canViewBilling,
-  } = usePermissions()
+  const { isOwner, isBillingBlocked, canViewBilling } = usePermissions()
 
   if (!organizationId) {
     return (
@@ -108,64 +103,15 @@ export function SidebarOrganizationNav() {
       allowed: true,
       billingBlockable: true,
     },
-    {
-      key: "r4",
-      label: "Reserve4",
-      to: `${base}/platform/r4`,
-      icon: IconCodeVariableMinus,
-      allowed: true,
-      billingBlockable: true,
-    },
-    {
-      key: "r5",
-      label: "Reserve5",
-      to: `${base}/platform/r5`,
-      icon: IconCodeVariableMinus,
-      allowed: true,
-      billingBlockable: true,
-    },
   ]
   {
     /* DONT TOUCH THIS*/
   }
 
-  // Regrouped: day-to-day items (General) vs. ownership/config items (Manage).
-  const GENERAL_NAV: NavItem[] = [
-    {
-      key: "members",
-      label: t("organization.tabs.members"),
-      to: `${base}/members`,
-      icon: IconUsers,
-      allowed: true,
-      billingBlockable: true,
-    },
-    {
-      key: "files",
-      label: t("organization.tabs.files"),
-      to: `${base}/files`,
-      icon: IconFolder,
-      allowed: canAccessFiles,
-      billingBlockable: true,
-    },
-  ]
-
-  const MANAGE_NAV: NavItem[] = [
-    {
-      key: "webhooks",
-      label: t("organization.tabs.webhooks"),
-      to: `${base}/webhooks`,
-      icon: IconWebhook,
-      allowed: canAccessWebhooks,
-      billingBlockable: true,
-    },
-    {
-      key: "auditLog",
-      label: t("organization.tabs.auditLog"),
-      to: `${base}/audit-log`,
-      icon: IconHistory,
-      allowed: canAccessAuditLog,
-      billingBlockable: false,
-    },
+  // Flat list — Settings is billingBlockable as an *aggregate* signal (the
+  // Members/Webhooks sections it now contains carry their own dots), not
+  // because Settings itself is ever a blocked/inaccessible segment.
+  const ORG_NAV: NavItem[] = [
     {
       key: "billing",
       label: t("organization.tabs.billing"),
@@ -180,7 +126,8 @@ export function SidebarOrganizationNav() {
       to: `${base}/settings`,
       icon: IconSettings2,
       allowed: true,
-      billingBlockable: false,
+      billingBlockable: true,
+      hideBillingDotForOwner: true,
     },
   ]
 
@@ -189,7 +136,10 @@ export function SidebarOrganizationNav() {
   }
 
   function renderNavItem(item: NavItem) {
-    const showBillingDot = item.billingBlockable && isBillingBlocked
+    const showBillingDot =
+      item.billingBlockable &&
+      isBillingBlocked &&
+      !(item.hideBillingDotForOwner && isOwner)
     return (
       <SidebarMenuItem key={item.to}>
         <SidebarMenuButton
@@ -277,18 +227,7 @@ export function SidebarOrganizationNav() {
         </SidebarGroupLabel>
         <SidebarGroupContent>
           <SidebarMenu>
-            {GENERAL_NAV.filter((item) => item.allowed).map(renderNavItem)}
-          </SidebarMenu>
-        </SidebarGroupContent>
-      </SidebarGroup>
-
-      <SidebarGroup>
-        <SidebarGroupLabel className="group-data-[collapsible=icon]:hidden">
-          {t("nav.groups.manage")}
-        </SidebarGroupLabel>
-        <SidebarGroupContent>
-          <SidebarMenu>
-            {MANAGE_NAV.filter((item) => item.allowed).map(renderNavItem)}
+            {ORG_NAV.filter((item) => item.allowed).map(renderNavItem)}
           </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>

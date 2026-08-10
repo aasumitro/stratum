@@ -6,7 +6,7 @@ import {
   type TablerIcon,
 } from "@tabler/icons-react"
 
-// The backend's 18 flat event keys group into 4 human categories
+// The backend's flat event keys group into 4 human categories
 // (Organization / Members / Billing / Account). This grouping is a
 // frontend-only static map — the backend stays flat
 // (`notification.messages.channel`, `notification.preferences.event_type`).
@@ -17,10 +17,7 @@ import {
 // "welcome" vs "organization_welcome"), so each map stays a literal match
 // against its own backend column rather than being merged into one.
 export type NotificationCategory =
-  | "organization"
-  | "members"
-  | "billing"
-  | "account"
+  "organization" | "members" | "billing" | "account"
 
 // Shared between the feed rows and the preferences matrix so both views read
 // as one system without needing brand color — icon shape is the only
@@ -57,6 +54,7 @@ export const CHANNEL_CATEGORY: Record<string, NotificationCategory> = {
   member_removed: "members",
   member_role_changed: "members",
   invite: "members",
+  invitation_requested: "members",
   ownership_transferred: "organization",
   trial_started: "billing",
   invoice_created: "billing",
@@ -68,30 +66,29 @@ export const CHANNEL_CATEGORY: Record<string, NotificationCategory> = {
   subscription_cancelled: "billing",
   subscription_resumed: "billing",
   subscription_remind: "billing",
+  usage_limit_warning: "billing",
+  webhook_health_warning: "organization",
+  webhook_auto_disabled: "organization",
   email_changed: "account",
 }
 
-// Email preference event_type keys. "account" has none currently — the only
-// account-category notification (email_changed) is in-app-only, with no
-// email counterpart to gate. The preferences panel shows that category's
-// switches disabled with an explanatory note rather than fabricate a toggle
-// for a preference that doesn't exist on the backend.
+// Email preference event_type keys — only events that still send email
+// belong here (organization_welcome, trial_started, invoice_created,
+// subscription_activated/cancelled/resumed, member_role_changed,
+// organization_ownership_transferred, and invitation_requested are in-app
+// only, same as organization_suspended/organization_reactivated/
+// email_changed always were, so they have no row here to gate).
 export const EVENT_TYPE_CATEGORY: Record<string, NotificationCategory> = {
-  organization_welcome: "organization",
   organization_deleted: "organization",
   member_removed: "members",
-  member_role_changed: "members",
-  organization_ownership_transferred: "organization",
-  trial_started: "billing",
-  invoice_created: "billing",
   invoice_paid: "billing",
   invoice_failed: "billing",
   invoice_payment_remind: "billing",
   invoice_payment_final: "billing",
-  subscription_activated: "billing",
-  subscription_cancelled: "billing",
-  subscription_resumed: "billing",
   subscription_remind: "billing",
+  usage_limit_warning: "billing",
+  webhook_health_warning: "organization",
+  webhook_auto_disabled: "organization",
 }
 
 export function channelsInCategory(category: NotificationCategory): string[] {

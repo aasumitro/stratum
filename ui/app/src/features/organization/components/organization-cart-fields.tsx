@@ -29,11 +29,10 @@ export function OrganizationCartFields({ formState }: Props) {
   const { form } = formState
   const [addonDialogOpen, setAddonDialogOpen] = useState(false)
 
-  const countryCode = useSelector(form.store, (s) => s.values.country_code)
   const cycle = useSelector(form.store, (s) => s.values.cycle) as BillingCycle
   const selectedAddons = useSelector(form.store, (s) => s.values.addons)
 
-  const { data: addonsCatalogData } = useAddonsCatalog(countryCode)
+  const { data: addonsCatalogData } = useAddonsCatalog()
   const addonsById = new Map(
     (addonsCatalogData?.data ?? []).map((a) => [a.id, a])
   )
@@ -93,7 +92,6 @@ export function OrganizationCartFields({ formState }: Props) {
       <AddAddonsDialog
         open={addonDialogOpen}
         onOpenChange={setAddonDialogOpen}
-        countryCode={countryCode}
         cycle={cycle}
         selected={selectedAddons}
         onChange={(next) => form.setFieldValue("addons", next)}

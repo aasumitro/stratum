@@ -65,12 +65,12 @@ func Setup(
 
 	res, err := newResource(ctx, serviceName, serviceVersion)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("otel.Setup: resource: %w", err)
 	}
 
 	tracerProvider, err := newTracerProvider(ctx, isLocal, cfg.CollectorURL, res)
 	if err != nil {
-		return nil, nil, fmt.Errorf("setting up tracing: %w", err)
+		return nil, nil, fmt.Errorf("otel.Setup: setting up tracing: %w", err)
 	}
 
 	// Every outbound HTTP call (Supabase admin API, storage) gets a client
@@ -81,12 +81,12 @@ func Setup(
 
 	meterProvider, err := newMeterProvider(ctx, isLocal, cfg.CollectorURL, res)
 	if err != nil {
-		return nil, nil, fmt.Errorf("setting up metrics: %w", err)
+		return nil, nil, fmt.Errorf("otel.Setup: setting up metrics: %w", err)
 	}
 
 	loggerProvider, err := newLoggerProvider(ctx, isLocal, cfg.CollectorURL, res)
 	if err != nil {
-		return nil, nil, fmt.Errorf("setting up logging: %w", err)
+		return nil, nil, fmt.Errorf("otel.Setup: setting up logging: %w", err)
 	}
 
 	logBridge := otellogbridge.NewHandler(serviceName, otellogbridge.WithLoggerProvider(loggerProvider))

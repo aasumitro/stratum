@@ -42,4 +42,4 @@ PostgreSQL is the system of record — back it up per your SLA (define RPO/RTO h
 **Degraded readiness** — A 503 from `/health/ready` means a dependency check failed; `/health/stats` shows pool and GC pressure. Check Postgres, Redis, and RabbitMQ reachability. Don't restart infrastructure from inside an automated session — surface it to a human.
 
 ## No scheduler
-Stratum has no cron. Anything that looks periodic is either a one-shot RabbitMQ delayed message (dunning, renewal reminders) or lazy/opportunistic work (trash purge on read, webhook health on delivery). This is a deliberate simplification — adding a scheduler for a single sweep wasn't judged worth the operational surface.
+Stratum has no cron. Anything that looks periodic is either a one-shot RabbitMQ delayed message (dunning, renewal reminders) or lazy/opportunistic work (webhook health computed on delivery). This is a deliberate simplification — adding a scheduler for a single sweep wasn't judged worth the operational surface.

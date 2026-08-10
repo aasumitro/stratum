@@ -68,9 +68,9 @@ export function CreateOrganizationForm({
 
   const selectedPlan = plans.find((p) => p.id === form.state.values.plan)
   const cycle = form.state.values.cycle as BillingCycle
-  // The API scopes `prices` down to a single currency when country_code is
-  // passed (see usePlans in billing/hooks.ts) — read whichever one it sent
-  // back instead of assuming "USD".
+  // The API always scopes `prices` down to a single, server-resolved
+  // currency (see usePlans in billing/hooks.ts) — read whichever one it
+  // sent back instead of assuming "USD".
   const [currency, prices] = Object.entries(selectedPlan?.prices ?? {})[0] ?? [
     "USD",
     undefined,

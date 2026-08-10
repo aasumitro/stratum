@@ -13,7 +13,7 @@ export interface ResponseStatus {
   details:
     | string
     | string[]
-    | Record<string, string[]>[]
+    | Record<string, { code: string; param?: string }[]>
     | Record<string, string>
 }
 

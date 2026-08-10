@@ -135,6 +135,11 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* In-page hash navigation (Settings' anchor nav) scrolls smoothly instead
+     of jumping; motion-safe keeps prefers-reduced-motion users instant. */
+  html {
+    @apply motion-safe:scroll-smooth;
+  }
   /* tw-animate-css's animate-in/out (dialog, alert-dialog, dropdown-menu,
      select, popover, tooltip) reads --tw-ease, falling back to the CSS
      keyword "ease" — a curve that ramps up slowly before the popup visibly

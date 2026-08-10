@@ -524,17 +524,17 @@ func TestIntegration_SendEmail_ConfiguredMailer_RecordsFailedRow(t *testing.T) {
 	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
 
 	mod := notification.New(pool, deadMailer(), notifMembersReader{name: "Acme"}, stubNotifUserReader{}, "https://app.test", nil)
-	body := encodeEnvNotif("trial-mail-01", events.RoutingKeyTrialStarted, orgID,
-		events.TrialStarted{OrgID: orgID, Plan: "growth", TrialEnd: time.Now().Add(14 * 24 * time.Hour)})
+	body := encodeEnvNotif("expired-mail-01", events.RoutingKeySubscriptionExpired, orgID,
+		events.SubscriptionExpired{OrgID: orgID, ExpiredAt: time.Now()})
 
-	if err := mod.Worker.HandleTrialStarted(t.Context(), body); err != nil {
-		t.Fatalf("HandleTrialStarted with mailer: %v", err)
+	if err := mod.Worker.HandleSubscriptionExpired(t.Context(), body); err != nil {
+		t.Fatalf("HandleSubscriptionExpired with mailer: %v", err)
 	}
 
 	var count int
 	var status string
 	pool.QueryRow(t.Context(),
-		`SELECT COUNT(*), COALESCE(MAX(payload->>'status'),'') FROM notification.messages WHERE organization_id = $1 AND kind = 'email' AND channel = 'trial_started'`, orgID,
+		`SELECT COUNT(*), COALESCE(MAX(status),'') FROM notification.messages WHERE organization_id = $1 AND kind = 'email' AND channel = 'subscription_expired'`, orgID,
 	).Scan(&count, &status)
 	if count == 0 {
 		t.Fatal("configured mailer should record an email message row")
@@ -552,30 +552,30 @@ func TestIntegration_SendEmail_SkippedWhenEmailPreferenceDisabled(t *testing.T) 
 		pool.Exec(context.Background(), `DELETE FROM notification.preferences WHERE auth_sub = $1`, testAuthSubNotif)
 	})
 
-	// owner has opted out of the trial_started email specifically
+	// owner has opted out of the subscription_expired email specifically
 	if _, err := pool.Exec(t.Context(),
-		`INSERT INTO notification.preferences (auth_sub, channel, event_type, enabled) VALUES ($1, 'email', 'trial_started', false)`,
+		`INSERT INTO notification.preferences (auth_sub, channel, event_type, enabled) VALUES ($1, 'email', 'subscription_expired', false)`,
 		testAuthSubNotif,
 	); err != nil {
 		t.Fatalf("insert email preference: %v", err)
 	}
 
 	mod := notification.New(pool, deadMailer(), notifMembersReader{name: "Acme"}, stubNotifUserReader{}, "https://app.test", nil)
-	body := encodeEnvNotif("trial-mail-02", events.RoutingKeyTrialStarted, orgID,
-		events.TrialStarted{OrgID: orgID, Plan: "growth", TrialEnd: time.Now().Add(14 * 24 * time.Hour)})
-	if err := mod.Worker.HandleTrialStarted(t.Context(), body); err != nil {
-		t.Fatalf("HandleTrialStarted: %v", err)
+	body := encodeEnvNotif("expired-mail-02", events.RoutingKeySubscriptionExpired, orgID,
+		events.SubscriptionExpired{OrgID: orgID, ExpiredAt: time.Now()})
+	if err := mod.Worker.HandleSubscriptionExpired(t.Context(), body); err != nil {
+		t.Fatalf("HandleSubscriptionExpired: %v", err)
 	}
 
 	var emailCount int
 	pool.QueryRow(t.Context(),
-		`SELECT COUNT(*) FROM notification.messages WHERE organization_id = $1 AND kind = 'email' AND channel = 'trial_started'`, orgID,
+		`SELECT COUNT(*) FROM notification.messages WHERE organization_id = $1 AND kind = 'email' AND channel = 'subscription_expired'`, orgID,
 	).Scan(&emailCount)
 	if emailCount != 0 {
 		t.Errorf("email disabled by preference must not send/record, got %d email rows", emailCount)
 	}
 	// the in_app notification is governed by a separate preference and still fires
-	assertNotifChannelExists(t, pool, orgID, "trial_started")
+	assertNotifChannelExists(t, pool, orgID, "subscription_expired")
 }
 
 // --- decode-error edge cases: a malformed body must surface the decode error ---

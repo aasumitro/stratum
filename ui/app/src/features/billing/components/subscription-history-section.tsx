@@ -2,7 +2,11 @@ import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useBillingHistory } from "@/features/billing/hooks"
+import {
+  useBillingHistory,
+  useOrgAddonsCatalog,
+} from "@/features/billing/hooks"
+import { parseAddonChangeMetadata } from "@/features/billing/utils"
 import { capitalize, timeAgo } from "@/lib/format"
 import { SubscriptionHistorySheet } from "./subscription-history-sheet"
 
@@ -15,6 +19,7 @@ export function SubscriptionHistorySection({ organizationId, isOwner }: Props) {
   const { t } = useTranslation()
   const [showSheet, setShowSheet] = useState(false)
   const { data, isLoading } = useBillingHistory(organizationId, isOwner)
+  const { data: addonsData } = useOrgAddonsCatalog(organizationId, isOwner)
 
   if (!isOwner) return null
 
@@ -33,17 +38,31 @@ export function SubscriptionHistorySection({ organizationId, isOwner }: Props) {
 
   const name = latest.changed_by_name
   const timeAgoLabel = timeAgo(latest.changed_at)
-  let summary: string
+  let summary: string | null = null
   switch (latest.action) {
     case "upgrade":
-    case "downgrade":
-      summary = t("billing.history.summaryChange", {
-        name,
-        fromPlan: latest.from_plan ? capitalize(latest.from_plan) : "—",
-        toPlan: latest.to_plan ? capitalize(latest.to_plan) : "—",
-        timeAgo: timeAgoLabel,
-      })
+    case "downgrade": {
+      const cycleChanged =
+        latest.from_cycle &&
+        latest.to_cycle &&
+        latest.from_cycle !== latest.to_cycle
+      const planChanged = latest.from_plan !== latest.to_plan
+      summary =
+        !planChanged && cycleChanged
+          ? t("billing.history.summaryCycleChange", {
+              name,
+              fromCycle: capitalize(latest.from_cycle!),
+              toCycle: capitalize(latest.to_cycle!),
+              timeAgo: timeAgoLabel,
+            })
+          : t("billing.history.summaryChange", {
+              name,
+              fromPlan: latest.from_plan ? capitalize(latest.from_plan) : "—",
+              toPlan: latest.to_plan ? capitalize(latest.to_plan) : "—",
+              timeAgo: timeAgoLabel,
+            })
       break
+    }
     case "trial":
     case "activate":
       summary = t("billing.history.summaryStart", {
@@ -76,7 +95,24 @@ export function SubscriptionHistorySection({ organizationId, isOwner }: Props) {
         timeAgo: timeAgoLabel,
       })
       break
+    case "addon_change": {
+      const meta = parseAddonChangeMetadata(latest.metadata)
+      if (meta) {
+        const addonName =
+          addonsData?.data?.find((a) => a.id === meta.addon_id)?.name ??
+          meta.addon_id
+        summary = t("billing.history.summaryAddonChange", {
+          name,
+          addonName,
+          fromQuantity: meta.from_quantity,
+          toQuantity: meta.to_quantity,
+          timeAgo: timeAgoLabel,
+        })
+      }
+      break
+    }
   }
+  if (!summary) return null
 
   return (
     <div className="flex-1 space-y-2">
