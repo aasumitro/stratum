@@ -6,6 +6,55 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-10
+
+### Added
+
+- Server-resolved billing currency: `country_code` is now resolved from the caller's real IP
+  (MaxMind GeoLite2) at organization creation and plan/addon catalog lookups instead of being a
+  client-supplied field, closing a price-arbitrage hole
+- In-app notifications now render in the viewer's current UI language, including history read
+  later — previously frozen in English at write time
+- Backend error codes now drive frontend translation: every error the API can throw has an
+  EN/ID translation, enforced by a coverage test; validation field errors carry a translatable
+  `{code, param}` pair instead of a prebuilt English sentence
+- Zod-backed schema validation adopted across frontend forms
+- Stripe/Xendit checkout pages show a real itemized invoice breakdown instead of a bare
+  "Invoice `<uuid>`" line
+- Plan History now distinguishes scheduled vs. applied vs. undone changes, records cycle-only
+  switches, and covers the full addon lifecycle (attach/increase/decrease/undo) — previously
+  addon changes never appeared in history at all
+- Org-scoped plan/addon catalog pricing for post-creation pickers, so a traveling owner sees
+  their organization's own currency instead of a GeoIP-resolved one
+
+### Changed
+
+- Subscription extensions now bill attached addons for the extended window instead of letting
+  them ride free; addon-increase proration now accounts for the subscription's real (possibly
+  multi-cycle) period instead of assuming a single billing cycle
+- 9 confirmatory/non-time-sensitive notification types (welcome, trial started, invoice created,
+  subscription activated/cancelled/resumed, role changed, ownership transferred, invitation
+  requested) are now in-app-only, reducing email noise; time-sensitive/financial/security
+  notifications are unchanged
+- Organization file/folder storage removed entirely (upload/download/folders/trash/quota and the
+  extra-storage add-on); avatars, organization logos, and invoice PDFs are unaffected
+- Member seat-limit checks are now atomic (row-locked) across add/invite-accept/join-by-code,
+  closing a race that could over-fill a seat-limited organization
+
+### Fixed
+
+- Organization invitation resend endpoint (IDOR): now verifies the caller's verified email
+  against the invitation's target instead of trusting any authenticated caller
+- Accepting an invitation to a suspended organization no longer bypasses the suspension gate
+- Non-atomic billing webhook handling, a coupon double-redemption race, and an orphaned invoice
+  on partial failure fixed with proper transaction boundaries, including two worker-invoked
+  paths (subscription expiry, cancel-on-deletion) that previously had no audit trail on failure
+- SSRF, CORS, webhook-secret, and rate-limiting hardening; auth redirect and CSP hardening
+- SSE concurrent-stream slot no longer drops on a connection held open past 10 minutes (counter
+  TTL is now refreshed for the life of the stream)
+- Notification "Load more" pagination no longer breaks depending on cursor vs. page usage
+- Removing an already-removed organization member no longer publishes a phantom removal event
+
 ## [0.2.0] - 2026-07-25
 
 ### Added
