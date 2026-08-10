@@ -135,3 +135,49 @@ func TestIntegration_StreamNotifications_DecrementsOnClose(t *testing.T) {
 		t.Fatal("counter never returned to 0 after the stream closed")
 	}
 }
+
+// TestIntegration_StreamNotifications_RefreshesTTLBeforeExpiry regression-
+// tests that a stream held open longer than its counter slot's TTL keeps
+// that slot alive via periodic refresh, instead of the slot expiring out
+// from under a still-open stream (which would let the concurrency cap be
+// bypassed by the next stream and risk a negative counter once this one
+// eventually closes and decrements it).
+func TestIntegration_StreamNotifications_RefreshesTTLBeforeExpiry(t *testing.T) {
+	pool := testPoolNotif(t)
+	redis := testRedisNotif(t)
+
+	const subject = "integ_sse_ttl_refresh_user"
+	key := "sse:open:" + subject
+	t.Cleanup(func() { redis.Del(context.Background(), key) })
+
+	restore := notification.SetSSESlotDurationsForTest(300*time.Millisecond, 100*time.Millisecond)
+	defer restore()
+
+	e := notification.NewModuleEngineWithRedis(pool, subject, redis)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/me/notifications/stream", nil).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		e.ServeHTTP(newCloseNotifyRecorder(), req)
+		close(done)
+	}()
+
+	if !waitForCounter(t, redis, key, 1) {
+		t.Fatal("counter never reached 1 after opening the stream")
+	}
+
+	// With a 300ms TTL and no refresh, the key would already be gone by
+	// now; the 100ms refresh ticker should have kept it alive past that.
+	time.Sleep(500 * time.Millisecond)
+	if ttl, err := redis.TTL(t.Context(), key).Result(); err != nil || ttl <= 0 {
+		t.Fatalf("slot key expired despite the stream still being open: ttl=%v err=%v", ttl, err)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after its context was cancelled")
+	}
+}

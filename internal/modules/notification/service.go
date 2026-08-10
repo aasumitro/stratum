@@ -35,6 +35,7 @@ type listResult struct {
 	Messages   []messageRecord
 	Total      int64
 	NextCursor string
+	CursorMode bool
 }
 
 // send creates an in-app (or other kind) notification message, honoring the
@@ -270,12 +271,25 @@ func (s *service) resolveFirstOrganizationID(ctx context.Context, authSub string
 	return id
 }
 
-// listForUser lists in_app messages for a user. organizationID and channel are optional — empty means all.
-// When cursor is non-empty, cursor pagination is used and Total is not computed.
+// listForUser lists in_app messages for a user. organizationID and channel
+// are optional — empty means all.
+//
+// Response shape is resolved here and reported back via listResult.CursorMode
+// so the handler doesn't have to re-derive it:
+//   - a caller-supplied cursor always continues in cursor mode.
+//   - pageRequested (the caller explicitly sent a page param) always stays
+//     in page mode — Total, never NextCursor — even when the requested page
+//     happens to come back exactly full; otherwise an explicit page-based
+//     caller would silently flip to the cursor shape and lose Total.
+//   - with neither given, falls back to cursor mode whenever another page
+//     exists — the product's own notification feed never sends a cursor on
+//     its first request, only on "load more", and relies on NextCursor
+//     showing up on that first response to know there's more to load.
 func (s *service) listForUser(
 	ctx context.Context,
 	authSub, organizationID, channel, cursor string,
 	limit, offset int,
+	pageRequested bool,
 ) (*listResult, error) {
 	messages, err := s.repo.listMessages(ctx, s.pool, authSub, organizationID, channel, cursor, limit, offset)
 	if err != nil {
@@ -292,8 +306,8 @@ func (s *service) listForUser(
 		nextCursor = base64.StdEncoding.EncodeToString([]byte(raw))
 	}
 
-	if cursor != "" || nextCursor != "" {
-		return &listResult{Messages: messages, NextCursor: nextCursor}, nil
+	if cursor != "" || (!pageRequested && nextCursor != "") {
+		return &listResult{Messages: messages, NextCursor: nextCursor, CursorMode: true}, nil
 	}
 	total, err := s.repo.countTotal(ctx, s.pool, authSub, organizationID, channel)
 	if err != nil {

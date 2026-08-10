@@ -265,7 +265,9 @@ func (h *handler) requestNewInvitation(c *gin.Context) {
 	if !request.Bind(c, &req) {
 		return
 	}
-	if err := h.svc.requestNewInvitation(c.Request.Context(), req.Token); err != nil {
+	email := reqctx.Email(c)
+	emailVerified := reqctx.EmailVerified(c)
+	if err := h.svc.requestNewInvitation(c.Request.Context(), req.Token, email, emailVerified); err != nil {
 		response.FromError(c, err)
 		return
 	}

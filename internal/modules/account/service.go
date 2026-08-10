@@ -591,7 +591,7 @@ func (s *service) syncMFAStatusOnLogin(ctx context.Context, authSub string) {
 		syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := s.fetchAndPersistMFAStatus(syncCtx, authSub); err != nil {
-			slog.WarnContext(ctx, "account.syncMFAStatusOnLogin: mfa status sync failed", "auth_sub", authSub, "error", err)
+			slog.WarnContext(syncCtx, "account.syncMFAStatusOnLogin: mfa status sync failed", "auth_sub", authSub, "error", err)
 		}
 	}()
 }

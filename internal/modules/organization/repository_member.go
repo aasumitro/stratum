@@ -139,15 +139,18 @@ func (r *repository) insertMembership(
 	return m, nil
 }
 
-func (r *repository) deleteMembership(ctx context.Context, q db.Querier, organizationID, authSub string) error {
-	_, err := q.Exec(ctx, `
+// deleteMembership reports whether a row was actually removed, so a caller
+// can tell a real removal apart from a no-op delete of a membership that was
+// already gone.
+func (r *repository) deleteMembership(ctx context.Context, q db.Querier, organizationID, authSub string) (bool, error) {
+	tag, err := q.Exec(ctx, `
 		DELETE FROM organization.memberships WHERE organization_id = $1 AND auth_sub = $2 AND role != 'owner'`,
 		organizationID, authSub,
 	)
 	if err != nil {
-		return fmt.Errorf("organization.deleteMembership: %w", err)
+		return false, fmt.Errorf("organization.deleteMembership: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organizationID, authSub, role string) error {

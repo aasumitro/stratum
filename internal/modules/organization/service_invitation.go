@@ -323,10 +323,21 @@ func (s *service) listMyInvitations(ctx context.Context, email string) ([]myInvi
 // requestNewInvitation notifies the ORIGINAL inviter (not the requester)
 // that an expired/lost invitation needs resending — the requester has no
 // permission to re-invite themselves. Looked up by token regardless of
-// status/expiry so this works precisely on the expired-invitation case.
-func (s *service) requestNewInvitation(ctx context.Context, token string) error {
+// status/expiry so this works precisely on the expired-invitation case;
+// unlike acceptInvitation/previewInvitation/declineInvitation it therefore
+// can't route through validateInvitationForClaim (which rejects expired
+// tokens). The caller's verified email must still match the invitation's
+// target address — otherwise any authenticated user who knows or intercepts
+// a token could trigger a resend notification for an invitation that isn't
+// theirs. A mismatch returns the same "not found" error as a nonexistent
+// token so this endpoint can't be used to probe whether a given token is
+// valid but belongs to someone else.
+func (s *service) requestNewInvitation(ctx context.Context, token, email string, emailVerified bool) error {
 	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
 	if err != nil {
+		return apperr.Validation("INVITATION_NOT_FOUND", "invitation not found")
+	}
+	if !emailVerified || !strings.EqualFold(inv.Email, email) {
 		return apperr.Validation("INVITATION_NOT_FOUND", "invitation not found")
 	}
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyInvitationRequested, "organization", inv.OrganizationID,

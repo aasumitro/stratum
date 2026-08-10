@@ -839,7 +839,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the caller's notifications. Page-based (limit/page) unless a cursor is supplied, in which case it switches to cursor pagination.",
+                "description": "Returns the caller's notifications. Cursor pagination (response carries next_cursor, no total) once a cursor is supplied, or by default when neither cursor nor page is given and another page exists. Sending an explicit page forces page-based pagination (response carries total) even on a full page.",
                 "produces": [
                     "application/json"
                 ],
@@ -868,7 +868,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "integer",
-                        "description": "page number, ignored once cursor is set (default 1)",
+                        "description": "page number; sending this forces page-based pagination (default 1)",
                         "name": "page",
                         "in": "query"
                     },

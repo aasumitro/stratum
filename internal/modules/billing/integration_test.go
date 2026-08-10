@@ -969,6 +969,44 @@ func TestIntegration_ExpireIfDue_FutureEnd_NoChange(t *testing.T) {
 	}
 }
 
+// TestIntegration_ExpireIfDue_HistoryFailure_RollsBackStatus proves
+// expireIfDue's status update and history insert are atomic: if the history
+// insert fails, the status change must not have committed either.
+func TestIntegration_ExpireIfDue_HistoryFailure_RollsBackStatus(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_expire_txfail_user"
+		orgID = "00000000-0000-0000-0000-000000000d18"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	past := time.Now().Add(-time.Second)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET period_end = $1, trial_end = NULL WHERE subject_type = 'organization' AND subject_id = $2`,
+		past, orgID); err != nil {
+		t.Fatalf("set past period_end: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, orgID)
+	statusBefore := getSubscriptionData(t, billing.NewModuleEngine(pool, user, orgID), orgID)["status"].(string)
+
+	forceHistoryInsertFailure(t, pool, subID)
+
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, past)); err == nil {
+		t.Fatal("HandleSubscriptionCheck: want error from failed history insert, got nil")
+	}
+
+	data := getSubscriptionData(t, billing.NewModuleEngine(pool, user, orgID), orgID)
+	if data["status"] != statusBefore {
+		t.Errorf("after failed history insert: want status unchanged (%q), got %v", statusBefore, data["status"])
+	}
+}
+
 // --- Webhook processing ---
 
 func TestIntegration_StripeWebhook_MarksInvoicePaid(t *testing.T) {
@@ -3315,6 +3353,45 @@ func TestIntegration_HandleOrganizationDeleted_CancelsSubscription(t *testing.T)
 	}
 	if string(metadataRaw) != "{}" {
 		t.Errorf("cancelOnDeletion history metadata: want empty {}, got %s", metadataRaw)
+	}
+}
+
+// TestIntegration_CancelOnDeletion_HistoryFailure_RollsBackStatus proves
+// cancelOnDeletion's status update and history insert are atomic: if the
+// history insert fails, the status change must not have committed either.
+func TestIntegration_CancelOnDeletion_HistoryFailure_RollsBackStatus(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_ws_deleted_txfail_user"
+		orgID = "00000000-0000-0000-0000-000000000f1a"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, orgID)
+	forceHistoryInsertFailure(t, pool, subID)
+
+	deletedEvt := events.Envelope{
+		ID: "del-txfail-" + orgID, Type: events.RoutingKeyOrganizationDeleted,
+		Source: "organization", Time: time.Now(), OrgID: orgID,
+		Data: events.OrganizationDeleted{OrganizationID: orgID, DeletedAt: time.Now()},
+	}
+	body, _ := json.Marshal(deletedEvt)
+
+	if err := mod.Worker.HandleOrganizationDeleted(t.Context(), body); err == nil {
+		t.Fatal("HandleOrganizationDeleted: want error from failed history insert, got nil")
+	}
+
+	var status string
+	pool.QueryRow(t.Context(),
+		`SELECT status FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID,
+	).Scan(&status)
+	if status == "cancelled" {
+		t.Errorf("after failed history insert: want status not cancelled, got %q", status)
 	}
 }
 

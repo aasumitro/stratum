@@ -102,8 +102,15 @@ func (s *service) removeMember(ctx context.Context, organizationID, authSub stri
 	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
 		return apperr.Forbidden("CANNOT_REMOVE_OWNER", "cannot remove the organization owner")
 	}
-	if err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
+	removed, err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub)
+	if err != nil {
 		return apperr.Internal("MEMBER_REMOVE_FAILED", "failed to remove member", err)
+	}
+	// Idempotent: removing a member who's already gone succeeds without
+	// re-syncing usage or publishing a second MemberRemoved for a removal
+	// that didn't actually happen here.
+	if !removed {
+		return nil
 	}
 	s.syncMemberUsage(ctx, organizationID)
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
@@ -206,7 +213,7 @@ func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub
 	if role == contracts.RoleOwner {
 		return errors.New("owner cannot leave — transfer ownership first")
 	}
-	if err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
+	if _, err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
 		return err
 	}
 	s.syncMemberUsage(ctx, organizationID)

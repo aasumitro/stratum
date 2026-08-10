@@ -577,20 +577,27 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 		return nil
 	}
 
-	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusExpired); err != nil {
-		return fmt.Errorf("billing.expireIfDue: %w", err)
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		ctx := db.WithQuerier(ctx, tx)
+		if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusExpired); err != nil {
+			return fmt.Errorf("billing.expireIfDue: %w", err)
+		}
+		if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
+			nil, 0, sub.Currency, changedBySystem, nil); err != nil {
+			return fmt.Errorf("billing.expireIfDue: insert history: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
-	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "expire", &sub.Plan,
-		nil, 0, sub.Currency, changedBySystem, nil); err != nil {
-		return fmt.Errorf("billing.expireIfDue: insert history: %w", err)
-	}
-
-	// The status change and history row above already committed (this
-	// function runs with no enclosing transaction) — a suspend failure here
-	// can't roll those back, so it's logged rather than turned into a
-	// function-level error that would just re-run the already-succeeded
-	// writes on retry.
+	// SuspendOrganization and the event publish below deliberately stay
+	// outside the transaction above: they're best-effort/idempotent, run
+	// only after the status+history write has durably committed, and a
+	// failure here can't roll that back — it's logged instead of turned
+	// into a function-level error that would just re-run the
+	// already-succeeded writes on retry.
 	if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
 		if err := s.orgSuspender.SuspendOrganization(ctx, sub.SubjectID, "subscription expired"); err != nil {
 			slog.Error("SuspendOrganization failed", "organization_id", sub.SubjectID, "error", err)
@@ -616,12 +623,15 @@ func (s *service) cancelOnDeletion(ctx context.Context, organizationID string) e
 	if sub.Status == statusCancelled || sub.Status == statusExpired {
 		return nil
 	}
-	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusCancelled); err != nil {
-		return fmt.Errorf("billing.cancelOnDeletion: %w", err)
-	}
-	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
-		&sub.Plan, nil, 0, sub.Currency, changedBySystem, nil); err != nil {
-		return fmt.Errorf("billing.cancelOnDeletion: insert history: %w", err)
-	}
-	return nil
+	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		ctx := db.WithQuerier(ctx, tx)
+		if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusCancelled); err != nil {
+			return fmt.Errorf("billing.cancelOnDeletion: %w", err)
+		}
+		if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "cancel",
+			&sub.Plan, nil, 0, sub.Currency, changedBySystem, nil); err != nil {
+			return fmt.Errorf("billing.cancelOnDeletion: insert history: %w", err)
+		}
+		return nil
+	})
 }

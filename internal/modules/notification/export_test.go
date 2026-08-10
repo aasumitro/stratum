@@ -1,6 +1,8 @@
 package notification
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -8,6 +10,16 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 )
+
+// SetSSESlotDurationsForTest overrides the SSE concurrency-slot TTL and its
+// refresh interval so a test can observe a refresh without waiting out the
+// real multi-minute cadence. Mutates package-level state; call at the start
+// of a test and restore via the returned func.
+func SetSSESlotDurationsForTest(ttl, refresh time.Duration) (restore func()) {
+	prevTTL, prevRefresh := sseSlotTTL, sseSlotRefreshInterval
+	sseSlotTTL, sseSlotRefreshInterval = ttl, refresh
+	return func() { sseSlotTTL, sseSlotRefreshInterval = prevTTL, prevRefresh }
+}
 
 // NewHandlerEngine returns a gin.Engine with notification handlers and no
 // service. Only use for binding/validation tests.

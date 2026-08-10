@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
@@ -213,6 +214,40 @@ func getSubscriptionID(pool *pgxpool.Pool, orgID string) string {
 		`SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID,
 	).Scan(&id)
 	return id
+}
+
+// forceHistoryInsertFailure installs a trigger that raises an error on any
+// INSERT into billing.subscription_history for subscriptionID, so a caller
+// can prove a preceding write (e.g. updateSubscriptionStatus) rolls back
+// when insertHistory fails inside the same transaction. CREATE TRIGGER
+// doesn't support query parameters, so subscriptionID (already validated as
+// a UUID) is inlined directly rather than passed as a bind argument.
+func forceHistoryInsertFailure(t *testing.T, pool *pgxpool.Pool, subscriptionID string) {
+	t.Helper()
+	if _, err := uuid.Parse(subscriptionID); err != nil {
+		t.Fatalf("forceHistoryInsertFailure: not a UUID: %v", err)
+	}
+	ctx := t.Context()
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION test_force_history_insert_failure() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'test-induced history insert failure';
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE OR REPLACE TRIGGER trg_test_force_history_insert_failure
+		BEFORE INSERT ON billing.subscription_history
+		FOR EACH ROW WHEN (NEW.subscription_id = '`+subscriptionID+`')
+		EXECUTE FUNCTION test_force_history_insert_failure()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(),
+			`DROP TRIGGER IF EXISTS trg_test_force_history_insert_failure ON billing.subscription_history`)
+		pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS test_force_history_insert_failure()`)
+	})
 }
 
 // getSubscriptionExpectedEnd returns the subscription's current trial_end (if

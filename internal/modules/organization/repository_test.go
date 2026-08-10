@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 )
@@ -308,6 +309,75 @@ func TestIntegration_AddAndRemoveMember(t *testing.T) {
 	w4 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodDelete, "/api/organizations/"+orgID+"/members/sub_extra_member", ""))
 	if w4.Code != http.StatusNoContent {
 		t.Errorf("want 204, got %d: %s", w4.Code, w4.Body)
+	}
+}
+
+// countMemberRemovedEvents returns how many MemberRemoved events a
+// capturingPublisher recorded — used to prove removeMember only publishes
+// once per actual removal, never for a no-op delete of an already-removed
+// member.
+func countMemberRemovedEvents(pub *capturingPublisher) int {
+	n := 0
+	for _, evt := range pub.published {
+		if evt.routingKey == events.RoutingKeyMemberRemoved {
+			n++
+		}
+	}
+	return n
+}
+
+// TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent proves that
+// removing a member who's already been removed still succeeds (idempotent
+// delete) but does not publish a second MemberRemoved event for a removal
+// that didn't actually happen.
+func TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent(t *testing.T) {
+	pool := testPool(t)
+	pub := &capturingPublisher{}
+	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub, pub)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-mem-phantom","name":"Phantom Removal WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := httptest.NewRecorder()
+	e.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/members",
+		`{"auth_sub":"sub_phantom_member","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("add member: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+
+	pub.published = nil // drop the create/add-member events, only care about removeMember below
+
+	w3 := httptest.NewRecorder()
+	e.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodDelete, "/api/organizations/"+orgID+"/members/sub_phantom_member", ""))
+	if w3.Code != http.StatusNoContent {
+		t.Fatalf("first remove: want 204, got %d: %s", w3.Code, w3.Body)
+	}
+	if n := countMemberRemovedEvents(pub); n != 1 {
+		t.Fatalf("first remove: want 1 MemberRemoved event, got %d", n)
+	}
+
+	pub.published = nil
+
+	w4 := httptest.NewRecorder()
+	e.ServeHTTP(w4, httpserver.JSONTestRequest(http.MethodDelete, "/api/organizations/"+orgID+"/members/sub_phantom_member", ""))
+	if w4.Code != http.StatusNoContent {
+		t.Fatalf("second remove (already gone): want 204, got %d: %s", w4.Code, w4.Body)
+	}
+	if n := countMemberRemovedEvents(pub); n != 0 {
+		t.Errorf("second remove (already gone): want 0 MemberRemoved events, got %d", n)
 	}
 }
 
@@ -1309,6 +1379,92 @@ func TestIntegration_AcceptInvitation_AlreadyMember(t *testing.T) {
 	code := errResp["status"].(map[string]any)["code"]
 	if code != "INVITATION_ALREADY_MEMBER" {
 		t.Errorf("want code INVITATION_ALREADY_MEMBER, got %v", code)
+	}
+}
+
+// TestIntegration_RequestNewInvitation_WrongEmail_Rejected proves a caller
+// whose verified email doesn't match the invitation's target can't trigger a
+// resend notification for someone else's invitation by supplying a token
+// they know or intercepted.
+func TestIntegration_RequestNewInvitation_WrongEmail_Rejected(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv-reqnew1","name":"Request New WS 1","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"target@test.com","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+	var token string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
+		orgID, "target@test.com",
+	).Scan(&token); err != nil {
+		t.Fatalf("fetch invitation token: %v", err)
+	}
+
+	attackerEngine := organization.NewModuleEngineWithEmail(pool, "sub_attacker", "attacker@test.com")
+	w3 := httptest.NewRecorder()
+	attackerEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/request-new", `{"token":"`+token+`"}`))
+	if w3.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("request-new with wrong email: want 422, got %d: %s", w3.Code, w3.Body)
+	}
+	var errResp map[string]any
+	json.NewDecoder(w3.Body).Decode(&errResp)
+	if code := errResp["status"].(map[string]any)["code"]; code != "INVITATION_NOT_FOUND" {
+		t.Errorf("want code INVITATION_NOT_FOUND, got %v", code)
+	}
+}
+
+// TestIntegration_RequestNewInvitation_MatchingEmail_Succeeds proves the
+// legitimate invitee (verified email matching the invitation) can still
+// trigger the resend notification, including on an already-expired token —
+// this endpoint exists specifically for that case.
+func TestIntegration_RequestNewInvitation_MatchingEmail_Succeeds(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv-reqnew2","name":"Request New WS 2","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	const expiredToken = "expired-request-new-token-0000000000"
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO organization.invitations (organization_id, email, role, token, invited_by, expires_at)
+		VALUES ($1, 'expired-target@test.com', 'member', $2, $3, NOW() - INTERVAL '1 day')`,
+		orgID, expiredToken, testAuthSub); err != nil {
+		t.Fatalf("seed expired invitation: %v", err)
+	}
+
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_expired_invitee", "expired-target@test.com")
+	w2 := httptest.NewRecorder()
+	inviteeEngine.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/request-new", `{"token":"`+expiredToken+`"}`))
+	if w2.Code != http.StatusNoContent {
+		t.Fatalf("request-new with matching email on expired token: want 204, got %d: %s", w2.Code, w2.Body)
 	}
 }
 
