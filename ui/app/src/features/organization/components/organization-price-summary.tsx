@@ -31,7 +31,6 @@ export function OrganizationPriceSummary({
 
   const plan = useSelector(form.store, (s) => s.values.plan)
   const cycle = useSelector(form.store, (s) => s.values.cycle) as BillingCycle
-  const countryCode = useSelector(form.store, (s) => s.values.country_code)
   const addons = useSelector(form.store, (s) => s.values.addons)
   const couponCode = useSelector(form.store, (s) => s.values.coupon_code)
 
@@ -42,7 +41,7 @@ export function OrganizationPriceSummary({
   const planAmount =
     (cycle === "yearly" ? planPrices?.yearly : planPrices?.monthly) ?? 0
 
-  const { data: addonsCatalogData } = useAddonsCatalog(countryCode)
+  const { data: addonsCatalogData } = useAddonsCatalog()
   const addonsById = new Map(
     (addonsCatalogData?.data ?? []).map((a) => [a.id, a])
   )

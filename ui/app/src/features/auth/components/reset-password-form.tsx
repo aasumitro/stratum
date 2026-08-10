@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/components/auth-provider"
 import { toast } from "sonner"
+import { createPasswordSchema, fieldValidator } from "@/lib/validation/schemas"
 
 export function ResetPasswordForm() {
   const { t } = useTranslation()
@@ -56,12 +57,15 @@ export function ResetPasswordForm() {
         <form.Field
           name="password"
           validators={{
-            onChange: ({ value }) => {
-              if (!value) return t("auth.resetPassword.passwordRequired")
-              if (value.length < 8)
-                return t("auth.resetPassword.passwordMinLength")
-              return undefined
-            },
+            onChange: fieldValidator(
+              createPasswordSchema({
+                required: t("auth.resetPassword.passwordRequired"),
+                minLength: {
+                  length: 8,
+                  message: t("auth.resetPassword.passwordMinLength"),
+                },
+              })
+            ),
           }}
         >
           {(field) => (
@@ -91,8 +95,11 @@ export function ResetPasswordForm() {
         <form.Field
           name="confirm"
           validators={{
-            onChange: ({ value }) =>
-              !value ? t("auth.resetPassword.confirmRequired") : undefined,
+            onChange: fieldValidator(
+              createPasswordSchema({
+                required: t("auth.resetPassword.confirmRequired"),
+              })
+            ),
           }}
         >
           {(field) => (

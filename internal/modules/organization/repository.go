@@ -215,6 +215,14 @@ func (r *repository) getOrganizationOwner(ctx context.Context, q db.Querier, id 
 	return ownerID, nil
 }
 
+func (r *repository) getOrganizationStatus(ctx context.Context, q db.Querier, id string) (string, error) {
+	var status string
+	if err := q.QueryRow(ctx, `SELECT status FROM organization.organizations WHERE id = $1`, id).Scan(&status); err != nil {
+		return "", fmt.Errorf("organization.getOrganizationStatus: %w", err)
+	}
+	return status, nil
+}
+
 // lockOrganizationForUpdate takes a row lock on the organization for the
 // rest of the caller's transaction. Used by addMember/acceptInvitation/
 // joinByCode so two concurrent member-adds for the same organization
@@ -228,8 +236,16 @@ func (r *repository) lockOrganizationForUpdate(ctx context.Context, q db.Querier
 	return nil
 }
 
-func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs []string) error {
-	settingsJSON, _ := json.Marshal(map[string]any{settingAllowedIPs: allowedIPs})
+func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs *[]string) error {
+	// Only include allowed_ips in the patch when the caller actually sent
+	// it — jsonb's `||` operator leaves keys absent from the right-hand
+	// operand untouched, so an omitted field never overwrites the existing
+	// allowlist.
+	patch := map[string]any{}
+	if allowedIPs != nil {
+		patch[settingAllowedIPs] = *allowedIPs
+	}
+	settingsJSON, _ := json.Marshal(patch)
 	_, err := q.Exec(ctx, `
 		UPDATE organization.organizations
 		SET timezone = $2, locale = $3,

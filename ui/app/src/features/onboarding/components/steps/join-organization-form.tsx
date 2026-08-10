@@ -9,6 +9,10 @@ import { useInviteCodePreview } from "@/features/organization/hooks/use-invitati
 import { API } from "@/lib/api/path"
 import { parseApiError } from "@/lib/api/error"
 import type { Organization } from "@/types/organization"
+import {
+  createExactLengthCodeSchema,
+  fieldValidator,
+} from "@/lib/validation/schemas"
 
 export function JoinOrganizationForm({
   onJoined,
@@ -148,13 +152,13 @@ export function JoinOrganizationForm({
           <form.Field
             name="code"
             validators={{
-              onChange: ({ value }) => {
-                if (!value.trim())
-                  return t("onboarding.organization.codeRequired")
-                if (value.trim().length !== 16)
-                  return t("onboarding.organization.codeLength")
-                return undefined
-              },
+              onChange: fieldValidator(
+                createExactLengthCodeSchema({
+                  required: t("onboarding.organization.codeRequired"),
+                  length: 16,
+                  lengthMessage: t("onboarding.organization.codeLength"),
+                })
+              ),
             }}
           >
             {(field) => (

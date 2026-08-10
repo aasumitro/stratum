@@ -61,6 +61,7 @@ const (
 	// with historyPhaseApplied when it actually applies the amendment.
 	historyPhaseScheduled = "scheduled"
 	historyPhaseApplied   = "applied"
+	historyPhaseUndone    = "undone"
 
 	// actionDowngrade is subscription_history.action for a plan downgrade,
 	// shared by the immediate-trial path, the schedule-at-renewal path, and
@@ -184,6 +185,25 @@ func (s *service) addonsCatalog(ctx context.Context) ([]contracts.AddonInfo, err
 		out[i] = *addonToInfo(&addons[i])
 	}
 	return out, nil
+}
+
+// scopeCatalogPrices trims a plan/addon's full multi-currency Prices map
+// down to a single currency — the org-scoped catalog counterpart of
+// scopeAddonPrice (attached addons) and reference.scopedPrices (the
+// pre-org-creation, GeoIP-resolved catalog): currency here is always the
+// caller's own already-fixed sub.Currency, never resolved from a request.
+// Falls back to USD if that currency has no entry, matching
+// contracts.ResolveCurrency's own fallback semantics.
+func scopeCatalogPrices(prices map[string]contracts.PlanPrices, currency string) map[string]contracts.PlanPrices {
+	amount, ok := prices[currency]
+	if !ok {
+		amount, ok = prices[contracts.CurrencyUSD]
+		currency = contracts.CurrencyUSD
+	}
+	if !ok {
+		return map[string]contracts.PlanPrices{}
+	}
+	return map[string]contracts.PlanPrices{currency: amount}
 }
 
 func (s *service) featureCatalog(ctx context.Context) ([]contracts.FeatureInfo, error) {

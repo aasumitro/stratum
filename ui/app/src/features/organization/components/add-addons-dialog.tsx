@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useAddonsCatalog } from "@/features/billing/hooks"
+import { useAddonsCatalog, useOrgAddonsCatalog } from "@/features/billing/hooks"
 import { formatMoney } from "@/lib/format"
 import type { BillingCycle } from "@/types/billing"
 import type { PlanPrices } from "@/types/reference"
@@ -19,12 +19,16 @@ import type { PlanPrices } from "@/types/reference"
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
-  countryCode: string
   cycle: BillingCycle
   /** addon_id -> quantity, owned by the create form's `addons` field
    * (use-organization-create-form.ts) */
   selected: Record<string, number>
   onChange: (next: Record<string, number>) => void
+  /** When set, this dialog is showing an already-created organization's
+   * catalog (billing/components/addons-section.tsx) — prices are scoped to
+   * that subscription's own fixed currency. Omitted for the org-creation
+   * cart below, where no subscription/currency exists yet. */
+  organizationId?: string
 }
 
 // Used by organization-cart-fields.tsx wherever an organization is being
@@ -40,13 +44,20 @@ interface Props {
 export function AddAddonsDialog({
   open,
   onOpenChange,
-  countryCode,
   cycle,
   selected,
   onChange,
+  organizationId,
 }: Props) {
   const { t } = useTranslation()
-  const { data: catalogData, isLoading } = useAddonsCatalog(countryCode)
+  const { data: refCatalogData, isLoading: refLoading } =
+    useAddonsCatalog(!organizationId)
+  const { data: orgCatalogData, isLoading: orgLoading } = useOrgAddonsCatalog(
+    organizationId ?? "",
+    !!organizationId
+  )
+  const catalogData = organizationId ? orgCatalogData : refCatalogData
+  const isLoading = organizationId ? orgLoading : refLoading
   const catalog = (catalogData?.data ?? []).filter((a) => a.active)
   const [quantities, setQuantities] = useState<Record<string, number>>(selected)
 

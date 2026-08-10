@@ -33,15 +33,11 @@ func (s *service) listCurrencies(ctx context.Context) ([]currencyRecord, error) 
 }
 
 // scopedPrices trims a catalog price map down to the single currency an
-// org from countryCode is actually billed in (contracts.ResolveCurrency),
-// so a client never sees pricing for a currency it can't be charged in.
-// Empty countryCode returns prices unchanged — existing callers (billing's
-// own settings-page plan/addon pickers, which already know the org's real
-// currency from its subscription record) keep today's full-map behavior.
+// org from countryCode is actually billed in (contracts.ResolveCurrency) —
+// every caller now passes a server-resolved (GeoIP, never client-supplied)
+// countryCode, and always gets back exactly one currency; there is no
+// longer a "give me everything" mode (see handler.go's resolveCountryCode).
 func scopedPrices(prices map[string]contracts.PlanPrices, countryCode string) map[string]contracts.PlanPrices {
-	if countryCode == "" {
-		return prices
-	}
 	currency := contracts.ResolveCurrency(countryCode)
 	amount, ok := prices[currency]
 	if !ok {

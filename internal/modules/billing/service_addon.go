@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -21,6 +22,71 @@ const (
 	addonDetachFailedMsg  = "failed to detach addon"
 )
 
+// addonChangeMetadata is the subscription_history.metadata shape every
+// "addon_change" history row carries — addon_id plus the quantity change,
+// deliberately no addon name (the worker's renewal-reconciliation loop must
+// stay catalog-lookup-free; the frontend resolves addon_id -> name from the
+// addons catalog it already has loaded wherever history renders).
+type addonChangeMetadata struct {
+	AddonID      string `json:"addon_id"`
+	FromQuantity int    `json:"from_quantity"`
+	ToQuantity   int    `json:"to_quantity"`
+	// Pending marks the one addon_change row that doesn't mean "quantity
+	// changed to ToQuantity" the way every other row does: requestAddonIncrease's
+	// invoice-creation row records a quantity increase that's only requested,
+	// gated on that invoice's payment — the live quantity is still FromQuantity
+	// until handleWebhook confirms paid. Omitted (false) for every other
+	// addon_change row, where the quantity change already happened or is a
+	// renewal-scheduled certainty.
+	Pending bool `json:"pending,omitempty"`
+}
+
+// insertAddonChangeHistory writes one "addon_change" subscription_history
+// row — shared by every addon lifecycle call site (attach/increase/decrease,
+// detach, undo, and the renewal worker's scheduled-addon loop) so the
+// metadata shape and action value can't drift between them. q is the
+// caller's own querier so this participates in whatever transaction (if
+// any) the caller is already inside.
+func (s *service) insertAddonChangeHistory(
+	ctx context.Context, q db.Querier, sub *subscriptionRecord, addonID string,
+	fromQuantity, toQuantity int, changedBy string,
+	phase *string, effectiveAt *time.Time, pending bool,
+) error {
+	metadata, _ := json.Marshal(addonChangeMetadata{
+		AddonID: addonID, FromQuantity: fromQuantity, ToQuantity: toQuantity, Pending: pending,
+	})
+	if _, err := s.repo.insertHistoryWithPhase(ctx, q, sub.ID, "addon_change",
+		nil, nil, 0, sub.Currency, changedBy, metadata, phase, effectiveAt); err != nil {
+		return fmt.Errorf("billing.insertAddonChangeHistory: %w", err)
+	}
+	return nil
+}
+
+// scopeAddonPrice trims a's full multi-currency Prices map down to the
+// subscription's own currency — the same "never show a currency the caller
+// can't be charged in" rule reference.scopedPrices enforces for the catalog
+// browsing endpoints (GET /references/plans|addons). This is a different,
+// billing-owned endpoint (GET/POST/DELETE .../billing/addons) that leaked
+// the same way and wasn't caught by that earlier pass. currency is always
+// the subscription's own already-resolved sub.Currency here, never GeoIP —
+// an existing org's currency is fixed at creation and must never silently
+// drift based on where its owner currently is to ensure predictable billing.
+// Falls back to USD if that currency has no entry, matching
+// contracts.ResolveCurrency's own fallback semantics — never the full map.
+func scopeAddonPrice(a *attachedAddonRecord, currency string) *attachedAddonRecord {
+	price, ok := a.Prices[currency]
+	if !ok {
+		price, ok = a.Prices[contracts.CurrencyUSD]
+		currency = contracts.CurrencyUSD
+	}
+	if !ok {
+		a.Prices = map[string]contracts.PlanPrices{}
+		return a
+	}
+	a.Prices = map[string]contracts.PlanPrices{currency: price}
+	return a
+}
+
 // attachAddon attaches a new addon, or changes the quantity of one already
 // attached. Trialing subscriptions apply every change immediately, matching
 // today's behavior — trials have no paid period to protect and no revenue
@@ -39,7 +105,7 @@ const (
 // path's payment-link creation is a blocking provider HTTP call, and the
 // existing convention (extendSubscription, activateTrialNow) is to never
 // hold a pooled DB connection open across one — see requestAddonIncrease.
-func (s *service) attachAddon(ctx context.Context, organizationID, addonID string, quantity int) (*attachedAddonRecord, error) {
+func (s *service) attachAddon(ctx context.Context, organizationID, addonID string, quantity int, changedBy string) (*attachedAddonRecord, error) {
 	addonInfo, err := s.addonCatalog(ctx, addonID)
 	if err != nil {
 		return nil, apperr.NotFound("ADDON_NOT_FOUND", "addon not found", ErrAddonNotFound)
@@ -71,11 +137,14 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 			if err := s.repo.clearScheduledAddonQuantityChange(txCtx, tx, sub.ID, addonID); err != nil {
 				return err
 			}
-			if sub.Status == statusTrialing {
-				return s.repo.upsertSubscriptionAddon(txCtx, tx, sub.ID, addonID, quantity)
-			}
 			if quantity == existingQuantity {
-				return nil // no-op: nothing changed, nothing to bill
+				return nil // no-op: nothing changed, nothing to bill (trialing or not)
+			}
+			if sub.Status == statusTrialing {
+				if err := s.repo.upsertSubscriptionAddon(txCtx, tx, sub.ID, addonID, quantity); err != nil {
+					return err
+				}
+				return s.insertAddonChangeHistory(txCtx, tx, sub, addonID, existingQuantity, quantity, changedBy, nil, nil, false)
 			}
 			// No ScheduledCancelAt guard here: an increase request has
 			// always been allowed through regardless of a scheduled
@@ -94,19 +163,26 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 					return err
 				}
 			}
-			inv, err := s.requestAddonIncrease(txCtx, tx, sub, addonID, addonInfo, existingQuantity, quantity)
+			inv, err := s.requestAddonIncrease(txCtx, tx, sub, addonID, addonInfo, existingQuantity, quantity, changedBy)
 			if err != nil {
 				return err
 			}
 			pendingInvoice = inv
 			return nil
 		case sub.Status == statusTrialing:
-			return s.repo.upsertSubscriptionAddon(txCtx, tx, sub.ID, addonID, quantity)
+			if err := s.repo.upsertSubscriptionAddon(txCtx, tx, sub.ID, addonID, quantity); err != nil {
+				return err
+			}
+			return s.insertAddonChangeHistory(txCtx, tx, sub, addonID, existingQuantity, quantity, changedBy, nil, nil, false)
 		default:
 			if sub.ScheduledCancelAt != nil {
 				return apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
 			}
-			return s.repo.scheduleAddonQuantityChange(txCtx, tx, sub.ID, addonID, quantity)
+			if err := s.repo.scheduleAddonQuantityChange(txCtx, tx, sub.ID, addonID, quantity); err != nil {
+				return err
+			}
+			phase := historyPhaseScheduled
+			return s.insertAddonChangeHistory(txCtx, tx, sub, addonID, existingQuantity, quantity, changedBy, &phase, sub.PeriodEnd, false)
 		}
 	})
 	if err != nil {
@@ -136,7 +212,7 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 	if err != nil {
 		return nil, apperr.Internal(addonAttachFailedCode, addonAttachFailedMsg, err)
 	}
-	return addon, nil
+	return scopeAddonPrice(addon, sub.Currency), nil
 }
 
 // requestAddonIncrease prices a quantity increase (delta = quantity -
@@ -150,27 +226,41 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 func (s *service) requestAddonIncrease(
 	ctx context.Context, tx db.Querier,
 	sub *subscriptionRecord, addonID string, addonInfo *contracts.AddonInfo,
-	existingQuantity, quantity int,
+	existingQuantity, quantity int, changedBy string,
 ) (*invoiceRecord, error) {
 	delta := quantity - existingQuantity
 
+	// unitPrice must cover the addon's full current period, not one flat
+	// cycle price — a subscription extended past one cycle (extendSubscription,
+	// up to maxRunwayMonths) still has sub.Cycle == "monthly"/"yearly", but its
+	// period can span many cycles' worth of time. Tiered the same way
+	// computeExtensionSubtotal prices an extension itself (12-month blocks at
+	// the yearly rate, remainder at the monthly rate) so a same-day increase
+	// on a multi-cycle period isn't undercharged for the months the addon will
+	// actually occupy before this period's own renewal bills it again.
 	unitPrice := int64(0)
 	if prices, ok := addonInfo.Prices[sub.Currency]; ok {
-		unitPrice = int64(prices.Monthly)
-		if sub.Cycle == cycleYearly {
-			unitPrice = int64(prices.Yearly)
-		}
+		months := periodMonths(*sub.PeriodStart, *sub.PeriodEnd)
+		blocks, remainder := months/12, months%12
+		unitPrice = int64(blocks)*int64(prices.Yearly) + int64(remainder)*int64(prices.Monthly)
 	}
 
 	preDiscount := computeAddonIncreaseProration(*sub.PeriodStart, time.Now(), *sub.PeriodEnd, delta, unitPrice)
 
 	var couponCode string
 	var discountCents int64
-	if redemption, err := s.findActiveCouponRedemption(ctx, tx, sub.ID); err == nil {
-		discountCents = computeCouponDiscount(redemption.DiscountType, redemption.AmountCents, redemption.PercentOff, preDiscount)
+	redemption, err := s.findActiveCouponRedemption(ctx, tx, sub.ID)
+	switch {
+	case err == nil:
+		discountCents = computeCouponDiscount(redemption.DiscountType,
+			redemption.AmountCents, redemption.PercentOff, preDiscount)
 		if discountCents > 0 {
 			couponCode = redemption.CouponCode
 		}
+	case errors.Is(err, pgx.ErrNoRows):
+		// No active coupon — expected steady state, nothing to apply.
+	default:
+		return nil, fmt.Errorf("billing.requestAddonIncrease: find active coupon redemption: %w", err)
 	}
 	subtotal := preDiscount - discountCents
 
@@ -189,10 +279,14 @@ func (s *service) requestAddonIncrease(
 		if err := s.repo.upsertSubscriptionAddon(ctx, tx, sub.ID, addonID, quantity); err != nil {
 			return nil, fmt.Errorf("billing.requestAddonIncrease: %w", err)
 		}
+		if err := s.insertAddonChangeHistory(ctx, tx, sub, addonID, existingQuantity, quantity, changedBy, nil, nil, false); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 
-	inv, err := s.repo.insertInvoice(ctx, tx, sub.SubjectID, sub.ID, subtotal, taxRate, tax, sub.Currency, "addon_increase", false)
+	inv, err := s.repo.insertInvoice(ctx, tx, sub.SubjectID, sub.ID, subtotal,
+		taxRate, tax, sub.Currency, "addon_increase", false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("billing.requestAddonIncrease: %w", err)
 	}
@@ -214,6 +308,9 @@ func (s *service) requestAddonIncrease(
 	if err := s.repo.setPendingAddonIncrease(ctx, tx, sub.ID, addonID, quantity, inv.ID); err != nil {
 		return nil, fmt.Errorf("billing.requestAddonIncrease: %w", err)
 	}
+	if err := s.insertAddonChangeHistory(ctx, tx, sub, addonID, existingQuantity, quantity, changedBy, nil, nil, true); err != nil {
+		return nil, err
+	}
 
 	return inv, nil
 }
@@ -222,7 +319,7 @@ func (s *service) requestAddonIncrease(
 // immediately, matching today's behavior. Active subscriptions schedule the
 // removal (quantity 0 at renewal) instead, so the live quantity keeps being
 // read by checkUsageLimit until the renewal worker applies it.
-func (s *service) detachAddon(ctx context.Context, organizationID, addonID string) error {
+func (s *service) detachAddon(ctx context.Context, organizationID, addonID, changedBy string) error {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
@@ -230,9 +327,16 @@ func (s *service) detachAddon(ctx context.Context, organizationID, addonID strin
 	if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
 		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
 	}
+	existing, err := s.repo.findAttachedAddon(ctx, s.querier(ctx), sub.ID, addonID)
+	if err != nil {
+		return apperr.NotFound("ADDON_NOT_FOUND", "addon not found", ErrAddonNotFound)
+	}
 
 	if sub.Status == statusTrialing {
 		if err := s.repo.deleteSubscriptionAddon(ctx, s.querier(ctx), sub.ID, addonID); err != nil {
+			return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
+		}
+		if err := s.insertAddonChangeHistory(ctx, s.querier(ctx), sub, addonID, existing.Quantity, 0, changedBy, nil, nil, false); err != nil {
 			return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
 		}
 		return nil
@@ -243,14 +347,20 @@ func (s *service) detachAddon(ctx context.Context, organizationID, addonID strin
 	if err := s.repo.scheduleAddonQuantityChange(ctx, s.querier(ctx), sub.ID, addonID, 0); err != nil {
 		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
 	}
+	phase := historyPhaseScheduled
+	if err := s.insertAddonChangeHistory(ctx, s.querier(ctx), sub, addonID, existing.Quantity, 0, changedBy, &phase, sub.PeriodEnd, false); err != nil {
+		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
+	}
 	return nil
 }
 
 // undoScheduledAddonQuantityChange clears a scheduled addon quantity change
 // (a scheduled decrease or removal) before it ever takes effect. The live
-// quantity is untouched — it was never applied.
+// quantity is untouched — it was never applied. Writes a phase='undone'
+// history row mirroring the original 'scheduled' row's from/to quantity —
+// what was undone, not the addon's current live quantity.
 func (s *service) undoScheduledAddonQuantityChange(
-	ctx context.Context, organizationID, addonID string,
+	ctx context.Context, organizationID, addonID, changedBy string,
 ) (*attachedAddonRecord, error) {
 	sub, err := s.getSubscription(ctx, subjectTypeOrganization, organizationID)
 	if err != nil {
@@ -269,7 +379,17 @@ func (s *service) undoScheduledAddonQuantityChange(
 	if err := s.repo.clearScheduledAddonQuantityChange(ctx, s.querier(ctx), sub.ID, addonID); err != nil {
 		return nil, apperr.Internal("ADDON_UNDO_FAILED", "failed to undo scheduled addon change", err)
 	}
-	return s.repo.findAttachedAddon(ctx, s.querier(ctx), sub.ID, addonID)
+	phase := historyPhaseUndone
+	now := time.Now()
+	if err := s.insertAddonChangeHistory(ctx, s.querier(ctx), sub, addonID,
+		addon.Quantity, *addon.ScheduledQuantity, changedBy, &phase, &now, false); err != nil {
+		return nil, apperr.Internal("ADDON_UNDO_FAILED", "failed to undo scheduled addon change", err)
+	}
+	updated, err := s.repo.findAttachedAddon(ctx, s.querier(ctx), sub.ID, addonID)
+	if err != nil {
+		return nil, apperr.Internal("ADDON_UNDO_FAILED", "failed to undo scheduled addon change", err)
+	}
+	return scopeAddonPrice(updated, sub.Currency), nil
 }
 
 func (s *service) listAddons(ctx context.Context, organizationID string) ([]attachedAddonRecord, error) {
@@ -280,6 +400,28 @@ func (s *service) listAddons(ctx context.Context, organizationID string) ([]atta
 	addons, err := s.repo.listAttachedAddonsWithPricing(ctx, s.querier(ctx), sub.ID)
 	if err != nil {
 		return nil, apperr.Internal("ADDONS_FETCH_FAILED", "failed to list addons", err)
+	}
+	for i := range addons {
+		scopeAddonPrice(&addons[i], sub.Currency)
+	}
+	return addons, nil
+}
+
+// listAddonsCatalog is the existing-subscription counterpart to
+// reference.listAddons (unattached catalog options, not what's already on
+// the subscription) — see listPlansCatalog (service_subscription.go) for the
+// same rationale applied to plans.
+func (s *service) listAddonsCatalog(ctx context.Context, organizationID string) ([]contracts.AddonInfo, error) {
+	sub, err := s.getSubscription(ctx, subjectTypeOrganization, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	addons, err := s.addonsCatalog(ctx)
+	if err != nil {
+		return nil, apperr.Internal("ADDONS_CATALOG_FETCH_FAILED", "failed to list addons catalog", err)
+	}
+	for i := range addons {
+		addons[i].Prices = scopeCatalogPrices(addons[i].Prices, sub.Currency)
 	}
 	return addons, nil
 }

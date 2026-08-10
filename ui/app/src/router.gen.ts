@@ -9,54 +9,38 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as ResetPasswordRouteImport } from './routes/reset-password'
-import { Route as RegisterRouteImport } from './routes/register'
-import { Route as OnboardingRouteImport } from './routes/onboarding'
-import { Route as MfaChallengeRouteImport } from './routes/mfa-challenge'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
-import { Route as ProtectedRouteImport } from './routes/_protected'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as BillingSuccessRouteImport } from './routes/billing/success'
-import { Route as BillingCancelRouteImport } from './routes/billing/cancel'
-import { Route as ProtectedOrganizationsRouteImport } from './routes/_protected/organizations'
-import { Route as ProtectedNotificationsRouteImport } from './routes/_protected/notifications'
+import { Route as ProtectedRouteImport } from './routes/_protected'
+import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as MfaChallengeRouteImport } from './routes/mfa-challenge'
+import { Route as OnboardingRouteImport } from './routes/onboarding'
+import { Route as RegisterRouteImport } from './routes/register'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as ProtectedAccountRouteImport } from './routes/_protected/account'
+import { Route as ProtectedNotificationsRouteImport } from './routes/_protected/notifications'
+import { Route as ProtectedOrganizationsRouteImport } from './routes/_protected/organizations'
+import { Route as BillingCancelRouteImport } from './routes/billing/cancel'
+import { Route as BillingSuccessRouteImport } from './routes/billing/success'
+import { Route as ProtectedInvitationsAcceptRouteImport } from './routes/_protected/invitations/accept'
 import { Route as ProtectedOrganizationIndexRouteImport } from './routes/_protected/organization/index'
 import { Route as ProtectedOrganizationOrganizationIdRouteImport } from './routes/_protected/organization/$organizationId'
-import { Route as ProtectedInvitationsAcceptRouteImport } from './routes/_protected/invitations/accept'
 import { Route as ProtectedOrganizationOrganizationIdIndexRouteImport } from './routes/_protected/organization/$organizationId/index'
-import { Route as ProtectedOrganizationOrganizationIdSettingsRouteImport } from './routes/_protected/organization/$organizationId/settings'
 import { Route as ProtectedOrganizationOrganizationIdBillingRouteImport } from './routes/_protected/organization/$organizationId/billing'
-import { Route as ProtectedOrganizationOrganizationIdPlatformIndexRouteImport } from './routes/_protected/organization/$organizationId/platform/index'
+import { Route as ProtectedOrganizationOrganizationIdSettingsRouteImport } from './routes/_protected/organization/$organizationId/settings'
 import { Route as ProtectedOrganizationOrganizationIdBillingIndexRouteImport } from './routes/_protected/organization/$organizationId/billing/index'
-import { Route as ProtectedOrganizationOrganizationIdPlatformR3RouteImport } from './routes/_protected/organization/$organizationId/platform/r3'
-import { Route as ProtectedOrganizationOrganizationIdPlatformR2RouteImport } from './routes/_protected/organization/$organizationId/platform/r2'
+import { Route as ProtectedOrganizationOrganizationIdPlatformIndexRouteImport } from './routes/_protected/organization/$organizationId/platform/index'
 import { Route as ProtectedOrganizationOrganizationIdPlatformR1RouteImport } from './routes/_protected/organization/$organizationId/platform/r1'
+import { Route as ProtectedOrganizationOrganizationIdPlatformR2RouteImport } from './routes/_protected/organization/$organizationId/platform/r2'
+import { Route as ProtectedOrganizationOrganizationIdPlatformR3RouteImport } from './routes/_protected/organization/$organizationId/platform/r3'
 
-const ResetPasswordRoute = ResetPasswordRouteImport.update({
-  id: '/reset-password',
-  path: '/reset-password',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const RegisterRoute = RegisterRouteImport.update({
-  id: '/register',
-  path: '/register',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OnboardingRoute = OnboardingRouteImport.update({
-  id: '/onboarding',
-  path: '/onboarding',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const MfaChallengeRoute = MfaChallengeRouteImport.update({
-  id: '/mfa-challenge',
-  path: '/mfa-challenge',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
+const ProtectedRoute = ProtectedRouteImport.update({
+  id: '/_protected',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
@@ -64,28 +48,34 @@ const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
   path: '/forgot-password',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ProtectedRoute = ProtectedRouteImport.update({
-  id: '/_protected',
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const MfaChallengeRoute = MfaChallengeRouteImport.update({
+  id: '/mfa-challenge',
+  path: '/mfa-challenge',
   getParentRoute: () => rootRouteImport,
 } as any)
-const BillingSuccessRoute = BillingSuccessRouteImport.update({
-  id: '/billing/success',
-  path: '/billing/success',
+const OnboardingRoute = OnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
   getParentRoute: () => rootRouteImport,
 } as any)
-const BillingCancelRoute = BillingCancelRouteImport.update({
-  id: '/billing/cancel',
-  path: '/billing/cancel',
+const RegisterRoute = RegisterRouteImport.update({
+  id: '/register',
+  path: '/register',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ProtectedOrganizationsRoute = ProtectedOrganizationsRouteImport.update({
-  id: '/organizations',
-  path: '/organizations',
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProtectedAccountRoute = ProtectedAccountRouteImport.update({
+  id: '/account',
+  path: '/account',
   getParentRoute: () => ProtectedRoute,
 } as any)
 const ProtectedNotificationsRoute = ProtectedNotificationsRouteImport.update({
@@ -93,11 +83,27 @@ const ProtectedNotificationsRoute = ProtectedNotificationsRouteImport.update({
   path: '/notifications',
   getParentRoute: () => ProtectedRoute,
 } as any)
-const ProtectedAccountRoute = ProtectedAccountRouteImport.update({
-  id: '/account',
-  path: '/account',
+const ProtectedOrganizationsRoute = ProtectedOrganizationsRouteImport.update({
+  id: '/organizations',
+  path: '/organizations',
   getParentRoute: () => ProtectedRoute,
 } as any)
+const BillingCancelRoute = BillingCancelRouteImport.update({
+  id: '/billing/cancel',
+  path: '/billing/cancel',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BillingSuccessRoute = BillingSuccessRouteImport.update({
+  id: '/billing/success',
+  path: '/billing/success',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProtectedInvitationsAcceptRoute =
+  ProtectedInvitationsAcceptRouteImport.update({
+    id: '/invitations/accept',
+    path: '/invitations/accept',
+    getParentRoute: () => ProtectedRoute,
+  } as any)
 const ProtectedOrganizationIndexRoute =
   ProtectedOrganizationIndexRouteImport.update({
     id: '/organization/',
@@ -110,22 +116,10 @@ const ProtectedOrganizationOrganizationIdRoute =
     path: '/organization/$organizationId',
     getParentRoute: () => ProtectedRoute,
   } as any)
-const ProtectedInvitationsAcceptRoute =
-  ProtectedInvitationsAcceptRouteImport.update({
-    id: '/invitations/accept',
-    path: '/invitations/accept',
-    getParentRoute: () => ProtectedRoute,
-  } as any)
 const ProtectedOrganizationOrganizationIdIndexRoute =
   ProtectedOrganizationOrganizationIdIndexRouteImport.update({
     id: '/',
     path: '/',
-    getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
-  } as any)
-const ProtectedOrganizationOrganizationIdSettingsRoute =
-  ProtectedOrganizationOrganizationIdSettingsRouteImport.update({
-    id: '/settings',
-    path: '/settings',
     getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
   } as any)
 const ProtectedOrganizationOrganizationIdBillingRoute =
@@ -134,10 +128,10 @@ const ProtectedOrganizationOrganizationIdBillingRoute =
     path: '/billing',
     getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
   } as any)
-const ProtectedOrganizationOrganizationIdPlatformIndexRoute =
-  ProtectedOrganizationOrganizationIdPlatformIndexRouteImport.update({
-    id: '/platform/',
-    path: '/platform/',
+const ProtectedOrganizationOrganizationIdSettingsRoute =
+  ProtectedOrganizationOrganizationIdSettingsRouteImport.update({
+    id: '/settings',
+    path: '/settings',
     getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
   } as any)
 const ProtectedOrganizationOrganizationIdBillingIndexRoute =
@@ -146,10 +140,16 @@ const ProtectedOrganizationOrganizationIdBillingIndexRoute =
     path: '/',
     getParentRoute: () => ProtectedOrganizationOrganizationIdBillingRoute,
   } as any)
-const ProtectedOrganizationOrganizationIdPlatformR3Route =
-  ProtectedOrganizationOrganizationIdPlatformR3RouteImport.update({
-    id: '/platform/r3',
-    path: '/platform/r3',
+const ProtectedOrganizationOrganizationIdPlatformIndexRoute =
+  ProtectedOrganizationOrganizationIdPlatformIndexRouteImport.update({
+    id: '/platform/',
+    path: '/platform/',
+    getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
+  } as any)
+const ProtectedOrganizationOrganizationIdPlatformR1Route =
+  ProtectedOrganizationOrganizationIdPlatformR1RouteImport.update({
+    id: '/platform/r1',
+    path: '/platform/r1',
     getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
   } as any)
 const ProtectedOrganizationOrganizationIdPlatformR2Route =
@@ -158,10 +158,10 @@ const ProtectedOrganizationOrganizationIdPlatformR2Route =
     path: '/platform/r2',
     getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
   } as any)
-const ProtectedOrganizationOrganizationIdPlatformR1Route =
-  ProtectedOrganizationOrganizationIdPlatformR1RouteImport.update({
-    id: '/platform/r1',
-    path: '/platform/r1',
+const ProtectedOrganizationOrganizationIdPlatformR3Route =
+  ProtectedOrganizationOrganizationIdPlatformR3RouteImport.update({
+    id: '/platform/r3',
+    path: '/platform/r3',
     getParentRoute: () => ProtectedOrganizationOrganizationIdRoute,
   } as any)
 
@@ -332,46 +332,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/reset-password': {
-      id: '/reset-password'
-      path: '/reset-password'
-      fullPath: '/reset-password'
-      preLoaderRoute: typeof ResetPasswordRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/register': {
-      id: '/register'
-      path: '/register'
-      fullPath: '/register'
-      preLoaderRoute: typeof RegisterRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/onboarding': {
-      id: '/onboarding'
-      path: '/onboarding'
-      fullPath: '/onboarding'
-      preLoaderRoute: typeof OnboardingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/mfa-challenge': {
-      id: '/mfa-challenge'
-      path: '/mfa-challenge'
-      fullPath: '/mfa-challenge'
-      preLoaderRoute: typeof MfaChallengeRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/forgot-password': {
-      id: '/forgot-password'
-      path: '/forgot-password'
-      fullPath: '/forgot-password'
-      preLoaderRoute: typeof ForgotPasswordRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected': {
@@ -381,32 +346,53 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/forgot-password': {
+      id: '/forgot-password'
+      path: '/forgot-password'
+      fullPath: '/forgot-password'
+      preLoaderRoute: typeof ForgotPasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/billing/success': {
-      id: '/billing/success'
-      path: '/billing/success'
-      fullPath: '/billing/success'
-      preLoaderRoute: typeof BillingSuccessRouteImport
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/billing/cancel': {
-      id: '/billing/cancel'
-      path: '/billing/cancel'
-      fullPath: '/billing/cancel'
-      preLoaderRoute: typeof BillingCancelRouteImport
+    '/mfa-challenge': {
+      id: '/mfa-challenge'
+      path: '/mfa-challenge'
+      fullPath: '/mfa-challenge'
+      preLoaderRoute: typeof MfaChallengeRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_protected/organizations': {
-      id: '/_protected/organizations'
-      path: '/organizations'
-      fullPath: '/organizations'
-      preLoaderRoute: typeof ProtectedOrganizationsRouteImport
+    '/onboarding': {
+      id: '/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof OnboardingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/register': {
+      id: '/register'
+      path: '/register'
+      fullPath: '/register'
+      preLoaderRoute: typeof RegisterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_protected/account': {
+      id: '/_protected/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof ProtectedAccountRouteImport
       parentRoute: typeof ProtectedRoute
     }
     '/_protected/notifications': {
@@ -416,11 +402,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedNotificationsRouteImport
       parentRoute: typeof ProtectedRoute
     }
-    '/_protected/account': {
-      id: '/_protected/account'
-      path: '/account'
-      fullPath: '/account'
-      preLoaderRoute: typeof ProtectedAccountRouteImport
+    '/_protected/organizations': {
+      id: '/_protected/organizations'
+      path: '/organizations'
+      fullPath: '/organizations'
+      preLoaderRoute: typeof ProtectedOrganizationsRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/billing/cancel': {
+      id: '/billing/cancel'
+      path: '/billing/cancel'
+      fullPath: '/billing/cancel'
+      preLoaderRoute: typeof BillingCancelRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/billing/success': {
+      id: '/billing/success'
+      path: '/billing/success'
+      fullPath: '/billing/success'
+      preLoaderRoute: typeof BillingSuccessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_protected/invitations/accept': {
+      id: '/_protected/invitations/accept'
+      path: '/invitations/accept'
+      fullPath: '/invitations/accept'
+      preLoaderRoute: typeof ProtectedInvitationsAcceptRouteImport
       parentRoute: typeof ProtectedRoute
     }
     '/_protected/organization/': {
@@ -437,25 +444,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedOrganizationOrganizationIdRouteImport
       parentRoute: typeof ProtectedRoute
     }
-    '/_protected/invitations/accept': {
-      id: '/_protected/invitations/accept'
-      path: '/invitations/accept'
-      fullPath: '/invitations/accept'
-      preLoaderRoute: typeof ProtectedInvitationsAcceptRouteImport
-      parentRoute: typeof ProtectedRoute
-    }
     '/_protected/organization/$organizationId/': {
       id: '/_protected/organization/$organizationId/'
       path: '/'
       fullPath: '/organization/$organizationId/'
       preLoaderRoute: typeof ProtectedOrganizationOrganizationIdIndexRouteImport
-      parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
-    }
-    '/_protected/organization/$organizationId/settings': {
-      id: '/_protected/organization/$organizationId/settings'
-      path: '/settings'
-      fullPath: '/organization/$organizationId/settings'
-      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdSettingsRouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
     }
     '/_protected/organization/$organizationId/billing': {
@@ -465,11 +458,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedOrganizationOrganizationIdBillingRouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
     }
-    '/_protected/organization/$organizationId/platform/': {
-      id: '/_protected/organization/$organizationId/platform/'
-      path: '/platform'
-      fullPath: '/organization/$organizationId/platform/'
-      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdPlatformIndexRouteImport
+    '/_protected/organization/$organizationId/settings': {
+      id: '/_protected/organization/$organizationId/settings'
+      path: '/settings'
+      fullPath: '/organization/$organizationId/settings'
+      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdSettingsRouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
     }
     '/_protected/organization/$organizationId/billing/': {
@@ -479,11 +472,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedOrganizationOrganizationIdBillingIndexRouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdBillingRoute
     }
-    '/_protected/organization/$organizationId/platform/r3': {
-      id: '/_protected/organization/$organizationId/platform/r3'
-      path: '/platform/r3'
-      fullPath: '/organization/$organizationId/platform/r3'
-      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdPlatformR3RouteImport
+    '/_protected/organization/$organizationId/platform/': {
+      id: '/_protected/organization/$organizationId/platform/'
+      path: '/platform'
+      fullPath: '/organization/$organizationId/platform/'
+      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdPlatformIndexRouteImport
+      parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
+    }
+    '/_protected/organization/$organizationId/platform/r1': {
+      id: '/_protected/organization/$organizationId/platform/r1'
+      path: '/platform/r1'
+      fullPath: '/organization/$organizationId/platform/r1'
+      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdPlatformR1RouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
     }
     '/_protected/organization/$organizationId/platform/r2': {
@@ -493,11 +493,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedOrganizationOrganizationIdPlatformR2RouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
     }
-    '/_protected/organization/$organizationId/platform/r1': {
-      id: '/_protected/organization/$organizationId/platform/r1'
-      path: '/platform/r1'
-      fullPath: '/organization/$organizationId/platform/r1'
-      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdPlatformR1RouteImport
+    '/_protected/organization/$organizationId/platform/r3': {
+      id: '/_protected/organization/$organizationId/platform/r3'
+      path: '/platform/r3'
+      fullPath: '/organization/$organizationId/platform/r3'
+      preLoaderRoute: typeof ProtectedOrganizationOrganizationIdPlatformR3RouteImport
       parentRoute: typeof ProtectedOrganizationOrganizationIdRoute
     }
   }

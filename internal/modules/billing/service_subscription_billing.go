@@ -58,6 +58,35 @@ func truncateToDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
+// periodMonths returns the whole number of calendar months periodStart to
+// periodEnd most closely spans — nearest, not floor. Ordinary calendar
+// variance (28/30/31-day months) means a period landing near, but not
+// exactly on, a whole-month boundary is still that month: a subscription's
+// single-cycle period is frequently a few days off an exact AddDate
+// boundary (e.g. a 30-day test period vs. AddDate's 31-day August month, or
+// any period reshaped by prorate()'s day-based math) and flooring such a
+// near-miss down would drop an entire pricing tier — for a period just
+// under one month, all the way to zero. A period produced by
+// extendSubscription (AddDate(0, months, 0)) always lands on an exact
+// whole-month boundary, so it always wins its own exact match regardless.
+// Mirrors maxExtendableMonths' AddDate-loop technique for calendar-exact
+// month counting instead of a fixed-day-length division — AddDate's
+// calendar semantics aren't cleanly invertible into a formula, and the
+// bound is tiny enough that scanning every candidate is simpler and
+// provably correct.
+func periodMonths(periodStart, periodEnd time.Time) int {
+	end := truncateToDay(periodEnd)
+	best := 0
+	bestDiff := truncateToDay(periodStart).Sub(end).Abs()
+	for n := 1; n <= maxRunwayMonths; n++ {
+		diff := truncateToDay(periodStart.AddDate(0, n, 0)).Sub(end).Abs()
+		if diff < bestDiff {
+			best, bestDiff = n, diff
+		}
+	}
+	return best
+}
+
 // computeExtensionSubtotal implements the tiered extension-pricing rule:
 // every full 12-month block bills at the plan's yearly price, and any
 // remainder bills at the monthly price (e.g. 13 months = 1 yearly block +
@@ -70,6 +99,29 @@ func computeExtensionSubtotal(planInfo *contracts.PlanInfo, currency string, mon
 	return int64(blocks)*planInfo.Price(currency, cycleYearly) + int64(remainder)*planInfo.Price(currency, cycleMonthly)
 }
 
+// computeExtensionAddonSubtotal applies computeExtensionSubtotal's same
+// tiered rule to every currently attached addon, so an extension purchase
+// can no longer buy addon runway for free: previously extendSubscription
+// priced the plan only, and since addons ride the subscription's
+// period_end with no expiry of their own, the regular renewal invoice
+// (the only thing that normally bills them) got rescheduled past the
+// bought window entirely. Uses each addon's live Quantity — never
+// ScheduledQuantity/PendingQuantity, which describe changes that aren't
+// in effect yet.
+func computeExtensionAddonSubtotal(addons []attachedAddonRecord, currency string, months int) int64 {
+	blocks := int64(months / 12)
+	remainder := int64(months % 12)
+	var total int64
+	for _, a := range addons {
+		prices, ok := a.Prices[currency]
+		if !ok {
+			continue
+		}
+		total += (blocks*int64(prices.Yearly) + remainder*int64(prices.Monthly)) * int64(a.Quantity)
+	}
+	return total
+}
+
 // insertExtensionLineItems writes the invoice line item(s) for an extension
 // purchase, split so every line's unit_price_cents × quantity == its own
 // total_cents — the invoice PDF (pdf.LineItem, handler_invoice.go) shows
@@ -79,9 +131,13 @@ func computeExtensionSubtotal(planInfo *contracts.PlanInfo, currency string, mon
 // specifically so handleWebhook can recover the total extension length by
 // summing every one of the invoice's line items' quantities, instead of
 // assuming a single line item at a fixed index — see the matching comment
-// there.
+// there. addons is only the plan's own block/remainder lines' sibling data;
+// each attached addon gets the same block/remainder line treatment appended
+// after the plan's lines, priced via computeExtensionAddonSubtotal's same
+// rule, using each addon's live Quantity only.
 func (s *service) insertExtensionLineItems(
-	ctx context.Context, invoiceID string, planInfo *contracts.PlanInfo, currency string, months int,
+	ctx context.Context, invoiceID string,
+	planInfo *contracts.PlanInfo, addons []attachedAddonRecord, currency string, months int,
 ) error {
 	blocks, remainder := months/12, months%12
 	sortOrder := 0
@@ -115,6 +171,48 @@ func (s *service) insertExtensionLineItems(
 		); err != nil {
 			return fmt.Errorf("billing.insertExtensionLineItems: %w", err)
 		}
+		sortOrder++
+	}
+
+	// Every addon line's Quantity is expressed in months too, matching the
+	// plan lines above — never in addon units. applyExtensionPayment
+	// (service_webhook.go) recovers the total extension length by summing
+	// every one of the invoice's line items' Quantity fields; an addon line
+	// quantified by addon-units × months instead of months alone would
+	// inflate that sum and roll the period forward further than what was
+	// actually paid for. The addon's own attached quantity is folded into
+	// total_cents (and named in the description) instead.
+	for _, a := range addons {
+		prices, ok := a.Prices[currency]
+		if !ok || a.Quantity <= 0 {
+			continue
+		}
+		if blocks > 0 {
+			qty := blocks * 12
+			desc := fmt.Sprintf("%s (×%d) — 12-month block", a.Name, a.Quantity)
+			if blocks > 1 {
+				desc = fmt.Sprintf("%s (×%d) — %d × 12-month blocks", a.Name, a.Quantity, blocks)
+			}
+			total := int64(blocks) * int64(prices.Yearly) * int64(a.Quantity)
+			if err := s.repo.insertLineItem(
+				ctx, s.querier(ctx), invoiceID, desc, currency,
+				qty, total/int64(qty), total, sortOrder,
+			); err != nil {
+				return fmt.Errorf("billing.insertExtensionLineItems: %w", err)
+			}
+			sortOrder++
+		}
+		if remainder > 0 {
+			desc := fmt.Sprintf("%s (×%d) — %d month extension", a.Name, a.Quantity, remainder)
+			total := int64(remainder) * int64(prices.Monthly) * int64(a.Quantity)
+			if err := s.repo.insertLineItem(
+				ctx, s.querier(ctx), invoiceID, desc, currency,
+				remainder, total/int64(remainder), total, sortOrder,
+			); err != nil {
+				return fmt.Errorf("billing.insertExtensionLineItems: %w", err)
+			}
+			sortOrder++
+		}
 	}
 
 	return nil
@@ -122,9 +220,14 @@ func (s *service) insertExtensionLineItems(
 
 // extendSubscription buys `months` of additional runway on an active
 // subscription's current period (a dedicated invoice, independent of the
-// regular renewal cycle — coupons/addon pricing deliberately don't apply
-// here, since their cadence/attachment model is built around regular cycle
-// invoices, not ad hoc extension purchases), priced by computeExtensionSubtotal.
+// regular renewal cycle), priced by computeExtensionSubtotal for the plan
+// plus computeExtensionAddonSubtotal for every currently attached addon —
+// addons ride the subscription's period_end with no expiry of their own, so
+// without this the regular renewal invoice (the only thing that normally
+// bills them) would get rescheduled past the bought window and the addon
+// would run free for its length. Coupons still don't apply here: unlike
+// addons, skipping a coupon only reduces what's charged, it doesn't open a
+// free-access path, so there's no equivalent leak to close.
 // Capped so the subscription's total lifetime (from its original creation,
 // never extendable past 2 years) is never exceeded — rejected outright
 // rather than silently clamped, so the caller always knows exactly how much
@@ -144,7 +247,8 @@ func (s *service) insertExtensionLineItems(
 // call already self-prefixes, and errors.Is classification on the sentinels
 // above runs on the raw error before any of this would wrap it anyway.
 func (s *service) extendSubscription(
-	ctx context.Context, subjectType, subjectID string, months int, switchToAnnual bool, _ string,
+	ctx context.Context, subjectType, subjectID string,
+	months int, switchToAnnual bool, _ string,
 ) (inv *invoiceRecord, err error) {
 	defer func() {
 		if err == nil {
@@ -194,7 +298,11 @@ func (s *service) extendSubscription(
 		months = 12
 	}
 
-	if isPending, _ := s.repo.hasPendingInvoiceBlockingExtend(ctx, s.querier(ctx), sub.ID); isPending {
+	isPending, err := s.repo.hasPendingInvoiceBlockingExtend(ctx, s.querier(ctx), sub.ID)
+	if err != nil {
+		return nil, err
+	}
+	if isPending {
 		return nil, ErrExtensionAlreadyPending
 	}
 
@@ -202,14 +310,20 @@ func (s *service) extendSubscription(
 	now := time.Now()
 	if months > maxExtendableMonths(*sub.PeriodEnd, now) {
 		maxAllowedEnd := truncateToDay(now.AddDate(0, maxRunwayMonths, 0))
-		return nil, fmt.Errorf("billing.extendSubscription: %w: at most until %s", ErrExtensionExceedsMaxDuration, maxAllowedEnd.Format(time.RFC3339))
+		return nil, fmt.Errorf("billing.extendSubscription: %w: at most until %s",
+			ErrExtensionExceedsMaxDuration, maxAllowedEnd.Format(time.RFC3339))
 	}
 
 	planInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
 		return nil, ErrUnknownPlan
 	}
-	subtotal := computeExtensionSubtotal(planInfo, sub.Currency, months)
+	addons, err := s.repo.listAttachedAddonsWithPricing(ctx, s.querier(ctx), sub.ID)
+	if err != nil {
+		return nil, fmt.Errorf("billing.extendSubscription: list attached addons: %w", err)
+	}
+	subtotal := computeExtensionSubtotal(planInfo, sub.Currency, months) +
+		computeExtensionAddonSubtotal(addons, sub.Currency, months)
 
 	taxRate := 0
 	if s.taxReader != nil {
@@ -227,11 +341,12 @@ func (s *service) extendSubscription(
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
-		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, subtotal, taxRate, tax, sub.Currency, "extension", switchToAnnual)
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID,
+			sub.ID, subtotal, taxRate, tax, sub.Currency, "extension", switchToAnnual, &months)
 		if err != nil {
 			return err
 		}
-		if err := s.insertExtensionLineItems(ctx, inv.ID, planInfo, sub.Currency, months); err != nil {
+		if err := s.insertExtensionLineItems(ctx, inv.ID, planInfo, addons, sub.Currency, months); err != nil {
 			return err
 		}
 		return nil
@@ -249,11 +364,13 @@ func (s *service) extendSubscription(
 	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
 		events.InvoiceCreated{
 			OrgID: subjectID, InvoiceID: inv.ID,
-			Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: sub.Currency, DueAt: *inv.DueAt,
+			Plan: sub.Plan, AmountCents: inv.AmountCents,
+			Currency: sub.Currency, DueAt: *inv.DueAt,
 		})
 
 	s.scheduleRenewalSequence(ctx, &subscriptionRecord{
-		ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &newPeriodEnd,
+		ID: sub.ID, SubjectType: sub.SubjectType,
+		SubjectID: sub.SubjectID, PeriodEnd: &newPeriodEnd,
 	})
 
 	return inv, nil
@@ -303,8 +420,11 @@ func (s *service) activateTrialNow(
 		periodEnd = now.AddDate(1, 0, 0)
 	}
 
-	composed, addonLines, couponCode, discountCents := s.composeInvoiceAmount(ctx,
+	composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(ctx,
 		s.querier(ctx), sub.ID, planInfo, sub.Currency, sub.Cycle)
+	if err != nil {
+		return nil, err
+	}
 	taxRate := 0
 	if s.taxReader != nil {
 		taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
@@ -316,14 +436,18 @@ func (s *service) activateTrialNow(
 	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
-		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "activation", false)
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID,
+			sub.ID, composed, taxRate, tax, sub.Currency, "activation", false, nil)
 		if err != nil {
 			return err
 		}
 		if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
 			return err
 		}
-		if err := s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents); err != nil {
+		if err := s.applyInvoiceCharges(
+			ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency,
+			addonLines, couponCode, discountCents,
+		); err != nil {
 			return err
 		}
 
@@ -331,7 +455,12 @@ func (s *service) activateTrialNow(
 		if err != nil {
 			return err
 		}
-		_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "activate", &sub.Plan, &sub.Plan, composed, sub.Currency, activatedBy, nil)
+		if _, err := s.repo.insertHistory(
+			ctx, s.querier(ctx), sub.ID, "activate", &sub.Plan,
+			&sub.Plan, composed, sub.Currency, activatedBy, nil,
+		); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -348,11 +477,13 @@ func (s *service) activateTrialNow(
 	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
 		events.InvoiceCreated{
 			OrgID: subjectID, InvoiceID: inv.ID,
-			Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: sub.Currency, DueAt: *inv.DueAt,
+			Plan: sub.Plan, AmountCents: inv.AmountCents,
+			Currency: sub.Currency, DueAt: *inv.DueAt,
 		})
 
 	s.scheduleRenewalSequence(ctx, &subscriptionRecord{
-		ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
+		ID: sub.ID, SubjectType: sub.SubjectType,
+		SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
 	})
 
 	return inv, nil
@@ -385,103 +516,140 @@ func (s *service) resumeSubscription(
 
 	switch sub.Status {
 	case statusCancelled:
-		now := time.Now()
-
-		// A subscription cancelled while still within its original trial
-		// window resumes back into "trialing", not "active" with a
-		// freshly-started billing period — the trial hasn't actually
-		// expired, and marking it "active" would imply a paying customer
-		// even though no invoice was ever created. cancelSubscription only
-		// ever touches status, never trial_end, so this is a reliable check.
-		isStillTrialing := sub.TrialEnd != nil && sub.TrialEnd.After(now)
-
-		newStatus := statusActive
-		periodEnd := now.AddDate(0, 1, 0)
-		if sub.Cycle == cycleYearly {
-			periodEnd = now.AddDate(1, 0, 0)
-		}
-		if isStillTrialing {
-			newStatus = statusTrialing
-			periodEnd = *sub.TrialEnd
-		}
-
-		var updated *subscriptionRecord
-		err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
-			ctx := db.WithQuerier(ctx, tx)
-			var err error
-			updated, err = s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, newStatus)
-			if err != nil {
-				return err
-			}
-			_ = s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd)
-			_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
-				&sub.Plan, &sub.Plan, 0, sub.Currency, changedBySystem, nil)
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", subjectID,
-			events.SubscriptionResumed{OrgID: subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now})
-
-		renewalSub := &subscriptionRecord{
-			ID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
-		}
-		if isStillTrialing {
-			renewalSub.TrialEnd = sub.TrialEnd
-		}
-		s.scheduleRenewalSequence(ctx, renewalSub)
-
-		return updated, nil
-
+		return s.resumeFromCancelled(ctx, subjectID, sub)
 	case statusExpired:
-		planInfo, err := s.planCatalog(ctx, sub.Plan)
-		if err != nil {
-			return nil, fmt.Errorf("billing.HandleSubscriptionRemind: %w: current plan", ErrUnknownPlan)
-		}
-		composed, addonLines, couponCode, discountCents := s.composeInvoiceAmount(
-			ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, sub.Cycle)
-		taxRate := 0
-		if s.taxReader != nil {
-			taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
-		}
-		tax := calculateTax(composed, taxRate)
-
-		var inv *invoiceRecord
-		err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
-			ctx := db.WithQuerier(ctx, tx)
-			var err error
-			// Stays "subscription", not "activation": the webhook dispatches
-			// this invoice's payment by subscription status
-			// (sub.Status == statusExpired, checked before the kind-based
-			// cases), so its kind never reaches the generic renewal case
-			// either way — safe regardless of which value it carries.
-			inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
-			if err != nil {
-				return err
-			}
-			if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
-				return err
-			}
-			if err := s.applyInvoiceCharges(ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents); err != nil {
-				return err
-			}
-			_, _ = s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume", &sub.Plan, &sub.Plan, composed, sub.Currency, resumedBy, nil)
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		// Payment link is a convenience, not load-bearing — see extendSubscription.
-		_, _ = s.createPaymentLink(ctx, "", "", inv.ID)
-
-		return sub, nil
-
+		return s.resumeFromExpired(ctx, sub, resumedBy)
 	default:
 		return nil, ErrSubscriptionNotResumable
 	}
+}
+
+// resumeFromCancelled reactivates a cancelled subscription with a fresh
+// billing period starting now — except a subscription cancelled while still
+// within its original trial window, which resumes back into "trialing", not
+// "active": the trial hasn't actually expired, and marking it "active"
+// would imply a paying customer even though no invoice was ever created.
+// cancelSubscription only ever touches status, never trial_end, so
+// sub.TrialEnd is a reliable check here.
+func (s *service) resumeFromCancelled(
+	ctx context.Context,
+	subjectID string,
+	sub *subscriptionRecord,
+) (*subscriptionRecord, error) {
+	now := time.Now()
+	isStillTrialing := sub.TrialEnd != nil && sub.TrialEnd.After(now)
+
+	newStatus := statusActive
+	periodEnd := now.AddDate(0, 1, 0)
+	if sub.Cycle == cycleYearly {
+		periodEnd = now.AddDate(1, 0, 0)
+	}
+	if isStillTrialing {
+		newStatus = statusTrialing
+		periodEnd = *sub.TrialEnd
+	}
+
+	var updated *subscriptionRecord
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		ctx := db.WithQuerier(ctx, tx)
+		var err error
+		updated, err = s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, newStatus)
+		if err != nil {
+			return err
+		}
+		if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
+			return err
+		}
+		if _, err := s.repo.insertHistory(
+			ctx, s.querier(ctx), sub.ID, "resume",
+			&sub.Plan, &sub.Plan, 0, sub.Currency,
+			changedBySystem, nil,
+		); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", subjectID,
+		events.SubscriptionResumed{OrgID: subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now})
+
+	renewalSub := &subscriptionRecord{
+		ID: sub.ID, SubjectType: sub.SubjectType,
+		SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
+	}
+	if isStillTrialing {
+		renewalSub.TrialEnd = sub.TrialEnd
+	}
+	s.scheduleRenewalSequence(ctx, renewalSub)
+
+	return updated, nil
+}
+
+// resumeFromExpired invoices an expired subscription's next period at its
+// current plan (addons/coupons included via composeInvoiceAmount, same as
+// any other invoice) without changing its status yet — the subscription
+// stays "expired" until handleWebhook (service_webhook.go) confirms this
+// invoice paid, at which point it reactivates. Only creating the invoice
+// here (rather than reactivating immediately) means an owner who starts but
+// never completes this payment never silently regains access.
+func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord, resumedBy string) (*subscriptionRecord, error) {
+	planInfo, err := s.planCatalog(ctx, sub.Plan)
+	if err != nil {
+		return nil, fmt.Errorf("billing.resumeFromExpired: %w: current plan", ErrUnknownPlan)
+	}
+	composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
+		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, sub.Cycle)
+	if err != nil {
+		return nil, err
+	}
+	taxRate := 0
+	if s.taxReader != nil {
+		taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
+	}
+	tax := calculateTax(composed, taxRate)
+
+	var inv *invoiceRecord
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		ctx := db.WithQuerier(ctx, tx)
+		var err error
+		// Stays "subscription", not "activation": the webhook dispatches
+		// this invoice's payment by subscription status
+		// (sub.Status == statusExpired, checked before the kind-based
+		// cases), so its kind never reaches the generic renewal case
+		// either way — safe regardless of which value it carries.
+		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID,
+			sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false, nil)
+		if err != nil {
+			return err
+		}
+		if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+			return err
+		}
+		if err := s.applyInvoiceCharges(
+			ctx, s.querier(ctx), sub.ID, inv.ID, sub.Currency,
+			addonLines, couponCode, discountCents,
+		); err != nil {
+			return err
+		}
+		if _, err := s.repo.insertHistory(
+			ctx, s.querier(ctx), sub.ID, "resume", &sub.Plan,
+			&sub.Plan, composed, sub.Currency, resumedBy, nil,
+		); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Payment link is a convenience, not load-bearing — see extendSubscription.
+	_, _ = s.createPaymentLink(ctx, "", "", inv.ID)
+
+	return sub, nil
 }
 
 // scheduleRenewalSequence publishes delayed messages for the renewal flow:
@@ -512,16 +680,19 @@ func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscription
 		remindLeadDays = 2
 	}
 	if d := time.Until(endTime.AddDate(0, 0, -remindLeadDays)); d > 0 {
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d)
+		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
+			events.DelayRoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d)
 	}
 
 	if d := time.Until(endTime.AddDate(0, 0, -3)); d > 0 {
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d)
+		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
+			events.DelayRoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d)
 	}
 
 	d := time.Until(endTime)
 	if d <= 0 {
 		d = time.Second
 	}
-	events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d)
+	events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
+		events.DelayRoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d)
 }

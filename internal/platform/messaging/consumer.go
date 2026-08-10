@@ -54,6 +54,10 @@ func NewConsumer(conn *Connection, spec ConsumerSpec, handler Handler, logger *s
 	return &Consumer{conn: conn, spec: spec, handler: handler, logger: logger}
 }
 
+// Spec returns c's ConsumerSpec — exported for tests that verify topology
+// (queue name, bindings, DLX, prefetch) without needing a live broker.
+func (c *Consumer) Spec() ConsumerSpec { return c.spec }
+
 // Run declares topology and consumes until ctx is cancelled, transparently
 // resuming after reconnects. Run blocks — call it in its own goroutine.
 func (c *Consumer) Run(ctx context.Context) {

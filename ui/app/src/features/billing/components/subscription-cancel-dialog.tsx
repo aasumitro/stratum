@@ -15,12 +15,11 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import {
-  usePlans,
+  useOrgPlansCatalog,
   useCancelSubscription,
   useResumeSubscription,
   useUndoScheduledCancellation,
 } from "@/features/billing/hooks"
-import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
 import type {
@@ -84,20 +83,13 @@ export function SubscriptionCancelDialog({
     useResumeSubscription(organizationId)
   const { mutate: undoCancellation, isPending: undoingCancellation } =
     useUndoScheduledCancellation(organizationId)
-  // country_code, not the subscription's own currency field, is what scopes
-  // this fetch down to one currency — kept disabled until it's known,
-  // rather than firing once unscoped and again once scoped.
-  const { data: orgData, isLoading: orgLoading } =
-    useOrganization(organizationId)
-  const countryCode = orgData?.data?.country_code ?? ""
-  const { data: plansData } = usePlans(countryCode, !orgLoading)
+  const { data: plansData } = useOrgPlansCatalog(organizationId)
   const { hasPendingInvoice } = usePermissions()
 
   const planInfo = (plansData?.data ?? []).find((p) => p.id === plan)
-  // Scoped by the same country_code as the fetch above, so its price map
-  // holds exactly one currency — read it back from the data itself, rather
-  // than the `currency` prop, so this never depends on the two staying in
-  // sync.
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself, rather than the `currency` prop, so
+  // this never depends on the two staying in sync.
   const displayCurrency = Object.keys(planInfo?.prices ?? {})[0] ?? currency
   const prices = planInfo?.prices[displayCurrency]
   const priceLabel = prices
@@ -178,7 +170,11 @@ export function SubscriptionCancelDialog({
             <Button
               variant="outline"
               disabled={isTrialing ? resuming : undoingCancellation}
-              onClick={() => (isTrialing ? resume() : undoCancellation())}
+              onClick={() =>
+                isTrialing
+                  ? resume()
+                  : undoCancellation(undefined, { onSuccess: handleClose })
+              }
             >
               {(isTrialing ? resuming : undoingCancellation) && (
                 <IconLoader2

@@ -72,6 +72,29 @@ func (h *handler) getSubscription(c *gin.Context) {
 	response.Success(resp).JSON(c, http.StatusOK)
 }
 
+// listPlansCatalog godoc
+// @Summary      List the plan catalog, scoped to this subscription's currency
+// @Description  Same catalog as GET /references/plans, but prices are scoped to the
+// @Description  subscription's own already-fixed currency instead of the caller's GeoIP-resolved
+// @Description  one — correct for an existing subscription, which never changes currency.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Success      200             {object}  response.Payload{data=[]contracts.PlanInfo}
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/plans/catalog [get]
+func (h *handler) listPlansCatalog(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	plans, err := h.svc.listPlansCatalog(c.Request.Context(), ws.ID)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.List(plans, int64(len(plans))).JSON(c, http.StatusOK)
+}
+
 type changePlanRequest struct {
 	// Plan is validated dynamically against billing.plans via the catalog
 	// lookup in changePlan — no oneof here: a static enum would reject any plan an
@@ -204,7 +227,7 @@ func (h *handler) undoDowngrade(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	sub, err := h.svc.undoScheduledPlanDowngrade(
-		c.Request.Context(), subjectTypeOrganization, ws.ID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -228,7 +251,7 @@ func (h *handler) undoCancellation(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	sub, err := h.svc.undoScheduledCancellation(
-		c.Request.Context(), subjectTypeOrganization, ws.ID)
+		c.Request.Context(), subjectTypeOrganization, ws.ID, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
 		return

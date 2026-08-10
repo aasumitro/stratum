@@ -144,6 +144,33 @@ func TestResolveDowngradeOverage(t *testing.T) {
 			t.Errorf("want 1 member left (the un-removable owner, still over the limit of 0), got %d", remaining)
 		}
 	})
+
+	// Regression: filterRemovableMembers used to return matches in
+	// arbitrary DB order, so validPreferred[:overage]'s truncation silently
+	// dropped whichever of the owner's picks the DB happened to list last —
+	// not necessarily their lowest-priority ones. With the caller's order
+	// preserved, truncating to the overage must keep exactly the caller's
+	// first N picks.
+	t.Run("preferred longer than overage keeps the caller's first N picks in order", func(t *testing.T) {
+		orgID6 := setupOrgWithMembers(t, pool, "test-downgrade-6")
+		// setupOrgWithMembers seeds mem_1/mem_2/mem_3 with joined_at
+		// ascending — a DB ORDER BY joined_at (or primary-key) would return
+		// them as mem_1, mem_2, mem_3, the opposite of this preferred list.
+		res, err := mod.ResolveDowngradeOverage(t.Context(), orgID6,
+			[]string{"mem_3", "mem_1", "mem_2"}, 2, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"mem_3", "mem_1"}
+		if len(res.RemovedMemberAuthSubs) != len(want) {
+			t.Fatalf("want %d removed, got %d: %v", len(want), len(res.RemovedMemberAuthSubs), res.RemovedMemberAuthSubs)
+		}
+		for i, sub := range want {
+			if res.RemovedMemberAuthSubs[i] != sub {
+				t.Errorf("want removed[%d] = %q (caller's order), got %q", i, sub, res.RemovedMemberAuthSubs[i])
+			}
+		}
+	})
 }
 
 // TestResolveDowngradeOverage_PublishesMemberRemovedEvents confirms the

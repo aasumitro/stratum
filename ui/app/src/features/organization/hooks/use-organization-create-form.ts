@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { useForm } from "@tanstack/react-form"
-import { useSelector } from "@tanstack/react-store"
 import { useTranslation } from "react-i18next"
 import { useHTTPActionPost } from "@/lib/api/action"
 import { API } from "@/lib/api/path"
 import { parseApiError } from "@/lib/api/error"
-import { useCountries, useOrganizations } from "./use-organization"
+import { useOrganizations } from "./use-organization"
 import { usePlans } from "@/features/billing/hooks"
 import type { Organization } from "@/types/organization"
 
@@ -28,9 +27,6 @@ export function useOrganizationCreateForm(
   const { t } = useTranslation()
   const [serverError, setServerError] = useState<string | null>(null)
 
-  const { data: countriesData } = useCountries()
-  const countries = countriesData?.data ?? []
-
   const { data: organizationsData } = useOrganizations()
   const isFirstOrganization = (organizationsData?.data ?? []).length === 0
 
@@ -39,7 +35,6 @@ export function useOrganizationCreateForm(
     {
       name: string
       slug: string
-      country_code: string
       plan: string
       cycle: string
       addons?: { addon_id: string; quantity: number }[]
@@ -60,7 +55,6 @@ export function useOrganizationCreateForm(
     defaultValues: {
       name: "",
       slug: "",
-      country_code: "",
       plan: "solo",
       cycle: "monthly",
       // addon_id -> quantity, and an optional coupon code — both sent in
@@ -83,7 +77,6 @@ export function useOrganizationCreateForm(
       mutate({
         name: value.name.trim(),
         slug: value.slug.trim(),
-        country_code: value.country_code,
         plan: value.plan,
         cycle: value.cycle,
         ...(addons.length > 0 && { addons }),
@@ -94,37 +87,15 @@ export function useOrganizationCreateForm(
     },
   })
 
-  // Reactive read (not a plain form.state.values.country_code access,
-  // which wouldn't re-render this hook's own component when the field
-  // changes) — the plan list must refetch scoped to whichever country the
-  // user has picked so far in Details.
-  const countryCode = useSelector(form.store, (s) => s.values.country_code)
-  const { data: plansData, isLoading: plansLoading } = usePlans(countryCode)
+  const { data: plansData, isLoading: plansLoading } = usePlans()
   // "custom" is sales-assisted (see PlanSelector's contact-us treatment on
   // the billing page) — not a self-serve choice at org-creation time.
   const plans = (plansData?.data ?? [])
     .filter((p) => p.active && p.id !== "custom")
     .sort((a, b) => a.sort_order - b.sort_order)
 
-  // Default to the first active country once the list loads, rather than
-  // hardcoding a country that may not even be active in this deployment
-  // (a fresh deploy only has Indonesia active by default).
-  // Only applies while the field is still untouched, so it never
-  // overwrites a country the user already picked.
-  useEffect(() => {
-    if (
-      countries.length > 0 &&
-      !form.state.values.country_code &&
-      !form.state.fieldMeta.country_code?.isTouched
-    ) {
-      form.setFieldValue("country_code", countries[0].code)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [countries.length])
-
   return {
     form,
-    countries,
     plans,
     plansLoading,
     isFirstOrganization,

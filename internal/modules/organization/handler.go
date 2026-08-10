@@ -5,6 +5,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 )
 
 const (
@@ -13,9 +14,10 @@ const (
 )
 
 type handler struct {
-	svc        *service
-	pool       *pgxpool.Pool
-	cacheInval contracts.OrganizationCacheInvalidator
+	svc             *service
+	pool            *pgxpool.Pool
+	cacheInval      contracts.OrganizationCacheInvalidator
+	countryResolver *geoip.Resolver
 }
 
 func (h *handler) invalidateOrg(c *gin.Context, organizationID string) {

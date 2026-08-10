@@ -9,17 +9,21 @@ import (
 )
 
 type invoiceRecord struct {
-	ID                string     `json:"id"`
-	SubscriptionID    string     `json:"subscription_id"`
-	InvoiceNumber     *string    `json:"invoice_number,omitempty"`
-	AmountCents       int64      `json:"amount_cents"`
-	SubtotalCents     *int64     `json:"subtotal_cents,omitempty"`
-	TaxRateBPS        int        `json:"tax_rate_bps"`
-	TaxCents          int64      `json:"tax_cents"`
-	Currency          string     `json:"currency"`
-	Status            string     `json:"status"`
-	Kind              string     `json:"kind"`
-	SwitchToAnnual    bool       `json:"switch_to_annual"`
+	ID             string  `json:"id"`
+	SubscriptionID string  `json:"subscription_id"`
+	InvoiceNumber  *string `json:"invoice_number,omitempty"`
+	AmountCents    int64   `json:"amount_cents"`
+	SubtotalCents  *int64  `json:"subtotal_cents,omitempty"`
+	TaxRateBPS     int     `json:"tax_rate_bps"`
+	TaxCents       int64   `json:"tax_cents"`
+	Currency       string  `json:"currency"`
+	Status         string  `json:"status"`
+	Kind           string  `json:"kind"`
+	SwitchToAnnual bool    `json:"switch_to_annual"`
+	// ExtensionMonths is set only for kind="extension" invoices — the exact
+	// months purchased, read back by applyExtensionPayment instead of
+	// re-derived by summing line items (service_webhook.go).
+	ExtensionMonths   *int       `json:"extension_months,omitempty"`
 	ProviderInvoiceID *string    `json:"provider_invoice_id,omitempty"`
 	DueAt             *time.Time `json:"due_at,omitempty"`
 	PaidAt            *time.Time `json:"paid_at,omitempty"`
@@ -44,7 +48,7 @@ func (r *repository) listInvoices(
 ) ([]invoiceRecord, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		       kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       kind, switch_to_annual, extension_months, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices
 		WHERE subscription_id = $1
 		ORDER BY created_at DESC`,
@@ -61,7 +65,7 @@ func (r *repository) listInvoices(
 		if err := rows.Scan(
 			&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 			&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-			&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt,
+			&inv.SwitchToAnnual, &inv.ExtensionMonths, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -74,12 +78,12 @@ func (r *repository) findInvoiceByID(ctx context.Context, q db.Querier, id strin
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		       kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       kind, switch_to_annual, extension_months, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices WHERE id = $1`,
 		id,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ExtensionMonths, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
 
@@ -92,14 +96,14 @@ func (r *repository) findInvoiceByIDAndSubject(
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT i.id, i.subscription_id, i.invoice_number, i.amount_cents, i.subtotal_cents, i.tax_rate_bps, i.tax_cents,
-		       i.currency, i.status, i.kind, i.switch_to_annual, i.provider_invoice_id, i.due_at, i.paid_at, i.created_at, i.updated_at
+		       i.currency, i.status, i.kind, i.switch_to_annual, i.extension_months, i.provider_invoice_id, i.due_at, i.paid_at, i.created_at, i.updated_at
 		FROM billing.invoices i
 		JOIN billing.subscriptions s ON s.id = i.subscription_id
 		WHERE i.id = $1 AND s.subject_type = $2 AND s.subject_id = $3`,
 		invoiceID, subjectType, subjectID,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ExtensionMonths, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
 
@@ -110,14 +114,14 @@ func (r *repository) findPendingInvoiceBySubscription(ctx context.Context, q db.
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents,
-		       currency, status, kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at
+		       currency, status, kind, switch_to_annual, extension_months, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices
 		WHERE subscription_id = $1 AND status = 'pending'
 		ORDER BY created_at DESC LIMIT 1`,
 		subscriptionID,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ExtensionMonths, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return inv, err
 }
 
@@ -155,10 +159,12 @@ func (r *repository) nextInvoiceNumber(ctx context.Context, q db.Querier, organi
 	return fmt.Sprintf("INV-%d-%05d", year, seq), nil
 }
 
+// extensionMonths is nil for every invoice kind except "extension", where it
+// records the exact months purchased — see invoiceRecord.ExtensionMonths.
 func (r *repository) insertInvoice(
 	ctx context.Context, q db.Querier,
 	organizationID, subscriptionID string, subtotalCents int64,
-	taxRateBPS int, taxCents int64, currency, kind string, switchToAnnual bool,
+	taxRateBPS int, taxCents int64, currency, kind string, switchToAnnual bool, extensionMonths *int,
 ) (*invoiceRecord, error) {
 	var inv invoiceRecord
 	dueAt := time.Now().AddDate(0, 0, 7)
@@ -173,14 +179,14 @@ func (r *repository) insertInvoice(
 	}
 
 	err := q.QueryRow(ctx, `
-		INSERT INTO billing.invoices (subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, kind, switch_to_annual, due_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO billing.invoices (subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, kind, switch_to_annual, extension_months, due_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents, currency, status,
-		          kind, switch_to_annual, provider_invoice_id, due_at, paid_at, created_at, updated_at`,
-		subscriptionID, invNum, totalCents, subtotalCents, taxRateBPS, taxCents, currency, kind, switchToAnnual, dueAt,
+		          kind, switch_to_annual, extension_months, provider_invoice_id, due_at, paid_at, created_at, updated_at`,
+		subscriptionID, invNum, totalCents, subtotalCents, taxRateBPS, taxCents, currency, kind, switchToAnnual, extensionMonths, dueAt,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
 		&inv.SubtotalCents, &inv.TaxRateBPS, &inv.TaxCents, &inv.Currency, &inv.Status, &inv.Kind,
-		&inv.SwitchToAnnual, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.SwitchToAnnual, &inv.ExtensionMonths, &inv.ProviderInvoiceID, &inv.DueAt, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
 	return &inv, err
 }
 

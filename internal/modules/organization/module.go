@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
@@ -20,10 +21,11 @@ import (
 // Implements contracts.OrganizationReader so the organization middleware can
 // resolve organization data without importing this package directly.
 type Module struct {
-	svc        *service
-	pool       *pgxpool.Pool
-	cacheInval contracts.OrganizationCacheInvalidator
-	Worker     *WebhookWorker
+	svc             *service
+	pool            *pgxpool.Pool
+	cacheInval      contracts.OrganizationCacheInvalidator
+	countryResolver *geoip.Resolver
+	Worker          *WebhookWorker
 }
 
 func New(pool *pgxpool.Pool, pub messaging.EventPublisher) *Module {
@@ -86,6 +88,16 @@ func (m *Module) SetStorageClient(s *storage.Client) {
 // billing module is created (billing owns the catalog schema).
 func (m *Module) SetCatalogReader(r contracts.CatalogReader) {
 	m.svc.catalogReader = r
+}
+
+// SetCountryResolver wires the GeoIP resolver after construction — the
+// trusted source for a new organization's billing country/currency (see
+// createOrganization), replacing the client-supplied country_code field
+// this used to accept. Nil-safe like every other optional dependency here:
+// unwired, createOrganization falls back to the same "US" default it always
+// has, just without a GeoIP-informed reason for it.
+func (m *Module) SetCountryResolver(r *geoip.Resolver) {
+	m.countryResolver = r
 }
 
 // SetUserReader wires the user reader after construction to resolve an
@@ -225,7 +237,7 @@ func (m *Module) CleanupExpiredInvitations(ctx context.Context) {
 // aal2-only gate for users who have MFA enabled, see
 // contracts.UserReader.IsMFAEnabled.
 func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
-	h := &handler{svc: m.svc, pool: m.pool, cacheInval: m.cacheInval}
+	h := &handler{svc: m.svc, pool: m.pool, cacheInval: m.cacheInval, countryResolver: m.countryResolver}
 	ownerOnly := middleware.RequireRole(contracts.RoleOwner)
 	adminUp := middleware.RequireRole(contracts.RoleOwner, contracts.RoleAdmin)
 

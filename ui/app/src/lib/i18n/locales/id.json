@@ -56,7 +56,165 @@
     "stateDefaultMessage": "Terjadi kesalahan. Silakan coba lagi.",
     "notFoundTitle": "Halaman tidak ditemukan",
     "notFoundDescription": "Halaman yang Anda cari tidak ada atau telah dipindahkan.",
-    "notFoundAction": "Ke daftar organisasi"
+    "notFoundAction": "Ke daftar organisasi",
+    "codes": {
+      "VALIDATION_FAILED": "Validasi gagal.",
+      "MFA_STATUS_UNAVAILABLE": "Tidak dapat memverifikasi status MFA akun Anda. Coba lagi.",
+      "MFA_REQUIRED": "Tindakan ini memerlukan faktor kedua yang terverifikasi.",
+      "INVITEE_ALREADY_MEMBER": "Orang ini sudah menjadi anggota organisasi.",
+      "INVITATION_NOT_FOUND": "Undangan tidak ditemukan atau telah dicabut.",
+      "INVITATION_EXPIRED": "Undangan ini telah kedaluwarsa.",
+      "INVITATION_EMAIL_MISMATCH": "Undangan ini dikirim ke alamat email yang berbeda.",
+      "INVITATION_ALREADY_MEMBER": "Anda sudah menjadi anggota organisasi ini.",
+      "INVITATION_ORGANIZATION_NOT_ACTIVE": "Organisasi ini sedang tidak aktif.",
+      "INVITATION_INVALID": "Undangan tidak valid atau telah kedaluwarsa.",
+      "INVITE_CODE_INVALID": "Kode undangan tidak valid atau dinonaktifkan.",
+      "JOIN_ALREADY_MEMBER": "Anda sudah menjadi anggota organisasi ini.",
+      "SELF_REMOVAL": "Anda tidak dapat menghapus diri sendiri.",
+      "CANNOT_REMOVE_OWNER": "Anda tidak dapat menghapus pemilik organisasi.",
+      "CANNOT_DEMOTE_OWNER": "Anda tidak dapat mengubah peran pemilik.",
+      "LOGO_MISSING": "File logo wajib diisi.",
+      "LOGO_TOO_LARGE": "Logo harus di bawah 2 MB.",
+      "LOGO_INVALID_TYPE": "Logo harus berupa gambar.",
+      "AUDIT_LOG_FETCH_FAILED": "Gagal memuat log audit.",
+      "WEBHOOK_NOT_FOUND": "Webhook tidak ditemukan.",
+      "WEBHOOK_FETCH_FAILED": "Gagal memuat webhook.",
+      "DELIVERY_LIST_FAILED": "Gagal memuat riwayat pengiriman.",
+      "TOO_MANY_STREAMS": "Terlalu banyak koneksi notifikasi yang terbuka bersamaan.",
+      "EMAIL_REQUIRED": "Akun Anda belum memiliki email terverifikasi.",
+      "UNEXPECTED_BODY": "Endpoint ini tidak menerima isi permintaan (request body).",
+      "AVATAR_MISSING": "File avatar wajib diisi.",
+      "AVATAR_TOO_LARGE": "Avatar harus di bawah 2 MB.",
+      "AVATAR_INVALID_TYPE": "Avatar harus berupa gambar.",
+      "INVALID_SECRET": "Secret webhook tidak valid.",
+      "INVALID_PAYLOAD": "Payload tidak valid.",
+      "INVITATION_CREATE_FAILED": "Gagal membuat undangan.",
+      "INVITATIONS_FETCH_FAILED": "Gagal memuat undangan.",
+      "INVITATION_REVOKE_FAILED": "Gagal mencabut undangan.",
+      "UNKNOWN_PLAN": "Paket tidak dikenal.",
+      "UNKNOWN_ADDON": "Add-on tidak dikenal.",
+      "INVALID_COUPON": "Kupon ini tidak berlaku untuk akun Anda.",
+      "SLUG_TAKEN": "Slug ini sudah digunakan.",
+      "ORGANIZATION_CREATE_FAILED": "Gagal membuat organisasi.",
+      "ORGANIZATION_NOT_FOUND": "Organisasi tidak ditemukan.",
+      "ORGANIZATION_FETCH_FAILED": "Gagal memuat organisasi.",
+      "ORGANIZATION_UPDATE_FAILED": "Gagal memperbarui organisasi.",
+      "ORGANIZATION_DELETE_FAILED": "Gagal menghapus organisasi.",
+      "LOGO_UPLOAD_FAILED": "Gagal mengunggah logo.",
+      "IP_ALLOWLIST_LOCKS_OUT_CALLER": "Daftar izin ini akan mengunci alamat IP Anda sendiri.",
+      "SETTINGS_UPDATE_FAILED": "Gagal memperbarui pengaturan.",
+      "ORGANIZATION_SUSPEND_FAILED": "Gagal menangguhkan organisasi.",
+      "BILLING_HOLD": "Organisasi ini ditangguhkan karena tagihan belum dibayar — bayar untuk mengaktifkan kembali.",
+      "ORGANIZATION_UNSUSPEND_FAILED": "Gagal mengaktifkan kembali organisasi.",
+      "FEATURE_NOT_AVAILABLE": "Webhook tidak tersedia pada paket Anda saat ini.",
+      "WEBHOOK_URL_NOT_ALLOWED": "URL webhook harus HTTPS dan mengarah ke alamat publik.",
+      "WEBHOOK_CREATE_FAILED": "Gagal membuat webhook.",
+      "WEBHOOK_LIST_FAILED": "Gagal memuat webhook.",
+      "WEBHOOK_UPDATE_FAILED": "Gagal memperbarui webhook.",
+      "WEBHOOK_REQUIRES_TEST_EVENT": "Kirim event uji yang berhasil untuk mengaktifkan kembali webhook ini.",
+      "WEBHOOK_ROTATE_FAILED": "Gagal memperbarui secret webhook.",
+      "WEBHOOK_DELETE_FAILED": "Gagal menghapus webhook.",
+      "RETRY_FAILED": "Percobaan ulang gagal.",
+      "WEBHOOK_TEST_FAILED": "Gagal mengirim event uji.",
+      "INVITE_CODE_FAILED": "Gagal membuat ulang kode undangan.",
+      "INVITE_CODE_TOGGLE_FAILED": "Gagal mengubah status kode undangan.",
+      "MEMBERS_FETCH_FAILED": "Gagal memuat anggota.",
+      "INVALID_ROLE": "Peran harus admin atau anggota.",
+      "CANNOT_MODIFY_OWNER": "Anda tidak dapat mengubah peran pemilik.",
+      "MEMBER_EXISTS": "Anggota ini sudah ada.",
+      "MEMBER_ADD_FAILED": "Gagal menambahkan anggota.",
+      "MEMBER_REMOVE_FAILED": "Gagal menghapus anggota.",
+      "MEMBER_ROLE_UPDATE_FAILED": "Gagal memperbarui peran anggota.",
+      "INVALID_CURSOR": "Cursor yang diberikan tidak valid.",
+      "NOTIFICATIONS_FETCH_FAILED": "Gagal memuat notifikasi.",
+      "UNREAD_COUNT_FAILED": "Gagal menghitung notifikasi belum dibaca.",
+      "MARK_READ_FAILED": "Gagal menandai sebagai telah dibaca.",
+      "MARK_ALL_READ_FAILED": "Gagal menandai semua sebagai telah dibaca.",
+      "PREFS_FETCH_FAILED": "Gagal memuat preferensi.",
+      "PREF_UPDATE_FAILED": "Gagal memperbarui preferensi.",
+      "PROFILE_SAVE_FAILED": "Gagal menyimpan profil.",
+      "PROFILE_NOT_FOUND": "Profil tidak ditemukan.",
+      "PROFILE_FETCH_FAILED": "Gagal memuat profil.",
+      "PROFILE_UPDATE_FAILED": "Gagal memperbarui profil.",
+      "PREFERENCES_UPDATE_FAILED": "Gagal memperbarui preferensi.",
+      "EMAIL_SYNC_FAILED": "Gagal menyinkronkan email.",
+      "ACCOUNT_DELETE_FAILED": "Alihkan atau hapus organisasi Anda sebelum menghapus akun Anda.",
+      "EXPORT_FAILED": "Gagal meminta ekspor data.",
+      "MFA_SYNC_FAILED": "Gagal menyinkronkan status MFA.",
+      "TASKS_FETCH_FAILED": "Gagal memuat tugas.",
+      "TASK_NOT_FOUND": "Tugas tidak ditemukan.",
+      "REVOKE_FAILED": "Gagal mencabut sesi.",
+      "SESSIONS_FETCH_FAILED": "Gagal memuat sesi.",
+      "AVATAR_UPLOAD_FAILED": "Gagal mengunggah avatar.",
+      "AVATAR_DELETE_FAILED": "Gagal menghapus avatar.",
+      "COUNTRIES_FETCH_FAILED": "Gagal memuat daftar negara.",
+      "CURRENCIES_FETCH_FAILED": "Gagal memuat daftar mata uang.",
+      "PLANS_FETCH_FAILED": "Gagal memuat paket.",
+      "FEATURES_FETCH_FAILED": "Gagal memuat fitur.",
+      "ADDONS_FETCH_FAILED": "Gagal memuat add-on.",
+      "PLANS_CATALOG_FETCH_FAILED": "Gagal memuat katalog paket.",
+      "ADDONS_CATALOG_FETCH_FAILED": "Gagal memuat katalog add-on.",
+      "SUBSCRIPTION_NOT_FOUND": "Langganan tidak ditemukan.",
+      "SUBSCRIPTION_NOT_EXTENDABLE": "Langganan ini tidak dapat diperpanjang dalam kondisinya saat ini.",
+      "EXTENSION_ALREADY_PENDING": "Sudah ada tagihan yang menunggu pembayaran untuk langganan ini — bayar atau batalkan sebelum meminta perpanjangan.",
+      "SUBSCRIPTION_ALREADY_YEARLY": "Langganan ini sudah menggunakan siklus tahunan.",
+      "SUBSCRIPTION_EXTEND_FAILED": "Gagal memperpanjang langganan.",
+      "SUBSCRIPTION_NOT_TRIALING": "Langganan ini sedang tidak dalam masa uji coba.",
+      "SUBSCRIPTION_ACTIVATE_FAILED": "Gagal mengaktifkan langganan.",
+      "SUBSCRIPTION_NOT_RESUMABLE": "Langganan ini tidak dapat dilanjutkan dalam kondisinya saat ini.",
+      "SUBSCRIPTION_RESUME_FAILED": "Gagal melanjutkan langganan.",
+      "HISTORY_FETCH_FAILED": "Gagal memuat riwayat.",
+      "USAGE_RECORD_FAILED": "Gagal mencatat penggunaan.",
+      "USAGE_FETCH_FAILED": "Gagal memuat data penggunaan.",
+      "NOT_FOUND": "Tidak ditemukan.",
+      "INVOICES_FETCH_FAILED": "Gagal memuat tagihan.",
+      "PAYMENT_LINKS_FETCH_FAILED": "Gagal memuat tautan pembayaran.",
+      "INVOICE_NOT_FOUND": "Tagihan tidak ditemukan.",
+      "PAYMENT_LINK_REGENERATE_FAILED": "Gagal membuat ulang tautan pembayaran.",
+      "PAYMENTS_FETCH_FAILED": "Gagal memuat pembayaran.",
+      "PAYMENT_LINK_CREATE_FAILED": "Gagal membuat tautan pembayaran.",
+      "PREVIEW_FAILED": "Gagal menampilkan pratinjau tagihan.",
+      "DOWNGRADE_UNSUPPORTED": "Penurunan paket hanya didukung untuk organisasi.",
+      "INVALID_DOWNGRADE": "Paket tujuan bukan penurunan paket.",
+      "NO_SCHEDULED_DOWNGRADE": "Tidak ada penurunan paket terjadwal yang dapat dibatalkan.",
+      "SUBSCRIPTION_FETCH_FAILED": "Gagal memuat langganan.",
+      "PLAN_CHANGE_NOT_ALLOWED": "Langganan ini tidak dapat mengubah paket dalam kondisinya saat ini.",
+      "PLAN_CHANGE_FAILED": "Gagal mengubah paket.",
+      "SUBSCRIPTION_NOT_CANCELLABLE": "Langganan ini tidak dapat dibatalkan dalam kondisinya saat ini.",
+      "SUBSCRIPTION_CANCEL_FAILED": "Gagal membatalkan langganan.",
+      "NO_SCHEDULED_CANCELLATION": "Tidak ada pembatalan terjadwal yang dapat dibatalkan.",
+      "SUBSCRIPTION_UNDO_CANCEL_FAILED": "Gagal membatalkan pembatalan terjadwal.",
+      "ADDON_NOT_FOUND": "Add-on tidak ditemukan.",
+      "ADDON_UNDO_FAILED": "Gagal membatalkan perubahan add-on terjadwal.",
+      "NO_SCHEDULED_ADDON_CHANGE": "Tidak ada perubahan jumlah add-on terjadwal yang dapat dibatalkan.",
+      "COUPONS_FETCH_FAILED": "Gagal memuat kupon yang memenuhi syarat.",
+      "COUPON_NOT_FOUND": "Kupon tidak ditemukan.",
+      "COUPON_NOT_REDEEMABLE": "Kupon ini tidak dapat ditukarkan.",
+      "COUPON_REDEEM_FAILED": "Gagal menukarkan kupon.",
+      "CANCELLATION_SCHEDULED": "Langganan dijadwalkan untuk dibatalkan — batalkan penjadwalan itu terlebih dahulu.",
+      "INVALID_BODY": "Tidak dapat membaca isi permintaan.",
+      "INVALID_SIGNATURE": "Tanda tangan tidak valid.",
+      "INVALID_TOKEN": "Token tidak valid.",
+      "PDF_GENERATION_FAILED": "Gagal membuat PDF tagihan.",
+      "WEBHOOK_FAILED": "Pemrosesan webhook gagal.",
+      "ADDON_ATTACH_FAILED": "Gagal menambahkan add-on.",
+      "ADDON_DETACH_FAILED": "Gagal melepas add-on."
+    },
+    "validation": {
+      "required": "Kolom {{field}} wajib diisi.",
+      "email": "Kolom {{field}} harus berupa alamat email yang valid.",
+      "min": "Kolom {{field}} minimal harus {{param}}.",
+      "max": "Kolom {{field}} tidak boleh lebih dari {{param}}.",
+      "oneof": "{{field}} yang dipilih tidak valid. Harus salah satu dari: {{param}}.",
+      "url": "Kolom {{field}} harus berupa URL yang valid.",
+      "uuid": "Kolom {{field}} harus berupa UUID yang valid.",
+      "len": "Kolom {{field}} harus tepat {{param}} karakter.",
+      "gt": "Kolom {{field}} harus lebih besar dari {{param}}.",
+      "gte": "Kolom {{field}} minimal harus {{param}}.",
+      "lt": "Kolom {{field}} harus kurang dari {{param}}.",
+      "lte": "Kolom {{field}} tidak boleh lebih dari {{param}}.",
+      "default": "Kolom {{field}} tidak valid."
+    }
   },
   "nav": {
     "organizations": "Organisasi",
@@ -129,6 +287,116 @@
       "yesterday": "Kemarin",
       "week": "Minggu ini",
       "earlier": "Lebih awal"
+    },
+    "messages": {
+      "welcome": {
+        "title": "Selamat datang di {{organization_name}}",
+        "body": "Organisasi Anda \"{{organization_name}}\" sudah siap. Undang tim Anda untuk memulai."
+      },
+      "organization_suspended": {
+        "title": "Organisasi ditangguhkan",
+        "body": "Organisasi Anda telah ditangguhkan. Alasan: {{reason}}"
+      },
+      "organization_reactivated": {
+        "title": "Organisasi diaktifkan kembali",
+        "body": "Organisasi Anda telah diaktifkan kembali dan kini aktif."
+      },
+      "organization_deleted": {
+        "title": "Organisasi dihapus",
+        "body": "Organisasi Anda \"{{organization_name}}\" telah dihapus."
+      },
+      "invoice_paid": {
+        "title": "Tagihan dibayar",
+        "body": "Tagihan {{invoice_id}} telah berhasil dibayar."
+      },
+      "subscription_remind": {
+        "title": "Langganan akan segera berakhir",
+        "body": "Langganan Anda berakhir pada {{expected_end}}. Perpanjang untuk menghindari gangguan."
+      },
+      "subscription_remind_trial": {
+        "title": "Langganan akan segera berakhir",
+        "body": "Uji coba gratis Anda berakhir pada {{expected_end}}. Tambahkan metode pembayaran untuk mempertahankan akses."
+      },
+      "trial_started": {
+        "title": "Uji coba dimulai",
+        "body": "Uji coba Anda aktif hingga {{trial_end}}."
+      },
+      "invoice_created": {
+        "title": "Tagihan dibuat",
+        "body": "Tagihan perpanjangan {{invoice_id}} telah dibuat. Selesaikan pembayaran untuk melanjutkan langganan Anda."
+      },
+      "invoice_created_trial": {
+        "title": "Tagihan dibuat",
+        "body": "Uji coba Anda telah berakhir — tagihan {{invoice_id}} sudah siap. Selesaikan pembayaran untuk melanjutkan."
+      },
+      "invoice_failed": {
+        "title": "Pembayaran gagal",
+        "body": "Pembayaran untuk tagihan {{invoice_id}} gagal. Silakan perbarui metode pembayaran Anda."
+      },
+      "subscription_activated": {
+        "title": "Langganan diaktifkan",
+        "body": "Langganan paket {{plan}} Anda kini aktif."
+      },
+      "subscription_cancelled": {
+        "title": "Langganan dibatalkan",
+        "body": "Langganan Anda telah dibatalkan. Akses tetap berlaku hingga akhir periode saat ini."
+      },
+      "subscription_expired": {
+        "title": "Langganan berakhir",
+        "body": "Langganan Anda telah berakhir dan organisasi Anda telah ditangguhkan. Bayar tagihan tertunda untuk memulihkan akses."
+      },
+      "subscription_resumed": {
+        "title": "Langganan diaktifkan kembali",
+        "body": "Langganan paket {{plan}} Anda telah diaktifkan kembali."
+      },
+      "invoice_payment_remind": {
+        "title": "Pembayaran masih tertunda",
+        "body": "Tagihan {{invoice_id}} masih belum dibayar. Selesaikan pembayaran untuk menjaga langganan Anda tetap aktif."
+      },
+      "invoice_payment_final": {
+        "title": "Pengingat pembayaran terakhir",
+        "body": "Ini adalah pemberitahuan terakhir untuk tagihan {{invoice_id}}. Langganan Anda dapat ditangguhkan jika pembayaran tidak diterima."
+      },
+      "invite": {
+        "title": "Anda diundang",
+        "body": "Anda diundang untuk bergabung ke \"{{organization_name}}\"."
+      },
+      "invitation_requested": {
+        "title": "Undangan perlu dikirim ulang",
+        "body": "{{invitee_email}} meminta undangan baru ke \"{{organization_name}}\" — undangan asli mereka kedaluwarsa atau hilang."
+      },
+      "invitation_declined": {
+        "title": "Undangan ditolak",
+        "body": "{{invitee_email}} menolak undangan Anda untuk bergabung ke \"{{organization_name}}\"."
+      },
+      "member_removed": {
+        "title": "Dikeluarkan dari organisasi",
+        "body": "Anda telah dikeluarkan dari \"{{organization_name}}\"."
+      },
+      "member_role_changed": {
+        "title": "Peran diubah",
+        "body": "Peran Anda di \"{{organization_name}}\" telah diubah menjadi {{role}}."
+      },
+      "ownership_transferred": {
+        "title": "Anda kini menjadi pemilik",
+        "body": "Anda kini menjadi pemilik \"{{organization_name}}\"."
+      },
+      "webhook_health_warning": {
+        "title": "Masalah pengiriman webhook",
+        "body": "Endpoint webhook Anda {{url}} hanya berhasil {{success_percent}}% dari pengiriman dalam 24 jam terakhir."
+      },
+      "webhook_auto_disabled": {
+        "title": "Webhook dinonaktifkan",
+        "body": "Endpoint webhook Anda {{url}} dinonaktifkan otomatis setelah 3 hari kegagalan pengiriman. Kirim event uji untuk mengaktifkannya kembali."
+      },
+      "email_changed": {
+        "title": "Alamat email diubah",
+        "body": "Email akun Anda diubah dari {{old_email}} menjadi {{new_email}}. Jika ini bukan Anda, segera hubungi dukungan."
+      },
+      "usage_limit_warning": {
+        "title": "Mendekati batas penggunaan",
+        "body": "Penggunaan {{metric}} berada di {{current}} / {{limit}}."
+      }
     }
   },
   "breadcrumb": {
@@ -569,8 +837,6 @@
       "detailsDescription": "Nama dan slug terlihat oleh semua anggota.",
       "nameLabel": "Nama",
       "slugLabel": "Slug",
-      "countryLabel": "Negara",
-      "countryPlaceholder": "Pilih negara",
       "nameRequired": "Nama wajib diisi",
       "slugRequired": "Slug wajib diisi",
       "localeTitle": "Lokal & zona waktu",
@@ -920,6 +1186,9 @@
       "lineTwelveMonthsYearly": "12 bulan (tarif tahunan)",
       "lineYearlyBlocks": "{{blocks}} × 12 bulan (tarif tahunan)",
       "lineMonthlyRemainder": "{{count}} bulan (tarif bulanan)",
+      "addonLineTwelveMonthsYearly": "{{name}} (×{{quantity}}) — 12 bulan (tarif tahunan)",
+      "addonLineYearlyBlocks": "{{name}} (×{{quantity}}) — {{blocks}} × 12 bulan (tarif tahunan)",
+      "addonLineMonthlyRemainder": "{{name}} (×{{quantity}}) — {{count}} bulan (tarif bulanan)",
       "subtotalLabel": "Subtotal",
       "taxLabel": "Pajak",
       "taxAtCheckout": "Dihitung saat checkout",
@@ -1061,7 +1330,8 @@
       "dueLabel": "Jatuh tempo {{date}}",
       "kind": {
         "extension": "Perpanjangan",
-        "activation": "Aktivasi"
+        "activation": "Aktivasi",
+        "addon_increase": "Penambahan add-on"
       },
       "pay": "Bayar",
       "opening": "Membuka…",
@@ -1105,14 +1375,26 @@
       "summaryResume": "{{name}} melanjutkan paket · {{timeAgo}}",
       "summaryExpire": "{{name}} membiarkan paket kedaluwarsa · {{timeAgo}}",
       "summaryExtend": "{{name}} memperpanjang paket · {{timeAgo}}",
+      "summaryCycleChange": "{{name}} mengganti siklus tagihan: {{fromCycle}} → {{toCycle}} · {{timeAgo}}",
+      "summaryAddonChange": "{{name}} mengubah {{addonName}}: {{fromQuantity}} → {{toQuantity}} · {{timeAgo}}",
       "viewFull": "Lihat riwayat lengkap",
       "logChange": "Mengubah paket: {{fromPlan}} → {{toPlan}}",
+      "logChangeWithCycle": "Mengubah paket: {{fromPlan}} ({{fromCycle}}) → {{toPlan}} ({{toCycle}})",
+      "logCycleChange": "Mengganti siklus tagihan: {{fromCycle}} → {{toCycle}}",
       "logStart": "Memulai paket {{toPlan}}",
       "logCancel": "Membatalkan paket",
       "logResume": "Melanjutkan paket",
       "logExpire": "Paket kedaluwarsa",
       "logExtend": "Memperpanjang paket",
-      "loadMore": "Muat acara lainnya"
+      "logAddonChange": "{{addonName}}: {{fromQuantity}} → {{toQuantity}}",
+      "loadMore": "Muat acara lainnya",
+      "phase": {
+        "scheduled": "Dijadwalkan",
+        "applied": "Diterapkan",
+        "undone": "Dibatalkan"
+      },
+      "effectiveScheduled": "Dijadwalkan untuk {{date}}",
+      "effectiveApplied": "Diterapkan {{date}}"
     },
     "payments": {
       "title": "Pembayaran",

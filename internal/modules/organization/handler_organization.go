@@ -1,12 +1,12 @@
 package organization
 
 import (
-	"cmp"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/aasumitro/stratum/internal/platform/audit"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/reqctx"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/request"
@@ -16,9 +16,8 @@ import (
 // --- organization routes ---
 
 type createOrganizationRequest struct {
-	Slug        string `json:"slug" binding:"required,min=1,max=63"`
-	Name        string `json:"name" binding:"required,min=1,max=100"`
-	CountryCode string `json:"country_code" binding:"omitempty,len=2"`
+	Slug string `json:"slug" binding:"required,min=1,max=63"`
+	Name string `json:"name" binding:"required,min=1,max=100"`
 	// Plan is required and validated dynamically against the billing
 	// catalog (service.createOrganization, via refReader.GetPlanByID) —
 	// no oneof here, same reasoning as billing.changePlanRequest.Plan: a
@@ -42,9 +41,18 @@ type createOrganizationAddonRequest struct {
 	Quantity int    `json:"quantity" binding:"omitempty,min=1"`
 }
 
+// resolveCountryCode derives the organization's billing country/currency
+// from the caller's real IP via GeoIP instead of trusting a client-supplied
+// value — country_code used to be a request field here, but a client could
+// simply declare a cheaper country/currency at signup with no exploit
+// tooling required. See internal/platform/geoip.
+func (h *handler) resolveCountryCode(c *gin.Context) string {
+	return h.countryResolver.Resolve(c.Request.Context(), c.ClientIP(), c.GetHeader(geoip.DebugCountryCodeHeader))
+}
+
 // createOrganization godoc
 // @Summary      Create an organization
-// @Description  Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog.
+// @Description  Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog. Billing country/currency is resolved server-side from the caller's IP, not client-supplied.
 // @Tags         organization
 // @Accept       json
 // @Produce      json
@@ -59,7 +67,6 @@ func (h *handler) createOrganization(c *gin.Context) {
 	if !request.Bind(c, &req) {
 		return
 	}
-	req.CountryCode = cmp.Or(req.CountryCode, "US")
 
 	addons := make([]addonSelection, len(req.Addons))
 	for i, a := range req.Addons {
@@ -71,7 +78,7 @@ func (h *handler) createOrganization(c *gin.Context) {
 	}
 
 	t, err := h.svc.createOrganization(c.Request.Context(), req.Slug, req.Name,
-		reqctx.Subject(c), req.CountryCode, req.Plan, req.Cycle, addons, req.CouponCode)
+		reqctx.Subject(c), h.resolveCountryCode(c), req.Plan, req.Cycle, addons, req.CouponCode)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -244,9 +251,14 @@ func (h *handler) unsuspendOrganization(c *gin.Context) {
 }
 
 type updateSettingsRequest struct {
-	Timezone   string   `json:"timezone" binding:"required"`
-	Locale     string   `json:"locale" binding:"required"`
-	AllowedIPs []string `json:"allowed_ips"`
+	Timezone string `json:"timezone" binding:"required"`
+	Locale   string `json:"locale" binding:"required"`
+	// AllowedIPs is a pointer so an absent field (nil) preserves the existing
+	// allowlist, while an explicit "allowed_ips": [] clears it — the two
+	// General Settings and Security settings tabs each PATCH this endpoint
+	// with only their own fields, so omission must never wipe the other
+	// tab's setting.
+	AllowedIPs *[]string `json:"allowed_ips"`
 }
 
 // updateSettings godoc

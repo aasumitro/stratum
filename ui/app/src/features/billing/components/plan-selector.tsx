@@ -10,13 +10,21 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { usePlans, useInvoicePreview } from "@/features/billing/hooks"
-import { useOrganization } from "@/features/organization/hooks/use-organization"
+import { useOrgPlansCatalog, useInvoicePreview } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
 import type { BillingCycle, SubscriptionStatus } from "@/types/billing"
 import { cn } from "@/lib/ui"
 import { InvoicePreviewNote } from "./invoice-preview-note"
+
+function formatDate(s?: string) {
+  if (!s) return "—"
+  return new Date(s).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}
 
 // Only entered once the user picks a downgrade/upgrade target and hits
 // Continue — kept out of this dialog's chunk so opening the plan picker
@@ -60,26 +68,16 @@ export function PlanSelector({
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
   const { hasPendingInvoice } = usePermissions()
-  // country_code, not the subscription's own currency field, is what scopes
-  // this fetch down to one currency — a customer must never receive (or be
-  // able to pick from) pricing for a currency they can't actually be billed
-  // in. Kept disabled until it's known, rather than firing once unscoped
-  // and again once scoped.
-  const { data: orgData, isLoading: orgLoading } =
-    useOrganization(organizationId)
-  const countryCode = orgData?.data?.country_code ?? ""
-  const { data, isLoading: plansLoading } = usePlans(countryCode, !orgLoading)
-  const isLoading = orgLoading || plansLoading
+  const { data, isLoading } = useOrgPlansCatalog(organizationId)
 
   const plans = (data?.data ?? [])
     .filter((p) => p.active)
     .sort((a, b) => a.sort_order - b.sort_order)
   const selected = plans.find((p) => p.id === selectedPlan)
   const current = plans.find((p) => p.id === currentPlan)
-  // Every plan above was scoped by the same country_code, so each one's
-  // price map holds exactly one currency — read it back from the data
-  // itself for display, rather than the `currency` prop, so this never
-  // depends on the two staying in sync.
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself for display, rather than the
+  // `currency` prop, so this never depends on the two staying in sync.
   const displayCurrency = Object.keys(plans[0]?.prices ?? {})[0] ?? currency
 
   const isChanging = selectedPlan !== currentPlan || cycle !== currentCycle
@@ -246,15 +244,26 @@ export function PlanSelector({
           </div>
         )}
 
-        {isChanging && selectedPlan !== "custom" && (
-          <InvoicePreviewNote
-            preview={preview}
-            loading={previewLoading}
-            currentPeriodEnd={currentPeriodEnd}
-            planName={selected?.name ?? selectedPlan}
-            hasPendingInvoice={hasPendingInvoice}
-          />
-        )}
+        {isChanging &&
+          selectedPlan !== "custom" &&
+          (isDowngrade && subscriptionStatus !== "trialing" ? (
+            <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+              <b className="text-foreground">
+                {t("billing.plans.noChargeToday")}
+              </b>{" "}
+              {t("billing.downgrade.scheduledReviewNote", {
+                date: formatDate(currentPeriodEnd),
+              })}
+            </p>
+          ) : (
+            <InvoicePreviewNote
+              preview={preview}
+              loading={previewLoading}
+              currentPeriodEnd={currentPeriodEnd}
+              planName={selected?.name ?? selectedPlan}
+              hasPendingInvoice={hasPendingInvoice}
+            />
+          ))}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => handleOpenChange(false)}>

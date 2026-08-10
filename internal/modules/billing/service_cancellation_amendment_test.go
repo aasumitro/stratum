@@ -53,7 +53,7 @@ func TestIntegration_UndoScheduledCancellation_NonOrganizationSubject_NotFound(t
 	pool := testPoolAmendment(t)
 	mod := NewModuleForTest(pool, nil)
 
-	_, err := mod.svc.undoScheduledCancellation(t.Context(), "user", "does-not-exist")
+	_, err := mod.svc.undoScheduledCancellation(t.Context(), "user", "does-not-exist", "sub_owner")
 	var appErr *apperr.Error
 	if !errors.As(err, &appErr) || appErr.Kind != apperr.KindNotFound {
 		t.Fatalf("want a not-found error for a subject with no matching subscription, got %v", err)
@@ -154,7 +154,7 @@ func TestIntegration_UndoScheduledCancellation_ClearsSchedule(t *testing.T) {
 		t.Fatalf("scheduleCancellation: %v", err)
 	}
 
-	updated, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID)
+	updated, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID, "sub_owner")
 	if err != nil {
 		t.Fatalf("undoScheduledCancellation: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestIntegration_UndoScheduledCancellation_NothingScheduled(t *testing.T) {
 	mod := NewModuleForTest(pool, nil)
 	makeActiveAmendmentSubscription(t, pool, r, orgID)
 
-	_, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID)
+	_, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID, "sub_owner")
 	wantApperrCode(t, err, "NO_SCHEDULED_CANCELLATION")
 }
 
@@ -190,7 +190,7 @@ func TestIntegration_UndoScheduledCancellation_AlreadyCancelled(t *testing.T) {
 		t.Fatalf("force cancelled: %v", err)
 	}
 
-	_, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID)
+	_, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID, "sub_owner")
 	wantApperrCode(t, err, "NO_SCHEDULED_CANCELLATION")
 }
 
@@ -237,7 +237,7 @@ func TestIntegration_CancelSubscription_Concurrent_ScheduleAndUndo(t *testing.T)
 	go func() {
 		defer wg.Done()
 		errs[1] = inTx(func(ctx context.Context) error {
-			_, err := mod.svc.undoScheduledCancellation(ctx, "organization", orgID)
+			_, err := mod.svc.undoScheduledCancellation(ctx, "organization", orgID, "sub_owner")
 			return err
 		})
 	}()

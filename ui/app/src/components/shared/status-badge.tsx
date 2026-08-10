@@ -32,6 +32,10 @@ const STATUS_TONE: Record<string, StatusTone> = {
   processing: "info",
   delivered: "success",
   completed: "success",
+  // Subscription history phase (billing/components/subscription-history-sheet.tsx).
+  scheduled: "warning",
+  applied: "success",
+  undone: "neutral",
 }
 
 interface StatusBadgeProps {

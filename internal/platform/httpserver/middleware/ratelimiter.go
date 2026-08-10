@@ -117,7 +117,10 @@ func ByAuthenticatedSubject(c *gin.Context) string {
 // subscription: trialRateLimit while trialing, otherwise the plan's
 // api_rate_limit catalog feature. Fails open to defaultLimit on any
 // lookup error.
-func NewRateLimitMiddleware(limiter *cache.RateLimiter, keyFunc KeyFunc, defaultLimit cache.Limit, catalog ...RateLimitCatalog) gin.HandlerFunc {
+func NewRateLimitMiddleware(
+	limiter *cache.RateLimiter, keyFunc KeyFunc,
+	defaultLimit cache.Limit, catalog ...RateLimitCatalog,
+) gin.HandlerFunc {
 	var rc RateLimitCatalog
 	if len(catalog) > 0 {
 		rc = catalog[0]

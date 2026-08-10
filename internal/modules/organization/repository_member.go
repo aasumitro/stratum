@@ -141,7 +141,7 @@ func (r *repository) insertMembership(
 
 func (r *repository) deleteMembership(ctx context.Context, q db.Querier, organizationID, authSub string) error {
 	_, err := q.Exec(ctx, `
-		DELETE FROM organization.memberships WHERE organization_id = $1 AND auth_sub = $2`,
+		DELETE FROM organization.memberships WHERE organization_id = $1 AND auth_sub = $2 AND role != 'owner'`,
 		organizationID, authSub,
 	)
 	if err != nil {
@@ -258,7 +258,8 @@ func (r *repository) filterRemovableMembers(ctx context.Context, q db.Querier, o
 	}
 	rows, err := q.Query(ctx, `
 		SELECT auth_sub FROM organization.memberships
-		WHERE organization_id = $1 AND role != 'owner' AND auth_sub = ANY($2)`,
+		WHERE organization_id = $1 AND role != 'owner' AND auth_sub = ANY($2)
+		ORDER BY array_position($2::text[], auth_sub)`,
 		organizationID, authSubs,
 	)
 	if err != nil {

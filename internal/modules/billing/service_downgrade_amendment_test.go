@@ -41,7 +41,7 @@ func TestIntegration_UndoScheduledPlanDowngrade_NonOrganizationSubject_NotFound(
 	pool := testPoolAmendment(t)
 	mod := NewModuleForTest(pool, nil)
 
-	_, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "user", "does-not-exist")
+	_, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "user", "does-not-exist", "sub_owner")
 	var appErr *apperr.Error
 	if !errors.As(err, &appErr) || appErr.Kind != apperr.KindNotFound {
 		t.Fatalf("want a not-found error for a subject with no matching subscription, got %v", err)
@@ -150,7 +150,7 @@ func TestIntegration_UndoScheduledPlanDowngrade_ClearsSchedule(t *testing.T) {
 		t.Fatalf("schedulePlanDowngrade: %v", err)
 	}
 
-	updated, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "organization", orgID)
+	updated, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "organization", orgID, "sub_owner")
 	if err != nil {
 		t.Fatalf("undoScheduledPlanDowngrade: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestIntegration_UndoScheduledPlanDowngrade_NothingScheduled(t *testing.T) {
 	mod := NewModuleForTest(pool, nil)
 	seedAmendmentSubscription(t, pool, r, orgID)
 
-	_, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "organization", orgID)
+	_, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "organization", orgID, "sub_owner")
 	wantApperrCode(t, err, "NO_SCHEDULED_DOWNGRADE")
 }
 
@@ -221,7 +221,7 @@ func TestIntegration_DowngradeSubscription_Concurrent_ScheduleAndUndo(t *testing
 	go func() {
 		defer wg.Done()
 		errs[1] = inTx(func(ctx context.Context) error {
-			_, err := mod.svc.undoScheduledPlanDowngrade(ctx, "organization", orgID)
+			_, err := mod.svc.undoScheduledPlanDowngrade(ctx, "organization", orgID, "sub_owner")
 			return err
 		})
 	}()

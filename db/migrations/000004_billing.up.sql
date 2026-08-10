@@ -85,6 +85,14 @@ CREATE TABLE billing.invoices (
     -- handleWebhook on payment confirmation, not when the invoice is
     -- created; see service_subscription_billing.go).
     switch_to_annual    BOOLEAN     NOT NULL DEFAULT false,
+    -- Exact number of months a "kind = 'extension'" invoice bought, set once
+    -- at invoice creation (extendSubscription) and read back at payment time
+    -- (applyExtensionPayment) instead of being re-derived by summing every
+    -- line item's quantity — summing broke once addon line items (also
+    -- quantified in months) started sharing the same invoice as the plan's
+    -- own block/remainder lines. NULL for every non-extension invoice kind,
+    -- which never sets it.
+    extension_months    INT,
     provider_invoice_id TEXT,
     due_at              TIMESTAMPTZ,
     paid_at             TIMESTAMPTZ,
@@ -147,12 +155,17 @@ CREATE TABLE billing.subscription_history (
     changed_by      TEXT        NOT NULL DEFAULT '',
     changed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata        JSONB       NOT NULL DEFAULT '{}',
-    -- A 'downgrade'/'cancel' row gets phase 'scheduled' when the change is first requested and a
-    -- second row with phase 'applied' when the renewal worker actually applies it — no new
-    -- `action` value needed, same pattern from_plan/to_plan already establish (nullable,
-    -- action-dependent, NULL for every action this doesn't apply to).
-    phase           TEXT        CHECK (phase IS NULL OR phase IN ('scheduled', 'applied')),
-    effective_at    TIMESTAMPTZ
+    -- A 'downgrade'/'cancel' row gets phase 'scheduled' when the change is first requested, a
+    -- second row with phase 'applied' when the renewal worker actually applies it, and (undo)
+    -- a third row with phase 'undone' if it's cleared before that happens — no new `action` value
+    -- needed, same pattern from_plan/to_plan already establish (nullable, action-dependent, NULL
+    -- for every action this doesn't apply to).
+    phase           TEXT        CHECK (phase IS NULL OR phase IN ('scheduled', 'applied', 'undone')),
+    effective_at    TIMESTAMPTZ,
+    -- Only set for a plan/cycle-changing row (change-plan, scheduled downgrade, renewal-applied
+    -- downgrade) — NULL otherwise, same nullable/action-dependent shape as from_plan/to_plan.
+    from_cycle      TEXT,
+    to_cycle        TEXT
 );
 CREATE INDEX idx_subscription_history_sub ON billing.subscription_history (subscription_id);
 

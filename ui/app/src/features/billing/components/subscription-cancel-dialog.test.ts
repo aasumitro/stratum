@@ -102,7 +102,7 @@ function setupApi() {
           updated_at: "2026-01-01T00:00:00Z",
         })
       )
-    if (url === "/v1/references/plans?country_code=US")
+    if (url === `/v1/organizations/${organizationId}/billing/plans/catalog`)
       return Promise.resolve(httpResponse(plans))
     return Promise.reject(new Error(`unexpected GET ${url}`))
   })
@@ -180,6 +180,12 @@ describe("SubscriptionCancelDialog — active (deferred) subscription", () => {
         undefined,
         expect.anything()
       )
+    )
+
+    // A successful undo must close the dialog instead of leaving it on
+    // stale "Cancellation scheduled" copy.
+    await waitFor(() =>
+      expect(screen.queryByText("Cancellation scheduled")).toBeNull()
     )
   })
 })

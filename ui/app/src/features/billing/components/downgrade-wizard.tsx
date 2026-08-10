@@ -12,11 +12,10 @@ import {
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  usePlans,
+  useOrgPlansCatalog,
   useDowngradeSubscription,
   useInvoicePreview,
 } from "@/features/billing/hooks"
-import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
@@ -104,20 +103,13 @@ export function DowngradeWizard({
     useDowngradeSubscription(organizationId)
 
   const { hasPendingInvoice } = usePermissions()
-  // country_code, not the subscription's own currency field, is what scopes
-  // this fetch down to one currency — kept disabled until it's known,
-  // rather than firing once unscoped and again once scoped.
-  const { data: orgData, isLoading: orgLoading } =
-    useOrganization(organizationId)
-  const countryCode = orgData?.data?.country_code ?? ""
-  const { data: plansData } = usePlans(countryCode, !orgLoading)
+  const { data: plansData } = useOrgPlansCatalog(organizationId)
   const plans = plansData?.data ?? []
   const targetPlanInfo = plans.find((p) => p.id === targetPlan)
   const currentPlanInfo = plans.find((p) => p.id === currentPlan)
-  // Every plan above was scoped by the same country_code, so its price map
-  // holds exactly one currency — read it back from the data itself, rather
-  // than the `currency` prop, so this never depends on the two staying in
-  // sync.
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself, rather than the `currency` prop, so
+  // this never depends on the two staying in sync.
   const displayCurrency =
     Object.keys(targetPlanInfo?.prices ?? {})[0] ?? currency
   const targetPrices = targetPlanInfo?.prices[displayCurrency]
@@ -565,13 +557,24 @@ export function DowngradeWizard({
           </div>
         </div>
 
-        <InvoicePreviewNote
-          preview={preview}
-          loading={previewLoading}
-          currentPeriodEnd={currentPeriodEnd}
-          planName={targetPlanInfo?.name ?? targetPlan}
-          hasPendingInvoice={hasPendingInvoice}
-        />
+        {isTrialing ? (
+          <InvoicePreviewNote
+            preview={preview}
+            loading={previewLoading}
+            currentPeriodEnd={currentPeriodEnd}
+            planName={targetPlanInfo?.name ?? targetPlan}
+            hasPendingInvoice={hasPendingInvoice}
+          />
+        ) : (
+          <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+            <b className="text-foreground">
+              {t("billing.plans.noChargeToday")}
+            </b>{" "}
+            {t("billing.downgrade.scheduledReviewNote", {
+              date: formatDate(currentPeriodEnd),
+            })}
+          </p>
+        )}
 
         <p className="text-sm text-muted-foreground">
           {isTrialing

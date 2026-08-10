@@ -50,10 +50,10 @@ func TestIntegration_AttachAddon_Trialing_NewAndDecrease_Immediate(t *testing.T)
 	mod := NewModuleForTest(pool, nil)
 	sub := seedAmendmentTrialSubscription(t, pool, r, orgID)
 
-	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5); err != nil {
+	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5, "sub_owner"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 2); err != nil {
+	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 2, "sub_owner"); err != nil {
 		t.Fatalf("decrease on trial: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestIntegration_AttachAddon_Active_Increase_CreatesPendingInvoice_ClearsSta
 		t.Fatalf("seed stale schedule: %v", err)
 	}
 
-	addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 8)
+	addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 8, "sub_owner")
 	if err != nil {
 		t.Fatalf("increase: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestIntegration_AttachAddon_Active_Decrease_Schedules(t *testing.T) {
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 5)
 
-	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 2); err != nil {
+	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 2, "sub_owner"); err != nil {
 		t.Fatalf("decrease: %v", err)
 	}
 
@@ -154,9 +154,9 @@ func TestIntegration_AttachAddon_Active_CancellationScheduled_DecreaseRejected_I
 		t.Fatalf("scheduleCancellation: %v", err)
 	}
 
-	_, decreaseErr := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 2)
+	_, decreaseErr := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 2, "sub_owner")
 	wantApperrCode(t, decreaseErr, cancellationScheduledCode)
-	addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 9)
+	addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 9, "sub_owner")
 	if err != nil {
 		t.Fatalf("increase must still succeed while a cancellation is scheduled: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestIntegration_DetachAddon_Trialing_DeletesImmediately(t *testing.T) {
 	sub := seedAmendmentTrialSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
 
-	if err := mod.svc.detachAddon(t.Context(), orgID, "extra-seat"); err != nil {
+	if err := mod.svc.detachAddon(t.Context(), orgID, "extra-seat", "sub_owner"); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestIntegration_DetachAddon_Active_SchedulesRemoval_RowSurvives(t *testing.
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
 
-	if err := mod.svc.detachAddon(t.Context(), orgID, "extra-seat"); err != nil {
+	if err := mod.svc.detachAddon(t.Context(), orgID, "extra-seat", "sub_owner"); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestIntegration_DetachAddon_Active_CancellationScheduled_Rejected(t *testin
 		t.Fatalf("scheduleCancellation: %v", err)
 	}
 
-	wantApperrCode(t, mod.svc.detachAddon(t.Context(), orgID, "extra-seat"), cancellationScheduledCode)
+	wantApperrCode(t, mod.svc.detachAddon(t.Context(), orgID, "extra-seat", "sub_owner"), cancellationScheduledCode)
 
 	addons, err := r.listAttachedAddonsWithPricing(t.Context(), pool, sub.ID)
 	if err != nil {
@@ -254,7 +254,7 @@ func TestIntegration_UndoScheduledAddonQuantityChange_ClearsSchedule(t *testing.
 		t.Fatalf("seed schedule: %v", err)
 	}
 
-	updated, err := mod.svc.undoScheduledAddonQuantityChange(t.Context(), orgID, "extra-seat")
+	updated, err := mod.svc.undoScheduledAddonQuantityChange(t.Context(), orgID, "extra-seat", "sub_owner")
 	if err != nil {
 		t.Fatalf("undo: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestIntegration_UndoScheduledAddonQuantityChange_NothingScheduled(t *testin
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 5)
 
-	_, err := mod.svc.undoScheduledAddonQuantityChange(t.Context(), orgID, "extra-seat")
+	_, err := mod.svc.undoScheduledAddonQuantityChange(t.Context(), orgID, "extra-seat", "sub_owner")
 	wantApperrCode(t, err, "NO_SCHEDULED_ADDON_CHANGE")
 }
 
@@ -315,14 +315,14 @@ func TestIntegration_AttachAddon_Concurrent_DecreaseAndUndo(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		errs[0] = inTx(func(ctx context.Context) error {
-			_, err := mod.svc.attachAddon(ctx, orgID, "extra-seat", 2)
+			_, err := mod.svc.attachAddon(ctx, orgID, "extra-seat", 2, "sub_owner")
 			return err
 		})
 	}()
 	go func() {
 		defer wg.Done()
 		errs[1] = inTx(func(ctx context.Context) error {
-			_, err := mod.svc.undoScheduledAddonQuantityChange(ctx, orgID, "extra-seat")
+			_, err := mod.svc.undoScheduledAddonQuantityChange(ctx, orgID, "extra-seat", "sub_owner")
 			return err
 		})
 	}()
@@ -363,7 +363,7 @@ func TestIntegration_AttachAddon_Active_SecondIncrease_VoidsAndReissues(t *testi
 	mod := NewModuleForTest(pool, nil)
 	makeActiveAmendmentSubscription(t, pool, r, orgID)
 
-	first, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5)
+	first, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5, "sub_owner")
 	if err != nil {
 		t.Fatalf("first increase: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestIntegration_AttachAddon_Active_SecondIncrease_VoidsAndReissues(t *testi
 	}
 	firstInvoiceID := *first.PendingInvoiceID
 
-	second, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 8)
+	second, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 8, "sub_owner")
 	if err != nil {
 		t.Fatalf("second increase: %v", err)
 	}
@@ -406,16 +406,16 @@ func TestIntegration_AttachAddon_Active_UnrelatedPendingInvoiceUnaffected(t *tes
 	mod := NewModuleForTest(pool, nil)
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 
-	renewalInv, err := r.insertInvoice(t.Context(), pool, orgID, sub.ID, 900, 0, 0, "USD", "subscription", false)
+	renewalInv, err := r.insertInvoice(t.Context(), pool, orgID, sub.ID, 900, 0, 0, "USD", "subscription", false, nil)
 	if err != nil {
 		t.Fatalf("seed renewal invoice: %v", err)
 	}
 	renewalInvoiceID := renewalInv.ID
 
-	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5); err != nil {
+	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5, "sub_owner"); err != nil {
 		t.Fatalf("first increase: %v", err)
 	}
-	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 9); err != nil {
+	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 9, "sub_owner"); err != nil {
 		t.Fatalf("second increase (void-and-reissue): %v", err)
 	}
 
@@ -444,11 +444,11 @@ func TestIntegration_AttachAddon_Active_TwoAddonsIndependentPending(t *testing.T
 	mod := NewModuleForTest(pool, nil)
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 
-	seatAddon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5)
+	seatAddon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5, "sub_owner")
 	if err != nil {
 		t.Fatalf("attach extra-seat: %v", err)
 	}
-	secondAddon, err := mod.svc.attachAddon(t.Context(), orgID, testAddonID, 10)
+	secondAddon, err := mod.svc.attachAddon(t.Context(), orgID, testAddonID, 10, "sub_owner")
 	if err != nil {
 		t.Fatalf("attach %s: %v", testAddonID, err)
 	}
@@ -504,7 +504,7 @@ func TestIntegration_AttachAddon_Active_ProrationReflectsRemainingPeriod(t *test
 		// requires amount_cents > 0, so requestAddonIncrease applies the
 		// increase directly instead of creating a zero-amount invoice
 		// (nothing to gate a $0 charge on payment for anyway).
-		addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5)
+		addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 5, "sub_owner")
 		if err != nil {
 			t.Fatalf("attach: %v", err)
 		}
@@ -527,7 +527,7 @@ func TestIntegration_AttachAddon_Active_ProrationReflectsRemainingPeriod(t *test
 			t.Fatalf("updateSubscriptionPeriod: %v", err)
 		}
 
-		addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1)
+		addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1, "sub_owner")
 		if err != nil {
 			t.Fatalf("attach: %v", err)
 		}
@@ -544,6 +544,43 @@ func TestIntegration_AttachAddon_Active_ProrationReflectsRemainingPeriod(t *test
 			t.Errorf("want ~full monthly price (99-100 cents) for a full period remaining, got %d", amountCents)
 		}
 	})
+}
+
+// TestIntegration_AttachAddon_Active_MultiCyclePeriod_ChargesTieredPrice
+// guards a subscription whose current period spans more than one billing
+// cycle (possible via extendSubscription, up to 24 months): a same-day
+// addon increase must price off the period's actual real length, not a flat
+// single-cycle price — subscription_addons has no expiry of its own and
+// rides period_end, so a seat priced for one cycle but attached for the
+// full remaining period would otherwise run free for the difference.
+func TestIntegration_AttachAddon_Active_MultiCyclePeriod_ChargesTieredPrice(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-000000000b24"
+	mod := NewModuleForTest(pool, nil)
+	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
+	now := time.Now()
+	// 24 months = extendSubscription's own lifetime cap (maxRunwayMonths) —
+	// 2 full yearly blocks, no remainder.
+	if err := r.updateSubscriptionPeriod(t.Context(), pool, sub.ID, now, now.AddDate(0, 24, 0)); err != nil {
+		t.Fatalf("updateSubscriptionPeriod: %v", err)
+	}
+
+	addon, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1, "sub_owner")
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	var amountCents int64
+	pool.QueryRow(t.Context(), `SELECT amount_cents FROM billing.invoices WHERE id = $1`, *addon.PendingInvoiceID).Scan(&amountCents)
+	// extra-seat's USD yearly price is 1000 cents (seed data): 2 blocks x
+	// 1000 = 2000 for the full 24-month period. Before the fix this priced
+	// at a flat single-cycle price (~100-1000 depending on which branch
+	// sub.Cycle happened to hit) regardless of the period actually being
+	// twice that long. Same 1-cent float-truncation slop as the sibling
+	// full-period test above.
+	if amountCents < 1999 || amountCents > 2000 {
+		t.Errorf("want ~full 24-month tiered price (1999-2000 cents = 2 yearly blocks), got %d", amountCents)
+	}
 }
 
 // TestIntegration_AttachAddon_Concurrent_TwoIncreases races two increase
@@ -578,14 +615,14 @@ func TestIntegration_AttachAddon_Concurrent_TwoIncreases(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		errs[0] = inTx(func(ctx context.Context) error {
-			_, err := mod.svc.attachAddon(ctx, orgID, "extra-seat", 5)
+			_, err := mod.svc.attachAddon(ctx, orgID, "extra-seat", 5, "sub_owner")
 			return err
 		})
 	}()
 	go func() {
 		defer wg.Done()
 		errs[1] = inTx(func(ctx context.Context) error {
-			_, err := mod.svc.attachAddon(ctx, orgID, "extra-seat", 7)
+			_, err := mod.svc.attachAddon(ctx, orgID, "extra-seat", 7, "sub_owner")
 			return err
 		})
 	}()

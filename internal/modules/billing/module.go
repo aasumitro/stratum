@@ -22,7 +22,11 @@ type Module struct {
 	cfg    ProviderConfig
 }
 
-func New(pool *pgxpool.Pool, pub messaging.EventPublisher, cfg ProviderConfig, taxReader contracts.CountryTaxReader, orgSuspender contracts.OrganizationSuspender) *Module {
+func New(
+	pool *pgxpool.Pool, pub messaging.EventPublisher,
+	cfg ProviderConfig, taxReader contracts.CountryTaxReader,
+	orgSuspender contracts.OrganizationSuspender,
+) *Module {
 	svc := &service{repo: &repository{}, pool: pool, pub: pub, provider: cfg, taxReader: taxReader, orgSuspender: orgSuspender}
 	return &Module{svc: svc, Worker: &Worker{svc: svc}, cfg: cfg}
 }
@@ -107,7 +111,9 @@ func addonToInfo(a *addonRecord) *contracts.AddonInfo {
 }
 
 // GetSubscriptionBySubject implements contracts.BillingReader.
-func (m *Module) GetSubscriptionBySubject(ctx context.Context, subjectType, subjectID string) (*contracts.SubscriptionInfo, error) {
+func (m *Module) GetSubscriptionBySubject(
+	ctx context.Context, subjectType, subjectID string,
+) (*contracts.SubscriptionInfo, error) {
 	s, err := m.svc.getSubscription(ctx, subjectType, subjectID)
 	if err != nil {
 		return nil, fmt.Errorf("billing.GetSubscriptionBySubject: %w", err)
@@ -173,6 +179,8 @@ func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 //	DELETE /organizations/:organizationID/billing/addons/:addonID
 //	POST   /organizations/:organizationID/billing/addons/:addonID/undo
 //	GET    /organizations/:organizationID/billing/addons
+//	GET    /organizations/:organizationID/billing/plans/catalog
+//	GET    /organizations/:organizationID/billing/addons/catalog
 //	GET    /organizations/:organizationID/billing/preview
 //	GET    /organizations/:organizationID/billing/coupons
 //	GET    /billing/coupons/eligible — same eligibility check, before an organization exists
@@ -203,6 +211,8 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billing.GET("/usage", h.getUsage)
 		billing.GET("/features", h.listFeatures)
 		billing.GET("/addons", h.listAddons)
+		billing.GET("/plans/catalog", h.listPlansCatalog)
+		billing.GET("/addons/catalog", h.listAddonsCatalog)
 		billing.GET("/preview", h.previewInvoice)
 		billing.GET("/coupons", h.listEligibleCoupons)
 

@@ -81,7 +81,8 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 	// set the Authorization header, and every other route must not accept
 	// the cookie (see RouteDeps.AuthSSE).
 	if m.svc.redis != nil {
-		r.GET("/me/notifications/stream", deps.AuthSSE, deps.RateLimit, h.streamNotifications)
+		r.GET("/me/notifications/stream", deps.AuthSSE, deps.RateLimit,
+			ConcurrentSSELimitMiddleware(m.svc.redis, maxConcurrentSSEStreamsPerSubject), h.streamNotifications)
 	}
 
 	g := r.Group("/me/notifications")

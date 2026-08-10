@@ -56,7 +56,165 @@
     "stateDefaultMessage": "Something went wrong. Please try again.",
     "notFoundTitle": "Page not found",
     "notFoundDescription": "The page you're looking for doesn't exist or has been moved.",
-    "notFoundAction": "Go to organizations"
+    "notFoundAction": "Go to organizations",
+    "codes": {
+      "VALIDATION_FAILED": "Validation failed.",
+      "MFA_STATUS_UNAVAILABLE": "Could not verify your account's MFA status. Try again.",
+      "MFA_REQUIRED": "This action requires a verified second factor.",
+      "INVITEE_ALREADY_MEMBER": "This person is already a member of the organization.",
+      "INVITATION_NOT_FOUND": "Invitation not found or revoked.",
+      "INVITATION_EXPIRED": "This invitation has expired.",
+      "INVITATION_EMAIL_MISMATCH": "This invitation was sent to a different email address.",
+      "INVITATION_ALREADY_MEMBER": "You are already a member of this organization.",
+      "INVITATION_ORGANIZATION_NOT_ACTIVE": "This organization is not currently active.",
+      "INVITATION_INVALID": "Invalid or expired invitation.",
+      "INVITE_CODE_INVALID": "Invalid or disabled invite code.",
+      "JOIN_ALREADY_MEMBER": "You are already a member of this organization.",
+      "SELF_REMOVAL": "You cannot remove yourself.",
+      "CANNOT_REMOVE_OWNER": "You cannot remove the organization owner.",
+      "CANNOT_DEMOTE_OWNER": "You cannot change the owner's role.",
+      "LOGO_MISSING": "A logo file is required.",
+      "LOGO_TOO_LARGE": "Logo must be under 2 MB.",
+      "LOGO_INVALID_TYPE": "Logo must be an image.",
+      "AUDIT_LOG_FETCH_FAILED": "Failed to load the audit log.",
+      "WEBHOOK_NOT_FOUND": "Webhook not found.",
+      "WEBHOOK_FETCH_FAILED": "Failed to load the webhook.",
+      "DELIVERY_LIST_FAILED": "Failed to load deliveries.",
+      "TOO_MANY_STREAMS": "Too many concurrent notification streams are open.",
+      "EMAIL_REQUIRED": "Your account has no verified email.",
+      "UNEXPECTED_BODY": "This endpoint does not accept a request body.",
+      "AVATAR_MISSING": "An avatar file is required.",
+      "AVATAR_TOO_LARGE": "Avatar must be under 2 MB.",
+      "AVATAR_INVALID_TYPE": "Avatar must be an image.",
+      "INVALID_SECRET": "Invalid webhook secret.",
+      "INVALID_PAYLOAD": "Invalid payload.",
+      "INVITATION_CREATE_FAILED": "Failed to create the invitation.",
+      "INVITATIONS_FETCH_FAILED": "Failed to load invitations.",
+      "INVITATION_REVOKE_FAILED": "Failed to revoke the invitation.",
+      "UNKNOWN_PLAN": "Unknown plan.",
+      "UNKNOWN_ADDON": "Unknown add-on.",
+      "INVALID_COUPON": "This coupon isn't valid for your account.",
+      "SLUG_TAKEN": "This slug is already taken.",
+      "ORGANIZATION_CREATE_FAILED": "Failed to create the organization.",
+      "ORGANIZATION_NOT_FOUND": "Organization not found.",
+      "ORGANIZATION_FETCH_FAILED": "Failed to load the organization.",
+      "ORGANIZATION_UPDATE_FAILED": "Failed to update the organization.",
+      "ORGANIZATION_DELETE_FAILED": "Failed to delete the organization.",
+      "LOGO_UPLOAD_FAILED": "Failed to upload the logo.",
+      "IP_ALLOWLIST_LOCKS_OUT_CALLER": "This allowlist would lock out your own IP address.",
+      "SETTINGS_UPDATE_FAILED": "Failed to update settings.",
+      "ORGANIZATION_SUSPEND_FAILED": "Failed to suspend the organization.",
+      "BILLING_HOLD": "This organization was suspended for an unpaid invoice — pay it to reactivate.",
+      "ORGANIZATION_UNSUSPEND_FAILED": "Failed to reactivate the organization.",
+      "FEATURE_NOT_AVAILABLE": "Webhooks aren't available on your current plan.",
+      "WEBHOOK_URL_NOT_ALLOWED": "The webhook URL must be HTTPS and resolve to a public address.",
+      "WEBHOOK_CREATE_FAILED": "Failed to create the webhook.",
+      "WEBHOOK_LIST_FAILED": "Failed to load webhooks.",
+      "WEBHOOK_UPDATE_FAILED": "Failed to update the webhook.",
+      "WEBHOOK_REQUIRES_TEST_EVENT": "Send a passing test event to re-enable this webhook.",
+      "WEBHOOK_ROTATE_FAILED": "Failed to rotate the webhook secret.",
+      "WEBHOOK_DELETE_FAILED": "Failed to delete the webhook.",
+      "RETRY_FAILED": "Retry failed.",
+      "WEBHOOK_TEST_FAILED": "Failed to send the test event.",
+      "INVITE_CODE_FAILED": "Failed to regenerate the invite code.",
+      "INVITE_CODE_TOGGLE_FAILED": "Failed to toggle the invite code.",
+      "MEMBERS_FETCH_FAILED": "Failed to load members.",
+      "INVALID_ROLE": "Role must be admin or member.",
+      "CANNOT_MODIFY_OWNER": "You cannot change the owner's role.",
+      "MEMBER_EXISTS": "This member already exists.",
+      "MEMBER_ADD_FAILED": "Failed to add member.",
+      "MEMBER_REMOVE_FAILED": "Failed to remove member.",
+      "MEMBER_ROLE_UPDATE_FAILED": "Failed to update member role.",
+      "INVALID_CURSOR": "The provided cursor is malformed.",
+      "NOTIFICATIONS_FETCH_FAILED": "Failed to load notifications.",
+      "UNREAD_COUNT_FAILED": "Failed to count unread notifications.",
+      "MARK_READ_FAILED": "Failed to mark as read.",
+      "MARK_ALL_READ_FAILED": "Failed to mark all as read.",
+      "PREFS_FETCH_FAILED": "Failed to load preferences.",
+      "PREF_UPDATE_FAILED": "Failed to update preference.",
+      "PROFILE_SAVE_FAILED": "Failed to save profile.",
+      "PROFILE_NOT_FOUND": "Profile not found.",
+      "PROFILE_FETCH_FAILED": "Failed to load profile.",
+      "PROFILE_UPDATE_FAILED": "Failed to update profile.",
+      "PREFERENCES_UPDATE_FAILED": "Failed to update preferences.",
+      "EMAIL_SYNC_FAILED": "Failed to sync email.",
+      "ACCOUNT_DELETE_FAILED": "Transfer or delete your organizations before deleting your account.",
+      "EXPORT_FAILED": "Failed to request data export.",
+      "MFA_SYNC_FAILED": "Failed to sync MFA status.",
+      "TASKS_FETCH_FAILED": "Failed to load tasks.",
+      "TASK_NOT_FOUND": "Task not found.",
+      "REVOKE_FAILED": "Failed to revoke sessions.",
+      "SESSIONS_FETCH_FAILED": "Failed to load sessions.",
+      "AVATAR_UPLOAD_FAILED": "Failed to upload avatar.",
+      "AVATAR_DELETE_FAILED": "Failed to delete avatar.",
+      "COUNTRIES_FETCH_FAILED": "Failed to load countries.",
+      "CURRENCIES_FETCH_FAILED": "Failed to load currencies.",
+      "PLANS_FETCH_FAILED": "Failed to load plans.",
+      "FEATURES_FETCH_FAILED": "Failed to load features.",
+      "ADDONS_FETCH_FAILED": "Failed to load add-ons.",
+      "PLANS_CATALOG_FETCH_FAILED": "Failed to load the plan catalog.",
+      "ADDONS_CATALOG_FETCH_FAILED": "Failed to load the add-on catalog.",
+      "SUBSCRIPTION_NOT_FOUND": "Subscription not found.",
+      "SUBSCRIPTION_NOT_EXTENDABLE": "This subscription cannot be extended in its current state.",
+      "EXTENSION_ALREADY_PENDING": "An invoice is already pending payment for this subscription — pay or void it before requesting an extension.",
+      "SUBSCRIPTION_ALREADY_YEARLY": "This subscription is already on the yearly cycle.",
+      "SUBSCRIPTION_EXTEND_FAILED": "Failed to extend the subscription.",
+      "SUBSCRIPTION_NOT_TRIALING": "This subscription is not currently trialing.",
+      "SUBSCRIPTION_ACTIVATE_FAILED": "Failed to activate the subscription.",
+      "SUBSCRIPTION_NOT_RESUMABLE": "This subscription cannot be resumed in its current state.",
+      "SUBSCRIPTION_RESUME_FAILED": "Failed to resume the subscription.",
+      "HISTORY_FETCH_FAILED": "Failed to load history.",
+      "USAGE_RECORD_FAILED": "Failed to record usage.",
+      "USAGE_FETCH_FAILED": "Failed to load usage.",
+      "NOT_FOUND": "Not found.",
+      "INVOICES_FETCH_FAILED": "Failed to load invoices.",
+      "PAYMENT_LINKS_FETCH_FAILED": "Failed to load payment links.",
+      "INVOICE_NOT_FOUND": "Invoice not found.",
+      "PAYMENT_LINK_REGENERATE_FAILED": "Failed to regenerate the payment link.",
+      "PAYMENTS_FETCH_FAILED": "Failed to load payments.",
+      "PAYMENT_LINK_CREATE_FAILED": "Failed to create the payment link.",
+      "PREVIEW_FAILED": "Failed to preview the invoice.",
+      "DOWNGRADE_UNSUPPORTED": "Downgrade is only supported for organizations.",
+      "INVALID_DOWNGRADE": "The target plan is not a downgrade.",
+      "NO_SCHEDULED_DOWNGRADE": "There is no scheduled plan downgrade to undo.",
+      "SUBSCRIPTION_FETCH_FAILED": "Failed to load the subscription.",
+      "PLAN_CHANGE_NOT_ALLOWED": "This subscription cannot change plans in its current state.",
+      "PLAN_CHANGE_FAILED": "Failed to change plan.",
+      "SUBSCRIPTION_NOT_CANCELLABLE": "This subscription cannot be cancelled in its current state.",
+      "SUBSCRIPTION_CANCEL_FAILED": "Failed to cancel the subscription.",
+      "NO_SCHEDULED_CANCELLATION": "There is no scheduled cancellation to undo.",
+      "SUBSCRIPTION_UNDO_CANCEL_FAILED": "Failed to undo the scheduled cancellation.",
+      "ADDON_NOT_FOUND": "Add-on not found.",
+      "ADDON_UNDO_FAILED": "Failed to undo the scheduled add-on change.",
+      "NO_SCHEDULED_ADDON_CHANGE": "There is no scheduled add-on quantity change to undo.",
+      "COUPONS_FETCH_FAILED": "Failed to load eligible coupons.",
+      "COUPON_NOT_FOUND": "Coupon not found.",
+      "COUPON_NOT_REDEEMABLE": "This coupon is not redeemable.",
+      "COUPON_REDEEM_FAILED": "Failed to redeem the coupon.",
+      "CANCELLATION_SCHEDULED": "Subscription is scheduled to cancel — undo that first.",
+      "INVALID_BODY": "Cannot read the request body.",
+      "INVALID_SIGNATURE": "Invalid signature.",
+      "INVALID_TOKEN": "Invalid token.",
+      "PDF_GENERATION_FAILED": "Failed to generate the invoice PDF.",
+      "WEBHOOK_FAILED": "Webhook processing failed.",
+      "ADDON_ATTACH_FAILED": "Failed to attach add-on.",
+      "ADDON_DETACH_FAILED": "Failed to detach add-on."
+    },
+    "validation": {
+      "required": "The {{field}} field is required.",
+      "email": "The {{field}} field must be a valid email address.",
+      "min": "The {{field}} field must be at least {{param}}.",
+      "max": "The {{field}} field must not be greater than {{param}}.",
+      "oneof": "The selected {{field}} is invalid. Must be one of: {{param}}.",
+      "url": "The {{field}} field must be a valid URL.",
+      "uuid": "The {{field}} field must be a valid UUID.",
+      "len": "The {{field}} field must be exactly {{param}} characters.",
+      "gt": "The {{field}} field must be greater than {{param}}.",
+      "gte": "The {{field}} field must be at least {{param}}.",
+      "lt": "The {{field}} field must be less than {{param}}.",
+      "lte": "The {{field}} field must not be greater than {{param}}.",
+      "default": "The {{field}} field is invalid."
+    }
   },
   "nav": {
     "organizations": "Organizations",
@@ -129,6 +287,116 @@
       "yesterday": "Yesterday",
       "week": "This week",
       "earlier": "Earlier"
+    },
+    "messages": {
+      "welcome": {
+        "title": "Welcome to {{organization_name}}",
+        "body": "Your organization \"{{organization_name}}\" is ready. Invite your team to get started."
+      },
+      "organization_suspended": {
+        "title": "Organization suspended",
+        "body": "Your organization has been suspended. Reason: {{reason}}"
+      },
+      "organization_reactivated": {
+        "title": "Organization reactivated",
+        "body": "Your organization has been reactivated and is now active again."
+      },
+      "organization_deleted": {
+        "title": "Organization deleted",
+        "body": "Your organization \"{{organization_name}}\" has been deleted."
+      },
+      "invoice_paid": {
+        "title": "Invoice paid",
+        "body": "Invoice {{invoice_id}} has been paid successfully."
+      },
+      "subscription_remind": {
+        "title": "Subscription expiring soon",
+        "body": "Your subscription expires on {{expected_end}}. Please renew to avoid interruption."
+      },
+      "subscription_remind_trial": {
+        "title": "Subscription expiring soon",
+        "body": "Your free trial ends on {{expected_end}}. Add a payment method to keep access."
+      },
+      "trial_started": {
+        "title": "Trial started",
+        "body": "Your trial is active until {{trial_end}}."
+      },
+      "invoice_created": {
+        "title": "Invoice generated",
+        "body": "A renewal invoice {{invoice_id}} has been created. Please complete payment to continue your subscription."
+      },
+      "invoice_created_trial": {
+        "title": "Invoice generated",
+        "body": "Your trial has ended — invoice {{invoice_id}} is ready. Please complete payment to continue."
+      },
+      "invoice_failed": {
+        "title": "Payment failed",
+        "body": "Payment for invoice {{invoice_id}} has failed. Please update your payment method."
+      },
+      "subscription_activated": {
+        "title": "Subscription activated",
+        "body": "Your {{plan}} plan subscription is now active."
+      },
+      "subscription_cancelled": {
+        "title": "Subscription cancelled",
+        "body": "Your subscription has been cancelled. Access continues until the end of the current period."
+      },
+      "subscription_expired": {
+        "title": "Subscription expired",
+        "body": "Your subscription has expired and your organization has been suspended. Pay the outstanding invoice to restore access."
+      },
+      "subscription_resumed": {
+        "title": "Subscription reactivated",
+        "body": "Your {{plan}} plan subscription has been reactivated."
+      },
+      "invoice_payment_remind": {
+        "title": "Payment still pending",
+        "body": "Invoice {{invoice_id}} is still unpaid. Please complete payment to keep your subscription active."
+      },
+      "invoice_payment_final": {
+        "title": "Final payment reminder",
+        "body": "This is your final notice for invoice {{invoice_id}}. Your subscription may be suspended if payment is not received."
+      },
+      "invite": {
+        "title": "You've been invited",
+        "body": "You've been invited to join \"{{organization_name}}\"."
+      },
+      "invitation_requested": {
+        "title": "Invitation needs resending",
+        "body": "{{invitee_email}} requested a new invite to \"{{organization_name}}\" — their original invitation expired or was lost."
+      },
+      "invitation_declined": {
+        "title": "Invitation declined",
+        "body": "{{invitee_email}} declined your invitation to join \"{{organization_name}}\"."
+      },
+      "member_removed": {
+        "title": "Removed from organization",
+        "body": "You have been removed from \"{{organization_name}}\"."
+      },
+      "member_role_changed": {
+        "title": "Role changed",
+        "body": "Your role in \"{{organization_name}}\" has been changed to {{role}}."
+      },
+      "ownership_transferred": {
+        "title": "You are now the owner",
+        "body": "You are now the owner of \"{{organization_name}}\"."
+      },
+      "webhook_health_warning": {
+        "title": "Webhook delivery issues",
+        "body": "Your webhook endpoint {{url}} is only succeeding {{success_percent}}% of deliveries in the last 24 hours."
+      },
+      "webhook_auto_disabled": {
+        "title": "Webhook disabled",
+        "body": "Your webhook endpoint {{url}} was automatically disabled after 3 days of failed deliveries. Send a test event to re-enable it."
+      },
+      "email_changed": {
+        "title": "Email address changed",
+        "body": "Your account email was changed from {{old_email}} to {{new_email}}. If this wasn't you, contact support immediately."
+      },
+      "usage_limit_warning": {
+        "title": "Approaching usage limit",
+        "body": "{{metric}} usage is at {{current}} / {{limit}}."
+      }
     }
   },
   "breadcrumb": {
@@ -569,8 +837,6 @@
       "detailsDescription": "Name and slug visible to all members.",
       "nameLabel": "Name",
       "slugLabel": "Slug",
-      "countryLabel": "Country",
-      "countryPlaceholder": "Select a country",
       "nameRequired": "Name is required",
       "slugRequired": "Slug is required",
       "localeTitle": "Locale & timezone",
@@ -920,6 +1186,9 @@
       "lineTwelveMonthsYearly": "12 months (yearly rate)",
       "lineYearlyBlocks": "{{blocks}} × 12 months (yearly rate)",
       "lineMonthlyRemainder": "{{count}} month(s) (monthly rate)",
+      "addonLineTwelveMonthsYearly": "{{name}} (×{{quantity}}) — 12 months (yearly rate)",
+      "addonLineYearlyBlocks": "{{name}} (×{{quantity}}) — {{blocks}} × 12 months (yearly rate)",
+      "addonLineMonthlyRemainder": "{{name}} (×{{quantity}}) — {{count}} month(s) (monthly rate)",
       "subtotalLabel": "Subtotal",
       "taxLabel": "Tax",
       "taxAtCheckout": "Calculated at checkout",
@@ -1061,7 +1330,8 @@
       "dueLabel": "Due {{date}}",
       "kind": {
         "extension": "Extension",
-        "activation": "Activation"
+        "activation": "Activation",
+        "addon_increase": "Addon increase"
       },
       "pay": "Pay",
       "opening": "Opening…",
@@ -1105,14 +1375,26 @@
       "summaryResume": "{{name}} resumed the plan · {{timeAgo}}",
       "summaryExpire": "{{name}} let the plan expire · {{timeAgo}}",
       "summaryExtend": "{{name}} extended the plan · {{timeAgo}}",
+      "summaryCycleChange": "{{name}} switched billing cycle: {{fromCycle}} → {{toCycle}} · {{timeAgo}}",
+      "summaryAddonChange": "{{name}} changed {{addonName}}: {{fromQuantity}} → {{toQuantity}} · {{timeAgo}}",
       "viewFull": "View full history",
       "logChange": "Changed the plan: {{fromPlan}} → {{toPlan}}",
+      "logChangeWithCycle": "Changed the plan: {{fromPlan}} ({{fromCycle}}) → {{toPlan}} ({{toCycle}})",
+      "logCycleChange": "Switched billing cycle: {{fromCycle}} → {{toCycle}}",
       "logStart": "Started the {{toPlan}} plan",
       "logCancel": "Cancelled the plan",
       "logResume": "Resumed the plan",
       "logExpire": "Plan expired",
       "logExtend": "Extended the plan",
-      "loadMore": "Load more events"
+      "logAddonChange": "{{addonName}}: {{fromQuantity}} → {{toQuantity}}",
+      "loadMore": "Load more events",
+      "phase": {
+        "scheduled": "Scheduled",
+        "applied": "Applied",
+        "undone": "Undone"
+      },
+      "effectiveScheduled": "Scheduled for {{date}}",
+      "effectiveApplied": "Applied {{date}}"
     },
     "payments": {
       "title": "Payments",

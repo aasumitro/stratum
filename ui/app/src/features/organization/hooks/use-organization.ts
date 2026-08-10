@@ -6,14 +6,6 @@ import { useHTTPActionPatch, useHTTPActionUpload } from "@/lib/api/action"
 import { queryKeys } from "@/lib/api/keys"
 import { API } from "@/lib/api/path"
 import type { Organization, OrganizationView } from "@/types/organization"
-import type { Country } from "@/types/reference"
-
-export function useCountries() {
-  return useHTTPQuery<Country[]>({
-    queryKey: queryKeys.references.countries(),
-    url: API.references("countries"),
-  })
-}
 
 export function useOrganizations() {
   return useHTTPQuery<OrganizationView[]>({

@@ -136,9 +136,11 @@ export function MembersTable({ organizationId, currentRole }: Props) {
 
   const rows: Row[] = [
     ...allMembers.map((m): Row => ({ kind: "member", key: m.id, data: m })),
-    ...allInvitations.map(
-      (inv): Row => ({ kind: "invitation", key: inv.id, data: inv })
-    ),
+    ...allInvitations.map((inv): Row => ({
+      kind: "invitation",
+      key: inv.id,
+      data: inv,
+    })),
   ].sort((a, b) => {
     // 1. Members before invitations
     if (a.kind === "member" && b.kind === "invitation") return -1

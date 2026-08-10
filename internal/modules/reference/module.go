@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 )
 
@@ -17,7 +18,8 @@ import (
 // owner) — this module only serves those HTTP routes, delegating to an
 // injected contracts.CatalogReader (see SetCatalogReader).
 type Module struct {
-	svc *service
+	svc             *service
+	countryResolver *geoip.Resolver
 }
 
 func New(pool *pgxpool.Pool) *Module {
@@ -30,6 +32,15 @@ func New(pool *pgxpool.Pool) *Module {
 // created, mirroring the existing nil-safe Set* convention.
 func (m *Module) SetCatalogReader(r contracts.CatalogReader) {
 	m.svc.catalog = r
+}
+
+// SetCountryResolver wires the GeoIP resolver after construction — the
+// trusted source GET /references/plans|addons resolves a caller's currency
+// from, replacing the client-supplied country_code query param they used to
+// accept. Nil-safe: unwired, listPlans/listAddons fall back to "US" the
+// same way createOrganization does (see organization.Module.SetCountryResolver).
+func (m *Module) SetCountryResolver(r *geoip.Resolver) {
+	m.countryResolver = r
 }
 
 // GetCountryTaxRate implements contracts.CountryTaxReader.
@@ -45,7 +56,7 @@ func (m *Module) GetCountryTaxRate(ctx context.Context, countryCode string) (int
 //	GET /references/features
 //	GET /references/addons
 func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
-	h := &handler{svc: m.svc}
+	h := &handler{svc: m.svc, countryResolver: m.countryResolver}
 
 	ref := r.Group("/references")
 	ref.Use(deps.Auth, deps.RateLimit)

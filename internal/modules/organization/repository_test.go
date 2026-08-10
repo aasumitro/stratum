@@ -662,6 +662,68 @@ func TestIntegration_AcceptInvitation_Valid(t *testing.T) {
 	}
 }
 
+// TestIntegration_AcceptInvitation_SuspendedOrganization_Rejected covers a
+// gap found during manual QA: /invitations/accept isn't scoped under
+// /organizations/:organizationID, so it never passes through the
+// organization middleware's own active-status gate the way every other
+// member-adding route does. An invitation created while the organization
+// was still active must not still be acceptable after the organization is
+// suspended.
+func TestIntegration_AcceptInvitation_SuspendedOrganization_Rejected(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv-susp","name":"Invite Suspended WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"suspended-invitee@test.com","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+	var token string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
+		orgID, "suspended-invitee@test.com",
+	).Scan(&token); err != nil {
+		t.Fatalf("fetch invitation token: %v", err)
+	}
+
+	if _, err := pool.Exec(context.Background(), `UPDATE organization.organizations SET status = 'suspended' WHERE id = $1`, orgID); err != nil {
+		t.Fatalf("suspend org directly: %v", err)
+	}
+
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_suspended_invitee", "suspended-invitee@test.com")
+	w3 := httptest.NewRecorder()
+	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept",
+		`{"token":"`+token+`"}`))
+	if w3.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("accept invitation on a suspended organization: want 422, got %d: %s", w3.Code, w3.Body)
+	}
+	var acceptResp map[string]any
+	json.NewDecoder(w3.Body).Decode(&acceptResp)
+	if code := acceptResp["status"].(map[string]any)["code"]; code != "INVITATION_ORGANIZATION_NOT_ACTIVE" {
+		t.Errorf("want code INVITATION_ORGANIZATION_NOT_ACTIVE, got %v", code)
+	}
+
+	var memberCount int
+	pool.QueryRow(context.Background(), `SELECT count(*) FROM organization.memberships WHERE organization_id = $1 AND auth_sub = 'sub_suspended_invitee'`, orgID).Scan(&memberCount)
+	if memberCount != 0 {
+		t.Errorf("no membership should have been created, got %d rows", memberCount)
+	}
+}
+
 // --- Settings ---
 
 func TestIntegration_UpdateSettings_PersistsTzAndLocale(t *testing.T) {
@@ -697,6 +759,92 @@ func TestIntegration_UpdateSettings_PersistsTzAndLocale(t *testing.T) {
 	}
 	if locale != "id" {
 		t.Errorf("locale: want id, got %q", locale)
+	}
+}
+
+// TestIntegration_UpdateSettings_OmittedAllowedIPs_PreservesExisting is the
+// General Settings tab's real save shape (timezone/locale only, no
+// allowed_ips key at all — Security is a separate tab that owns that field).
+// Before this fix, the missing key still unmarshaled to a zero-value []string
+// and got written back as {"allowed_ips": null}, silently wiping any
+// allowlist the Security tab had already saved.
+func TestIntegration_UpdateSettings_OmittedAllowedIPs_PreservesExisting(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-ip-preserve","name":"IP Preserve WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	seedReq := httpserver.JSONTestRequest(http.MethodPatch, "/api/organizations/"+orgID+"/settings",
+		`{"timezone":"UTC","locale":"en","allowed_ips":["192.0.2.0/24"]}`)
+	seedReq.RemoteAddr = "192.0.2.1:54321"
+	if w := serveWS(t, pool, seedReq); w.Code != http.StatusNoContent {
+		t.Fatalf("seed allowlist: want 204, got %d: %s", w.Code, w.Body)
+	}
+
+	generalReq := httpserver.JSONTestRequest(http.MethodPatch, "/api/organizations/"+orgID+"/settings",
+		`{"timezone":"Asia/Jakarta","locale":"id"}`)
+	generalReq.RemoteAddr = "192.0.2.1:54321" // must stay inside the allowlist — once set, every request to this org is gated on it, unrelated to this save's own field scope
+	if w := serveWS(t, pool, generalReq); w.Code != http.StatusNoContent {
+		t.Fatalf("general settings save: want 204, got %d: %s", w.Code, w.Body)
+	}
+
+	var allowedIPs []byte
+	pool.QueryRow(t.Context(), `SELECT settings->'allowed_ips' FROM organization.organizations WHERE id = $1`, orgID).Scan(&allowedIPs)
+	if string(allowedIPs) != `["192.0.2.0/24"]` {
+		t.Errorf("allowlist must survive an omitted-field save, got settings->'allowed_ips' = %s", allowedIPs)
+	}
+}
+
+// TestIntegration_UpdateSettings_ExplicitEmptyAllowedIPs_Clears confirms the
+// still-reachable clear path (Security tab's remove-last-entry flow, which
+// always sends a defined array) keeps working under the new pointer typing.
+func TestIntegration_UpdateSettings_ExplicitEmptyAllowedIPs_Clears(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-ip-clear","name":"IP Clear WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	seedReq := httpserver.JSONTestRequest(http.MethodPatch, "/api/organizations/"+orgID+"/settings",
+		`{"timezone":"UTC","locale":"en","allowed_ips":["192.0.2.0/24"]}`)
+	seedReq.RemoteAddr = "192.0.2.1:54321"
+	if w := serveWS(t, pool, seedReq); w.Code != http.StatusNoContent {
+		t.Fatalf("seed allowlist: want 204, got %d: %s", w.Code, w.Body)
+	}
+
+	clearReq := httpserver.JSONTestRequest(http.MethodPatch, "/api/organizations/"+orgID+"/settings",
+		`{"timezone":"UTC","locale":"en","allowed_ips":[]}`)
+	if w := serveWS(t, pool, clearReq); w.Code != http.StatusNoContent {
+		t.Fatalf("clear allowlist: want 204, got %d: %s", w.Code, w.Body)
+	}
+
+	var allowedIPs []byte
+	pool.QueryRow(t.Context(), `SELECT settings->'allowed_ips' FROM organization.organizations WHERE id = $1`, orgID).Scan(&allowedIPs)
+	if string(allowedIPs) != `[]` {
+		t.Errorf("explicit empty array must clear the allowlist, got settings->'allowed_ips' = %s", allowedIPs)
 	}
 }
 

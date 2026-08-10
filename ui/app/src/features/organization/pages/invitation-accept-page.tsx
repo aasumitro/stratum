@@ -172,6 +172,13 @@ export function InvitationAcceptPage() {
                         to: "/organization/$organizationId",
                         params: { organizationId: preview.organization_id },
                       }),
+                    onError: (err) =>
+                      toast.error(
+                        parseApiError(
+                          err,
+                          t("organization.invitations.acceptFailed")
+                        )
+                      ),
                   }
                 )
               }

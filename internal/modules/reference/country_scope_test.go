@@ -54,8 +54,14 @@ func TestScopedPrices(t *testing.T) {
 		"IDR": {Monthly: 150000, Yearly: 1500000},
 	}
 
-	if got := scopedPrices(prices, ""); len(got) != 2 {
-		t.Errorf("empty countryCode: want unchanged 2-currency map, got %d entries", len(got))
+	// Empty countryCode is what an unresolved GeoIP lookup passes through as
+	// (handler.go's resolveCountryCode always calls geoip.Resolver.Resolve,
+	// which itself never returns "" — but scopedPrices stays defensive: an
+	// empty string resolves like any other non-"ID" code, to USD-only).
+	if got := scopedPrices(prices, ""); len(got) != 1 {
+		t.Errorf("empty countryCode: want USD-only fallback, got %d entries", len(got))
+	} else if _, ok := got["USD"]; !ok {
+		t.Errorf("empty countryCode: want USD key, got %v", got)
 	}
 
 	got := scopedPrices(prices, "ID")
@@ -85,12 +91,15 @@ func TestScopedPrices(t *testing.T) {
 func TestListPlans_CountryCodeScopesPrices(t *testing.T) {
 	svc := &service{catalog: stubCatalogWithBothCurrencies{}}
 
-	all, err := svc.listPlans(t.Context(), "")
+	// listPlans always scopes now — there is no "give me everything" mode,
+	// since every real caller passes a server-resolved countryCode
+	// (handler.go's resolveCountryCode, never a client-supplied value).
+	usOnly, err := svc.listPlans(t.Context(), "US")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(all[0].Prices) != 2 {
-		t.Errorf("no country_code: want both currencies, got %d", len(all[0].Prices))
+	if len(usOnly[0].Prices) != 1 {
+		t.Errorf("country_code=US: want exactly 1 currency, got %d", len(usOnly[0].Prices))
 	}
 
 	scoped, err := svc.listPlans(t.Context(), "ID")

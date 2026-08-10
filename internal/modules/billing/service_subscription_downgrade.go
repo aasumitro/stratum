@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
@@ -22,7 +23,8 @@ func (s *service) downgradeSubscription(
 	removeMemberIDs []string,
 ) (*subscriptionRecord, contracts.OverageResolution, error) {
 	if subjectType != subjectTypeOrganization {
-		return nil, contracts.OverageResolution{}, apperr.Validation("DOWNGRADE_UNSUPPORTED", "downgrade is only supported for organizations")
+		return nil, contracts.OverageResolution{}, apperr.Validation(
+			"DOWNGRADE_UNSUPPORTED", "downgrade is only supported for organizations")
 	}
 
 	newPlanInfo, err := s.planCatalog(ctx, plan)
@@ -46,10 +48,12 @@ func (s *service) downgradeSubscription(
 	if !alreadyOnTarget {
 		oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)
 		if err != nil {
-			return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: %w: current plan", ErrUnknownPlan)
+			return nil, contracts.OverageResolution{}, fmt.Errorf(
+				"billing.downgradeSubscription: %w: current plan", ErrUnknownPlan)
 		}
 		if newPlanInfo.SortOrder >= oldPlanInfo.SortOrder {
-			return nil, contracts.OverageResolution{}, apperr.Validation("INVALID_DOWNGRADE", "target plan is not a downgrade")
+			return nil, contracts.OverageResolution{}, apperr.Validation(
+				"INVALID_DOWNGRADE", "target plan is not a downgrade")
 		}
 	}
 
@@ -71,8 +75,9 @@ func (s *service) downgradeSubscription(
 			ToCycle string `json:"to_cycle"`
 		}{ToPlan: plan, ToCycle: cycle})
 		phase := historyPhaseScheduled
-		if _, err := s.repo.insertHistoryWithPhase(ctx, s.querier(ctx), sub.ID, actionDowngrade,
-			&sub.Plan, &plan, 0, sub.Currency, changedBy, metadata, &phase, sub.PeriodEnd); err != nil {
+		if _, err := s.repo.insertHistoryWithCycle(ctx, s.querier(ctx), sub.ID, actionDowngrade,
+			&sub.Plan, &plan, 0, sub.Currency, changedBy, metadata, &phase, sub.PeriodEnd,
+			&sub.Cycle, &cycle); err != nil {
 			return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: %w", err)
 		}
 		// Re-fetch so the caller sees the schedule it just wrote, not the
@@ -117,11 +122,12 @@ func (s *service) downgradeSubscription(
 }
 
 // undoScheduledPlanDowngrade clears a scheduled plan downgrade before it
-// ever takes effect. No history row is written — the "scheduled" row
-// simply never gets a matching "applied" one, which is itself the record
-// that it was undone, visible by its absence at renewal.
+// ever takes effect, and writes a phase='undone' history row mirroring the
+// original 'scheduled' row's from_plan/to_plan/cycle — what was undone, not
+// the subscription's current live values, so the pair reads correctly
+// without a link column back to the row it undoes.
 func (s *service) undoScheduledPlanDowngrade(
-	ctx context.Context, subjectType, subjectID string,
+	ctx context.Context, subjectType, subjectID, changedBy string,
 ) (*subscriptionRecord, error) {
 	sub, err := s.getSubscription(ctx, subjectType, subjectID)
 	if err != nil {
@@ -134,6 +140,13 @@ func (s *service) undoScheduledPlanDowngrade(
 		return nil, apperr.Validation("NO_SCHEDULED_DOWNGRADE", "no scheduled plan downgrade to undo")
 	}
 	if err := s.repo.clearScheduledPlanDowngrade(ctx, s.querier(ctx), sub.ID); err != nil {
+		return nil, fmt.Errorf("billing.undoScheduledPlanDowngrade: %w", err)
+	}
+	phase := historyPhaseUndone
+	now := time.Now()
+	if _, err := s.repo.insertHistoryWithCycle(ctx, s.querier(ctx), sub.ID, actionDowngrade,
+		&sub.Plan, sub.ScheduledPlan, 0, sub.Currency, changedBy, nil, &phase, &now,
+		&sub.Cycle, sub.ScheduledCycle); err != nil {
 		return nil, fmt.Errorf("billing.undoScheduledPlanDowngrade: %w", err)
 	}
 	return s.getSubscription(ctx, subjectType, subjectID)

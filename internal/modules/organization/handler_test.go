@@ -54,15 +54,6 @@ func TestCreateOrganization_NameTooLong(t *testing.T) {
 	}
 }
 
-func TestCreateOrganization_InvalidCountryCode(t *testing.T) {
-	w := httptest.NewRecorder()
-	ownerEngine().ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/organizations",
-		`{"slug":"acme","name":"Acme","country_code":"USA"}`))
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Errorf("want 422 for 3-letter country code, got %d", w.Code)
-	}
-}
-
 // --- listOrganizations / getOrganization ---
 
 func TestListOrganizations_RouteRegistered(t *testing.T) {

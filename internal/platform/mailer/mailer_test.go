@@ -2,6 +2,7 @@ package mailer
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,7 +12,6 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/smtp"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +21,7 @@ import (
 
 func TestSend_Unconfigured_ReturnsNil(t *testing.T) {
 	m := &Mailer{} // host = "" → IsConfigured = false
-	if err := m.Send(Message{To: "to@test.com", Subject: "Hi", HTML: "<p>Hi</p>"}); err != nil {
+	if err := m.Send(t.Context(), Message{To: "to@test.com", Subject: "Hi", HTML: "<p>Hi</p>"}); err != nil {
 		t.Errorf("unconfigured Send: want nil, got %v", err)
 	}
 }
@@ -98,7 +98,7 @@ func selfSignedCert(t *testing.T, host string) tls.Certificate {
 }
 
 // TestSend_ImplicitTLS_UntrustedCertificate_ReturnsWrappedError covers the
-// port-465 implicit-TLS branch (sendTLS), otherwise untested: a misconfigured
+// port-465 implicit-TLS branch (dialTLS), otherwise untested: a misconfigured
 // or expired certificate on the SMTP relay must fail fast with a wrapped
 // error rather than hang or panic.
 func TestSend_ImplicitTLS_UntrustedCertificate_ReturnsWrappedError(t *testing.T) {
@@ -121,12 +121,11 @@ func TestSend_ImplicitTLS_UntrustedCertificate_ReturnsWrappedError(t *testing.T)
 		io.Copy(io.Discard, conn) //nolint:errcheck
 	}()
 
-	// sendTLS is called directly (bypassing Send's port==465 dispatch) since
+	// dialTLS is called directly (bypassing Send's port==465 dispatch) since
 	// binding a test listener to the real privileged port 465 isn't portable.
 	m := &Mailer{host: "127.0.0.1", fromAddr: "sender@test.com"}
-	auth := smtp.PlainAuth("", "user@test.com", "secret", m.host)
 
-	err = m.sendTLS(ln.Addr().String(), auth, m.fromAddr, "recipient@test.com", []byte("body"))
+	_, err = m.dialTLS(t.Context(), ln.Addr().String())
 	if err == nil {
 		t.Fatal("want an error dialing a server with an untrusted self-signed certificate")
 	}
@@ -196,7 +195,7 @@ func TestSend_SMTP_DeliversMessage(t *testing.T) {
 		fromName: "Test Sender",
 		fromAddr: "sender@test.com",
 	}
-	if err = m.Send(Message{
+	if err = m.Send(t.Context(), Message{
 		To:      "recipient@test.com",
 		Subject: "Phase4 Subject",
 		HTML:    "<p>Hello from test</p>",
@@ -211,6 +210,53 @@ func TestSend_SMTP_DeliversMessage(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("SMTP server did not receive message within 2s")
+	}
+}
+
+// TestSend_SlowServer_TimesOutViaContext covers a server that accepts the
+// TCP connection but never speaks SMTP (a hung or overloaded relay): Send
+// must not block indefinitely — it must fail once ctx's deadline passes,
+// instead of hanging on the OS's default TCP timeout.
+func TestSend_SlowServer_TimesOutViaContext(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		// Accept but never send the SMTP greeting — simulates a hung relay.
+		// Just drain so Accept's goroutine doesn't block the listener.
+		io.Copy(io.Discard, conn) //nolint:errcheck
+	}()
+
+	m := &Mailer{
+		host:     "127.0.0.1",
+		port:     port,
+		username: "user@test.com",
+		password: "secret",
+		fromName: "Test Sender",
+		fromAddr: "sender@test.com",
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = m.Send(ctx, Message{To: "recipient@test.com", Subject: "Hi", HTML: "<p>Hi</p>"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("want an error from a server that never speaks SMTP, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Send blocked for %v, want it bounded by the ~200ms context deadline", elapsed)
 	}
 }
 

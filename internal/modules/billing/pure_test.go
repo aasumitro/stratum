@@ -678,6 +678,78 @@ func TestMaxExtendableMonths(t *testing.T) {
 	})
 }
 
+// --- periodMonths ---
+
+func TestPeriodMonths(t *testing.T) {
+	periodStart := time.Date(2026, 8, 9, 7, 18, 34, 0, time.UTC)
+
+	cases := []struct {
+		name   string
+		end    time.Time
+		months int
+	}{
+		{"exact 1-month period", periodStart.AddDate(0, 1, 0), 1},
+		{"exact 12-month period", periodStart.AddDate(0, 12, 0), 12},
+		{"exact 24-month period (extendSubscription's own max)", periodStart.AddDate(0, 24, 0), 24},
+		{"13-month period, not cycle-aligned to a year", periodStart.AddDate(0, 13, 0), 13},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := periodMonths(periodStart, c.end); got != c.months {
+				t.Errorf("periodMonths() = %d, want %d", got, c.months)
+			}
+		})
+	}
+
+	t.Run("a few hours short of a whole month still counts, same day as the boundary", func(t *testing.T) {
+		// Mirrors maxExtendableMonths' own time-of-day-drift case: compared
+		// at day granularity, so a period reshaped by prorate()'s day-based
+		// math landing a few hours before a clean AddDate boundary — but on
+		// the same calendar day — must not lose a whole month over it.
+		end := periodStart.AddDate(0, 13, 0).Add(-3 * time.Hour)
+		if got := periodMonths(periodStart, end); got != 13 {
+			t.Errorf("periodMonths() = %d, want 13", got)
+		}
+	})
+
+	t.Run("closer to the lower month rounds down", func(t *testing.T) {
+		// 20 days short of the 13-month mark (periodStart.AddDate(0,13,0) =
+		// 2027-09-09, a 31-day August sitting just before it): closer to the
+		// 12-month mark (2027-08-09, 11 days away) than the 13-month one (20
+		// days away), so this must round down, not up.
+		end := periodStart.AddDate(0, 13, 0).AddDate(0, 0, -20)
+		if got := periodMonths(periodStart, end); got != 12 {
+			t.Errorf("periodMonths() = %d, want 12", got)
+		}
+	})
+
+	t.Run("closer to the upper month rounds up", func(t *testing.T) {
+		// Mirror of the above, 3 days short instead of 20: much closer to
+		// the 13-month mark than the 12-month one.
+		end := periodStart.AddDate(0, 13, 0).AddDate(0, 0, -3)
+		if got := periodMonths(periodStart, end); got != 13 {
+			t.Errorf("periodMonths() = %d, want 13", got)
+		}
+	})
+
+	t.Run("a leap day inside the span doesn't cost a whole month", func(t *testing.T) {
+		// Same rationale as maxExtendableMonths' leap-year case: AddDate on
+		// both sides keeps calendar-month counting exact regardless of
+		// whether Feb 29 falls inside the window.
+		start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+		end := start.AddDate(0, 24, 0) // crosses 2028's Feb 29
+		if got := periodMonths(start, end); got != 24 {
+			t.Errorf("periodMonths() = %d, want 24", got)
+		}
+	})
+
+	t.Run("periodEnd before periodStart returns 0, never negative", func(t *testing.T) {
+		if got := periodMonths(periodStart, periodStart.AddDate(0, 0, -5)); got != 0 {
+			t.Errorf("periodMonths() = %d, want 0", got)
+		}
+	})
+}
+
 // --- computeExtensionSubtotal ---
 
 func TestComputeExtensionSubtotal(t *testing.T) {
@@ -702,6 +774,92 @@ func TestComputeExtensionSubtotal(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := computeExtensionSubtotal(planInfo, "USD", c.months); got != c.want {
 				t.Errorf("computeExtensionSubtotal(%d) = %d, want %d", c.months, got, c.want)
+			}
+		})
+	}
+}
+
+// --- computeExtensionAddonSubtotal ---
+
+func TestComputeExtensionAddonSubtotal(t *testing.T) {
+	seats := attachedAddonRecord{
+		Name: "Extra seats", Quantity: 3,
+		Prices: map[string]contracts.PlanPrices{
+			"USD": {Monthly: 5_00, Yearly: 50_00}, // $5/mo, $50/yr per seat
+		},
+	}
+	storage := attachedAddonRecord{
+		Name: "Extra storage", Quantity: 1,
+		Prices: map[string]contracts.PlanPrices{
+			"USD": {Monthly: 2_00, Yearly: 20_00},
+		},
+	}
+	noUSDPrice := attachedAddonRecord{
+		Name: "EUR-only addon", Quantity: 5,
+		Prices: map[string]contracts.PlanPrices{
+			"EUR": {Monthly: 1_00, Yearly: 10_00},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		addons []attachedAddonRecord
+		months int
+		want   int64
+	}{
+		{"no addons attached", nil, 13, 0},
+		{"single addon, months < 12, flat monthly x months x quantity", []attachedAddonRecord{seats}, 6, 6 * 5_00 * 3},
+		{"single addon, exactly 12 months bills one yearly block x quantity", []attachedAddonRecord{seats}, 12, 50_00 * 3},
+		{"single addon, 13 months = 1 yearly block + 1 month remainder, x quantity", []attachedAddonRecord{seats}, 13, (50_00 + 5_00) * 3},
+		{"multiple addons summed independently", []attachedAddonRecord{seats, storage}, 13, (50_00+5_00)*3 + (20_00+2_00)*1},
+		{"addon missing a price entry for the requested currency contributes 0, not an error", []attachedAddonRecord{noUSDPrice}, 13, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := computeExtensionAddonSubtotal(c.addons, "USD", c.months); got != c.want {
+				t.Errorf("computeExtensionAddonSubtotal(%d) = %d, want %d", c.months, got, c.want)
+			}
+		})
+	}
+}
+
+// --- scopeCatalogPrices ---
+
+func TestScopeCatalogPrices(t *testing.T) {
+	both := map[string]contracts.PlanPrices{
+		"USD": {Monthly: 9_00, Yearly: 90_00},
+		"IDR": {Monthly: 135_000, Yearly: 1_350_000},
+	}
+	eurOnly := map[string]contracts.PlanPrices{
+		"EUR": {Monthly: 8_00, Yearly: 80_00},
+	}
+
+	cases := []struct {
+		name         string
+		prices       map[string]contracts.PlanPrices
+		currency     string
+		wantCurrency string
+		wantEmpty    bool
+	}{
+		{"currency present returns exactly that one entry", both, "IDR", "IDR", false},
+		{"currency present, other branch (USD)", both, "USD", "USD", false},
+		{"currency absent falls back to USD", both, "EUR", "USD", false},
+		{"currency absent and no USD entry returns empty map", eurOnly, "IDR", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := scopeCatalogPrices(c.prices, c.currency)
+			if c.wantEmpty {
+				if len(got) != 0 {
+					t.Errorf("scopeCatalogPrices(%q) = %v, want empty", c.currency, got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("scopeCatalogPrices(%q) = %v, want exactly one currency", c.currency, got)
+			}
+			if _, ok := got[c.wantCurrency]; !ok {
+				t.Errorf("scopeCatalogPrices(%q) = %v, want key %q", c.currency, got, c.wantCurrency)
 			}
 		})
 	}

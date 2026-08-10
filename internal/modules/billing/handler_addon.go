@@ -5,12 +5,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/reqctx"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/request"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
 // --- addons ---
+
+// swag can only resolve a cross-package type referenced in a @Success
+// annotation if the package is imported in the same file — contracts is
+// otherwise unused here (listAddonsCatalog infers its type from service.go).
+var _ contracts.AddonInfo
 
 type attachAddonRequest struct {
 	AddonID  string `json:"addon_id" binding:"required"`
@@ -48,7 +55,7 @@ func (h *handler) attachAddon(c *gin.Context) {
 		quantity = 1
 	}
 
-	addon, err := h.svc.attachAddon(c.Request.Context(), ws.ID, req.AddonID, quantity)
+	addon, err := h.svc.attachAddon(c.Request.Context(), ws.ID, req.AddonID, quantity, reqctx.Subject(c))
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -72,7 +79,7 @@ func (h *handler) detachAddon(c *gin.Context) {
 	addonID := c.Param("addonID")
 
 	if err := h.svc.detachAddon(
-		c.Request.Context(), ws.ID, addonID,
+		c.Request.Context(), ws.ID, addonID, reqctx.Subject(c),
 	); err != nil {
 		response.FromError(c, err)
 		return
@@ -98,7 +105,7 @@ func (h *handler) undoAddonQuantityChange(c *gin.Context) {
 	addonID := c.Param("addonID")
 
 	addon, err := h.svc.undoScheduledAddonQuantityChange(
-		c.Request.Context(), ws.ID, addonID,
+		c.Request.Context(), ws.ID, addonID, reqctx.Subject(c),
 	)
 	if err != nil {
 		response.FromError(c, err)
@@ -109,6 +116,8 @@ func (h *handler) undoAddonQuantityChange(c *gin.Context) {
 
 // listAddons godoc
 // @Summary      List attached addons
+// @Description  Each addon's prices map holds exactly one currency — the subscription's own
+// @Description  (sub.Currency), never every currency the catalog stores.
 // @Tags         billing
 // @Produce      json
 // @Security     BearerAuth
@@ -120,6 +129,29 @@ func (h *handler) listAddons(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
 	addons, err := h.svc.listAddons(c.Request.Context(), ws.ID)
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.List(addons, int64(len(addons))).JSON(c, http.StatusOK)
+}
+
+// listAddonsCatalog godoc
+// @Summary      List the addon catalog, scoped to this subscription's currency
+// @Description  Same catalog as GET /references/addons (unattached options, not what's already
+// @Description  on this subscription), but prices are scoped to the subscription's own
+// @Description  already-fixed currency instead of the caller's GeoIP-resolved one.
+// @Tags         billing
+// @Produce      json
+// @Security     BearerAuth
+// @Param        organizationID  path      string  true  "Organization ID"
+// @Success      200             {object}  response.Payload{data=[]contracts.AddonInfo}
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/billing/addons/catalog [get]
+func (h *handler) listAddonsCatalog(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+
+	addons, err := h.svc.listAddonsCatalog(c.Request.Context(), ws.ID)
 	if err != nil {
 		response.FromError(c, err)
 		return

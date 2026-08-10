@@ -38,6 +38,10 @@ import {
 } from "@/features/organization/hooks/use-organization"
 import { useUpdateOrganizationSettings } from "@/features/organization/hooks/use-settings"
 import { slugify } from "@/lib/format"
+import {
+  createRequiredTextSchema,
+  fieldValidator,
+} from "@/lib/validation/schemas"
 
 const TIMEZONES = Intl.supportedValuesOf("timeZone")
 
@@ -173,10 +177,11 @@ export function OrganizationDetailsCard({ organizationId, isOwner }: Props) {
           <form.Field
             name="name"
             validators={{
-              onChange: ({ value }) =>
-                !value.trim()
-                  ? t("organization.settings.nameRequired")
-                  : undefined,
+              onChange: fieldValidator(
+                createRequiredTextSchema(
+                  t("organization.settings.nameRequired")
+                )
+              ),
             }}
           >
             {(field) => (
@@ -203,10 +208,11 @@ export function OrganizationDetailsCard({ organizationId, isOwner }: Props) {
           <form.Field
             name="slug"
             validators={{
-              onChange: ({ value }) =>
-                !value.trim()
-                  ? t("organization.settings.slugRequired")
-                  : undefined,
+              onChange: fieldValidator(
+                createRequiredTextSchema(
+                  t("organization.settings.slugRequired")
+                )
+              ),
             }}
           >
             {(field) => (

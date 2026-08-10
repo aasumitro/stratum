@@ -122,13 +122,18 @@ func (s *service) syncEmail(ctx context.Context, authSub, email string) error {
 		slog.WarnContext(ctx, "account.syncEmail: audit log insert failed", "auth_sub", authSub, "error", err)
 	}
 
-	events.Publish(ctx, s.pub, events.ExchangeAccount, events.RoutingKeyUserEmailChanged, "account", "", events.UserEmailChanged{
-		UserID:    u.ID,
-		AuthSub:   authSub,
-		OldEmail:  oldEmail,
-		NewEmail:  email,
-		ChangedAt: u.UpdatedAt,
-	})
+	events.Publish(ctx,
+		s.pub, events.ExchangeAccount,
+		events.RoutingKeyUserEmailChanged,
+		"account", "",
+		events.UserEmailChanged{
+			UserID:    u.ID,
+			AuthSub:   authSub,
+			OldEmail:  oldEmail,
+			NewEmail:  email,
+			ChangedAt: u.UpdatedAt,
+		},
+	)
 	return nil
 }
 
@@ -177,6 +182,25 @@ func (s *service) requestExportData(ctx context.Context, authSub string) (*taskR
 func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub string) error {
 	_ = s.repo.markTaskProcessing(ctx, s.pool, taskID)
 
+	failedSteps := s.runDeleteAccountCleanupSteps(ctx, authSub)
+
+	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
+		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
+		return fmt.Errorf("account.executeDeleteAccount: %w", err)
+	}
+
+	s.bestEffortDeleteSupabaseUser(ctx, authSub)
+
+	return s.completeDeleteAccountTask(ctx, taskID, failedSteps)
+}
+
+// runDeleteAccountCleanupSteps runs every best-effort cross-schema cleanup
+// step (plus wiping the avatar blob) and returns the names of the ones that
+// failed. Each failure is logged and reported here rather than silently
+// discarded, so a partial deletion is visible instead of silent — see the
+// executeDeleteAccount doc comment above for why this can't be a single
+// cross-schema transaction.
+func (s *service) runDeleteAccountCleanupSteps(ctx context.Context, authSub string) []string {
 	steps := []struct {
 		name string
 		run  func() error
@@ -205,6 +229,12 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 		{"login_events", func() error {
 			return s.repo.deleteLoginEvents(ctx, s.pool, authSub)
 		}},
+		{"avatar", func() error {
+			if s.store == nil {
+				return nil
+			}
+			return s.store.Delete(ctx, "users", authSub+"/avatar")
+		}},
 	}
 
 	var failedSteps []string
@@ -215,26 +245,24 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 			failedSteps = append(failedSteps, step.name)
 		}
 	}
+	return failedSteps
+}
 
-	// Best-effort: wipe avatar blob before removing the DB record.
-	if s.store != nil {
-		_ = s.store.Delete(ctx, "users", authSub+"/avatar")
+// bestEffortDeleteSupabaseUser removes the Supabase auth user so they cannot
+// log back in. A failure here is logged but does not roll back the
+// already-completed DB deletion.
+func (s *service) bestEffortDeleteSupabaseUser(ctx context.Context, authSub string) {
+	if s.adminURL == "" || s.serviceRoleKey == "" {
+		return
 	}
-
-	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
-		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
-		return fmt.Errorf("account.executeDeleteAccount: %w", err)
+	if err := s.deleteSupabaseUser(ctx, authSub); err != nil {
+		slog.WarnContext(ctx, "account.executeDeleteAccount: supabase user deletion failed",
+			"auth_sub", authSub, "error", err)
 	}
+}
 
-	// Best-effort: remove Supabase auth user so they cannot log back in.
-	// A failure here is logged but does not roll back the already-completed DB deletion.
-	if s.adminURL != "" && s.serviceRoleKey != "" {
-		if err := s.deleteSupabaseUser(ctx, authSub); err != nil {
-			slog.WarnContext(ctx, "account.executeDeleteAccount: supabase user deletion failed",
-				"auth_sub", authSub, "error", err)
-		}
-	}
-
+// completeDeleteAccountTask marshals the delete result and marks the task complete.
+func (s *service) completeDeleteAccountTask(ctx context.Context, taskID string, failedSteps []string) error {
 	result := struct {
 		Deleted     bool     `json:"deleted"`
 		FailedSteps []string `json:"failed_steps,omitempty"`
@@ -243,7 +271,6 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 	if err != nil {
 		return fmt.Errorf("account.executeDeleteAccount: marshal result: %w", err)
 	}
-
 	return s.repo.completeTask(ctx, s.pool, taskID, resultJSON)
 }
 
@@ -469,7 +496,7 @@ func (s *service) revokeAllSessions(ctx context.Context, authSub, sessionID stri
 				"auth_sub", authSub, "error", err)
 		}
 	}
-	if sessionID == "" {
+	if sessionID == "" || s.revokedNS == nil {
 		return nil
 	}
 	ttl := time.Until(exp)
@@ -483,7 +510,8 @@ func (s *service) revokeAllSessions(ctx context.Context, authSub, sessionID stri
 }
 
 func (s *service) revokeSupabaseSessions(ctx context.Context, authSub string) error {
-	resp, err := s.supabaseAdminRequest(ctx, "account.revokeSupabaseSessions", http.MethodPost, "/admin/users/"+authSub+"/logout?scope=global")
+	resp, err := s.supabaseAdminRequest(ctx, "account.revokeSupabaseSessions",
+		http.MethodPost, "/admin/users/"+authSub+"/logout?scope=global")
 	if err != nil {
 		return err
 	}

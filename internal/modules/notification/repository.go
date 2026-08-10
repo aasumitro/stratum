@@ -37,15 +37,16 @@ func (r *repository) insertMessage(
 	organizationID string, authSub *string,
 	kind, channel, subject, body string,
 	payload json.RawMessage,
+	status string, sentAt *time.Time,
 ) (*messageRecord, error) {
 	m := new(messageRecord)
 	err := q.QueryRow(ctx, `
 		INSERT INTO notification.messages
-		    (organization_id, auth_sub, kind, channel, subject, body, payload)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		    (organization_id, auth_sub, kind, channel, subject, body, payload, status, sent_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, organization_id, auth_sub, kind, channel, subject, body,
 		          payload, status, sent_at, read_at, created_at, updated_at`,
-		organizationID, authSub, kind, channel, subject, body, payload,
+		organizationID, authSub, kind, channel, subject, body, payload, status, sentAt,
 	).Scan(&m.ID, &m.OrganizationID, &m.AuthSub, &m.Kind, &m.Channel,
 		&m.Subject, &m.Body, &m.Payload, &m.Status, &m.SentAt, &m.ReadAt,
 		&m.CreatedAt, &m.UpdatedAt)
@@ -79,14 +80,15 @@ func (r *repository) insertMessages(
 	organizationID string, authSubs []string,
 	kind, channel, subject, body string,
 	payload json.RawMessage,
+	status string, sentAt *time.Time,
 ) ([]messageRecord, error) {
 	rows, err := q.Query(ctx, `
 		INSERT INTO notification.messages
-		    (organization_id, auth_sub, kind, channel, subject, body, payload)
-		SELECT $1, sub, $3, $4, $5, $6, $7 FROM unnest($2::text[]) AS sub
+		    (organization_id, auth_sub, kind, channel, subject, body, payload, status, sent_at)
+		SELECT $1, sub, $3, $4, $5, $6, $7, $8, $9 FROM unnest($2::text[]) AS sub
 		RETURNING id, organization_id, auth_sub, kind, channel, subject, body,
 		          payload, status, sent_at, read_at, created_at, updated_at`,
-		organizationID, authSubs, kind, channel, subject, body, payload,
+		organizationID, authSubs, kind, channel, subject, body, payload, status, sentAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("notification.insertMessages: %w", err)
@@ -109,11 +111,11 @@ func (r *repository) insertMessages(
 	return out, nil
 }
 
-func (r *repository) listMessages(
-	ctx context.Context, q db.Querier,
-	authSub, organizationID, channel, cursor string,
-	limit, offset int,
-) ([]messageRecord, error) {
+// buildListMessagesFilters builds the shared WHERE-clause fragment for a
+// user's in_app messages — organizationID/channel/cursor are all optional
+// filters, used by both listMessages (paginated feed) and countTotal (the
+// matching count for offset pagination, which never has a cursor).
+func buildListMessagesFilters(authSub, organizationID, channel, cursor string) ([]string, *db.Args, error) {
 	conds := []string{"kind = 'in_app'", "auth_sub = $1"}
 	args := db.NewArgs(authSub)
 
@@ -126,17 +128,29 @@ func (r *repository) listMessages(
 	if cursor != "" {
 		b, err := base64.StdEncoding.DecodeString(cursor)
 		if err != nil {
-			return nil, fmt.Errorf("notification.listMessages: invalid cursor: %w", err)
+			return nil, nil, fmt.Errorf("notification.listMessages: invalid cursor: %w", err)
 		}
 		parts := strings.SplitN(string(b), "|", 2)
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("notification.listMessages: invalid cursor format")
+			return nil, nil, fmt.Errorf("notification.listMessages: invalid cursor format")
 		}
 		ts, err := time.Parse(time.RFC3339Nano, parts[0])
 		if err != nil {
-			return nil, fmt.Errorf("notification.listMessages: invalid cursor timestamp: %w", err)
+			return nil, nil, fmt.Errorf("notification.listMessages: invalid cursor timestamp: %w", err)
 		}
 		conds = append(conds, fmt.Sprintf("(created_at, id) < ($%d, $%d)", args.Add(ts), args.Add(parts[1])))
+	}
+	return conds, args, nil
+}
+
+func (r *repository) listMessages(
+	ctx context.Context, q db.Querier,
+	authSub, organizationID, channel, cursor string,
+	limit, offset int,
+) ([]messageRecord, error) {
+	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, cursor)
+	if err != nil {
+		return nil, err
 	}
 
 	var tail string
@@ -218,14 +232,9 @@ func (r *repository) countTotal(
 	ctx context.Context, q db.Querier,
 	authSub, organizationID, channel string,
 ) (int64, error) {
-	conds := []string{"kind = 'in_app'", "auth_sub = $1"}
-	args := db.NewArgs(authSub)
-
-	if organizationID != "" {
-		conds = append(conds, fmt.Sprintf("organization_id = $%d", args.Add(organizationID)))
-	}
-	if channel != "" {
-		conds = append(conds, fmt.Sprintf("channel = $%d", args.Add(channel)))
+	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, "")
+	if err != nil {
+		return 0, err
 	}
 
 	var total int64

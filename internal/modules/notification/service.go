@@ -17,6 +17,10 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/mailer"
 )
 
+// emailSendTimeout bounds a single mailer.Send call so a hung or slow SMTP
+// server can't stall the whole notification consumer queue behind it.
+const emailSendTimeout = 15 * time.Second
+
 type service struct {
 	repo       *repository
 	pool       *pgxpool.Pool
@@ -45,19 +49,34 @@ func (s *service) send(
 	payload json.RawMessage,
 ) (*messageRecord, error) {
 	if authSub != nil {
-		if allowed, _ := s.repo.isPreferenceEnabled(ctx, s.pool, *authSub, kind, channel); !allowed {
+		allowed, err := s.repo.isPreferenceEnabled(ctx, s.pool, *authSub, kind, channel)
+		if err != nil {
+			// Fail open: mirrors sendEmail's handling of the identical error —
+			// isPreferenceEnabled's own no-rows case already defaults to
+			// allowed, so a real lookup error keeps that same default instead
+			// of being misread as an explicit opt-out.
+			slog.Warn("notification preference check failed, sending anyway",
+				"auth_sub", *authSub, "kind", kind, "channel", channel, "error", err)
+		} else if !allowed {
 			return nil, nil
 		}
 	}
 	if payload == nil {
 		payload = json.RawMessage("{}")
 	}
-	msg, err := s.repo.insertMessage(ctx, s.pool, organizationID, authSub, kind, channel, subject, body, payload)
+	// send is only ever called for in_app messages, where the insert IS the
+	// delivery — there's no separate delivery step to wait on, so "sent" is
+	// correct immediately, not just a default placeholder.
+	sentAt := time.Now()
+	msg, err := s.repo.insertMessage(ctx, s.pool, organizationID,
+		authSub, kind, channel, subject, body, payload, "sent", &sentAt)
 	if err != nil {
 		return nil, fmt.Errorf("notification.send: %w", err)
 	}
 	if kind == "in_app" && authSub != nil && s.redis != nil {
-		_ = s.redis.Publish(ctx, "notif:"+*authSub, "1").Err()
+		if err := s.redis.Publish(ctx, "notif:"+*authSub, "1").Err(); err != nil {
+			slog.Error("failed to publish notification event", "auth_sub", *authSub, "error", err)
+		}
 	}
 	return msg, nil
 }
@@ -80,6 +99,7 @@ func (s *service) sendToMany(
 	ctx context.Context,
 	organizationID string, authSubs []string,
 	kind, channel, subject, body string,
+	payload json.RawMessage,
 ) error {
 	if len(authSubs) == 0 {
 		return nil
@@ -100,8 +120,12 @@ func (s *service) sendToMany(
 		return nil
 	}
 
+	if payload == nil {
+		payload = json.RawMessage("{}")
+	}
+	sentAt := time.Now()
 	msgs, err := s.repo.insertMessages(ctx, s.pool, organizationID,
-		recipients, kind, channel, subject, body, json.RawMessage("{}"))
+		recipients, kind, channel, subject, body, payload, "sent", &sentAt)
 	if err != nil {
 		return fmt.Errorf("notification.sendToMany: %w", err)
 	}
@@ -113,7 +137,10 @@ func (s *service) sendToMany(
 				pipe.Publish(ctx, "notif:"+*m.AuthSub, "1")
 			}
 		}
-		_, _ = pipe.Exec(ctx)
+		if _, err := pipe.Exec(ctx); err != nil {
+			slog.Error("failed to publish notification events",
+				"organization_id", organizationID, "error", err)
+		}
 	}
 	return nil
 }
@@ -136,7 +163,8 @@ func (s *service) sendEmail(
 			// the email indefinitely (isPreferenceEnabled's own no-rows case
 			// already defaults to allowed, so this keeps the same default
 			// for a real lookup error instead of misreading it as opt-out).
-			slog.Warn("notification preference check failed, sending anyway", "auth_sub", authSub, "template", templateName, "error", err)
+			slog.Warn("notification preference check failed, sending anyway",
+				"auth_sub", authSub, "template", templateName, "error", err)
 		} else if !allowed {
 			return
 		}
@@ -149,13 +177,26 @@ func (s *service) sendEmail(
 	}
 
 	status := "sent"
-	if err := s.mailer.Send(mailer.Message{To: to, Subject: subject, HTML: html}); err != nil {
-		slog.Warn("email send failed", "to", to, "template", templateName, "error", err)
+	var sentAt *time.Time
+	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
+	err = s.mailer.Send(sendCtx, mailer.Message{To: to, Subject: subject, HTML: html})
+	cancel()
+	if err != nil {
+		slog.Warn("email send failed", "to", to,
+			"template", templateName, "timeout", emailSendTimeout, "error", err)
 		status = "failed"
+	} else {
+		t := time.Now()
+		sentAt = &t
 	}
 
-	_, _ = s.repo.insertMessage(ctx, s.pool, organizationID, nil, "email", templateName, subject, html,
-		json.RawMessage(fmt.Sprintf(`{"to":%q,"status":%q}`, to, status)))
+	if _, err := s.repo.insertMessage(
+		ctx, s.pool, organizationID, nil, "email", templateName, subject, html,
+		json.RawMessage(fmt.Sprintf(`{"to":%q}`, to)), status, sentAt,
+	); err != nil {
+		slog.Error("failed to record sent email", "organization_id",
+			organizationID, "template", templateName, "error", err)
+	}
 }
 
 // resolveOwnerAuthSub returns a pointer to the organization owner's auth_sub,

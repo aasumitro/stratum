@@ -35,13 +35,15 @@ export const queryKeys = {
   },
   billing: {
     subscription: (wsId: string) => ["billing", wsId, "subscription"] as const,
-    plans: () => ["billing", "plans"] as const,
+    plansCatalog: (wsId: string) => ["billing", wsId, "plans-catalog"] as const,
     invoices: (wsId: string) => ["billing", wsId, "invoices"] as const,
     payments: (wsId: string) => ["billing", wsId, "payments"] as const,
     paymentLinks: (wsId: string) => ["billing", wsId, "payment-links"] as const,
     usage: (wsId: string) => ["billing", wsId, "usage"] as const,
     history: (wsId: string) => ["billing", wsId, "history"] as const,
     addons: (wsId: string) => ["billing", wsId, "addons"] as const,
+    addonsCatalog: (wsId: string) =>
+      ["billing", wsId, "addons-catalog"] as const,
     // Prefix shared by every useInvoicePreview variant (plan/cycle appended
     // when previewing a hypothetical change) — invalidating this prefix
     // covers all of them without needing to know which variant is cached.

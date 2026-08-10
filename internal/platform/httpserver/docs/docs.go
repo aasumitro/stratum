@@ -73,7 +73,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Accept an invitation",
                 "parameters": [
@@ -98,7 +98,7 @@ const docTemplate = `{
                         }
                     },
                     "422": {
-                        "description": "invitation not found, expired, email mismatch, already a member, or plan limit reached",
+                        "description": "invitation not found, expired, email mismatch, already a member, plan limit reached, or organization not active",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -118,7 +118,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Decline an invitation",
                 "parameters": [
@@ -163,7 +163,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Preview an invitation",
                 "parameters": [
@@ -221,7 +221,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Request a fresh invitation",
                 "parameters": [
@@ -750,7 +750,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "List the caller's pending invitations",
                 "responses": {
@@ -1494,7 +1494,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog.",
+                "description": "Creates a new organization owned by the caller. Plan and cycle are required and validated against the billing catalog. Billing country/currency is resolved server-side from the caller's IP, not client-supplied.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2140,6 +2140,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Each addon's prices map holds exactly one currency — the subscription's own\n(sub.Currency), never every currency the catalog stores.",
                 "produces": [
                     "application/json"
                 ],
@@ -2254,6 +2255,61 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/billing/addons/catalog": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same catalog as GET /references/addons (unattached options, not what's already\non this subscription), but prices are scoped to the subscription's own\nalready-fixed currency instead of the caller's GeoIP-resolved one.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "List the addon catalog, scoped to this subscription's currency",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/AddonInfo"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -3383,6 +3439,61 @@ const docTemplate = `{
                 }
             }
         },
+        "/organizations/{organizationID}/billing/plans/catalog": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Same catalog as GET /references/plans, but prices are scoped to the\nsubscription's own already-fixed currency instead of the caller's GeoIP-resolved\none — correct for an existing subscription, which never changes currency.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "billing"
+                ],
+                "summary": "List the plan catalog, scoped to this subscription's currency",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/PlanInfo"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
         "/organizations/{organizationID}/billing/preview": {
             "get": {
                 "security": [
@@ -3626,7 +3737,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "List organization invitations",
                 "parameters": [
@@ -3687,7 +3798,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Invite a member by email",
                 "parameters": [
@@ -3756,7 +3867,7 @@ const docTemplate = `{
                     }
                 ],
                 "tags": [
-                    "organization"
+                    "invitations"
                 ],
                 "summary": "Revoke an invitation",
                 "parameters": [
@@ -5209,7 +5320,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the billing addon catalog; delegated to the billing module's catalog reader. Pass country_code to scope each addon's prices down to the currency that country is actually billed in — omit it to get every currency.",
+                "description": "Returns the billing addon catalog; delegated to the billing module's catalog reader. Prices are scoped server-side to the currency the caller's real (GeoIP-resolved) country is billed in.",
                 "produces": [
                     "application/json"
                 ],
@@ -5217,14 +5328,6 @@ const docTemplate = `{
                     "reference"
                 ],
                 "summary": "List billing addons",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "ISO country code — scopes prices to that country's currency",
-                        "name": "country_code",
-                        "in": "query"
-                    }
-                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -5401,7 +5504,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the billing plan catalog (pricing, limits, features); delegated to the billing module's catalog reader. Pass country_code to scope each plan's prices down to the currency that country is actually billed in — omit it to get every currency.",
+                "description": "Returns the billing plan catalog (pricing, limits, features); delegated to the billing module's catalog reader. Prices are scoped server-side to the currency the caller's real (GeoIP-resolved) country is billed in.",
                 "produces": [
                     "application/json"
                 ],
@@ -5409,14 +5512,6 @@ const docTemplate = `{
                     "reference"
                 ],
                 "summary": "List billing plans",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "ISO country code — scopes prices to that country's currency",
-                        "name": "country_code",
-                        "in": "query"
-                    }
-                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -6051,9 +6146,6 @@ const docTemplate = `{
                         "$ref": "#/definitions/createOrganizationAddonRequest"
                     }
                 },
-                "country_code": {
-                    "type": "string"
-                },
                 "coupon_code": {
                     "type": "string",
                     "maxLength": 64
@@ -6249,6 +6341,12 @@ const docTemplate = `{
                 "currency": {
                     "type": "string"
                 },
+                "effective_at": {
+                    "type": "string"
+                },
+                "from_cycle": {
+                    "type": "string"
+                },
                 "from_plan": {
                     "type": "string"
                 },
@@ -6256,12 +6354,16 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "metadata": {
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
+                    "description": "json.RawMessage (not []byte) so encoding/json embeds the jsonb\ncolumn's content verbatim instead of base64-encoding it; the\nswaggertype override is needed because swag still resolves the\nunderlying []byte and would otherwise document this as an integer\narray instead of an object.",
+                    "type": "object"
+                },
+                "phase": {
+                    "type": "string"
                 },
                 "subscription_id": {
+                    "type": "string"
+                },
+                "to_cycle": {
                     "type": "string"
                 },
                 "to_plan": {
@@ -6443,6 +6545,10 @@ const docTemplate = `{
                 },
                 "due_at": {
                     "type": "string"
+                },
+                "extension_months": {
+                    "description": "ExtensionMonths is set only for kind=\"extension\" invoices — the exact\nmonths purchased, read back by applyExtensionPayment instead of\nre-derived by summing line items (service_webhook.go).",
+                    "type": "integer"
                 },
                 "id": {
                     "type": "string"
@@ -7201,6 +7307,7 @@ const docTemplate = `{
             ],
             "properties": {
                 "allowed_ips": {
+                    "description": "AllowedIPs is a pointer so an absent field (nil) preserves the existing\nallowlist, while an explicit \"allowed_ips\": [] clears it — the two\nGeneral Settings and Security settings tabs each PATCH this endpoint\nwith only their own fields, so omission must never wipe the other\ntab's setting.",
                     "type": "array",
                     "items": {
                         "type": "string"

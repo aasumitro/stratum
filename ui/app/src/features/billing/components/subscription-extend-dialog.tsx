@@ -16,9 +16,15 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { Skeleton } from "@/components/ui/skeleton"
-import { usePlans, useExtendSubscription } from "@/features/billing/hooks"
-import { useOrganization } from "@/features/organization/hooks/use-organization"
-import { computeExtensionSubtotal } from "@/features/billing/proration"
+import {
+  useOrgPlansCatalog,
+  useExtendSubscription,
+  useAttachedAddons,
+} from "@/features/billing/hooks"
+import {
+  computeExtensionAddonSubtotal,
+  computeExtensionSubtotal,
+} from "@/features/billing/proration"
 import { formatMoney } from "@/lib/format"
 import type { Invoice, Subscription } from "@/types/billing"
 
@@ -56,17 +62,9 @@ export function SubscriptionExtendDialog({
   const [months, setMonths] = useState(1)
   const [result, setResult] = useState<Invoice | null>(null)
 
-  // country_code, not the subscription's own currency field, is what scopes
-  // this fetch down to one currency — kept disabled until it's known,
-  // rather than firing once unscoped and again once scoped.
-  const { data: orgData, isLoading: orgLoading } =
-    useOrganization(organizationId)
-  const countryCode = orgData?.data?.country_code ?? ""
-  const { data: plansData, isLoading: plansDataLoading } = usePlans(
-    countryCode,
-    !orgLoading
-  )
-  const plansLoading = orgLoading || plansDataLoading
+  const { data: plansData, isLoading: plansLoading } =
+    useOrgPlansCatalog(organizationId)
+  const { data: addonsData } = useAttachedAddons(organizationId)
   const { mutate: extend, isPending: extending } =
     useExtendSubscription(organizationId)
 
@@ -74,11 +72,15 @@ export function SubscriptionExtendDialog({
   const planInfo = (plansData?.data ?? []).find(
     (p) => p.id === subscription.plan
   )
-  // Scoped by the same country_code as the fetch above, so its price map
-  // holds exactly one currency — read it back from the data itself, rather
-  // than subscription.currency, so this never depends on the two staying
-  // in sync.
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself, rather than subscription.currency,
+  // so this never depends on the two staying in sync.
   const prices = planInfo?.prices[Object.keys(planInfo?.prices ?? {})[0] ?? ""]
+
+  // Only currently-attached addons are charged on extend — same "live
+  // quantity only, ignore scheduled/pending" rule the backend applies
+  // (extendSubscription / computeExtensionAddonSubtotal).
+  const attachedAddons = (addonsData?.data ?? []).filter((a) => a.quantity > 0)
 
   // Every option this component offers is only reachable through here — no
   // separate cap enforcement to keep in sync with the backend's own.
@@ -88,16 +90,42 @@ export function SubscriptionExtendDialog({
 
   const blocks = Math.floor(months / 12)
   const remainder = months % 12
-  const monthsSubtotal = computeExtensionSubtotal(prices, months)
-  const flatMonthlyTotal = (prices?.monthly ?? 0) * months
+  const planMonthsSubtotal = computeExtensionSubtotal(prices, months)
+  const addonMonthsSubtotal = computeExtensionAddonSubtotal(
+    attachedAddons,
+    subscription.currency,
+    months
+  )
+  const monthsSubtotal = planMonthsSubtotal + addonMonthsSubtotal
+  const flatMonthlyTotal =
+    (prices?.monthly ?? 0) * months +
+    attachedAddons.reduce(
+      (sum, a) =>
+        sum + (a.prices[subscription.currency]?.monthly ?? 0) * a.quantity,
+      0
+    ) *
+      months
   const monthsSavings = flatMonthlyTotal - monthsSubtotal
   const monthsSavingsPercent =
     flatMonthlyTotal > 0
       ? Math.round((monthsSavings / flatMonthlyTotal) * 100)
       : 0
 
-  const annualSubtotal = prices?.yearly ?? 0
-  const annualFlatTotal = (prices?.monthly ?? 0) * 12
+  const planAnnualSubtotal = prices?.yearly ?? 0
+  const addonAnnualSubtotal = computeExtensionAddonSubtotal(
+    attachedAddons,
+    subscription.currency,
+    12
+  )
+  const annualSubtotal = planAnnualSubtotal + addonAnnualSubtotal
+  const annualFlatTotal =
+    (prices?.monthly ?? 0) * 12 +
+    attachedAddons.reduce(
+      (sum, a) =>
+        sum + (a.prices[subscription.currency]?.monthly ?? 0) * a.quantity,
+      0
+    ) *
+      12
   const annualSavings = annualFlatTotal - annualSubtotal
   const annualSavingsPercent =
     annualFlatTotal > 0
@@ -270,7 +298,7 @@ export function SubscriptionExtendDialog({
                     {t("billing.extend.lineTwelveMonthsYearly")}
                   </span>
                   <span>
-                    {formatMoney(annualSubtotal, subscription.currency)}
+                    {formatMoney(planAnnualSubtotal, subscription.currency)}
                   </span>
                 </div>
               ) : (
@@ -306,6 +334,71 @@ export function SubscriptionExtendDialog({
                   )}
                 </>
               )}
+
+              {!plansLoading &&
+                attachedAddons.map((addon) => {
+                  const addonPrices = addon.prices[subscription.currency]
+                  if (!addonPrices) return null
+                  return (
+                    <div key={addon.addon_id} className="contents">
+                      {mode === "annual" ? (
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">
+                            {t("billing.extend.addonLineTwelveMonthsYearly", {
+                              name: addon.name,
+                              quantity: addon.quantity,
+                            })}
+                          </span>
+                          <span>
+                            {formatMoney(
+                              addonPrices.yearly * addon.quantity,
+                              subscription.currency
+                            )}
+                          </span>
+                        </div>
+                      ) : (
+                        <>
+                          {blocks >= 1 && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                {t("billing.extend.addonLineYearlyBlocks", {
+                                  name: addon.name,
+                                  quantity: addon.quantity,
+                                  blocks,
+                                })}
+                              </span>
+                              <span>
+                                {formatMoney(
+                                  blocks * addonPrices.yearly * addon.quantity,
+                                  subscription.currency
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {(blocks === 0 || remainder > 0) && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                {t("billing.extend.addonLineMonthlyRemainder", {
+                                  name: addon.name,
+                                  quantity: addon.quantity,
+                                  count: blocks === 0 ? months : remainder,
+                                })}
+                              </span>
+                              <span>
+                                {formatMoney(
+                                  (blocks === 0 ? months : remainder) *
+                                    addonPrices.monthly *
+                                    addon.quantity,
+                                  subscription.currency
+                                )}
+                              </span>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
 
               {!plansLoading && (
                 <>

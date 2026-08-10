@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -91,7 +92,8 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 		return nil
 	}
 	if staleSubscriptionCheck(sub, check) {
-		slog.Info("skipping stale subscription reminder", "subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
+		slog.Info("skipping stale subscription reminder",
+			"subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
 		return nil
 	}
 	events.Publish(ctx, w.svc.pub, events.ExchangeBilling, events.RoutingKeySubscriptionRemind, "billing", sub.SubjectID,
@@ -119,7 +121,9 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 // invoice for sub. Returns (nil, err) on failure, in which case the
 // transaction rolled back and nothing changed — a later redelivery of the
 // same event retries from the same state.
-func (w *Worker) reconcileScheduledCancellation(ctx context.Context, check events.SubscriptionCheck) (*subscriptionRecord, error) {
+func (w *Worker) reconcileScheduledCancellation(
+	ctx context.Context, check events.SubscriptionCheck,
+) (*subscriptionRecord, error) {
 	pctx := db.WithPendingEvents(ctx)
 	var sub *subscriptionRecord
 	err := db.WithTx(pctx, w.svc.pool, func(tx db.Querier) error {
@@ -223,8 +227,9 @@ func (w *Worker) reconcileScheduledOverage(ctx context.Context, subscriptionID s
 			}
 			phase := historyPhaseApplied
 			appliedAt := time.Now()
-			if _, err := w.svc.repo.insertHistoryWithPhase(txCtx, q, sub.ID, actionDowngrade,
-				&sub.Plan, sub.ScheduledPlan, 0, sub.Currency, changedBySystem, nil, &phase, &appliedAt); err != nil {
+			if _, err := w.svc.repo.insertHistoryWithCycle(txCtx, q, sub.ID, actionDowngrade,
+				&sub.Plan, sub.ScheduledPlan, 0, sub.Currency, changedBySystem, nil, &phase, &appliedAt,
+				&sub.Cycle, sub.ScheduledCycle); err != nil {
 				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
 			}
 		}
@@ -233,9 +238,16 @@ func (w *Worker) reconcileScheduledOverage(ctx context.Context, subscriptionID s
 				if err := w.svc.repo.deleteSubscriptionAddon(txCtx, q, sub.ID, a.AddonID); err != nil {
 					return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
 				}
-				continue
+			} else if err := w.svc.repo.applyScheduledAddonQuantityChange(txCtx, q, sub.ID, a.AddonID, a.ScheduledQuantity); err != nil {
+				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
 			}
-			if err := w.svc.repo.applyScheduledAddonQuantityChange(txCtx, q, sub.ID, a.AddonID, a.ScheduledQuantity); err != nil {
+			addonMetadata, _ := json.Marshal(addonChangeMetadata{
+				AddonID: a.AddonID, FromQuantity: a.LiveQuantity, ToQuantity: a.ScheduledQuantity,
+			})
+			addonPhase := historyPhaseApplied
+			addonAppliedAt := time.Now()
+			if _, err := w.svc.repo.insertHistoryWithPhase(txCtx, q, sub.ID, "addon_change",
+				nil, nil, 0, sub.Currency, changedBySystem, addonMetadata, &addonPhase, &addonAppliedAt); err != nil {
 				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
 			}
 		}
@@ -298,8 +310,11 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
 	}
 
-	composed, addonLines, couponCode, discountCents := w.svc.composeInvoiceAmount(
+	composed, addonLines, couponCode, discountCents, err := w.svc.composeInvoiceAmount(
 		ctx, w.svc.pool, sub.ID, planInfo, sub.Currency, sub.Cycle)
+	if err != nil {
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: compose invoice amount: %w", err)
+	}
 	if composed <= 0 {
 		// Zero-priced plan (e.g. "custom", contact-us only, never self-service
 		// selectable) with no addons — insertInvoice's amount_cents CHECK
@@ -312,15 +327,36 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		taxRate, _ = w.svc.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
 	}
 	tax := calculateTax(composed, taxRate)
-	inv, err := w.svc.repo.insertInvoice(ctx, w.svc.pool, sub.SubjectID, sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false)
+
+	// DB-local writes (invoice + line item + charges) wrapped in one
+	// transaction so a mid-sequence failure can't leave an orphaned invoice
+	// with a wrong/missing line-item breakdown — same convention every other
+	// invoice-creation site in this module already uses (provisionSubscription,
+	// extendSubscription, activateTrialNow, resumeSubscription). The payment
+	// link (blocking Stripe/Xendit HTTP call) and event publish stay outside,
+	// after this transaction commits.
+	var inv *invoiceRecord
+	err = db.WithTx(ctx, w.svc.pool, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var err error
+		inv, err = w.svc.repo.insertInvoice(txCtx, tx, sub.SubjectID, sub.ID,
+			composed, taxRate, tax, sub.Currency, "subscription", false, nil)
+		if err != nil {
+			return err
+		}
+		if err := w.svc.insertPlanLineItem(txCtx, inv, planInfo); err != nil {
+			return err
+		}
+		if err := w.svc.applyInvoiceCharges(
+			txCtx, tx, sub.ID, inv.ID, sub.Currency,
+			addonLines, couponCode, discountCents,
+		); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: insert invoice: %w", err)
-	}
-	if err := w.svc.insertPlanLineItem(ctx, inv, planInfo); err != nil {
-		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: insert plan line item: %w", err)
-	}
-	if err := w.svc.applyInvoiceCharges(ctx, w.svc.pool, sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents); err != nil {
-		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: apply invoice charges: %w", err)
 	}
 
 	_, err = w.svc.createPaymentLink(ctx, "", "", inv.ID)

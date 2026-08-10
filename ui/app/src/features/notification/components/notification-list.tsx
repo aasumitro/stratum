@@ -19,6 +19,7 @@ import {
 } from "@/features/notification/notification-categories"
 import { cn } from "@/lib/ui"
 import { timeAgo } from "@/lib/format"
+import { notificationDisplayText } from "@/features/notification/notification-text"
 
 type DateGroupKey = "today" | "yesterday" | "week" | "earlier"
 const DATE_GROUP_ORDER: DateGroupKey[] = [
@@ -91,7 +92,7 @@ export function NotificationList({
   organizationNames,
   category,
 }: Props) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const [cursor, setCursor] = useState<string | undefined>(undefined)
   // Category tabs are a frontend grouping over the backend's flat
@@ -155,6 +156,11 @@ export function NotificationList({
                 const actionPath = actionPathFor(n)
                 const rowCategory = CHANNEL_CATEGORY[n.channel]
                 const Icon = rowCategory ? CATEGORY_ICON[rowCategory] : IconBell
+                const { subject, body } = notificationDisplayText(
+                  n,
+                  t,
+                  i18n.exists.bind(i18n)
+                )
                 return (
                   <div
                     key={n.id}
@@ -178,7 +184,7 @@ export function NotificationList({
                             isUnread ? "font-semibold" : "font-medium"
                           )}
                         >
-                          {n.subject}
+                          {subject}
                         </span>
                         {isUnread && (
                           <span
@@ -191,7 +197,7 @@ export function NotificationList({
                         </span>
                       </div>
                       <p className="line-clamp-2 text-xs text-muted-foreground">
-                        {n.body}
+                        {body}
                       </p>
                       {organizationNames[n.organization_id] && (
                         <span className="text-xs text-muted-foreground/70">

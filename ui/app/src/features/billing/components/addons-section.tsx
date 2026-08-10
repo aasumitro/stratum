@@ -11,7 +11,7 @@ import { ReviewChangesDialog } from "@/features/billing/components/review-change
 import { OverageWarningCard } from "@/features/billing/components/overage-warning-card"
 import { PayButton } from "@/features/billing/components/pay-button"
 import {
-  useAddonsCatalog,
+  useOrgAddonsCatalog,
   useAttachedAddons,
   useAttachAddon,
   useDetachAddon,
@@ -19,7 +19,6 @@ import {
   useBillingSubscription,
   useInvoices,
 } from "@/features/billing/hooks"
-import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { usePermissions } from "@/hooks/use-permissions"
 import {
   formatPrice,
@@ -56,20 +55,8 @@ export function AddonsSection({ organizationId }: Props) {
     AmendmentChange[]
   >([])
 
-  // The org's real country_code, not its subscription currency, is what
-  // scopes every priced catalog fetch below down to one currency — a
-  // customer must never see (or be able to pick from) a currency they
-  // can't actually be billed in. The catalog fetch stays disabled until
-  // country_code is known, rather than firing once unscoped and again once
-  // scoped — the first response would otherwise flash every currency for a
-  // moment before the real, scoped one replaces it.
-  const { data: orgData, isLoading: orgLoading } =
-    useOrganization(organizationId)
-  const countryCode = orgData?.data?.country_code ?? ""
-  const { data: catalogData, isLoading: catalogLoading } = useAddonsCatalog(
-    countryCode,
-    !orgLoading
-  )
+  const { data: catalogData, isLoading: catalogLoading } =
+    useOrgAddonsCatalog(organizationId)
   const { data: attachedData, isLoading: attachedLoading } =
     useAttachedAddons(organizationId)
   const { data: subData } = useBillingSubscription(organizationId)
@@ -92,10 +79,9 @@ export function AddonsSection({ organizationId }: Props) {
   const cycle = subData?.data?.cycle ?? "monthly"
   const isTrialing = subData?.data?.status === "trialing"
   const periodEnd = subData?.data?.period_end
-  // Every addon in `catalog` was scoped by the same country_code above, so
-  // each one's price map holds exactly one currency — read it back from the
-  // data itself rather than the subscription's own currency field, so this
-  // never depends on the two staying in sync.
+  // The API always scopes prices down to one, server-resolved currency —
+  // read it back from the data itself rather than the subscription's own
+  // currency field, so this never depends on the two staying in sync.
   const displayCurrency = Object.keys(catalog[0]?.prices ?? {})[0] ?? "USD"
 
   const selected = Object.fromEntries(
@@ -113,7 +99,7 @@ export function AddonsSection({ organizationId }: Props) {
     }
   }
 
-  if (orgLoading || catalogLoading || attachedLoading) {
+  if (catalogLoading || attachedLoading) {
     return (
       <Card>
         <CardHeader>
@@ -271,10 +257,10 @@ export function AddonsSection({ organizationId }: Props) {
         onOpenChange={(open) => {
           if (!open) setPickerRequested(false)
         }}
-        countryCode={countryCode}
         cycle={cycle}
         selected={selected}
         onChange={handlePickerCommit}
+        organizationId={organizationId}
       />
 
       {reviewStaged && (

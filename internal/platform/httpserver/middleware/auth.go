@@ -47,8 +47,9 @@ type Claims struct {
 // checked as a fallback only, for forward compatibility with any other
 // JWKS-publishing IdP config.AuthConfig's JWKSURL might someday point at
 // that issues one instead. Empty return means neither claim was present —
-// revocation checks silently no-op for that token, same fail-open
-// convention as the rest of this app's best-effort security checks.
+// callers that need revocation checking (see AuthHooks.IsRevoked below)
+// treat that as fail-closed: a token with no session identifier is
+// rejected with 401 rather than let a revocation check silently no-op.
 func SessionIdentifier(claims jwtgo.MapClaims) string {
 	if sid, _ := claims["session_id"].(string); sid != "" {
 		return sid
@@ -89,7 +90,9 @@ type AuthHooks struct {
 //
 // On success, Claims are attached to the request context — retrieve them
 // in a handler with ClaimsFromContext(c).
-func NewAuthMiddleware(ctx context.Context, cfg config.AuthConfig, hooks ...AuthHooks) (authMW, sseMW gin.HandlerFunc, err error) {
+func NewAuthMiddleware(
+	ctx context.Context, cfg config.AuthConfig, hooks ...AuthHooks,
+) (authMW, sseMW gin.HandlerFunc, err error) {
 	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{cfg.JWKSURL})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating JWKS client: %w", err)

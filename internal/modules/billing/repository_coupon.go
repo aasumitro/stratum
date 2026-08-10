@@ -173,7 +173,10 @@ func (r *repository) listCouponRedemptionsForSubscription(
 	var out []couponRedemptionRecord
 	for rows.Next() {
 		var cr couponRedemptionRecord
-		if err := rows.Scan(&cr.CouponCode, &cr.DiscountType, &cr.AmountCents, &cr.PercentOff, &cr.Cadence, &cr.AppliedCount, &cr.DurationCount); err != nil {
+		if err := rows.Scan(
+			&cr.CouponCode, &cr.DiscountType, &cr.AmountCents,
+			&cr.PercentOff, &cr.Cadence, &cr.AppliedCount, &cr.DurationCount,
+		); err != nil {
 			return nil, fmt.Errorf("billing.listCouponRedemptionsForSubscription: scan: %w", err)
 		}
 		out = append(out, cr)

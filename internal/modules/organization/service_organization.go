@@ -82,37 +82,13 @@ func (s *service) createOrganization(
 		}
 	}()
 
-	if s.catalogReader != nil {
-		if _, err := s.catalogReader.GetPlanByID(ctx, plan); err != nil {
-			return nil, ErrUnknownPlan
-		}
-		for _, a := range addons {
-			if _, err := s.catalogReader.GetAddonByID(ctx, a.AddonID); err != nil {
-				return nil, ErrUnknownAddon
-			}
-		}
-		if couponCode != "" {
-			if err := s.catalogReader.ValidateCouponCode(ctx, couponCode, ownerID); err != nil {
-				return nil, ErrInvalidCoupon
-			}
-		}
+	if err := s.validateCatalogSelections(ctx, plan, addons, couponCode, ownerID); err != nil {
+		return nil, err
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	t, err := s.insertOrganizationWithOwner(ctx, slug, name, ownerID, countryCode)
 	if err != nil {
-		return nil, fmt.Errorf("organization.createOrganization: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	t, err := s.repo.insertOrganization(ctx, tx, slug, name, ownerID, countryCode)
-	if err != nil {
-		return nil, fmt.Errorf("organization.createOrganization: %w", err)
-	}
-	if err := s.repo.insertOwnerMembership(ctx, tx, t.ID, ownerID); err != nil {
-		return nil, fmt.Errorf("organization.createOrganization: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("organization.createOrganization: commit tx: %w", err)
+		return nil, err
 	}
 
 	eventAddons := make([]events.AddonSelection, len(addons))
@@ -126,6 +102,60 @@ func (s *service) createOrganization(
 			CountryCode: t.CountryCode, Plan: plan, Cycle: cycle,
 			Addons: eventAddons, CouponCode: couponCode, CreatedAt: t.CreatedAt,
 		})
+	return t, nil
+}
+
+// validateCatalogSelections checks plan, every addon ID, and a non-empty
+// coupon code against the live catalog before any DB write happens, so a
+// bad selection never leaves a half-created organization (or one whose
+// subscription-provisioning event fails forever) behind. A no-op when no
+// catalogReader is wired — catalog validation is optional, matching every
+// other call site of this dependency in this module.
+func (s *service) validateCatalogSelections(
+	ctx context.Context, plan string, addons []addonSelection, couponCode, ownerID string,
+) error {
+	if s.catalogReader == nil {
+		return nil
+	}
+	if _, err := s.catalogReader.GetPlanByID(ctx, plan); err != nil {
+		return ErrUnknownPlan
+	}
+	for _, a := range addons {
+		if _, err := s.catalogReader.GetAddonByID(ctx, a.AddonID); err != nil {
+			return ErrUnknownAddon
+		}
+	}
+	if couponCode != "" {
+		if err := s.catalogReader.ValidateCouponCode(ctx, couponCode, ownerID); err != nil {
+			return ErrInvalidCoupon
+		}
+	}
+	return nil
+}
+
+// insertOrganizationWithOwner creates the organization row and its owner
+// membership row atomically — either both exist or neither does, since a
+// membership-less organization would leave its owner unable to access what
+// they just created.
+func (s *service) insertOrganizationWithOwner(
+	ctx context.Context, slug, name, ownerID, countryCode string,
+) (*organizationRecord, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	t, err := s.repo.insertOrganization(ctx, tx, slug, name, ownerID, countryCode)
+	if err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: %w", err)
+	}
+	if err := s.repo.insertOwnerMembership(ctx, tx, t.ID, ownerID); err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: commit tx: %w", err)
+	}
 	return t, nil
 }
 
@@ -238,9 +268,11 @@ func (s *service) uploadLogo(ctx context.Context, organizationID string, r io.Re
 func (s *service) updateSettings(
 	ctx context.Context,
 	organizationID, timezone, locale, callerIP string,
-	allowedIPs []string,
+	allowedIPs *[]string,
 ) error {
-	if ipLocksOutCaller(callerIP, allowedIPs) {
+	// A nil allowedIPs means the field was omitted from the request — nothing
+	// to lock anyone out of, since the allowlist isn't changing.
+	if allowedIPs != nil && ipLocksOutCaller(callerIP, *allowedIPs) {
 		return apperr.Validation("IP_ALLOWLIST_LOCKS_OUT_CALLER", ErrIPAllowlistLocksOutCaller.Error())
 	}
 	if err := s.repo.updateSettings(ctx, s.pool, organizationID, timezone, locale, allowedIPs); err != nil {

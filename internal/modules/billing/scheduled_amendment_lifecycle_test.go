@@ -99,7 +99,7 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
-	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1); err != nil {
+	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1, "sub_owner"); err != nil {
 		t.Fatalf("schedule addon decrease: %v", err)
 	}
 
@@ -162,7 +162,10 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planCatalog: %v", err)
 	}
-	wantSubtotal, _, couponCode, discountCents := mod.svc.composeInvoiceAmount(t.Context(), pool, sub.ID, planInfo, "USD", cycleMonthly)
+	wantSubtotal, _, couponCode, discountCents, err := mod.svc.composeInvoiceAmount(t.Context(), pool, sub.ID, planInfo, "USD", cycleMonthly)
+	if err != nil {
+		t.Fatalf("composeInvoiceAmount: %v", err)
+	}
 	if couponCode != "" || discountCents != 0 {
 		t.Fatalf("test setup assumption violated: expected no coupon in this scenario, got couponCode=%q discountCents=%d", couponCode, discountCents)
 	}
@@ -220,7 +223,7 @@ func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testi
 	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
-	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1); err != nil {
+	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1, "sub_owner"); err != nil {
 		t.Fatalf("schedule addon decrease: %v", err)
 	}
 

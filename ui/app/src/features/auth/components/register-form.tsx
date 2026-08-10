@@ -12,6 +12,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useSignUp } from "@/features/auth/hooks/use-sign-up"
+import {
+  createEmailSchema,
+  createPasswordSchema,
+  fieldValidator,
+} from "@/lib/validation/schemas"
 
 export function RegisterForm() {
   const { t } = useTranslation()
@@ -90,12 +95,12 @@ export function RegisterForm() {
         <form.Field
           name="email"
           validators={{
-            onChange: ({ value }) => {
-              if (!value) return t("auth.register.emailRequired")
-              if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
-                return t("auth.register.emailInvalid")
-              return undefined
-            },
+            onChange: fieldValidator(
+              createEmailSchema({
+                required: t("auth.register.emailRequired"),
+                invalid: t("auth.register.emailInvalid"),
+              })
+            ),
           }}
         >
           {(field) => (
@@ -123,11 +128,15 @@ export function RegisterForm() {
         <form.Field
           name="password"
           validators={{
-            onChange: ({ value }) => {
-              if (!value) return t("auth.register.passwordRequired")
-              if (value.length < 8) return t("auth.register.passwordMinLength")
-              return undefined
-            },
+            onChange: fieldValidator(
+              createPasswordSchema({
+                required: t("auth.register.passwordRequired"),
+                minLength: {
+                  length: 8,
+                  message: t("auth.register.passwordMinLength"),
+                },
+              })
+            ),
           }}
         >
           {(field) => (

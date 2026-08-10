@@ -22,6 +22,11 @@ import {
 } from "@/features/account/hooks"
 import { useAuth } from "@/components/auth-provider"
 import type { UserProfile } from "@/types/account"
+import {
+  createOptionalHandleSchema,
+  createRequiredTextSchema,
+  fieldValidator,
+} from "@/lib/validation/schemas"
 
 export function ProfileForm() {
   const { user } = useAuth()
@@ -102,8 +107,9 @@ function ProfileFormInner({
           <form.Field
             name="full_name"
             validators={{
-              onChange: ({ value }) =>
-                !value.trim() ? t("account.form.nameRequired") : undefined,
+              onChange: fieldValidator(
+                createRequiredTextSchema(t("account.form.nameRequired"))
+              ),
             }}
           >
             {(field) => (
@@ -129,10 +135,9 @@ function ProfileFormInner({
           <form.Field
             name="display_name"
             validators={{
-              onChange: ({ value }) =>
-                value && !/^[A-Za-z0-9._]+$/.test(value)
-                  ? t("account.form.displayNameInvalid")
-                  : undefined,
+              onChange: fieldValidator(
+                createOptionalHandleSchema(t("account.form.displayNameInvalid"))
+              ),
             }}
           >
             {(field) => (

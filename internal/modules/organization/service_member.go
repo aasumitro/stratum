@@ -99,6 +99,9 @@ func (s *service) addMember(
 }
 
 func (s *service) removeMember(ctx context.Context, organizationID, authSub string) error {
+	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+		return apperr.Forbidden("CANNOT_REMOVE_OWNER", "cannot remove the organization owner")
+	}
 	if err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
 		return apperr.Internal("MEMBER_REMOVE_FAILED", "failed to remove member", err)
 	}

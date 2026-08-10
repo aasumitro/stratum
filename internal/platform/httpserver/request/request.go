@@ -14,8 +14,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
-const validationTagRequired = "required"
-
 // Bind validates and decodes the request body into req, writing a 422
 // validation-error response and returning false on failure. Callers should
 // return immediately when this returns false.
@@ -27,8 +25,18 @@ func Bind(c *gin.Context, req any) bool {
 	return true
 }
 
-// ValidationError translates a ShouldBindJSON error into a human-readable
-// field-level error map. Returns nil if the error is not a validation error.
+// FieldError is one field-level validation failure. Code is the validator
+// tag ("required", "min", "email", ...) and Param is that tag's argument
+// where it has one (e.g. "8" for "min=8") — translated and interpolated
+// frontend-side rather than rendered into English here, so the message
+// isn't fixed to one language at the source.
+type FieldError struct {
+	Code  string `json:"code"`
+	Param string `json:"param,omitempty"`
+}
+
+// ValidationError translates a ShouldBindJSON error into a field-level error
+// map. Returns nil if the error is not a validation error.
 //
 //	if err := c.ShouldBindJSON(&req); err != nil {
 //	    request.ValidationError(err).JSON(c, http.StatusUnprocessableEntity)
@@ -40,44 +48,12 @@ func ValidationError(err error) *response.Payload {
 		return response.Error("INVALID_REQUEST", err.Error())
 	}
 
-	fields := make(map[string][]string, len(ve))
+	fields := make(map[string][]FieldError, len(ve))
 	for _, fe := range ve {
 		field := toSnake(fe.Field())
-		fields[field] = append(fields[field], message(fe))
+		fields[field] = append(fields[field], FieldError{Code: fe.Tag(), Param: fe.Param()})
 	}
 	return response.Error("VALIDATION_FAILED", "validation failed", fields)
-}
-
-func message(fe validator.FieldError) string {
-	field := toSnake(fe.Field())
-	switch fe.Tag() {
-	case validationTagRequired:
-		return "The " + field + " field is required."
-	case "email":
-		return "The " + field + " field must be a valid email address."
-	case "min":
-		return "The " + field + " field must be at least " + fe.Param() + "."
-	case "max":
-		return "The " + field + " field must not be greater than " + fe.Param() + "."
-	case "oneof":
-		return "The selected " + field + " is invalid. Must be one of: " + fe.Param() + "."
-	case "url":
-		return "The " + field + " field must be a valid URL."
-	case "uuid":
-		return "The " + field + " field must be a valid UUID."
-	case "len":
-		return "The " + field + " field must be exactly " + fe.Param() + " characters."
-	case "gt":
-		return "The " + field + " field must be greater than " + fe.Param() + "."
-	case "gte":
-		return "The " + field + " field must be at least " + fe.Param() + "."
-	case "lt":
-		return "The " + field + " field must be less than " + fe.Param() + "."
-	case "lte":
-		return "The " + field + " field must not be greater than " + fe.Param() + "."
-	default:
-		return "The " + field + " field is invalid."
-	}
 }
 
 // SniffImageType reads up to the first 512 bytes of f to determine its

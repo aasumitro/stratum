@@ -339,6 +339,37 @@ func TestIntegration_IdempotentProvision(t *testing.T) {
 	}
 }
 
+// TestIntegration_ProvisionSubscription_PlanCatalogFailurePropagates is a
+// regression test: provisionSubscription's plan catalog lookup reads via
+// the pool, not the transaction-scoped querier, so a failure there isn't
+// caught by Postgres aborting the transaction the way
+// every other write in this function is — it must be propagated explicitly.
+// Before the fix, this call's error was swallowed (`planInfo, _ = ...`),
+// leaving subtotal at 0 and silently skipping invoice creation with no
+// error at all — a silently free, unbilled subscription. Simulated via a
+// redelivery carrying an unknown plan value: insertSubscription's
+// ON CONFLICT DO NOTHING skips the FK check for the conflicting
+// (already-provisioned) row, so this exercises the exact same "everything
+// else in the transaction succeeds, only the plan lookup fails" path a
+// transient lookup failure would.
+func TestIntegration_ProvisionSubscription_PlanCatalogFailurePropagates(t *testing.T) {
+	pool := testPoolBilling(t)
+
+	const orgID = "00000000-0000-0000-0000-000000000b06"
+	t.Cleanup(func() { cleanupBillingByOrganization(pool, orgID) })
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+		encodeOrganizationCreatedEventWithPlan(orgID, testAuthSubBilling, "solo", "monthly")); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+
+	badPlanBody := encodeOrganizationCreatedEventWithPlan(orgID, testAuthSubBilling, "does-not-exist", "monthly")
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), badPlanBody); err == nil {
+		t.Fatal("redelivery with an unknown plan: want an error from the plan catalog lookup, got nil")
+	}
+}
+
 // --- contracts.CatalogReader: catalog methods (moved from reference module,
 // which used to query billing.* tables directly across a schema boundary it
 // didn't own — see repository.go's "catalog" section) ---

@@ -37,8 +37,7 @@ export async function resolveLandingRoute(
   const isMember = (id: string) => organizations.some((o) => o.id === id)
 
   const defaultId = profileRes.data?.preferences?.default_organization_id as
-    | string
-    | undefined
+    string | undefined
   if (defaultId && isMember(defaultId)) {
     return {
       to: "/organization/$organizationId",

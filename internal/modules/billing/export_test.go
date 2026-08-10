@@ -113,8 +113,16 @@ func NewModuleForTest(pool *pgxpool.Pool, ref referenceStub) *Module {
 // and public webhook routes (/webhooks/stripe, /webhooks/xendit), backed by a
 // real DB. ProviderConfig is empty so webhook secrets are bypassed (dev mode).
 func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) *gin.Engine {
+	return NewWebhookModuleEngineWithPublisher(pool, authSub, organizationID, messaging.NoopPublisher{})
+}
+
+// NewWebhookModuleEngineWithPublisher is NewWebhookModuleEngine with an
+// injectable publisher, for tests that need to observe what a webhook
+// delivery publishes (e.g. asserting an event fires exactly once under
+// concurrent deliveries) instead of discarding it via NoopPublisher.
+func NewWebhookModuleEngineWithPublisher(pool *pgxpool.Pool, authSub, organizationID string, pub messaging.EventPublisher) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := NewModuleForTest(pool, nil)
+	mod := New(pool, pub, ProviderConfig{}, nil, nil)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})

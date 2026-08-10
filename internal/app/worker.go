@@ -29,7 +29,10 @@ func RunWorker() error {
 	}
 	defer infra.Close(context.Background())
 
-	bootstrap.DeclareWorkerDelayQueues(infra.MQConn)
+	if err := bootstrap.DeclareWorkerDelayQueues(infra.MQConn); err != nil {
+		return fmt.Errorf("declaring worker delay topology: %w", err)
+	}
+	infra.Log.Info("worker delay topology declared")
 
 	// Bucket existence is ensured by the API on its own startup (see
 	// api.go) — not repeated here, since it's the same idempotent setup
@@ -58,6 +61,7 @@ func RunWorker() error {
 	for _, c := range consumers {
 		wg.Go(func() { c.Run(ctx) })
 	}
+	wg.Go(func() { bootstrap.RunDelayTopologyReconnectLoop(ctx, infra.MQConn, infra.Log) })
 
 	// Hourly cleanup of expired organization invitations.
 	wg.Go(func() {

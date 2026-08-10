@@ -1,5 +1,34 @@
 import type { AttachedAddon, BillingCycle } from "@/types/billing"
 
+// AddonChangeMetadata mirrors the backend's addonChangeMetadata
+// (service_addon.go) — the shape of subscription_history.metadata for every
+// "addon_change" row. pending marks the one row that doesn't mean the
+// quantity already changed: requestAddonIncrease's invoice-creation row
+// records a quantity increase that's only requested, gated on that
+// invoice's payment.
+export interface AddonChangeMetadata {
+  addon_id: string
+  from_quantity: number
+  to_quantity: number
+  pending?: boolean
+}
+
+export function parseAddonChangeMetadata(
+  metadata: unknown
+): AddonChangeMetadata | null {
+  if (typeof metadata !== "object" || metadata === null) return null
+  const m = metadata as Record<string, unknown>
+  if (typeof m.addon_id !== "string") return null
+  if (typeof m.from_quantity !== "number" || typeof m.to_quantity !== "number")
+    return null
+  return {
+    addon_id: m.addon_id,
+    from_quantity: m.from_quantity,
+    to_quantity: m.to_quantity,
+    pending: m.pending === true,
+  }
+}
+
 export function formatPrice(
   amount: number,
   currency: string,

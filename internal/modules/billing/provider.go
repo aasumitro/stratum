@@ -32,11 +32,27 @@ type paymentLinkResult struct {
 	ExpiresAt  *time.Time
 }
 
+// checkoutLineItem is one line on the hosted checkout page — a plan/addon
+// charge or the invoice's tax, in that display order. Never the discount
+// line: Stripe Checkout rejects a negative unit_amount, and Xendit's items
+// total must equal the invoice amount too, so a discounted invoice always
+// falls back to one flat line instead of risking either provider charging
+// something other than the invoice's real total (see createPaymentLink).
+type checkoutLineItem struct {
+	Name            string
+	Quantity        int
+	UnitAmountCents int64
+}
+
 // createStripeCheckoutSession creates a Stripe Checkout Session and returns
-// the session ID (used as external_id) and the hosted payment URL.
+// the session ID (used as external_id) and the hosted payment URL. items
+// itemizes the checkout when non-empty; empty falls back to one flat line
+// using label (the invoice number, or the raw ID if unassigned) and the
+// invoice's full amountCents — see checkoutLineItem's own doc for why.
 func createStripeCheckoutSession(
 	ctx context.Context, cfg ProviderConfig,
-	invoiceID string, amountCents int64, currency string,
+	invoiceID, label string, amountCents int64,
+	currency string, items []checkoutLineItem,
 ) (*paymentLinkResult, error) {
 	form := url.Values{}
 	form.Set("mode", "payment")
@@ -44,10 +60,16 @@ func createStripeCheckoutSession(
 	cancelURL := cmp.Or(cfg.StripeCancelURL, "https://app.example.com/billing/cancel")
 	form.Set("success_url", successURL)
 	form.Set("cancel_url", cancelURL)
-	form.Set("line_items[0][price_data][currency]", strings.ToLower(currency))
-	form.Set("line_items[0][price_data][product_data][name]", "Invoice "+invoiceID)
-	form.Set("line_items[0][price_data][unit_amount]", fmt.Sprintf("%d", amountCents))
-	form.Set("line_items[0][quantity]", "1")
+	if len(items) == 0 {
+		items = []checkoutLineItem{{Name: "Invoice " + label, Quantity: 1, UnitAmountCents: amountCents}}
+	}
+	for i, item := range items {
+		prefix := fmt.Sprintf("line_items[%d]", i)
+		form.Set(prefix+"[price_data][currency]", strings.ToLower(currency))
+		form.Set(prefix+"[price_data][product_data][name]", item.Name)
+		form.Set(prefix+"[price_data][unit_amount]", fmt.Sprintf("%d", item.UnitAmountCents))
+		form.Set(prefix+"[quantity]", fmt.Sprintf("%d", item.Quantity))
+	}
 	form.Set("metadata[invoice_id]", invoiceID)
 	// Checkout Session metadata is a separate namespace from the PaymentIntent
 	// Stripe creates underneath it for mode=payment — it is NOT copied over
@@ -86,17 +108,32 @@ func createStripeCheckoutSession(
 	return &paymentLinkResult{ExternalID: out.ID, URL: out.URL}, nil
 }
 
-// createXenditInvoice creates a Xendit Invoice and returns its ID and payment URL.
+// createXenditInvoice creates a Xendit Invoice and returns its ID and
+// payment URL. items itemizes the hosted page's breakdown when non-empty —
+// see checkoutLineItem's own doc for when it's left empty instead.
 func createXenditInvoice(
 	ctx context.Context, cfg ProviderConfig,
-	invoiceID string, amountCents int64,
+	invoiceID, label string, amountCents int64,
+	items []checkoutLineItem,
 ) (*paymentLinkResult, error) {
-	payload, _ := json.Marshal(map[string]any{
+	reqBody := map[string]any{
 		"external_id": invoiceID,
 		"amount":      amountCents,
 		"currency":    currencyIDR,
-		"description": "Invoice " + invoiceID,
-	})
+		"description": "Invoice " + label,
+	}
+	if len(items) > 0 {
+		xenditItems := make([]map[string]any, len(items))
+		for i, item := range items {
+			xenditItems[i] = map[string]any{
+				"name":     item.Name,
+				"quantity": item.Quantity,
+				"price":    item.UnitAmountCents,
+			}
+		}
+		reqBody["items"] = xenditItems
+	}
+	payload, _ := json.Marshal(reqBody)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"https://api.xendit.co/v2/invoices",

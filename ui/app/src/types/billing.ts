@@ -1,11 +1,7 @@
 import type { PlanPrices } from "@/types/reference"
 
 export type SubscriptionStatus =
-  | "trialing"
-  | "active"
-  | "cancelled"
-  | "past_due"
-  | "expired"
+  "trialing" | "active" | "cancelled" | "past_due" | "expired"
 export type BillingCycle = "monthly" | "yearly"
 export type CancelReason =
   | "too_expensive"
@@ -23,6 +19,7 @@ export type HistoryAction =
   | "resume"
   | "expire"
   | "extend"
+  | "addon_change"
 
 export interface Subscription {
   id: string
@@ -116,6 +113,18 @@ export interface SubscriptionHistory {
   changed_by_kind: "user" | "system" | "webhook"
   changed_at: string
   metadata?: unknown
+  // phase distinguishes a scheduled-but-not-yet-applied change from one
+  // that already took effect, or one that was scheduled and then undone
+  // before it ever applied — undefined for an action with no phase concept
+  // (upgrade, extend, activate, resume, expire, immediate/trial addon change).
+  phase?: "scheduled" | "applied" | "undone"
+  // effective_at is when a scheduled/applied/undone row took (or will take)
+  // effect — distinct from changed_at, which is always when the row itself
+  // was written (e.g. the moment a downgrade was scheduled, not when it
+  // applies at renewal).
+  effective_at?: string
+  from_cycle?: BillingCycle
+  to_cycle?: BillingCycle
 }
 
 export interface UsageMetric {

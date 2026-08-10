@@ -73,19 +73,13 @@ export function useUsage(organizationId: string) {
   })
 }
 
-// countryCode, when passed, scopes the response to that country's currency
-// only (server-side — see reference.scopedPrices) instead of every currency
-// the catalog stores. Omitting it keeps today's full-currency-map behavior,
-// so existing callers (billing settings' plan/addon pickers, which already
-// know the org's real currency from its subscription record) are unaffected.
-export function usePlans(countryCode?: string, enabled = true) {
+// The backend always scopes prices to exactly one currency now, resolved
+// server-side from the caller's real IP (GeoIP) — never a client-supplied
+// value, so there's nothing left for a caller to pass here.
+export function usePlans(enabled = true) {
   return useHTTPQuery<Plan[]>({
-    queryKey: countryCode
-      ? [...queryKeys.references.plans(), countryCode]
-      : queryKeys.references.plans(),
-    url: countryCode
-      ? `${API.references("plans")}?country_code=${countryCode}`
-      : API.references("plans"),
+    queryKey: queryKeys.references.plans(),
+    url: API.references("plans"),
     options: { enabled },
   })
 }
@@ -97,14 +91,32 @@ export function useFeatures() {
   })
 }
 
-export function useAddonsCatalog(countryCode?: string, enabled = true) {
+export function useAddonsCatalog(enabled = true) {
   return useHTTPQuery<Addon[]>({
-    queryKey: countryCode
-      ? [...queryKeys.references.addons(), countryCode]
-      : queryKeys.references.addons(),
-    url: countryCode
-      ? `${API.references("addons")}?country_code=${countryCode}`
-      : API.references("addons"),
+    queryKey: queryKeys.references.addons(),
+    url: API.references("addons"),
+    options: { enabled },
+  })
+}
+
+// useOrgPlansCatalog/useOrgAddonsCatalog are the existing-subscription
+// counterparts of usePlans/useAddonsCatalog: same response shape, but prices
+// are scoped to the subscription's own already-fixed currency instead of the
+// caller's GeoIP-resolved one, which may not match what the org is actually
+// billed in (a different real IP, VPN, travel). Use these instead of
+// usePlans/useAddonsCatalog wherever an organizationId already exists.
+export function useOrgPlansCatalog(organizationId: string, enabled = true) {
+  return useHTTPQuery<Plan[]>({
+    queryKey: queryKeys.billing.plansCatalog(organizationId),
+    url: API.billing(organizationId, "plans", "catalog"),
+    options: { enabled },
+  })
+}
+
+export function useOrgAddonsCatalog(organizationId: string, enabled = true) {
+  return useHTTPQuery<Addon[]>({
+    queryKey: queryKeys.billing.addonsCatalog(organizationId),
+    url: API.billing(organizationId, "addons", "catalog"),
     options: { enabled },
   })
 }

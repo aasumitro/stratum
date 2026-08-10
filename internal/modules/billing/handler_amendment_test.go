@@ -398,7 +398,7 @@ func TestIntegration_GetSubscription_NothingScheduled_OmitsScheduledFields(t *te
 }
 
 // TestIntegration_GetSubscription_ScheduledDowngrade_ReflectsPlanAndCycle
-// also guards the fix this task made: scheduled_requested_at (repo-internal,
+// also guards against a regression: scheduled_requested_at (repo-internal,
 // set by the same seed that sets scheduled_plan/cycle) must never appear in
 // this response — only the per-addon endpoint exposes a request timestamp.
 func TestIntegration_GetSubscription_ScheduledDowngrade_ReflectsPlanAndCycle(t *testing.T) {

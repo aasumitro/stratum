@@ -124,6 +124,41 @@ func TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit(t *testing.T
 	}
 }
 
+// TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack covers
+// bufferedWriter's cap: a handler writing more than responseBufferCap must
+// fail the request (500) with the transaction rolled back — proven the
+// same way TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit
+// proves rollback above: a db.QueueEvent callback queued during the
+// request must never fire.
+func TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack(t *testing.T) {
+	pool := rlsTestPool(t)
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws_rls_cap_test"})
+		c.Next()
+	})
+	e.Use(middleware.NewRLSTxMiddleware(pool))
+
+	var fired []string
+	e.GET("/toolarge", func(c *gin.Context) {
+		db.QueueEvent(c.Request.Context(), func() { fired = append(fired, "toolarge") })
+		c.Status(http.StatusOK)
+		oversized := make([]byte, 6<<20) // 6MB > the 5MB cap
+		_, _ = c.Writer.Write(oversized)
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/toolarge", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("response exceeding the buffer cap: want 500, got %d", w.Code)
+	}
+	if len(fired) != 0 {
+		t.Fatalf("event queued on a cap-exceeded (rolled-back) request must not fire, fired = %v", fired)
+	}
+}
+
 func TestIntegration_RLSTxMiddleware_CommitFailure(t *testing.T) {
 	pool := rlsTestPool(t)
 	gin.SetMode(gin.TestMode)

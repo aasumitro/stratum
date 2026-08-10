@@ -126,7 +126,9 @@ func (r *repository) updateUser(
 // callers can record a before/after audit trail without a second query.
 // Returns pgx.ErrNoRows if the auth_sub hasn't onboarded yet (no account.users
 // row) — callers should treat that as a no-op, not a failure.
-func (r *repository) updateEmail(ctx context.Context, q db.Querier, authSub, email string) (u *userRecord, oldEmail string, err error) {
+func (r *repository) updateEmail(
+	ctx context.Context, q db.Querier, authSub, email string,
+) (u *userRecord, oldEmail string, err error) {
 	u = new(userRecord)
 	err = q.QueryRow(ctx, `
 		WITH old AS (SELECT email FROM account.users WHERE auth_sub = $1)
@@ -147,9 +149,16 @@ func (r *repository) updateEmail(ctx context.Context, q db.Querier, authSub, ema
 // This bypasses the HTTP audit middleware entirely (the webhook route lives
 // outside /api/v1, same as the Stripe/Xendit webhooks), so it's a manual
 // write here.
-func (r *repository) insertEmailChangeAuditEvent(ctx context.Context, q db.Querier, authSub, oldEmail, newEmail string) error {
+func (r *repository) insertEmailChangeAuditEvent(
+	ctx context.Context, q db.Querier,
+	authSub, oldEmail, newEmail string,
+) error {
 	metadata, _ := json.Marshal(map[string]string{"before": oldEmail, "after": newEmail})
-	if err := audit.InsertDirect(ctx, q, authSub, "EMAIL_CHANGE", "/webhooks/supabase/user-updated", 200, metadata); err != nil {
+	if err := audit.InsertDirect(
+		ctx, q, authSub, "EMAIL_CHANGE",
+		"/webhooks/supabase/user-updated",
+		200, metadata,
+	); err != nil {
 		return fmt.Errorf("account.insertEmailChangeAuditEvent: %w", err)
 	}
 	return nil
@@ -205,8 +214,10 @@ func (r *repository) isMFAEnabled(ctx context.Context, q db.Querier, authSub str
 }
 
 func (r *repository) setMFAEnabled(ctx context.Context, q db.Querier, authSub string, enabled bool) error {
-	_, err := q.Exec(ctx, `UPDATE account.users SET mfa_enabled = $2, updated_at = now() WHERE auth_sub = $1`,
-		authSub, enabled)
+	_, err := q.Exec(ctx,
+		`UPDATE account.users SET mfa_enabled = $2, updated_at = now() WHERE auth_sub = $1`,
+		authSub, enabled,
+	)
 	if err != nil {
 		return fmt.Errorf("account.setMFAEnabled: %w", err)
 	}
@@ -332,7 +343,10 @@ func (r *repository) insertLoginEvent(ctx context.Context, q db.Querier, authSub
 // two events landing in the same nanosecond could skip/duplicate one row at
 // a page boundary. Fine for a personal session list; use a composite keyset
 // cursor if this ever needs stronger pagination guarantees.
-func (r *repository) listLoginEvents(ctx context.Context, q db.Querier, authSub, cursor string, limit int) ([]loginEventRecord, string, error) {
+func (r *repository) listLoginEvents(
+	ctx context.Context, q db.Querier,
+	authSub, cursor string, limit int,
+) ([]loginEventRecord, string, error) {
 	query := `SELECT id, auth_sub, ip_address, user_agent, created_at
 		FROM account.login_events
 		WHERE auth_sub = $1 AND created_at > now() - interval '90 days'`

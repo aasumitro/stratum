@@ -131,7 +131,7 @@ function setupApi({
           updated_at: "2026-01-01T00:00:00Z",
         })
       )
-    if (url === "/v1/references/addons?country_code=US")
+    if (url === `/v1/organizations/${organizationId}/billing/addons/catalog`)
       return Promise.resolve(httpResponse(catalog))
     if (url === `/v1/organizations/${organizationId}/billing/addons`)
       return Promise.resolve(httpResponse(attached))
@@ -273,7 +273,7 @@ describe("AddonsSection", () => {
     await screen.findByText("No add-ons attached.")
   })
 
-  it("opens the AddAddonsDialog picker, scoped to the org's real country_code", async () => {
+  it("opens the AddAddonsDialog picker", async () => {
     setupApi({ status: "active", attached: [attachedAddon()] })
     renderAddonsSection()
 
@@ -286,10 +286,5 @@ describe("AddonsSection", () => {
     // copy) rather than asserting on "Add-ons", which collides with this
     // card's own <CardTitle> once the dialog's title renders alongside it.
     await screen.findByRole("button", { name: "Add Selected" })
-    await waitFor(() =>
-      expect(api.get).toHaveBeenCalledWith(
-        `/v1/organizations/${organizationId}`
-      )
-    )
   })
 })

@@ -120,7 +120,7 @@ function setupApi({
           updated_at: "2026-01-01T00:00:00Z",
         })
       )
-    if (url === "/v1/references/plans?country_code=US")
+    if (url === `/v1/organizations/${organizationId}/billing/plans/catalog`)
       return Promise.resolve(httpResponse(plans))
     if (url === `/v1/organizations/${organizationId}/members`)
       return Promise.resolve(httpResponse([]))
@@ -212,6 +212,20 @@ function renderWizard(subscriptionStatus: SubscriptionStatus) {
 }
 
 describe("DowngradeWizard — active (deferred) subscription", () => {
+  it("shows scheduled-effective copy on the first preview screen, not the proration note", async () => {
+    setupApi({ overage: false })
+    renderWizard("active")
+
+    await screen.findByText("Downgrade to a lower plan")
+    screen.getByText(
+      "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it anytime before that."
+    )
+    // The proration note ("new period end ...") only applies to an
+    // immediate change and must not render alongside the scheduled-effective
+    // copy above, which would contradict it.
+    expect(screen.queryByText(/new period end/)).toBeNull()
+  })
+
   it("skips the selection step and shows the scheduled-effective review note", async () => {
     setupApi({ overage: true })
     renderWizard("active")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/aasumitro/stratum/internal/platform/httpserver/reqctx"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/request"
@@ -23,6 +24,36 @@ const maxConcurrentSSEStreamsPerSubject = 3
 
 type handler struct {
 	svc *service
+}
+
+// ConcurrentSSELimitMiddleware rejects a stream request once the caller
+// already has max notification streams open, tracked via a Redis counter
+// keyed per subject. Only mounted on routes registered with a non-nil Redis
+// client (see module.go), so a Redis error here is an infra hiccup, not a
+// missing dependency — fails open (lets the request through unmetered)
+// rather than blocking streaming over it.
+func ConcurrentSSELimitMiddleware(redisClient *goredis.Client, maxStreams int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key := "sse:open:" + reqctx.Subject(c)
+		n, err := redisClient.Incr(c.Request.Context(), key).Result()
+		if err != nil {
+			c.Next()
+			return
+		}
+		// TTL is a safety net only, in case a connection ever ends without
+		// the deferred Decr running (e.g. the process is killed mid-stream)
+		// — refreshed on every open so a legitimately long-lived stream
+		// never has its slot expire out from under it.
+		redisClient.Expire(c.Request.Context(), key, 10*time.Minute)
+		if n > int64(maxStreams) {
+			redisClient.Decr(c.Request.Context(), key)
+			response.Error("TOO_MANY_STREAMS", "too many concurrent notification streams open").JSON(c, http.StatusTooManyRequests)
+			c.Abort()
+			return
+		}
+		defer redisClient.Decr(context.WithoutCancel(c.Request.Context()), key)
+		c.Next()
+	}
 }
 
 // listNotifications godoc
@@ -81,25 +112,6 @@ func (h *handler) listNotifications(c *gin.Context) {
 // @Router       /me/notifications/stream [get]
 func (h *handler) streamNotifications(c *gin.Context) {
 	subject := reqctx.Subject(c)
-
-	if h.svc.redis != nil {
-		key := "sse:open:" + subject
-		n, err := h.svc.redis.Incr(c.Request.Context(), key).Result()
-		if err == nil {
-			// TTL is a safety net only, in case a connection ever ends
-			// without the deferred Decr running (e.g. the process is
-			// killed mid-stream) — refreshed on every open so a
-			// legitimately long-lived stream never has its slot expire
-			// out from under it.
-			h.svc.redis.Expire(c.Request.Context(), key, 10*time.Minute)
-			if n > maxConcurrentSSEStreamsPerSubject {
-				h.svc.redis.Decr(c.Request.Context(), key)
-				response.Error("TOO_MANY_STREAMS", "too many concurrent notification streams open").JSON(c, http.StatusTooManyRequests)
-				return
-			}
-			defer h.svc.redis.Decr(context.WithoutCancel(c.Request.Context()), key)
-		}
-	}
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")

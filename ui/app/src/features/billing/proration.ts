@@ -12,3 +12,29 @@ export function computeExtensionSubtotal(
   const remainder = months % 12
   return blocks * prices.yearly + remainder * prices.monthly
 }
+
+// Mirrors computeExtensionAddonSubtotal (service_subscription_billing.go):
+// the same block/remainder rule as computeExtensionSubtotal, applied to
+// every currently attached addon and multiplied by its quantity — so the
+// confirmation screen never shows a smaller number than what extending
+// actually charges. Only live `quantity` counts, never
+// scheduled_quantity/pending_quantity (not-yet-effective changes).
+export function computeExtensionAddonSubtotal(
+  addons: {
+    quantity: number
+    prices: Record<string, { monthly: number; yearly: number }>
+  }[],
+  currency: string,
+  months: number
+): number {
+  const blocks = Math.floor(months / 12)
+  const remainder = months % 12
+  return addons.reduce((total, addon) => {
+    const prices = addon.prices[currency]
+    if (!prices) return total
+    return (
+      total +
+      (blocks * prices.yearly + remainder * prices.monthly) * addon.quantity
+    )
+  }, 0)
+}

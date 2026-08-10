@@ -7,6 +7,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useSignIn } from "@/features/auth/hooks/use-sign-in"
+import {
+  createEmailSchema,
+  createPasswordSchema,
+  fieldValidator,
+} from "@/lib/validation/schemas"
 
 export function LoginForm() {
   const { t } = useTranslation()
@@ -51,12 +56,12 @@ export function LoginForm() {
         <form.Field
           name="email"
           validators={{
-            onChange: ({ value }) => {
-              if (!value) return t("auth.login.emailRequired")
-              if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
-                return t("auth.login.emailInvalid")
-              return undefined
-            },
+            onChange: fieldValidator(
+              createEmailSchema({
+                required: t("auth.login.emailRequired"),
+                invalid: t("auth.login.emailInvalid"),
+              })
+            ),
           }}
         >
           {(field) => (
@@ -84,8 +89,11 @@ export function LoginForm() {
         <form.Field
           name="password"
           validators={{
-            onChange: ({ value }) =>
-              !value ? t("auth.login.passwordRequired") : undefined,
+            onChange: fieldValidator(
+              createPasswordSchema({
+                required: t("auth.login.passwordRequired"),
+              })
+            ),
           }}
         >
           {(field) => (

@@ -1,5 +1,6 @@
 import axios, { AxiosError } from "axios"
 import { toast } from "sonner"
+import i18n from "@/lib/i18n"
 import type {
   HTTPResponse,
   ResponsePagination,
@@ -38,10 +39,13 @@ export const SERVER_ERROR = {
 
 export function parseApiError(err: unknown, fallback: string): string {
   const e = err as {
-    response?: { data?: { status?: { message?: string } } }
-    status?: { message?: string }
+    response?: { data?: { status?: { code?: string; message?: string } } }
+    status?: { code?: string; message?: string }
   }
-  return e?.status?.message ?? e?.response?.data?.status?.message ?? fallback
+  const status = e?.status ?? e?.response?.data?.status
+  const message = status?.message ?? fallback
+  if (!status?.code) return message
+  return i18n.t(`errors.codes.${status.code}`, { defaultValue: message })
 }
 
 export const catchHTTPError = (error: unknown) => {

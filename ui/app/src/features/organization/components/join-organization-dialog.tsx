@@ -89,8 +89,7 @@ export function JoinOrganizationDialog({ open, onOpenChange }: Props) {
     checkedCode && previewError?.status?.code === "JOIN_ALREADY_MEMBER"
       ? (
           previewError.status.details as
-            | { organization_id?: string }
-            | undefined
+            { organization_id?: string } | undefined
         )?.organization_id
       : undefined
 

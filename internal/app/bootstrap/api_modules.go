@@ -12,6 +12,7 @@ import (
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/modules/reference"
 	"github.com/aasumitro/stratum/internal/platform/cache"
+	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/mailer"
 	"github.com/aasumitro/stratum/internal/platform/storage"
@@ -43,12 +44,24 @@ type APIModules struct {
 // storageClient may be nil (Storage.URL unconfigured) — organization's
 // SetStorageClient is nil-safe, matching every other optional dependency
 // in this codebase.
-func NewAPIModules(ctx context.Context, infra *Infra, storageClient *storage.Client) (*APIModules, error) {
+func NewAPIModules(
+	ctx context.Context, infra *Infra,
+	storageClient *storage.Client,
+) (*APIModules, error) {
 	cfg := infra.Cfg
 
 	// Redis namespace shared between account service (write revoked tokens)
 	// and auth middleware (read revoked tokens).
 	accountNS := cache.NewNamespace(infra.Redis, "account")
+
+	// GeoIPDBPath is required outside development (config.RequireGeoIPDBOutsideDev,
+	// checked in RunAPI right after Load()), so a non-dev deploy reaching this
+	// point already has a real database open here — geoip.New only ever opens
+	// an empty (dev-only, debug-header-driven) Resolver when Env == development.
+	countryResolver, err := geoip.New(cfg.GeoIPDBPath, cfg.Env == EnvDevelopment)
+	if err != nil {
+		return nil, fmt.Errorf("setting up geoip: %w", err)
+	}
 
 	organizationMod := organization.New(infra.Pool, infra.MQPublisher)
 	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
@@ -76,6 +89,8 @@ func NewAPIModules(ctx context.Context, infra *Infra, storageClient *storage.Cli
 	billingMod.SetOrganizationCommander(organizationMod)
 	organizationMod.SetCatalogReader(billingMod)
 	refMod.SetCatalogReader(billingMod)
+	organizationMod.SetCountryResolver(countryResolver)
+	refMod.SetCountryResolver(countryResolver)
 	accountMod.SetOrganizationWriter(organizationMod)
 	accountMod.SetNotificationWriter(notifMod)
 	accountMod.SetBillingWriter(billingMod)

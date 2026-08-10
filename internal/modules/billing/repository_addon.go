@@ -245,9 +245,13 @@ func (r *repository) setPendingAddonIncrease(
 // pendingAddonIncrease identifies which subscription/addon row is waiting on
 // a given invoice's payment — resolved by handleWebhook (by invoice ID) to
 // know which row to fold pending_quantity into once payment is confirmed.
+// Quantity/PendingQuantity carry the before/after values applyAddonIncreasePayment
+// needs for its subscription_history row (service_webhook.go).
 type pendingAddonIncrease struct {
-	SubscriptionID string
-	AddonID        string
+	SubscriptionID  string
+	AddonID         string
+	Quantity        int
+	PendingQuantity int
 }
 
 // findAddonByPendingInvoice resolves the addon row gated on invoiceID's
@@ -258,11 +262,11 @@ func (r *repository) findAddonByPendingInvoice(
 ) (*pendingAddonIncrease, error) {
 	p := new(pendingAddonIncrease)
 	err := q.QueryRow(ctx, `
-		SELECT subscription_id, addon_id
+		SELECT subscription_id, addon_id, quantity, pending_quantity
 		FROM billing.subscription_addons
 		WHERE pending_invoice_id = $1`,
 		invoiceID,
-	).Scan(&p.SubscriptionID, &p.AddonID)
+	).Scan(&p.SubscriptionID, &p.AddonID, &p.Quantity, &p.PendingQuantity)
 	if err != nil {
 		return nil, fmt.Errorf("billing.findAddonByPendingInvoice: %w", err)
 	}

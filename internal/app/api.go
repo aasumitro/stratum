@@ -23,6 +23,9 @@ func RunAPI() error {
 	if err := cfg.RequireWebhookSecretsOutsideDev(); err != nil {
 		return fmt.Errorf("validating config: %w", err)
 	}
+	if err := cfg.RequireGeoIPDBOutsideDev(); err != nil {
+		return fmt.Errorf("validating config: %w", err)
+	}
 
 	infra, err := bootstrap.SetupInfra(ctx, cfg)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
+	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
 // NewHandlerEngine returns a gin.Engine with profile handlers wired and no
@@ -34,6 +35,13 @@ func NewHandlerEngine() *gin.Engine {
 // NewModuleForTest creates a Module with a real pool and noop publisher.
 func NewModuleForTest(pool *pgxpool.Pool) *Module {
 	return New(pool, messaging.NoopPublisher{}, "", "", nil, nil, "")
+}
+
+// NewModuleForTestWithStore is NewModuleForTest but also wires a storage
+// client — needed to exercise executeDeleteAccount's avatar-blob cleanup
+// step against a fake/failing storage backend.
+func NewModuleForTestWithStore(pool *pgxpool.Pool, store *storage.Client) *Module {
+	return New(pool, messaging.NoopPublisher{}, "", "", nil, store, "")
 }
 
 // NewModuleForTestWithAdminAndRedis is NewModuleForTest but also wires a

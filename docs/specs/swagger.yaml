@@ -334,8 +334,6 @@ definitions:
         items:
           $ref: '#/definitions/createOrganizationAddonRequest'
         type: array
-      country_code:
-        type: string
       coupon_code:
         maxLength: 64
         type: string
@@ -481,15 +479,27 @@ definitions:
         type: string
       currency:
         type: string
+      effective_at:
+        type: string
+      from_cycle:
+        type: string
       from_plan:
         type: string
       id:
         type: string
       metadata:
-        items:
-          type: integer
-        type: array
+        description: |-
+          json.RawMessage (not []byte) so encoding/json embeds the jsonb
+          column's content verbatim instead of base64-encoding it; the
+          swaggertype override is needed because swag still resolves the
+          underlying []byte and would otherwise document this as an integer
+          array instead of an object.
+        type: object
+      phase:
+        type: string
       subscription_id:
+        type: string
+      to_cycle:
         type: string
       to_plan:
         type: string
@@ -614,6 +624,12 @@ definitions:
         type: string
       due_at:
         type: string
+      extension_months:
+        description: |-
+          ExtensionMonths is set only for kind="extension" invoices — the exact
+          months purchased, read back by applyExtensionPayment instead of
+          re-derived by summing line items (service_webhook.go).
+        type: integer
       id:
         type: string
       invoice_number:
@@ -1121,6 +1137,12 @@ definitions:
   updateSettingsRequest:
     properties:
       allowed_ips:
+        description: |-
+          AllowedIPs is a pointer so an absent field (nil) preserves the existing
+          allowlist, while an explicit "allowed_ips": [] clears it — the two
+          General Settings and Security settings tabs each PATCH this endpoint
+          with only their own fields, so omission must never wipe the other
+          tab's setting.
         items:
           type: string
         type: array
@@ -1299,14 +1321,14 @@ paths:
             $ref: '#/definitions/Payload'
         "422":
           description: invitation not found, expired, email mismatch, already a member,
-            or plan limit reached
+            plan limit reached, or organization not active
           schema:
             $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Accept an invitation
       tags:
-      - organization
+      - invitations
   /invitations/decline:
     post:
       consumes:
@@ -1336,7 +1358,7 @@ paths:
       - BearerAuth: []
       summary: Decline an invitation
       tags:
-      - organization
+      - invitations
   /invitations/preview:
     get:
       description: Read-only invitation details (organization name, role, inviter)
@@ -1372,7 +1394,7 @@ paths:
       - BearerAuth: []
       summary: Preview an invitation
       tags:
-      - organization
+      - invitations
   /invitations/request-new:
     post:
       consumes:
@@ -1401,7 +1423,7 @@ paths:
       - BearerAuth: []
       summary: Request a fresh invitation
       tags:
-      - organization
+      - invitations
   /me:
     delete:
       description: Queues an async GDPR account-deletion task. Requires step-up MFA
@@ -1719,7 +1741,7 @@ paths:
       - BearerAuth: []
       summary: List the caller's pending invitations
       tags:
-      - organization
+      - invitations
   /me/mfa/sync:
     post:
       description: Re-fetches MFA enrollment status from Supabase and persists it.
@@ -2154,7 +2176,8 @@ paths:
       consumes:
       - application/json
       description: Creates a new organization owned by the caller. Plan and cycle
-        are required and validated against the billing catalog.
+        are required and validated against the billing catalog. Billing country/currency
+        is resolved server-side from the caller's IP, not client-supplied.
       parameters:
       - description: Organization fields
         in: body
@@ -2476,6 +2499,9 @@ paths:
       - billing
   /organizations/{organizationID}/billing/addons:
     get:
+      description: |-
+        Each addon's prices map holds exactly one currency — the subscription's own
+        (sub.Currency), never every currency the catalog stores.
       parameters:
       - description: Organization ID
         in: path
@@ -2627,6 +2653,41 @@ paths:
       security:
       - BearerAuth: []
       summary: Undo a scheduled addon quantity change
+      tags:
+      - billing
+  /organizations/{organizationID}/billing/addons/catalog:
+    get:
+      description: |-
+        Same catalog as GET /references/addons (unattached options, not what's already
+        on this subscription), but prices are scoped to the subscription's own
+        already-fixed currency instead of the caller's GeoIP-resolved one.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/AddonInfo'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List the addon catalog, scoped to this subscription's currency
       tags:
       - billing
   /organizations/{organizationID}/billing/cancel:
@@ -3232,6 +3293,41 @@ paths:
       summary: Change the subscription plan
       tags:
       - billing
+  /organizations/{organizationID}/billing/plans/catalog:
+    get:
+      description: |-
+        Same catalog as GET /references/plans, but prices are scoped to the
+        subscription's own already-fixed currency instead of the caller's GeoIP-resolved
+        one — correct for an existing subscription, which never changes currency.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/PlanInfo'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: List the plan catalog, scoped to this subscription's currency
+      tags:
+      - billing
   /organizations/{organizationID}/billing/preview:
     get:
       description: Read-only proration preview. With no query params, previews the
@@ -3407,7 +3503,7 @@ paths:
       - BearerAuth: []
       summary: List organization invitations
       tags:
-      - organization
+      - invitations
     post:
       consumes:
       - application/json
@@ -3451,7 +3547,7 @@ paths:
       - BearerAuth: []
       summary: Invite a member by email
       tags:
-      - organization
+      - invitations
   /organizations/{organizationID}/invitations/{invitationID}:
     delete:
       parameters:
@@ -3480,7 +3576,7 @@ paths:
       - BearerAuth: []
       summary: Revoke an invitation
       tags:
-      - organization
+      - invitations
   /organizations/{organizationID}/invite-code:
     patch:
       consumes:
@@ -4438,13 +4534,8 @@ paths:
   /references/addons:
     get:
       description: Returns the billing addon catalog; delegated to the billing module's
-        catalog reader. Pass country_code to scope each addon's prices down to the
-        currency that country is actually billed in — omit it to get every currency.
-      parameters:
-      - description: ISO country code — scopes prices to that country's currency
-        in: query
-        name: country_code
-        type: string
+        catalog reader. Prices are scoped server-side to the currency the caller's
+        real (GeoIP-resolved) country is billed in.
       produces:
       - application/json
       responses:
@@ -4550,14 +4641,8 @@ paths:
   /references/plans:
     get:
       description: Returns the billing plan catalog (pricing, limits, features); delegated
-        to the billing module's catalog reader. Pass country_code to scope each plan's
-        prices down to the currency that country is actually billed in — omit it to
-        get every currency.
-      parameters:
-      - description: ISO country code — scopes prices to that country's currency
-        in: query
-        name: country_code
-        type: string
+        to the billing module's catalog reader. Prices are scoped server-side to the
+        currency the caller's real (GeoIP-resolved) country is billed in.
       produces:
       - application/json
       responses:

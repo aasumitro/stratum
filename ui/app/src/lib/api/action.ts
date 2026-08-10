@@ -6,8 +6,7 @@ import type { HTTPResponse } from "./response"
 type UseHTTPMutationParams<TData, TVariables> = {
   url: string | ((variables: TVariables) => string)
   headers?:
-    | Record<string, string>
-    | ((variables: TVariables) => Record<string, string>)
+    Record<string, string> | ((variables: TVariables) => Record<string, string>)
   options?: UseMutationOptions<
     HTTPResponse<TData>,
     HTTPResponse<unknown>,
@@ -18,8 +17,7 @@ type UseHTTPMutationParams<TData, TVariables> = {
 function postFn<TData, TVariables>(
   url: string | ((variables: TVariables) => string),
   headers?:
-    | Record<string, string>
-    | ((variables: TVariables) => Record<string, string>)
+    Record<string, string> | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
@@ -41,8 +39,7 @@ function postFn<TData, TVariables>(
 function putFn<TData, TVariables extends { id?: number; data?: unknown }>(
   url: string | ((variables: TVariables) => string),
   headers?:
-    | Record<string, string>
-    | ((variables: TVariables) => Record<string, string>)
+    Record<string, string> | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
@@ -90,8 +87,7 @@ export function useHTTPActionPut<
 function deleteFn<TData, TVariables = void>(
   url: string | ((variables: TVariables) => string),
   headers?:
-    | Record<string, string>
-    | ((variables: TVariables) => Record<string, string>)
+    Record<string, string> | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
@@ -124,8 +120,7 @@ export function useHTTPActionDelete<TData, TVariables = void>({
 function patchFn<TData, TVariables>(
   url: string | ((variables: TVariables) => string),
   headers?:
-    | Record<string, string>
-    | ((variables: TVariables) => Record<string, string>)
+    Record<string, string> | ((variables: TVariables) => Record<string, string>)
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
