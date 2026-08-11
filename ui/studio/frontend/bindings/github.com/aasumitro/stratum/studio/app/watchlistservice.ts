@@ -3,20 +3,15 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime"
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js"
+import * as $models from "./models.js";
 
 /**
  * GetAll returns all four watchlist buckets in a single call.
  */
-export function GetAll(
-  projectID: string
-): $CancellablePromise<$models.WatchlistResult> {
-  return $Call.ByID(165011160, projectID)
+export function GetAll(projectID: string): $CancellablePromise<$models.WatchlistResult> {
+    return $Call.ByID(165011160, projectID);
 }

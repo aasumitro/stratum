@@ -3,49 +3,36 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime"
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js"
+import * as $models from "./models.js";
 
-export function CheckHealth(
-  projectID: string
-): $CancellablePromise<$models.HealthStatus> {
-  return $Call.ByID(2919085592, projectID)
+export function CheckHealth(projectID: string): $CancellablePromise<$models.HealthStatus> {
+    return $Call.ByID(2919085592, projectID);
 }
 
-export function GetHistory(
-  projectID: string,
-  limit: number
-): $CancellablePromise<$models.MonitorLog[] | null> {
-  return $Call.ByID(3573570646, projectID, limit)
+export function GetHistory(projectID: string, limit: number): $CancellablePromise<$models.MonitorLog[] | null> {
+    return $Call.ByID(3573570646, projectID, limit);
 }
 
-export function GetLastStatus(
-  projectID: string
-): $CancellablePromise<$models.MonitorLog | null> {
-  return $Call.ByID(737113052, projectID)
+export function GetLastStatus(projectID: string): $CancellablePromise<$models.MonitorLog | null> {
+    return $Call.ByID(737113052, projectID);
 }
 
 export function IsPolling(projectID: string): $CancellablePromise<boolean> {
-  return $Call.ByID(1931328241, projectID)
+    return $Call.ByID(1931328241, projectID);
 }
 
-export function StartPoller(
-  projectID: string,
-  intervalSeconds: number
-): $CancellablePromise<void> {
-  return $Call.ByID(2516608976, projectID, intervalSeconds)
+export function StartPoller(projectID: string, intervalSeconds: number): $CancellablePromise<void> {
+    return $Call.ByID(2516608976, projectID, intervalSeconds);
 }
 
 export function StopAll(): $CancellablePromise<void> {
-  return $Call.ByID(2548295057)
+    return $Call.ByID(2548295057);
 }
 
 export function StopPoller(projectID: string): $CancellablePromise<void> {
-  return $Call.ByID(488834224, projectID)
+    return $Call.ByID(488834224, projectID);
 }

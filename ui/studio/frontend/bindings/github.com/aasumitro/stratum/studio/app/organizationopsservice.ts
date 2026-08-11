@@ -3,23 +3,17 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime"
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js"
+import * as $models from "./models.js";
 
 /**
  * CountOrganizations returns the total number of organizations for the given status filter.
  */
-export function CountOrganizations(
-  projectID: string,
-  status: string
-): $CancellablePromise<number> {
-  return $Call.ByID(929559576, projectID, status)
+export function CountOrganizations(projectID: string, status: string): $CancellablePromise<number> {
+    return $Call.ByID(929559576, projectID, status);
 }
 
 /**
@@ -27,32 +21,20 @@ export function CountOrganizations(
  * status: "" = all (excluding deleted), "active" | "suspended" | "deleted"
  * limit/offset enable pagination.
  */
-export function ListOrganizations(
-  projectID: string,
-  status: string,
-  limit: number,
-  offset: number
-): $CancellablePromise<$models.OrganizationSummary[] | null> {
-  return $Call.ByID(1044985415, projectID, status, limit, offset)
+export function ListOrganizations(projectID: string, status: string, limit: number, offset: number): $CancellablePromise<$models.OrganizationSummary[] | null> {
+    return $Call.ByID(1044985415, projectID, status, limit, offset);
 }
 
 /**
  * SuspendOrganization suspends an active organization and records the reason.
  */
-export function SuspendOrganization(
-  projectID: string,
-  organizationID: string,
-  reason: string
-): $CancellablePromise<void> {
-  return $Call.ByID(1015157868, projectID, organizationID, reason)
+export function SuspendOrganization(projectID: string, organizationID: string, reason: string): $CancellablePromise<void> {
+    return $Call.ByID(1015157868, projectID, organizationID, reason);
 }
 
 /**
  * UnsuspendOrganization restores a suspended organization to active status.
  */
-export function UnsuspendOrganization(
-  projectID: string,
-  organizationID: string
-): $CancellablePromise<void> {
-  return $Call.ByID(3073752337, projectID, organizationID)
+export function UnsuspendOrganization(projectID: string, organizationID: string): $CancellablePromise<void> {
+    return $Call.ByID(3073752337, projectID, organizationID);
 }

@@ -3,29 +3,22 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime"
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js"
+import * as $models from "./models.js";
 
 /**
  * Count returns the total number of log entries for the given project (or all projects when projectID="").
  */
 export function Count(projectID: string): $CancellablePromise<number> {
-  return $Call.ByID(3417459641, projectID)
+    return $Call.ByID(3417459641, projectID);
 }
 
 /**
  * List returns paginated operator log entries. Pass projectID="" to list across all projects.
  */
-export function List(
-  projectID: string,
-  limit: number,
-  offset: number
-): $CancellablePromise<$models.OperatorLogEntry[] | null> {
-  return $Call.ByID(835232366, projectID, limit, offset)
+export function List(projectID: string, limit: number, offset: number): $CancellablePromise<$models.OperatorLogEntry[] | null> {
+    return $Call.ByID(835232366, projectID, limit, offset);
 }

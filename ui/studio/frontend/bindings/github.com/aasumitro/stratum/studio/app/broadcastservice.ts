@@ -3,32 +3,24 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime"
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js"
+import * as $models from "./models.js";
 
 /**
  * CountRecipients returns the number of users who would receive a broadcast with the given target.
  */
-export function CountRecipients(
-  projectID: string,
-  target: string
-): $CancellablePromise<number> {
-  return $Call.ByID(3581313110, projectID, target)
+export function CountRecipients(projectID: string, target: string): $CancellablePromise<number> {
+    return $Call.ByID(3581313110, projectID, target);
 }
 
 /**
  * GetHistory returns the broadcast log for a project from the local SQLite store.
  */
-export function GetHistory(
-  projectID: string
-): $CancellablePromise<$models.BroadcastLog[] | null> {
-  return $Call.ByID(571542463, projectID)
+export function GetHistory(projectID: string): $CancellablePromise<$models.BroadcastLog[] | null> {
+    return $Call.ByID(571542463, projectID);
 }
 
 /**
@@ -36,9 +28,6 @@ export function GetHistory(
  * project DB, and writes the broadcast to the local operator log.
  * Returns the number of recipients who received the notification.
  */
-export function Send(
-  projectID: string,
-  input: $models.BroadcastInput
-): $CancellablePromise<number> {
-  return $Call.ByID(2820303469, projectID, input)
+export function Send(projectID: string, input: $models.BroadcastInput): $CancellablePromise<number> {
+    return $Call.ByID(2820303469, projectID, input);
 }

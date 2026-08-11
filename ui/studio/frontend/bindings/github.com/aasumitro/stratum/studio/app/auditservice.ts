@@ -3,41 +3,29 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime"
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js"
+import * as $models from "./models.js";
 
 /**
  * CountEvents returns the total number of matching audit events.
  */
-export function CountEvents(
-  projectID: string,
-  filter: $models.AuditFilter
-): $CancellablePromise<number> {
-  return $Call.ByID(252633891, projectID, filter)
+export function CountEvents(projectID: string, filter: $models.AuditFilter): $CancellablePromise<number> {
+    return $Call.ByID(252633891, projectID, filter);
 }
 
 /**
  * ExportCSV returns all matching audit events as a CSV string.
  */
-export function ExportCSV(
-  projectID: string,
-  filter: $models.AuditFilter
-): $CancellablePromise<string> {
-  return $Call.ByID(1232893351, projectID, filter)
+export function ExportCSV(projectID: string, filter: $models.AuditFilter): $CancellablePromise<string> {
+    return $Call.ByID(1232893351, projectID, filter);
 }
 
 /**
  * ListEvents returns paginated audit events matching the given filter.
  */
-export function ListEvents(
-  projectID: string,
-  filter: $models.AuditFilter
-): $CancellablePromise<$models.AuditEvent[] | null> {
-  return $Call.ByID(946867314, projectID, filter)
+export function ListEvents(projectID: string, filter: $models.AuditFilter): $CancellablePromise<$models.AuditEvent[] | null> {
+    return $Call.ByID(946867314, projectID, filter);
 }

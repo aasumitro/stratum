@@ -3,67 +3,40 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime"
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js"
+import * as $models from "./models.js";
 
-export function CreateCountry(
-  projectID: string,
-  input: $models.CountryInput
-): $CancellablePromise<void> {
-  return $Call.ByID(1050613665, projectID, input)
+export function CreateCountry(projectID: string, input: $models.CountryInput): $CancellablePromise<void> {
+    return $Call.ByID(1050613665, projectID, input);
 }
 
-export function CreateCurrency(
-  projectID: string,
-  input: $models.CurrencyInput
-): $CancellablePromise<void> {
-  return $Call.ByID(154758054, projectID, input)
+export function CreateCurrency(projectID: string, input: $models.CurrencyInput): $CancellablePromise<void> {
+    return $Call.ByID(154758054, projectID, input);
 }
 
-export function DeleteCountry(
-  projectID: string,
-  code: string
-): $CancellablePromise<void> {
-  return $Call.ByID(266121528, projectID, code)
+export function DeleteCountry(projectID: string, code: string): $CancellablePromise<void> {
+    return $Call.ByID(266121528, projectID, code);
 }
 
-export function DeleteCurrency(
-  projectID: string,
-  code: string
-): $CancellablePromise<void> {
-  return $Call.ByID(1765486881, projectID, code)
+export function DeleteCurrency(projectID: string, code: string): $CancellablePromise<void> {
+    return $Call.ByID(1765486881, projectID, code);
 }
 
-export function ListCountries(
-  projectID: string
-): $CancellablePromise<$models.Country[] | null> {
-  return $Call.ByID(173096913, projectID)
+export function ListCountries(projectID: string): $CancellablePromise<$models.Country[] | null> {
+    return $Call.ByID(173096913, projectID);
 }
 
-export function ListCurrencies(
-  projectID: string
-): $CancellablePromise<$models.Currency[] | null> {
-  return $Call.ByID(3894474370, projectID)
+export function ListCurrencies(projectID: string): $CancellablePromise<$models.Currency[] | null> {
+    return $Call.ByID(3894474370, projectID);
 }
 
-export function UpdateCountry(
-  projectID: string,
-  code: string,
-  input: $models.CountryInput
-): $CancellablePromise<void> {
-  return $Call.ByID(4068876318, projectID, code, input)
+export function UpdateCountry(projectID: string, code: string, input: $models.CountryInput): $CancellablePromise<void> {
+    return $Call.ByID(4068876318, projectID, code, input);
 }
 
-export function UpdateCurrency(
-  projectID: string,
-  code: string,
-  input: $models.CurrencyInput
-): $CancellablePromise<void> {
-  return $Call.ByID(139205231, projectID, code, input)
+export function UpdateCurrency(projectID: string, code: string, input: $models.CurrencyInput): $CancellablePromise<void> {
+    return $Call.ByID(139205231, projectID, code, input);
 }
