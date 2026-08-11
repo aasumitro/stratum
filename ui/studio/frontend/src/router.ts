@@ -102,7 +102,19 @@ const watchlistRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   projectsRoute,
-  studioLayoutRoute.addChildren([dashboardRoute, dlqRoute, referencesRoute, catalogRoute, monitoringRoute, supportRoute, broadcastRoute, organizationsRoute, auditRoute, operatorLogRoute, watchlistRoute]),
+  studioLayoutRoute.addChildren([
+    dashboardRoute,
+    dlqRoute,
+    referencesRoute,
+    catalogRoute,
+    monitoringRoute,
+    supportRoute,
+    broadcastRoute,
+    organizationsRoute,
+    auditRoute,
+    operatorLogRoute,
+    watchlistRoute,
+  ]),
 ])
 
 export const router = createRouter({ routeTree })

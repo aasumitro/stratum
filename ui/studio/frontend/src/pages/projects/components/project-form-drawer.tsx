@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { IconCheck, IconLoader2, IconX } from "@tabler/icons-react"
 import type { Project } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
-import { useAddProject, useTestConnection, useUpdateProject } from "@/hooks/use-projects"
+import {
+  useAddProject,
+  useTestConnection,
+  useUpdateProject,
+} from "@/hooks/use-projects"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -15,9 +19,16 @@ import {
 } from "@/components/ui/sheet"
 
 const ACCENT_COLORS = [
-  "#6366f1", "#8b5cf6", "#ec4899", "#ef4444",
-  "#f97316", "#eab308", "#22c55e", "#14b8a6",
-  "#0ea5e9", "#64748b",
+  "#6366f1",
+  "#8b5cf6",
+  "#ec4899",
+  "#ef4444",
+  "#f97316",
+  "#eab308",
+  "#22c55e",
+  "#14b8a6",
+  "#0ea5e9",
+  "#64748b",
 ]
 
 type TestStatus = "idle" | "testing" | "ok" | "error"
@@ -43,7 +54,14 @@ function DsnField({
 }: DsnFieldProps) {
   const [status, setStatus] = useState<TestStatus>("idle")
   const [errorMsg, setErrorMsg] = useState("")
+  const [prevValue, setPrevValue] = useState(value)
   const test = useTestConnection()
+
+  if (value !== prevValue) {
+    setPrevValue(value)
+    setStatus("idle")
+    setErrorMsg("")
+  }
 
   const handleTest = async () => {
     if (!value.trim()) return
@@ -58,16 +76,11 @@ function DsnField({
     }
   }
 
-  useEffect(() => {
-    setStatus("idle")
-    setErrorMsg("")
-  }, [value])
-
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>
         {label}
-        {required && <span className="text-destructive ml-0.5">*</span>}
+        {required && <span className="ml-0.5 text-destructive">*</span>}
       </Label>
       <div className="flex gap-2">
         <Input
@@ -83,7 +96,7 @@ function DsnField({
           size="sm"
           disabled={!value.trim() || status === "testing"}
           onClick={handleTest}
-          className="flex-shrink-0 w-16"
+          className="w-16 shrink-0"
         >
           {status === "testing" ? (
             <IconLoader2 className="size-3 animate-spin" />
@@ -125,8 +138,10 @@ export function ProjectFormDrawer({
   const [redisDsn, setRedisDsn] = useState("")
   const [statsToken, setStatsToken] = useState("")
   const [color, setColor] = useState(ACCENT_COLORS[0])
+  const [wasOpen, setWasOpen] = useState(open)
 
-  useEffect(() => {
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (open) {
       setName(project?.name ?? "")
       setApiUrl(project?.api_url ?? "")
@@ -136,7 +151,7 @@ export function ProjectFormDrawer({
       setStatsToken(project?.stats_token ?? "")
       setColor(project?.color ?? ACCENT_COLORS[0])
     }
-  }, [open, project])
+  }
 
   const isPending = add.isPending || update.isPending
   const isValid = name.trim() && apiUrl.trim() && dbDsn.trim() && mqDsn.trim()
@@ -178,7 +193,7 @@ export function ProjectFormDrawer({
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex flex-col gap-5 py-4 mx-6">
+        <div className="mx-6 flex flex-col gap-5 py-4">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="name">
               Name <span className="text-destructive">*</span>
@@ -250,10 +265,11 @@ export function ProjectFormDrawer({
                 <button
                   key={c}
                   type="button"
-                  className="size-6 rounded-full ring-offset-2 transition-all focus-visible:outline-none"
+                  className="size-6 rounded-full ring-offset-2 transition-all focus-visible:outline-hidden"
                   style={{
                     backgroundColor: c,
-                    outline: color === c ? `2px solid ${c}` : "2px solid transparent",
+                    outline:
+                      color === c ? `2px solid ${c}` : "2px solid transparent",
                     outlineOffset: 2,
                   }}
                   onClick={() => setColor(c)}
@@ -263,20 +279,16 @@ export function ProjectFormDrawer({
             </div>
           </div>
 
-          {error && (
-            <p className="text-sm text-destructive">
-              {String(error)}
-            </p>
-          )}
+          {error && <p className="text-sm text-destructive">{String(error)}</p>}
         </div>
 
-        <SheetFooter className="pt-4 mt-auto">
+        <SheetFooter className="mt-auto pt-4">
           <Button variant="outline" onClick={onClose} disabled={isPending}>
             Cancel
           </Button>
           <Button onClick={handleSubmit} disabled={!isValid || isPending}>
             {isPending ? (
-              <IconLoader2 className="size-4 animate-spin mr-2" />
+              <IconLoader2 className="mr-2 size-4 animate-spin" />
             ) : null}
             {isEdit ? "Save changes" : "Add project"}
           </Button>

@@ -191,6 +191,12 @@ jobs:
       - name: Install frontend dependencies
         run: cd frontend && npm ci
 
+      - name: Lint frontend
+        run: cd frontend && npm run lint
+
+      - name: Format check frontend
+        run: cd frontend && npx prettier --check "**/*.{ts,tsx}"
+
       - name: Build frontend
         run: cd frontend && npm run build
 

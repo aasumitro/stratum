@@ -1,5 +1,11 @@
 import { useState } from "react"
-import { IconAlertTriangle, IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react"
+import {
+  IconAlertTriangle,
+  IconPencil,
+  IconPlus,
+  IconRefresh,
+  IconTrash,
+} from "@tabler/icons-react"
 import type {
   Currency,
   CurrencyInput,
@@ -71,7 +77,7 @@ function CurrencyForm({ currency, projectId, onClose }: CurrencyFormProps) {
           decimal_places: currency.decimal_places,
           active: currency.active,
         }
-      : EMPTY_CURRENCY,
+      : EMPTY_CURRENCY
   )
 
   const set = <K extends keyof CurrencyInput>(k: K, v: CurrencyInput[K]) =>
@@ -79,21 +85,33 @@ function CurrencyForm({ currency, projectId, onClose }: CurrencyFormProps) {
 
   const handleSubmit = () => {
     if (isEdit) {
-      update.mutate({ code: currency!.code, input: form }, { onSuccess: onClose })
+      update.mutate(
+        { code: currency!.code, input: form },
+        { onSuccess: onClose }
+      )
     } else {
       create.mutate(form, { onSuccess: onClose })
     }
   }
 
   return (
-    <Sheet open onOpenChange={(o) => { if (!o) onClose() }}>
-      <SheetContent className="flex flex-col gap-0 w-full sm:max-w-lg overflow-y-auto">
+    <Sheet
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose()
+      }}
+    >
+      <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-lg">
         <SheetHeader className="pb-4">
-          <SheetTitle>{isEdit ? `Edit currency — ${currency!.code}` : "New currency"}</SheetTitle>
-          <SheetDescription>Changes are written directly to the production database.</SheetDescription>
+          <SheetTitle>
+            {isEdit ? `Edit currency — ${currency!.code}` : "New currency"}
+          </SheetTitle>
+          <SheetDescription>
+            Changes are written directly to the production database.
+          </SheetDescription>
         </SheetHeader>
 
-        <div className="flex flex-col gap-4 py-4 mx-6">
+        <div className="mx-6 flex flex-col gap-4 py-4">
           {!isEdit && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="cur-code">ISO code *</Label>
@@ -142,7 +160,7 @@ function CurrencyForm({ currency, projectId, onClose }: CurrencyFormProps) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label className="flex items-center gap-2 cursor-pointer">
+            <Label className="flex cursor-pointer items-center gap-2">
               <input
                 type="checkbox"
                 checked={form.active}
@@ -154,8 +172,10 @@ function CurrencyForm({ currency, projectId, onClose }: CurrencyFormProps) {
           </div>
         </div>
 
-        <SheetFooter className="pt-4 mt-auto">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <SheetFooter className="mt-auto pt-4">
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
           <Button onClick={handleSubmit} disabled={pending}>
             {pending ? "Saving…" : isEdit ? "Save changes" : "Create currency"}
           </Button>
@@ -166,7 +186,13 @@ function CurrencyForm({ currency, projectId, onClose }: CurrencyFormProps) {
 }
 
 export function CurrenciesTab({ projectId }: { projectId: string }) {
-  const { data: currencies, isLoading, error, refetch, isFetching } = useCurrencies(projectId)
+  const {
+    data: currencies,
+    isLoading,
+    error,
+    refetch,
+    isFetching,
+  } = useCurrencies(projectId)
   const deleteCurrency = useDeleteCurrency(projectId)
 
   const [formTarget, setFormTarget] = useState<Currency | null | "new">(null)
@@ -177,8 +203,15 @@ export function CurrenciesTab({ projectId }: { projectId: string }) {
       <WriteBanner />
 
       <div className="flex items-center justify-between">
-        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-          <IconRefresh className={`size-4 ${isFetching ? "animate-spin" : ""}`} />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => refetch()}
+          disabled={isFetching}
+        >
+          <IconRefresh
+            className={`size-4 ${isFetching ? "animate-spin" : ""}`}
+          />
           Refresh
         </Button>
         <Button size="sm" onClick={() => setFormTarget("new")}>
@@ -192,7 +225,9 @@ export function CurrenciesTab({ projectId }: { projectId: string }) {
       ) : error ? (
         <p className="text-sm text-destructive">{String(error)}</p>
       ) : !currencies || currencies.length === 0 ? (
-        <p className="text-sm text-muted-foreground py-8 text-center">No currencies found</p>
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No currencies found
+        </p>
       ) : (
         <Table>
           <TableHeader>
@@ -208,25 +243,38 @@ export function CurrenciesTab({ projectId }: { projectId: string }) {
           <TableBody>
             {currencies.map((c: Currency) => (
               <TableRow key={c.code}>
-                <TableCell><code className="font-mono text-xs">{c.code}</code></TableCell>
+                <TableCell>
+                  <code className="font-mono text-xs">{c.code}</code>
+                </TableCell>
                 <TableCell className="text-sm">{c.name}</TableCell>
-                <TableCell className="text-sm font-medium">{c.symbol}</TableCell>
-                <TableCell className="text-xs tabular-nums text-center">{c.decimal_places}</TableCell>
+                <TableCell className="text-sm font-medium">
+                  {c.symbol}
+                </TableCell>
+                <TableCell className="text-center text-xs tabular-nums">
+                  {c.decimal_places}
+                </TableCell>
                 <TableCell className="text-center">
-                  <Badge variant={c.active ? "default" : "secondary"} className="text-xs">
+                  <Badge
+                    variant={c.active ? "default" : "secondary"}
+                    className="text-xs"
+                  >
                     {c.active ? "active" : "inactive"}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-1.5">
                     <Button
-                      variant="ghost" size="sm" className="h-7 w-7 p-0"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0"
                       onClick={() => setFormTarget(c)}
                     >
                       <IconPencil className="size-3.5" />
                     </Button>
                     <Button
-                      variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0 text-destructive hover:text-destructive"
                       onClick={() => setDeleteTarget(c)}
                     >
                       <IconTrash className="size-3.5" />
@@ -247,7 +295,12 @@ export function CurrenciesTab({ projectId }: { projectId: string }) {
         />
       )}
 
-      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null) }}>
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => {
+          if (!o) setDeleteTarget(null)
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
@@ -255,12 +308,18 @@ export function CurrenciesTab({ projectId }: { projectId: string }) {
               Delete currency?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Currency <span className="font-mono font-medium">{deleteTarget?.code}</span> will be
-              permanently deleted. This will fail if any active subscription uses this currency.
+              Currency{" "}
+              <span className="font-mono font-medium">
+                {deleteTarget?.code}
+              </span>{" "}
+              will be permanently deleted. This will fail if any active
+              subscription uses this currency.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {

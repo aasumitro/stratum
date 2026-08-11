@@ -28,22 +28,41 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
-import { FieldHint, TableSkeleton, formatMetricValue } from "../components/table-helpers"
+import { FieldHint, TableSkeleton } from "../components/table-helpers"
+import { formatMetricValue } from "../components/table-utils"
 
 interface EntitlementsSheetProps {
   title: string
   mode: "plan" | "addon"
   projectId: string
   features: Feature[] | null | undefined
-  entitlements: { feature_id: string; limit_value: number | null; config_value?: string }[] | null | undefined
+  entitlements:
+    | {
+        feature_id: string
+        limit_value: number | null
+        config_value?: string
+      }[]
+    | null
+    | undefined
   isLoading: boolean
-  onUpsert: (input: { feature_id: string; limit_value: number | null; config_value: string }) => void
+  onUpsert: (input: {
+    feature_id: string
+    limit_value: number | null
+    config_value: string
+  }) => void
   onRemove: (featureId: string) => void
   onClose: () => void
 }
 
 export function EntitlementsSheet({
-  title, mode, features, entitlements, isLoading, onUpsert, onRemove, onClose,
+  title,
+  mode,
+  features,
+  entitlements,
+  isLoading,
+  onUpsert,
+  onRemove,
+  onClose,
 }: EntitlementsSheetProps) {
   const [featureId, setFeatureId] = useState("")
   const [limitValue, setLimitValue] = useState("")
@@ -65,8 +84,13 @@ export function EntitlementsSheet({
   }
 
   return (
-    <Sheet open onOpenChange={(o) => { if (!o) onClose() }}>
-      <SheetContent className="flex flex-col gap-0 w-full sm:max-w-xl overflow-y-auto">
+    <Sheet
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose()
+      }}
+    >
+      <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-xl">
         <SheetHeader className="pb-4">
           <SheetTitle>{title}</SheetTitle>
           <SheetDescription>
@@ -76,11 +100,13 @@ export function EntitlementsSheet({
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex flex-col gap-4 py-4 mx-6">
+        <div className="mx-6 flex flex-col gap-4 py-4">
           {isLoading ? (
             <TableSkeleton cols={3} />
           ) : !entitlements || entitlements.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-4 text-center">No entitlements yet</p>
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              No entitlements yet
+            </p>
           ) : (
             <Table>
               <TableHeader>
@@ -95,8 +121,10 @@ export function EntitlementsSheet({
                   const f = featureById(e.feature_id)
                   return (
                     <TableRow key={e.feature_id}>
-                      <TableCell className="text-sm">{f?.name ?? e.feature_id}</TableCell>
-                      <TableCell className="text-xs font-mono">
+                      <TableCell className="text-sm">
+                        {f?.name ?? e.feature_id}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
                         {e.limit_value !== null
                           ? `${mode === "addon" ? "+" : ""}${formatMetricValue(e.limit_value, f?.metric_key)}`
                           : e.config_value || "included"}
@@ -120,7 +148,10 @@ export function EntitlementsSheet({
 
           <div className="flex flex-col gap-2 border-t pt-4">
             <Label>Add entitlement</Label>
-            <Select value={featureId} onValueChange={(v) => setFeatureId(v ?? "")}>
+            <Select
+              value={featureId}
+              onValueChange={(v) => setFeatureId(v ?? "")}
+            >
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Select a feature" />
               </SelectTrigger>
@@ -128,9 +159,16 @@ export function EntitlementsSheet({
                 {features?.map((f) => (
                   <SelectItem key={f.id} value={f.id}>
                     <div className="flex flex-col">
-                      <span>{f.name} <span className="text-muted-foreground">({f.type})</span></span>
+                      <span>
+                        {f.name}{" "}
+                        <span className="text-muted-foreground">
+                          ({f.type})
+                        </span>
+                      </span>
                       {f.description && (
-                        <span className="text-xs text-muted-foreground">{f.description}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {f.description}
+                        </span>
                       )}
                     </div>
                   </SelectItem>
@@ -143,24 +181,30 @@ export function EntitlementsSheet({
                 : "Pick a feature this addon adds on top of the base plan."}
             </FieldHint>
 
-            {selectedFeature && selectedFeature.type !== "static" && selectedFeature.type !== "boolean" && (
-              <>
-                <Input
-                  type="number"
-                  placeholder="Limit value (-1 = unlimited)"
-                  value={limitValue}
-                  onChange={(e) => setLimitValue(e.target.value)}
-                />
-                <FieldHint>
-                  {mode === "plan"
-                    ? "The absolute cap this plan grants (e.g. 25 members). Use -1 for unlimited."
-                    : "An ADDITIVE amount on top of whatever the subscriber's base plan already grants (e.g. +5 members) — not a replacement value."}
-                  {selectedFeature?.metric_key?.endsWith("_bytes") && (
-                    <> Enter this in raw bytes, not GB/MB — e.g. 10 GB = <code className="font-mono">10737418240</code>.</>
-                  )}
-                </FieldHint>
-              </>
-            )}
+            {selectedFeature &&
+              selectedFeature.type !== "static" &&
+              selectedFeature.type !== "boolean" && (
+                <>
+                  <Input
+                    type="number"
+                    placeholder="Limit value (-1 = unlimited)"
+                    value={limitValue}
+                    onChange={(e) => setLimitValue(e.target.value)}
+                  />
+                  <FieldHint>
+                    {mode === "plan"
+                      ? "The absolute cap this plan grants (e.g. 25 members). Use -1 for unlimited."
+                      : "An ADDITIVE amount on top of whatever the subscriber's base plan already grants (e.g. +5 members) — not a replacement value."}
+                    {selectedFeature?.metric_key?.endsWith("_bytes") && (
+                      <>
+                        {" "}
+                        Enter this in raw bytes, not GB/MB — e.g. 10 GB ={" "}
+                        <code className="font-mono">10737418240</code>.
+                      </>
+                    )}
+                  </FieldHint>
+                </>
+              )}
             {selectedFeature?.type === "config" && (
               <>
                 <Textarea
@@ -170,16 +214,20 @@ export function EntitlementsSheet({
                   value={configValue}
                   onChange={(e) => setConfigValue(e.target.value)}
                 />
-                <FieldHint>JSON delivered to the app as this feature's entitlement value.</FieldHint>
+                <FieldHint>
+                  JSON delivered to the app as this feature's entitlement value.
+                </FieldHint>
               </>
             )}
-            {selectedFeature && (selectedFeature.type === "static" || selectedFeature.type === "boolean") && (
-              <FieldHint>
-                {selectedFeature.type === "boolean"
-                  ? "Boolean feature — no value needed. Adding it here is what turns access on."
-                  : "Static feature — no value needed. Adding it here is purely informational (e.g. \"SLA guarantee included\")."}
-              </FieldHint>
-            )}
+            {selectedFeature &&
+              (selectedFeature.type === "static" ||
+                selectedFeature.type === "boolean") && (
+                <FieldHint>
+                  {selectedFeature.type === "boolean"
+                    ? "Boolean feature — no value needed. Adding it here is what turns access on."
+                    : 'Static feature — no value needed. Adding it here is purely informational (e.g. "SLA guarantee included").'}
+                </FieldHint>
+              )}
 
             <Button size="sm" onClick={handleAdd} disabled={!featureId}>
               <IconPlus className="size-4" />
@@ -188,7 +236,7 @@ export function EntitlementsSheet({
           </div>
         </div>
 
-        <SheetFooter className="pt-4 mt-auto">
+        <SheetFooter className="mt-auto pt-4">
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>

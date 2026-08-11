@@ -44,7 +44,9 @@ export function usePurgeQueue(projectId: string) {
   return useMutation({
     mutationFn: (queue: string) => DLQService.PurgeQueue(projectId, queue),
     onSuccess: (count, queue) => {
-      toast.success(`Purged ${count} message${count !== 1 ? "s" : ""} from "${queue}"`)
+      toast.success(
+        `Purged ${count} message${count !== 1 ? "s" : ""} from "${queue}"`
+      )
       qc.invalidateQueries({ queryKey: ["dlq", "queues", projectId] })
       qc.invalidateQueries({ queryKey: ["dlq", "messages", projectId, queue] })
     },

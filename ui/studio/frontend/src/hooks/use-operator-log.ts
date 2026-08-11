@@ -3,7 +3,11 @@ import { OperatorLogService } from "../../bindings/github.com/aasumitro/stratum/
 
 export const OPERATOR_LOG_PAGE_SIZE = 50
 
-export function useOperatorLog(projectId: string, limit = OPERATOR_LOG_PAGE_SIZE, offset = 0) {
+export function useOperatorLog(
+  projectId: string,
+  limit = OPERATOR_LOG_PAGE_SIZE,
+  offset = 0
+) {
   return useQuery({
     queryKey: ["operator-log", "list", projectId, limit, offset],
     queryFn: () => OperatorLogService.List(projectId, limit, offset),

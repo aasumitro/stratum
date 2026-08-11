@@ -24,11 +24,11 @@ export function CatalogPage() {
   const [showGuide, setShowGuide] = useState(false)
 
   return (
-    <div className="flex flex-col min-h-full">
-      <header className="flex items-center gap-3 px-6 py-4 border-b">
+    <div className="flex min-h-full flex-col">
+      <header className="flex items-center gap-3 border-b px-6 py-4">
         <IconTag className="size-4 text-muted-foreground" />
-        <div className="flex flex-col gap-0.5 flex-1">
-          <h1 className="font-semibold text-sm">Catalog</h1>
+        <div className="flex flex-1 flex-col gap-0.5">
+          <h1 className="text-sm font-semibold">Catalog</h1>
           <p className="text-xs text-muted-foreground">
             Plans, features, coupons, and addons for the target project database
           </p>
@@ -47,10 +47,10 @@ export function CatalogPage() {
             key={t.id}
             onClick={() => setTab(t.id)}
             className={cn(
-              "px-4 py-2.5 text-sm border-b-2 transition-colors",
+              "border-b-2 px-4 py-2.5 text-sm transition-colors",
               tab === t.id
-                ? "border-primary text-foreground font-medium"
-                : "border-transparent text-muted-foreground hover:text-foreground",
+                ? "border-primary font-medium text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
             )}
           >
             {t.label}

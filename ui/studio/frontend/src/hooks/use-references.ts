@@ -1,7 +1,10 @@
 import { wailsError } from "@/lib/ui"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import type { CountryInput, CurrencyInput } from "../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
+import type {
+  CountryInput,
+  CurrencyInput,
+} from "../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
 import { ReferenceService } from "../../bindings/github.com/aasumitro/stratum/studio/app/index.js"
 
 export function useCountries(projectId: string) {
@@ -25,7 +28,8 @@ export function useCurrencies(projectId: string) {
 export function useCreateCountry(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: CountryInput) => ReferenceService.CreateCountry(projectId, input),
+    mutationFn: (input: CountryInput) =>
+      ReferenceService.CreateCountry(projectId, input),
     onSuccess: () => {
       toast.success("Country created")
       qc.invalidateQueries({ queryKey: ["ref", "countries", projectId] })
@@ -50,7 +54,8 @@ export function useUpdateCountry(projectId: string) {
 export function useDeleteCountry(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (code: string) => ReferenceService.DeleteCountry(projectId, code),
+    mutationFn: (code: string) =>
+      ReferenceService.DeleteCountry(projectId, code),
     onSuccess: () => {
       toast.success("Country deleted")
       qc.invalidateQueries({ queryKey: ["ref", "countries", projectId] })
@@ -62,7 +67,8 @@ export function useDeleteCountry(projectId: string) {
 export function useCreateCurrency(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: CurrencyInput) => ReferenceService.CreateCurrency(projectId, input),
+    mutationFn: (input: CurrencyInput) =>
+      ReferenceService.CreateCurrency(projectId, input),
     onSuccess: () => {
       toast.success("Currency created")
       qc.invalidateQueries({ queryKey: ["ref", "currencies", projectId] })
@@ -87,7 +93,8 @@ export function useUpdateCurrency(projectId: string) {
 export function useDeleteCurrency(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (code: string) => ReferenceService.DeleteCurrency(projectId, code),
+    mutationFn: (code: string) =>
+      ReferenceService.DeleteCurrency(projectId, code),
     onSuccess: () => {
       toast.success("Currency deleted")
       qc.invalidateQueries({ queryKey: ["ref", "currencies", projectId] })
@@ -95,4 +102,3 @@ export function useDeleteCurrency(projectId: string) {
     onError: (err) => toast.error(`Delete failed: ${wailsError(err)}`),
   })
 }
-

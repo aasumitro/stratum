@@ -3,51 +3,86 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime"
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js";
+import * as $models from "./models.js"
 
-export function ActivateSubscription(projectID: string, organizationID: string): $CancellablePromise<void> {
-    return $Call.ByID(220749503, projectID, organizationID);
+export function ActivateSubscription(
+  projectID: string,
+  organizationID: string
+): $CancellablePromise<void> {
+  return $Call.ByID(220749503, projectID, organizationID)
 }
 
-export function ChangePlan(projectID: string, organizationID: string, plan: string, cycle: string): $CancellablePromise<void> {
-    return $Call.ByID(2045446244, projectID, organizationID, plan, cycle);
+export function ChangePlan(
+  projectID: string,
+  organizationID: string,
+  plan: string,
+  cycle: string
+): $CancellablePromise<void> {
+  return $Call.ByID(2045446244, projectID, organizationID, plan, cycle)
 }
 
-export function ExtendTrial(projectID: string, organizationID: string, days: number): $CancellablePromise<void> {
-    return $Call.ByID(1482820317, projectID, organizationID, days);
+export function ExtendTrial(
+  projectID: string,
+  organizationID: string,
+  days: number
+): $CancellablePromise<void> {
+  return $Call.ByID(1482820317, projectID, organizationID, days)
 }
 
-export function GetAtRiskInvoices(projectID: string): $CancellablePromise<$models.AtRiskInvoice[] | null> {
-    return $Call.ByID(1622407183, projectID);
+export function GetAtRiskInvoices(
+  projectID: string
+): $CancellablePromise<$models.AtRiskInvoice[] | null> {
+  return $Call.ByID(1622407183, projectID)
 }
 
-export function GetOrganizationInvoices(projectID: string, organizationID: string): $CancellablePromise<$models.UserInvoice[] | null> {
-    return $Call.ByID(1643515586, projectID, organizationID);
+export function GetOrganizationInvoices(
+  projectID: string,
+  organizationID: string
+): $CancellablePromise<$models.UserInvoice[] | null> {
+  return $Call.ByID(1643515586, projectID, organizationID)
 }
 
-export function GetUserDetail(projectID: string, authSub: string): $CancellablePromise<$models.UserDetail> {
-    return $Call.ByID(2117393335, projectID, authSub);
+export function GetUserDetail(
+  projectID: string,
+  authSub: string
+): $CancellablePromise<$models.UserDetail> {
+  return $Call.ByID(2117393335, projectID, authSub)
 }
 
 /**
  * GetUserLoginHistory returns a user's 20 most recent login events, newest first.
  */
-export function GetUserLoginHistory(projectID: string, authSub: string): $CancellablePromise<$models.UserLoginEvent[] | null> {
-    return $Call.ByID(3048872141, projectID, authSub);
+export function GetUserLoginHistory(
+  projectID: string,
+  authSub: string
+): $CancellablePromise<$models.UserLoginEvent[] | null> {
+  return $Call.ByID(3048872141, projectID, authSub)
 }
 
-export function MarkInvoicePaid(projectID: string, invoiceID: string): $CancellablePromise<void> {
-    return $Call.ByID(2414450307, projectID, invoiceID);
+export function MarkInvoicePaid(
+  projectID: string,
+  invoiceID: string
+): $CancellablePromise<void> {
+  return $Call.ByID(2414450307, projectID, invoiceID)
 }
 
-export function SearchUsers(projectID: string, q: string): $CancellablePromise<$models.UserResult[] | null> {
-    return $Call.ByID(98094413, projectID, q);
+export function SearchUsers(
+  projectID: string,
+  q: string
+): $CancellablePromise<$models.UserResult[] | null> {
+  return $Call.ByID(98094413, projectID, q)
 }
 
-export function VoidInvoice(projectID: string, invoiceID: string): $CancellablePromise<void> {
-    return $Call.ByID(1210889924, projectID, invoiceID);
+export function VoidInvoice(
+  projectID: string,
+  invoiceID: string
+): $CancellablePromise<void> {
+  return $Call.ByID(1210889924, projectID, invoiceID)
 }

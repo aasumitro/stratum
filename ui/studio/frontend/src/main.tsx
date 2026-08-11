@@ -10,7 +10,9 @@ function applyColorScheme() {
   document.documentElement.classList.toggle("dark", dark)
 }
 applyColorScheme()
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyColorScheme)
+window
+  .matchMedia("(prefers-color-scheme: dark)")
+  .addEventListener("change", applyColorScheme)
 
 const queryClient = new QueryClient()
 
@@ -19,5 +21,5 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <QueryClientProvider client={queryClient}>
       <App />
     </QueryClientProvider>
-  </React.StrictMode>,
+  </React.StrictMode>
 )

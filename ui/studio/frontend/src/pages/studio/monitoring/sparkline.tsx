@@ -6,19 +6,20 @@ export function Sparkline({ history }: { history: MonitorLog[] }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-xs text-muted-foreground font-medium">
+      <span className="text-xs font-medium text-muted-foreground">
         Last {sorted.length} checks
       </span>
-      <div className="flex items-end gap-0.5 h-8">
+      <div className="flex h-8 items-end gap-0.5">
         {sorted.map((log) => {
           const style = statusStyle(log.status)
-          const height = log.latency_ms != null && log.latency_ms > 0
-            ? Math.min(100, Math.max(20, (log.latency_ms / 1000) * 30))
-            : 30
+          const height =
+            log.latency_ms != null && log.latency_ms > 0
+              ? Math.min(100, Math.max(20, (log.latency_ms / 1000) * 30))
+              : 30
           return (
             <div
               key={log.id}
-              className={`flex-1 max-w-[10px] rounded-sm ${style.dot} opacity-80 hover:opacity-100 transition-opacity`}
+              className={`max-w-2.5 flex-1 rounded-sm ${style.dot} opacity-80 transition-opacity hover:opacity-100`}
               style={{ height: `${height}%` }}
               title={`${log.status} · ${formatLatency(log.latency_ms)} · ${timeAgo(log.checked_at)}`}
             />
@@ -27,13 +28,14 @@ export function Sparkline({ history }: { history: MonitorLog[] }) {
       </div>
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
-          <span className="size-2 rounded-full bg-green-500 inline-block" /> ok
+          <span className="inline-block size-2 rounded-full bg-green-500" /> ok
         </span>
         <span className="flex items-center gap-1">
-          <span className="size-2 rounded-full bg-amber-500 inline-block" /> degraded (&ge;500ms)
+          <span className="inline-block size-2 rounded-full bg-amber-500" />{" "}
+          degraded (&ge;500ms)
         </span>
         <span className="flex items-center gap-1">
-          <span className="size-2 rounded-full bg-red-500 inline-block" /> down
+          <span className="inline-block size-2 rounded-full bg-red-500" /> down
         </span>
       </div>
     </div>

@@ -10,19 +10,20 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { isDLQ, StateDot } from "./utils"
+import { isDLQ } from "./is-dlq"
+import { StateDot } from "./utils"
 
 export function QueueTableSkeleton() {
   return (
     <div className="animate-pulse">
       {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-4 px-4 py-3 border-b">
-          <div className="h-4 bg-muted rounded flex-1" />
-          <div className="h-4 bg-muted rounded w-16" />
-          <div className="h-4 bg-muted rounded w-12" />
-          <div className="h-4 bg-muted rounded w-16" />
-          <div className="h-4 bg-muted rounded w-20" />
-          <div className="h-8 bg-muted rounded w-24" />
+        <div key={i} className="flex items-center gap-4 border-b px-4 py-3">
+          <div className="h-4 flex-1 rounded bg-muted" />
+          <div className="h-4 w-16 rounded bg-muted" />
+          <div className="h-4 w-12 rounded bg-muted" />
+          <div className="h-4 w-16 rounded bg-muted" />
+          <div className="h-4 w-20 rounded bg-muted" />
+          <div className="h-8 w-24 rounded bg-muted" />
         </div>
       ))}
     </div>
@@ -57,7 +58,9 @@ export function QueueTable({
               <div className="flex items-center gap-2">
                 <code className="font-mono text-xs">{queue.name}</code>
                 {isDLQ(queue.name) && (
-                  <Badge variant="secondary" className="text-[10px] h-4 px-1">DLQ</Badge>
+                  <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+                    DLQ
+                  </Badge>
                 )}
               </div>
             </TableCell>
@@ -77,14 +80,16 @@ export function QueueTable({
               <span className="text-xs tabular-nums">{queue.consumers}</span>
             </TableCell>
             <TableCell className="text-center">
-              <span className="text-xs tabular-nums text-muted-foreground">
+              <span className="text-xs text-muted-foreground tabular-nums">
                 {queue.message_rate > 0 ? queue.message_rate.toFixed(1) : "—"}
               </span>
             </TableCell>
             <TableCell>
               <div className="flex items-center gap-2">
                 <StateDot state={queue.state} />
-                <span className="text-xs text-muted-foreground">{queue.state}</span>
+                <span className="text-xs text-muted-foreground">
+                  {queue.state}
+                </span>
               </div>
             </TableCell>
             <TableCell className="text-right">

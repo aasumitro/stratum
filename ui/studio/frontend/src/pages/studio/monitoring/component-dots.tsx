@@ -8,9 +8,9 @@ function compDot(value: string) {
 
 export function ComponentDots({ components }: { components: ComponentStatus }) {
   const items = [
-    { key: "postgres", label: "PG",    value: components.postgres  },
-    { key: "redis",    label: "Redis", value: components.redis     },
-    { key: "rabbitmq", label: "MQ",    value: components.rabbitmq  },
+    { key: "postgres", label: "PG", value: components.postgres },
+    { key: "redis", label: "Redis", value: components.redis },
+    { key: "rabbitmq", label: "MQ", value: components.rabbitmq },
   ]
   return (
     <div className="flex items-center gap-2">

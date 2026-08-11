@@ -26,9 +26,12 @@ export function useCountRecipients(projectId: string, target: string) {
 export function useSendBroadcast(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: BroadcastInput) => BroadcastService.Send(projectId, input),
+    mutationFn: (input: BroadcastInput) =>
+      BroadcastService.Send(projectId, input),
     onSuccess: (count) => {
-      toast.success(`Broadcast sent to ${count} recipient${count === 1 ? "" : "s"}`)
+      toast.success(
+        `Broadcast sent to ${count} recipient${count === 1 ? "" : "s"}`
+      )
       qc.invalidateQueries({ queryKey: ["broadcast", "history", projectId] })
     },
     onError: (err) => toast.error(`Failed: ${wailsError(err)}`),

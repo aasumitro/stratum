@@ -20,7 +20,12 @@ interface ChangePlanSheetProps {
   onClose: () => void
 }
 
-export function ChangePlanSheet({ projectId, authSub, organization, onClose }: ChangePlanSheetProps) {
+export function ChangePlanSheet({
+  projectId,
+  authSub,
+  organization,
+  onClose,
+}: ChangePlanSheetProps) {
   const { data: plans } = usePlans(projectId)
   const changePlan = useChangePlan(projectId, authSub)
 
@@ -30,13 +35,18 @@ export function ChangePlanSheet({ projectId, authSub, organization, onClose }: C
   const handleSubmit = () => {
     changePlan.mutate(
       { organizationID: organization.id, plan, cycle },
-      { onSuccess: onClose },
+      { onSuccess: onClose }
     )
   }
 
   return (
-    <Sheet open onOpenChange={(o) => { if (!o) onClose() }}>
-      <SheetContent className="flex flex-col gap-0 w-full sm:max-w-md overflow-y-auto">
+    <Sheet
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose()
+      }}
+    >
+      <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-md">
         <SheetHeader className="pb-4">
           <SheetTitle>Change plan — {organization.name}</SheetTitle>
           <SheetDescription>
@@ -44,17 +54,19 @@ export function ChangePlanSheet({ projectId, authSub, organization, onClose }: C
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex flex-col gap-4 py-4 mx-6">
+        <div className="mx-6 flex flex-col gap-4 py-4">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cp-plan">Plan</Label>
             <select
               id="cp-plan"
               value={plan}
               onChange={(e) => setPlan(e.target.value)}
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-hidden"
             >
               {(plans ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.name} ({p.id})</option>
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.id})
+                </option>
               ))}
             </select>
           </div>
@@ -65,7 +77,7 @@ export function ChangePlanSheet({ projectId, authSub, organization, onClose }: C
               id="cp-cycle"
               value={cycle}
               onChange={(e) => setCycle(e.target.value as "monthly" | "yearly")}
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-hidden"
             >
               <option value="monthly">Monthly</option>
               <option value="yearly">Yearly</option>
@@ -73,9 +85,14 @@ export function ChangePlanSheet({ projectId, authSub, organization, onClose }: C
           </div>
         </div>
 
-        <SheetFooter className="pt-4 mt-auto">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={changePlan.isPending || !plan}>
+        <SheetFooter className="mt-auto pt-4">
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={changePlan.isPending || !plan}
+          >
             {changePlan.isPending ? "Saving…" : "Change plan"}
           </Button>
         </SheetFooter>

@@ -1,23 +1,34 @@
 import type { ComponentStatus } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
 
 const STATUS_COLORS = {
-  ok:       { dot: "bg-green-500",  badge: "bg-green-500/15 text-green-700 dark:text-green-400" },
-  degraded: { dot: "bg-amber-500",  badge: "bg-amber-500/15 text-amber-700 dark:text-amber-400" },
-  down:     { dot: "bg-red-500",    badge: "bg-red-500/15 text-red-700 dark:text-red-400" },
+  ok: {
+    dot: "bg-green-500",
+    badge: "bg-green-500/15 text-green-700 dark:text-green-400",
+  },
+  degraded: {
+    dot: "bg-amber-500",
+    badge: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  },
+  down: {
+    dot: "bg-red-500",
+    badge: "bg-red-500/15 text-red-700 dark:text-red-400",
+  },
 } as const
 
 export function statusStyle(status: string) {
-  return STATUS_COLORS[status as keyof typeof STATUS_COLORS] ?? {
-    dot: "bg-muted-foreground/40",
-    badge: "bg-muted text-muted-foreground",
-  }
+  return (
+    STATUS_COLORS[status as keyof typeof STATUS_COLORS] ?? {
+      dot: "bg-muted-foreground/40",
+      badge: "bg-muted text-muted-foreground",
+    }
+  )
 }
 
 export const INTERVALS = [
-  { label: "30s", value: 30  },
-  { label: "1m",  value: 60  },
-  { label: "2m",  value: 120 },
-  { label: "5m",  value: 300 },
+  { label: "30s", value: 30 },
+  { label: "1m", value: 60 },
+  { label: "2m", value: 120 },
+  { label: "5m", value: 300 },
 ]
 
 export function formatLatency(ms: number | null | undefined): string {

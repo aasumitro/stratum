@@ -31,7 +31,7 @@ export function NavLink({ to, params, icon, label, badge }: NavLinkProps) {
 
 export function NavSection({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-3 pt-4 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70 first:pt-0">
+    <p className="px-3 pt-4 pb-1 text-[11px] font-semibold tracking-wider text-muted-foreground/70 uppercase first:pt-0">
       {children}
     </p>
   )
