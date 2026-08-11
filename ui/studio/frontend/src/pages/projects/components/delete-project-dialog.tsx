@@ -30,13 +30,18 @@ export function DeleteProjectDialog({
   }
 
   return (
-    <AlertDialog open={project !== null} onOpenChange={(v: boolean) => !v && onClose()}>
+    <AlertDialog
+      open={project !== null}
+      onOpenChange={(v: boolean) => !v && onClose()}
+    >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete &ldquo;{project?.name}&rdquo;?</AlertDialogTitle>
+          <AlertDialogTitle>
+            Delete &ldquo;{project?.name}&rdquo;?
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            This removes the project from Studio. It does not affect the
-            Stratum deployment itself. This action cannot be undone.
+            This removes the project from Studio. It does not affect the Stratum
+            deployment itself. This action cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -47,7 +52,7 @@ export function DeleteProjectDialog({
             disabled={del.isPending}
           >
             {del.isPending ? (
-              <IconLoader2 className="size-4 animate-spin mr-2" />
+              <IconLoader2 className="mr-2 size-4 animate-spin" />
             ) : null}
             Delete
           </Button>

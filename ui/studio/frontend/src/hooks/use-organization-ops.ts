@@ -5,10 +5,20 @@ import { OrganizationOpsService } from "../../bindings/github.com/aasumitro/stra
 
 const PAGE_SIZE = 50
 
-export function useOrganizations(projectId: string, status: string, offset: number) {
+export function useOrganizations(
+  projectId: string,
+  status: string,
+  offset: number
+) {
   return useQuery({
     queryKey: ["organizations", projectId, status, offset],
-    queryFn: () => OrganizationOpsService.ListOrganizations(projectId, status, PAGE_SIZE, offset),
+    queryFn: () =>
+      OrganizationOpsService.ListOrganizations(
+        projectId,
+        status,
+        PAGE_SIZE,
+        offset
+      ),
     staleTime: 30_000,
     retry: 1,
   })
@@ -26,12 +36,24 @@ export function useOrganizationCount(projectId: string, status: string) {
 export function useSuspendOrganization(projectId: string, status: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ organizationID, reason }: { organizationID: string; reason: string }) =>
-      OrganizationOpsService.SuspendOrganization(projectId, organizationID, reason),
+    mutationFn: ({
+      organizationID,
+      reason,
+    }: {
+      organizationID: string
+      reason: string
+    }) =>
+      OrganizationOpsService.SuspendOrganization(
+        projectId,
+        organizationID,
+        reason
+      ),
     onSuccess: () => {
       toast.success("Organization suspended")
       qc.invalidateQueries({ queryKey: ["organizations", projectId, status] })
-      qc.invalidateQueries({ queryKey: ["organizations", "count", projectId, status] })
+      qc.invalidateQueries({
+        queryKey: ["organizations", "count", projectId, status],
+      })
     },
     onError: (err) => toast.error(`Failed: ${wailsError(err)}`),
   })
@@ -45,7 +67,9 @@ export function useUnsuspendOrganization(projectId: string, status: string) {
     onSuccess: () => {
       toast.success("Organization restored to active")
       qc.invalidateQueries({ queryKey: ["organizations", projectId, status] })
-      qc.invalidateQueries({ queryKey: ["organizations", "count", projectId, status] })
+      qc.invalidateQueries({
+        queryKey: ["organizations", "count", projectId, status],
+      })
     },
     onError: (err) => toast.error(`Failed: ${wailsError(err)}`),
   })

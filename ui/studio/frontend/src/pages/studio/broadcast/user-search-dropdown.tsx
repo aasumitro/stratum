@@ -1,23 +1,8 @@
 import { useState } from "react"
 import { IconCheck } from "@tabler/icons-react"
-import type { OrganizationSummary, UserResult } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
+import type { UserResult } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
 import { useSearchUsers } from "@/hooks/use-support"
 import { Input } from "@/components/ui/input"
-
-export type TargetType = "all" | "organization" | "user"
-
-export function buildTarget(type: TargetType, organization: OrganizationSummary | null, user: UserResult | null): string {
-  if (type === "all") return "all"
-  if (type === "organization") return organization ? `organization:${organization.id}` : ""
-  return user ? `user:${user.auth_sub}` : ""
-}
-
-export function formatTarget(target: string, organization: OrganizationSummary | null, user: UserResult | null): string {
-  if (target === "all") return "All users"
-  if (target.startsWith("organization:")) return organization ? `${organization.name} (${organization.slug})` : `Organization: ${target.slice(13).slice(0, 8)}…`
-  if (target.startsWith("user:")) return user ? `${user.full_name} — ${user.email}` : `User: ${target.slice(5).slice(0, 12)}…`
-  return target
-}
 
 export function UserSearchDropdown({
   projectId,
@@ -46,19 +31,19 @@ export function UserSearchDropdown({
         </div>
       )}
       {showResults && (
-        <div className="border rounded-md divide-y max-h-48 overflow-y-auto bg-popover shadow-md">
+        <div className="max-h-48 divide-y overflow-y-auto rounded-md border bg-popover shadow-md">
           {results!.map((u) => (
             <button
               key={u.auth_sub}
               type="button"
-              className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors"
+              className="w-full px-3 py-2 text-left text-sm transition-colors hover:bg-accent"
               onClick={() => {
                 onSelect(u)
                 setQ("")
               }}
             >
               <div className="font-medium">{u.full_name}</div>
-              <div className="text-muted-foreground text-xs">{u.email}</div>
+              <div className="text-xs text-muted-foreground">{u.email}</div>
             </button>
           ))}
         </div>

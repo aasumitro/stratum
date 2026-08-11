@@ -16,27 +16,38 @@ interface LoginHistorySectionProps {
   authSub: string
 }
 
-export function LoginHistorySection({ projectId, authSub }: LoginHistorySectionProps) {
+export function LoginHistorySection({
+  projectId,
+  authSub,
+}: LoginHistorySectionProps) {
   const [expanded, setExpanded] = useState(false)
-  const { data: events, isLoading } = useUserLoginHistory(projectId, authSub, expanded)
+  const { data: events, isLoading } = useUserLoginHistory(
+    projectId,
+    authSub,
+    expanded
+  )
 
   return (
     <div className="flex flex-col gap-2">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="flex items-center gap-1.5 text-sm font-semibold hover:text-foreground/80 transition-colors"
+        className="flex items-center gap-1.5 text-sm font-semibold transition-colors hover:text-foreground/80"
       >
-        {expanded ? <IconChevronDown className="size-3.5" /> : <IconChevronRight className="size-3.5" />}
+        {expanded ? (
+          <IconChevronDown className="size-3.5" />
+        ) : (
+          <IconChevronRight className="size-3.5" />
+        )}
         Login History
       </button>
 
-      {expanded && (
-        isLoading ? (
-          <p className="text-xs text-muted-foreground py-2">Loading…</p>
+      {expanded &&
+        (isLoading ? (
+          <p className="py-2 text-xs text-muted-foreground">Loading…</p>
         ) : !events || events.length === 0 ? (
-          <p className="text-xs text-muted-foreground py-2">No login history</p>
+          <p className="py-2 text-xs text-muted-foreground">No login history</p>
         ) : (
-          <div className="border rounded-lg overflow-hidden">
+          <div className="overflow-hidden rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -48,11 +59,13 @@ export function LoginHistorySection({ projectId, authSub }: LoginHistorySectionP
               <TableBody>
                 {events.map((e, i) => (
                   <TableRow key={i}>
-                    <TableCell className="text-xs font-mono py-1.5">{e.ip_address || "—"}</TableCell>
-                    <TableCell className="text-xs py-1.5 text-muted-foreground truncate max-w-[280px]">
+                    <TableCell className="py-1.5 font-mono text-xs">
+                      {e.ip_address || "—"}
+                    </TableCell>
+                    <TableCell className="max-w-70 truncate py-1.5 text-xs text-muted-foreground">
                       {e.user_agent || "—"}
                     </TableCell>
-                    <TableCell className="text-xs py-1.5 text-right text-muted-foreground">
+                    <TableCell className="py-1.5 text-right text-xs text-muted-foreground">
                       {formatDateTime(e.created_at)}
                     </TableCell>
                   </TableRow>
@@ -60,8 +73,7 @@ export function LoginHistorySection({ projectId, authSub }: LoginHistorySectionP
               </TableBody>
             </Table>
           </div>
-        )
-      )}
+        ))}
     </div>
   )
 }

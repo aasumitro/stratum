@@ -243,7 +243,7 @@ export function MfaFactorsSection() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              className="text-destructive-foreground bg-destructive hover:bg-destructive/90"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={removing}
               onClick={handleRemove}
             >

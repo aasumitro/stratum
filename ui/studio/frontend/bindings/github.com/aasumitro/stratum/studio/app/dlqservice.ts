@@ -3,34 +3,49 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime"
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as $models from "./models.js";
+import * as $models from "./models.js"
 
-export function GetMessages(projectID: string, queue: string, limit: number): $CancellablePromise<$models.DLQMessage[] | null> {
-    return $Call.ByID(757739061, projectID, queue, limit);
+export function GetMessages(
+  projectID: string,
+  queue: string,
+  limit: number
+): $CancellablePromise<$models.DLQMessage[] | null> {
+  return $Call.ByID(757739061, projectID, queue, limit)
 }
 
-export function ListQueues(projectID: string): $CancellablePromise<$models.DLQInfo[] | null> {
-    return $Call.ByID(146106451, projectID);
+export function ListQueues(
+  projectID: string
+): $CancellablePromise<$models.DLQInfo[] | null> {
+  return $Call.ByID(146106451, projectID)
 }
 
-export function PurgeQueue(projectID: string, queue: string): $CancellablePromise<number> {
-    return $Call.ByID(3641398737, projectID, queue);
+export function PurgeQueue(
+  projectID: string,
+  queue: string
+): $CancellablePromise<number> {
+  return $Call.ByID(3641398737, projectID, queue)
 }
 
 /**
  * RequeueMessage consumes the next message from the DLQ and republishes it to
  * its original exchange using x-death headers. Always operates FIFO (front of queue).
- * 
+ *
  * The consume and republish are two separate, unlinked API calls. If republish
  * fails after the message has already been consumed (removed from the DLQ), the
  * returned RequeueResult carries the consumed message (Requeued: false, Lost: ...)
  * instead of losing it silently — the error return is reserved for failures
  * before anything was consumed, where there is nothing to recover.
  */
-export function RequeueMessage(projectID: string, queue: string): $CancellablePromise<$models.RequeueResult | null> {
-    return $Call.ByID(3776236556, projectID, queue);
+export function RequeueMessage(
+  projectID: string,
+  queue: string
+): $CancellablePromise<$models.RequeueResult | null> {
+  return $Call.ByID(3776236556, projectID, queue)
 }

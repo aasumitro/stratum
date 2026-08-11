@@ -14,5 +14,7 @@ export function useWatchlist(projectId: string) {
 
 export function urgentCount(result: WatchlistResult | undefined): number {
   if (!result) return 0
-  return (result.trials_ending_soon?.length ?? 0) + (result.past_due?.length ?? 0)
+  return (
+    (result.trials_ending_soon?.length ?? 0) + (result.past_due?.length ?? 0)
+  )
 }

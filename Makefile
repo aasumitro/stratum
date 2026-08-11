@@ -204,10 +204,12 @@ sync-studio-deps: ## Upgrade studio deps to latest
 	cd ui/studio/frontend && npx npm-check-updates -u && npm install
 
 .PHONY: pre-push
-pre-push: verify-modules vet fmt lint vuln ## Mirror the GitHub CI api+web jobs locally
+pre-push: verify-modules vet fmt lint vuln ## Mirror the GitHub CI api+web+studio jobs locally
 	TEST_DATABASE_URL=$(DATABASE_URL) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 	go tool cover -func=coverage.out
 	cd ui/app && npm ci && npm run typecheck && npm run lint && npx prettier --write "**/*.{ts,tsx}" && npm run build
+	cd ui/studio && go vet ./... && gofmt -w . && go build ./...
+	cd ui/studio/frontend && npm ci && npm run lint && npx prettier --write "**/*.{ts,tsx}" && npm run build
 
 ## --- Help ---
 

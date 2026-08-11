@@ -10,7 +10,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import type { StatusFilter } from "./suspend-dialog"
+import type { StatusFilter } from "./badges"
 
 export function UnsuspendDialog({
   organization,
@@ -31,14 +31,17 @@ export function UnsuspendDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Restore organization?</AlertDialogTitle>
           <AlertDialogDescription>
-            This will restore <strong>{organization.name}</strong> to active status and re-enable member access.
+            This will restore <strong>{organization.name}</strong> to active
+            status and re-enable member access.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onClose}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             disabled={unsuspend.isPending}
-            onClick={() => unsuspend.mutate(organization.id, { onSuccess: onClose })}
+            onClick={() =>
+              unsuspend.mutate(organization.id, { onSuccess: onClose })
+            }
           >
             {unsuspend.isPending ? "Restoring…" : "Restore"}
           </AlertDialogAction>

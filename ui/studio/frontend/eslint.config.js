@@ -34,18 +34,13 @@ export default defineConfig([
       'tailwindcss/enforces-shorthand': 'off',
       'tailwindcss/important-modifier-suffix': 'off',
       'tailwindcss/no-unnecessary-arbitrary-value': 'off',
-      // `loader`: hand-written keyframe animation class in index.css (app-loader.tsx) —
-      // real, intentional, just not a Tailwind utility.
-      'tailwindcss/no-custom-classname': ['warn', { whitelist: ['loader'] }],
     },
   },
   {
-    // shadcn/ui generated files — do not edit manually; fast-refresh rule doesn't apply,
-    // and their classnames (e.g. sonner's `toaster`) are the library's own hooks, not ours.
+    // shadcn/ui generated files — do not edit manually; fast-refresh rule doesn't apply
     files: ['src/components/ui/**/*.{ts,tsx}'],
     rules: {
       'react-refresh/only-export-components': 'off',
-      'tailwindcss/no-custom-classname': 'off',
     },
   },
 ])

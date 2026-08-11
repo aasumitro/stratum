@@ -8,7 +8,11 @@ import {
 } from "@tabler/icons-react"
 import { toast } from "sonner"
 import type { OperatorLogEntry } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
-import { OPERATOR_LOG_PAGE_SIZE, useOperatorLog, useOperatorLogCount } from "@/hooks/use-operator-log"
+import {
+  OPERATOR_LOG_PAGE_SIZE,
+  useOperatorLog,
+  useOperatorLogCount,
+} from "@/hooks/use-operator-log"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
@@ -29,7 +33,12 @@ export function OperatorLogPage() {
   const [offset, setOffset] = useState(0)
   const [detail, setDetail] = useState<OperatorLogEntry | null>(null)
 
-  const { data: entries, isLoading, error, refetch } = useOperatorLog(projectId, OPERATOR_LOG_PAGE_SIZE, offset)
+  const {
+    data: entries,
+    isLoading,
+    error,
+    refetch,
+  } = useOperatorLog(projectId, OPERATOR_LOG_PAGE_SIZE, offset)
   const { data: total } = useOperatorLogCount(projectId)
 
   const hasMore = (entries?.length ?? 0) === OPERATOR_LOG_PAGE_SIZE
@@ -37,21 +46,23 @@ export function OperatorLogPage() {
   const currentPage = Math.floor(offset / OPERATOR_LOG_PAGE_SIZE) + 1
 
   return (
-    <div className="flex flex-col min-h-full">
-      <header className="flex items-center gap-3 px-6 py-4 border-b">
+    <div className="flex min-h-full flex-col">
+      <header className="flex items-center gap-3 border-b px-6 py-4">
         <IconHistory className="size-4 text-muted-foreground" />
         <div className="flex flex-col gap-0.5">
-          <h1 className="font-semibold text-sm">Operator Log</h1>
+          <h1 className="text-sm font-semibold">Operator Log</h1>
           <p className="text-xs text-muted-foreground">
             Audit trail of support actions taken in Studio
             {total !== undefined && (
-              <span className="ml-1 text-foreground font-medium">({total.toLocaleString()})</span>
+              <span className="ml-1 font-medium text-foreground">
+                ({total.toLocaleString()})
+              </span>
             )}
           </p>
         </div>
       </header>
 
-      <div className="p-6 space-y-5">
+      <div className="space-y-5 p-6">
         <div className="rounded-md border">
           {isLoading ? (
             <div className="divide-y">
@@ -62,7 +73,7 @@ export function OperatorLogPage() {
               ))}
             </div>
           ) : error ? (
-            <div className="flex flex-col items-center gap-2 py-12 text-muted-foreground text-sm">
+            <div className="flex flex-col items-center gap-2 py-12 text-sm text-muted-foreground">
               <span>Failed to load operator log</span>
               <Button variant="outline" size="sm" onClick={() => refetch()}>
                 Try again
@@ -72,8 +83,9 @@ export function OperatorLogPage() {
             <div className="flex flex-col items-center gap-2 py-12 text-muted-foreground">
               <IconHistory className="size-8 opacity-30" />
               <span className="text-sm">No operator actions recorded yet</span>
-              <span className="text-xs max-w-xs text-center">
-                Actions from the Support panel (extend trial, change plan, void invoice, etc.) will appear here.
+              <span className="max-w-xs text-center text-xs">
+                Actions from the Support panel (extend trial, change plan, void
+                invoice, etc.) will appear here.
               </span>
             </div>
           ) : (
@@ -97,37 +109,42 @@ export function OperatorLogPage() {
                     <TableCell>
                       <span
                         className={cn(
-                          "inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium capitalize",
-                          ACTION_STYLE[entry.action] ?? "bg-muted text-muted-foreground border-border",
+                          "inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium capitalize",
+                          ACTION_STYLE[entry.action] ??
+                            "border-border bg-muted text-muted-foreground"
                         )}
                       >
                         {actionLabel(entry.action)}
                       </span>
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground max-w-[180px]">
+                    <TableCell className="max-w-45 font-mono text-xs text-muted-foreground">
                       <div className="flex items-center gap-1.5">
-                        <span className="truncate" title={entry.target_id}>{entry.target_id}</span>
+                        <span className="truncate" title={entry.target_id}>
+                          {entry.target_id}
+                        </span>
                         <button
                           type="button"
-                          className="flex-shrink-0 text-muted-foreground hover:text-foreground"
+                          className="shrink-0 text-muted-foreground hover:text-foreground"
                           title="Copy target ID"
                           onClick={(e) => {
                             e.stopPropagation()
-                            void navigator.clipboard.writeText(entry.target_id).then(
-                              () => toast.success("ID copied"),
-                              () => toast.error("Copy failed"),
-                            )
+                            void navigator.clipboard
+                              .writeText(entry.target_id)
+                              .then(
+                                () => toast.success("ID copied"),
+                                () => toast.error("Copy failed")
+                              )
                           }}
                         >
                           <IconClipboard className="size-3" />
                         </button>
                       </div>
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground max-w-[200px] truncate">
+                    <TableCell className="max-w-50 truncate text-xs text-muted-foreground">
                       {entry.detail || <span className="italic">—</span>}
                     </TableCell>
                     <TableCell
-                      className="text-xs text-muted-foreground whitespace-nowrap"
+                      className="text-xs whitespace-nowrap text-muted-foreground"
                       title={new Date(entry.performed_at).toLocaleString()}
                     >
                       {timeAgo(entry.performed_at)}
@@ -148,7 +165,9 @@ export function OperatorLogPage() {
                 variant="outline"
                 size="sm"
                 disabled={!hasPrev}
-                onClick={() => setOffset(Math.max(0, offset - OPERATOR_LOG_PAGE_SIZE))}
+                onClick={() =>
+                  setOffset(Math.max(0, offset - OPERATOR_LOG_PAGE_SIZE))
+                }
               >
                 <IconChevronLeft className="size-4" />
                 Previous
@@ -167,7 +186,9 @@ export function OperatorLogPage() {
         )}
       </div>
 
-      {detail && <EntryDetailSheet entry={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <EntryDetailSheet entry={detail} onClose={() => setDetail(null)} />
+      )}
     </div>
   )
 }

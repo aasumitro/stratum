@@ -25,7 +25,8 @@ export function usePlans(projectId: string) {
 export function useCreatePlan(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: PlanInput) => CatalogService.CreatePlan(projectId, input),
+    mutationFn: (input: PlanInput) =>
+      CatalogService.CreatePlan(projectId, input),
     onSuccess: () => {
       toast.success("Plan created")
       qc.invalidateQueries({ queryKey: ["catalog", "plans", projectId] })
@@ -50,7 +51,8 @@ export function useUpdatePlan(projectId: string) {
 export function useDeletePlan(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (planID: string) => CatalogService.DeletePlan(projectId, planID),
+    mutationFn: (planID: string) =>
+      CatalogService.DeletePlan(projectId, planID),
     onSuccess: () => {
       toast.success("Plan deleted")
       qc.invalidateQueries({ queryKey: ["catalog", "plans", projectId] })
@@ -73,7 +75,8 @@ export function useFeatures(projectId: string) {
 export function useCreateFeature(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: FeatureInput) => CatalogService.CreateFeature(projectId, input),
+    mutationFn: (input: FeatureInput) =>
+      CatalogService.CreateFeature(projectId, input),
     onSuccess: () => {
       toast.success("Feature created")
       qc.invalidateQueries({ queryKey: ["catalog", "features", projectId] })
@@ -85,8 +88,13 @@ export function useCreateFeature(projectId: string) {
 export function useUpdateFeature(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ featureID, input }: { featureID: string; input: FeatureInput }) =>
-      CatalogService.UpdateFeature(projectId, featureID, input),
+    mutationFn: ({
+      featureID,
+      input,
+    }: {
+      featureID: string
+      input: FeatureInput
+    }) => CatalogService.UpdateFeature(projectId, featureID, input),
     onSuccess: () => {
       toast.success("Feature updated")
       qc.invalidateQueries({ queryKey: ["catalog", "features", projectId] })
@@ -98,7 +106,8 @@ export function useUpdateFeature(projectId: string) {
 export function useDeleteFeature(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (featureID: string) => CatalogService.DeleteFeature(projectId, featureID),
+    mutationFn: (featureID: string) =>
+      CatalogService.DeleteFeature(projectId, featureID),
     onSuccess: () => {
       toast.success("Feature deleted")
       qc.invalidateQueries({ queryKey: ["catalog", "features", projectId] })
@@ -122,10 +131,13 @@ export function usePlanFeatures(projectId: string, planId: string) {
 export function useUpsertPlanFeature(projectId: string, planId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: PlanFeatureInput) => CatalogService.UpsertPlanFeature(projectId, planId, input),
+    mutationFn: (input: PlanFeatureInput) =>
+      CatalogService.UpsertPlanFeature(projectId, planId, input),
     onSuccess: () => {
       toast.success("Entitlement saved")
-      qc.invalidateQueries({ queryKey: ["catalog", "plan-features", projectId, planId] })
+      qc.invalidateQueries({
+        queryKey: ["catalog", "plan-features", projectId, planId],
+      })
     },
     onError: (err) => toast.error(`Save failed: ${wailsError(err)}`),
   })
@@ -134,10 +146,13 @@ export function useUpsertPlanFeature(projectId: string, planId: string) {
 export function useDeletePlanFeature(projectId: string, planId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (featureID: string) => CatalogService.DeletePlanFeature(projectId, planId, featureID),
+    mutationFn: (featureID: string) =>
+      CatalogService.DeletePlanFeature(projectId, planId, featureID),
     onSuccess: () => {
       toast.success("Entitlement removed")
-      qc.invalidateQueries({ queryKey: ["catalog", "plan-features", projectId, planId] })
+      qc.invalidateQueries({
+        queryKey: ["catalog", "plan-features", projectId, planId],
+      })
     },
     onError: (err) => toast.error(`Remove failed: ${wailsError(err)}`),
   })
@@ -157,7 +172,8 @@ export function useCoupons(projectId: string) {
 export function useCreateCoupon(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: CouponInput) => CatalogService.CreateCoupon(projectId, input),
+    mutationFn: (input: CouponInput) =>
+      CatalogService.CreateCoupon(projectId, input),
     onSuccess: () => {
       toast.success("Coupon created")
       qc.invalidateQueries({ queryKey: ["catalog", "coupons", projectId] })
@@ -206,11 +222,24 @@ export function useCouponTargets(projectId: string, couponCode: string) {
 export function useAddCouponTarget(projectId: string, couponCode: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ subjectType, subjectId }: { subjectType: string; subjectId: string }) =>
-      CatalogService.AddCouponTarget(projectId, couponCode, subjectType, subjectId),
+    mutationFn: ({
+      subjectType,
+      subjectId,
+    }: {
+      subjectType: string
+      subjectId: string
+    }) =>
+      CatalogService.AddCouponTarget(
+        projectId,
+        couponCode,
+        subjectType,
+        subjectId
+      ),
     onSuccess: () => {
       toast.success("Target added")
-      qc.invalidateQueries({ queryKey: ["catalog", "coupon-targets", projectId, couponCode] })
+      qc.invalidateQueries({
+        queryKey: ["catalog", "coupon-targets", projectId, couponCode],
+      })
     },
     onError: (err) => toast.error(`Add failed: ${wailsError(err)}`),
   })
@@ -219,11 +248,24 @@ export function useAddCouponTarget(projectId: string, couponCode: string) {
 export function useRemoveCouponTarget(projectId: string, couponCode: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ subjectType, subjectId }: { subjectType: string; subjectId: string }) =>
-      CatalogService.RemoveCouponTarget(projectId, couponCode, subjectType, subjectId),
+    mutationFn: ({
+      subjectType,
+      subjectId,
+    }: {
+      subjectType: string
+      subjectId: string
+    }) =>
+      CatalogService.RemoveCouponTarget(
+        projectId,
+        couponCode,
+        subjectType,
+        subjectId
+      ),
     onSuccess: () => {
       toast.success("Target removed")
-      qc.invalidateQueries({ queryKey: ["catalog", "coupon-targets", projectId, couponCode] })
+      qc.invalidateQueries({
+        queryKey: ["catalog", "coupon-targets", projectId, couponCode],
+      })
     },
     onError: (err) => toast.error(`Remove failed: ${wailsError(err)}`),
   })
@@ -243,7 +285,8 @@ export function useAddons(projectId: string) {
 export function useCreateAddon(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: AddonInput) => CatalogService.CreateAddon(projectId, input),
+    mutationFn: (input: AddonInput) =>
+      CatalogService.CreateAddon(projectId, input),
     onSuccess: () => {
       toast.success("Addon created")
       qc.invalidateQueries({ queryKey: ["catalog", "addons", projectId] })
@@ -268,7 +311,8 @@ export function useUpdateAddon(projectId: string) {
 export function useDeleteAddon(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (addonID: string) => CatalogService.DeleteAddon(projectId, addonID),
+    mutationFn: (addonID: string) =>
+      CatalogService.DeleteAddon(projectId, addonID),
     onSuccess: () => {
       toast.success("Addon deleted")
       qc.invalidateQueries({ queryKey: ["catalog", "addons", projectId] })
@@ -292,10 +336,13 @@ export function useAddonFeatures(projectId: string, addonId: string) {
 export function useUpsertAddonFeature(projectId: string, addonId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: AddonFeatureInput) => CatalogService.UpsertAddonFeature(projectId, addonId, input),
+    mutationFn: (input: AddonFeatureInput) =>
+      CatalogService.UpsertAddonFeature(projectId, addonId, input),
     onSuccess: () => {
       toast.success("Entitlement saved")
-      qc.invalidateQueries({ queryKey: ["catalog", "addon-features", projectId, addonId] })
+      qc.invalidateQueries({
+        queryKey: ["catalog", "addon-features", projectId, addonId],
+      })
     },
     onError: (err) => toast.error(`Save failed: ${wailsError(err)}`),
   })
@@ -304,10 +351,13 @@ export function useUpsertAddonFeature(projectId: string, addonId: string) {
 export function useDeleteAddonFeature(projectId: string, addonId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (featureID: string) => CatalogService.DeleteAddonFeature(projectId, addonId, featureID),
+    mutationFn: (featureID: string) =>
+      CatalogService.DeleteAddonFeature(projectId, addonId, featureID),
     onSuccess: () => {
       toast.success("Entitlement removed")
-      qc.invalidateQueries({ queryKey: ["catalog", "addon-features", projectId, addonId] })
+      qc.invalidateQueries({
+        queryKey: ["catalog", "addon-features", projectId, addonId],
+      })
     },
     onError: (err) => toast.error(`Remove failed: ${wailsError(err)}`),
   })

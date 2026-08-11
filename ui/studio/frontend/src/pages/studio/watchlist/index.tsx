@@ -14,18 +14,19 @@ export function WatchlistPage() {
   const { projectId } = useParams({ from: "/studio/$projectId/watchlist" })
   const { data, isLoading, error, refetch } = useWatchlist(projectId)
 
-  const urgentTotal = (data?.trials_ending_soon?.length ?? 0) + (data?.past_due?.length ?? 0)
+  const urgentTotal =
+    (data?.trials_ending_soon?.length ?? 0) + (data?.past_due?.length ?? 0)
 
   return (
-    <div className="flex flex-col min-h-full">
-      <header className="flex items-center justify-between px-6 py-4 border-b">
+    <div className="flex min-h-full flex-col">
+      <header className="flex items-center justify-between border-b px-6 py-4">
         <div className="flex items-center gap-3">
           <IconAlertCircle className="size-4 text-muted-foreground" />
           <div className="flex flex-col gap-0.5">
-            <h1 className="font-semibold text-sm">
+            <h1 className="text-sm font-semibold">
               Watchlist
               {urgentTotal > 0 && (
-                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-700 dark:text-red-400">
+                <span className="ml-1.5 inline-flex items-center rounded-full bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-400">
                   {urgentTotal} urgent
                 </span>
               )}
@@ -35,19 +36,24 @@ export function WatchlistPage() {
             </p>
           </div>
         </div>
-        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => refetch()}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          onClick={() => refetch()}
+        >
           <IconRefresh className="size-4" />
           Refresh
         </Button>
       </header>
 
-      <div className="p-6 space-y-8">
+      <div className="space-y-8 p-6">
         {isLoading ? (
           <div className="space-y-6">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="space-y-3">
                 <Skeleton className="h-5 w-48" />
-                <div className="rounded-lg border divide-y overflow-hidden">
+                <div className="divide-y overflow-hidden rounded-lg border">
                   {Array.from({ length: 2 }).map((_, j) => (
                     <div key={j} className="px-4 py-3">
                       <Skeleton className="h-4 w-full" />
@@ -58,9 +64,11 @@ export function WatchlistPage() {
             ))}
           </div>
         ) : error ? (
-          <div className="flex flex-col items-center gap-2 py-16 text-muted-foreground text-sm">
+          <div className="flex flex-col items-center gap-2 py-16 text-sm text-muted-foreground">
             <span>Failed to load watchlist</span>
-            <Button variant="outline" size="sm" onClick={() => refetch()}>Try again</Button>
+            <Button variant="outline" size="sm" onClick={() => refetch()}>
+              Try again
+            </Button>
           </div>
         ) : (
           <>

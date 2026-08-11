@@ -57,12 +57,14 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   WriteBanner,
   TableSkeleton,
-  formatJSON,
-  buildPricesStub,
-  formatMetricValue,
   FieldHint,
   PriceUnitHint,
 } from "../components/table-helpers"
+import {
+  formatJSON,
+  buildPricesStub,
+  formatMetricValue,
+} from "../components/table-utils"
 import { EntitlementsSheet } from "./entitlements-sheet"
 import { SaveConfirmDialog } from "./save-confirm-dialog"
 
@@ -96,7 +98,7 @@ function AddonForm({ addon, projectId, onClose }: AddonFormProps) {
           prices: addon.prices,
           active: addon.active,
         }
-      : EMPTY_ADDON,
+      : EMPTY_ADDON
   )
 
   const set = <K extends keyof AddonInput>(k: K, v: AddonInput[K]) =>
@@ -105,7 +107,13 @@ function AddonForm({ addon, projectId, onClose }: AddonFormProps) {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const initialForm: AddonInput = addon
-    ? { id: addon.id, name: addon.name, description: addon.description, prices: addon.prices, active: addon.active }
+    ? {
+        id: addon.id,
+        name: addon.name,
+        description: addon.description,
+        prices: addon.prices,
+        active: addon.active,
+      }
     : EMPTY_ADDON
   const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm)
   const isValid = form.id.trim() !== "" && form.name.trim() !== ""
@@ -122,150 +130,206 @@ function AddonForm({ addon, projectId, onClose }: AddonFormProps) {
 
   return (
     <>
-    <Sheet open onOpenChange={(o) => { if (!o) onClose() }}>
-      <SheetContent className="flex flex-col gap-0 w-full sm:max-w-lg overflow-y-auto">
-        <SheetHeader className="pb-4">
-          <SheetTitle>{isEdit ? `Edit addon — ${addon!.id}` : "New addon"}</SheetTitle>
-          <SheetDescription>
-            Changes are written directly to the production database.
-          </SheetDescription>
-        </SheetHeader>
+      <Sheet
+        open
+        onOpenChange={(o) => {
+          if (!o) onClose()
+        }}
+      >
+        <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-lg">
+          <SheetHeader className="pb-4">
+            <SheetTitle>
+              {isEdit ? `Edit addon — ${addon!.id}` : "New addon"}
+            </SheetTitle>
+            <SheetDescription>
+              Changes are written directly to the production database.
+            </SheetDescription>
+          </SheetHeader>
 
-        <div className="flex flex-col gap-4 py-4 mx-6">
-          {!isEdit && (
+          <div className="mx-6 flex flex-col gap-4 py-4">
+            {!isEdit && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="addon-id">ID (slug) *</Label>
+                <Input
+                  id="addon-id"
+                  placeholder="extra-seats"
+                  value={form.id}
+                  onChange={(e) => set("id", e.target.value)}
+                />
+                <FieldHint>
+                  Unique identifier used when attaching this addon to a
+                  subscription. Cannot be changed after creation.
+                </FieldHint>
+              </div>
+            )}
+
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="addon-id">ID (slug) *</Label>
+              <Label htmlFor="addon-name">Name *</Label>
               <Input
-                id="addon-id"
-                placeholder="extra-seats"
-                value={form.id}
-                onChange={(e) => set("id", e.target.value)}
+                id="addon-name"
+                placeholder="Extra Seats"
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
               />
               <FieldHint>
-                Unique identifier used when attaching this addon to a subscription. Cannot be changed after creation.
+                Display name shown to customers when purchasing this addon.
               </FieldHint>
             </div>
-          )}
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="addon-name">Name *</Label>
-            <Input
-              id="addon-name"
-              placeholder="Extra Seats"
-              value={form.name}
-              onChange={(e) => set("name", e.target.value)}
-            />
-            <FieldHint>Display name shown to customers when purchasing this addon.</FieldHint>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="addon-desc">Description</Label>
-            <Input
-              id="addon-desc"
-              placeholder="10 additional member seats."
-              value={form.description}
-              onChange={(e) => set("description", e.target.value)}
-            />
-            <FieldHint>One-line description of what this addon includes.</FieldHint>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="addon-prices">Prices (JSONB)</Label>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => set("prices", buildPricesStub((currencies ?? []).filter((c) => c.active).map((c) => c.code)))}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  Generate stub
-                </button>
-                <button
-                  type="button"
-                  onClick={() => set("prices", formatJSON(form.prices))}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  Format
-                </button>
-              </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="addon-desc">Description</Label>
+              <Input
+                id="addon-desc"
+                placeholder="10 additional member seats."
+                value={form.description}
+                onChange={(e) => set("description", e.target.value)}
+              />
+              <FieldHint>
+                One-line description of what this addon includes.
+              </FieldHint>
             </div>
-            <Textarea
-              id="addon-prices"
-              rows={4}
-              value={form.prices}
-              onChange={(e) => set("prices", e.target.value)}
-              className="font-mono text-xs"
-              placeholder='{"USD": {"monthly": 500, "yearly": 5000}}'
-            />
-            <FieldHint>
-              Same shape as plan prices — JSON keyed by currency, each with <code className="font-mono">monthly</code>/<code className="font-mono">yearly</code> amounts.
-              This addon bills <strong>alongside the subscription on the same recurring cycle</strong>, not as a one-time charge.
-            </FieldHint>
-            <PriceUnitHint />
+
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="addon-prices">Prices (JSONB)</Label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      set(
+                        "prices",
+                        buildPricesStub(
+                          (currencies ?? [])
+                            .filter((c) => c.active)
+                            .map((c) => c.code)
+                        )
+                      )
+                    }
+                    className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Generate stub
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => set("prices", formatJSON(form.prices))}
+                    className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Format
+                  </button>
+                </div>
+              </div>
+              <Textarea
+                id="addon-prices"
+                rows={4}
+                value={form.prices}
+                onChange={(e) => set("prices", e.target.value)}
+                className="font-mono text-xs"
+                placeholder='{"USD": {"monthly": 500, "yearly": 5000}}'
+              />
+              <FieldHint>
+                Same shape as plan prices — JSON keyed by currency, each with{" "}
+                <code className="font-mono">monthly</code>/
+                <code className="font-mono">yearly</code> amounts. This addon
+                bills{" "}
+                <strong>
+                  alongside the subscription on the same recurring cycle
+                </strong>
+                , not as a one-time charge.
+              </FieldHint>
+              <PriceUnitHint />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.active}
+                  onChange={(e) => set("active", e.target.checked)}
+                  className="rounded"
+                />
+                Active
+              </Label>
+              <FieldHint>
+                Inactive addons can't be newly attached, but existing
+                attachments keep working.
+              </FieldHint>
+            </div>
           </div>
 
-          <div className="flex flex-col gap-1.5">
-          <Label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={form.active}
-              onChange={(e) => set("active", e.target.checked)}
-              className="rounded"
-            />
-            Active
-          </Label>
-          <FieldHint>Inactive addons can't be newly attached, but existing attachments keep working.</FieldHint>
-          </div>
-        </div>
+          <SheetFooter className="mt-auto pt-4">
+            <Button variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => setConfirmOpen(true)}
+              disabled={submitDisabled}
+            >
+              {pending ? "Saving…" : isEdit ? "Save changes" : "Create addon"}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
-        <SheetFooter className="pt-4 mt-auto">
-          <Button variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button onClick={() => setConfirmOpen(true)} disabled={submitDisabled}>
-            {pending ? "Saving…" : isEdit ? "Save changes" : "Create addon"}
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
-
-    {confirmOpen && (
-      <SaveConfirmDialog
-        title={isEdit ? `Confirm changes — ${addon!.id}` : "Confirm new addon"}
-        fields={[
-          { label: "ID", value: <code className="font-mono">{isEdit ? addon!.id : form.id}</code> },
-          { label: "Name", value: form.name },
-          { label: "Description", value: form.description || "—" },
-          { label: "Active", value: form.active ? "Yes" : "No" },
-        ]}
-        pricesJSON={form.prices}
-        currencies={currencies}
-        pending={pending}
-        onConfirm={handleSubmit}
-        onCancel={() => setConfirmOpen(false)}
-      />
-    )}
+      {confirmOpen && (
+        <SaveConfirmDialog
+          title={
+            isEdit ? `Confirm changes — ${addon!.id}` : "Confirm new addon"
+          }
+          fields={[
+            {
+              label: "ID",
+              value: (
+                <code className="font-mono">
+                  {isEdit ? addon!.id : form.id}
+                </code>
+              ),
+            },
+            { label: "Name", value: form.name },
+            { label: "Description", value: form.description || "—" },
+            { label: "Active", value: form.active ? "Yes" : "No" },
+          ]}
+          pricesJSON={form.prices}
+          currencies={currencies}
+          pending={pending}
+          onConfirm={handleSubmit}
+          onCancel={() => setConfirmOpen(false)}
+        />
+      )}
     </>
   )
 }
 
 function AddonEntitlementsCell({
-  projectId, addonId, features,
-}: { projectId: string; addonId: string; features: Feature[] | null | undefined }) {
+  projectId,
+  addonId,
+  features,
+}: {
+  projectId: string
+  addonId: string
+  features: Feature[] | null | undefined
+}) {
   const { data: entitlements, isLoading } = useAddonFeatures(projectId, addonId)
   if (isLoading) return <span className="text-xs text-muted-foreground">…</span>
   if (!entitlements || entitlements.length === 0) {
     return <span className="text-xs text-muted-foreground">None</span>
   }
   return (
-    <div className="flex flex-wrap gap-1 max-w-xs">
+    <div className="flex max-w-xs flex-wrap gap-1">
       {entitlements.map((e) => {
         const f = features?.find((x) => x.id === e.feature_id)
         const label = f?.name ?? e.feature_id
-        const value = e.limit_value !== null ? `+${formatMetricValue(e.limit_value, f?.metric_key)}` : undefined
+        const value =
+          e.limit_value !== null
+            ? `+${formatMetricValue(e.limit_value, f?.metric_key)}`
+            : undefined
         return (
-          <Badge key={e.feature_id} variant="outline" className="text-xs font-normal">
-            {label}{value !== undefined ? `: ${value}` : ""}
+          <Badge
+            key={e.feature_id}
+            variant="outline"
+            className="text-xs font-normal"
+          >
+            {label}
+            {value !== undefined ? `: ${value}` : ""}
           </Badge>
         )
       })}
@@ -274,27 +338,47 @@ function AddonEntitlementsCell({
 }
 
 export function AddonsTab({ projectId }: { projectId: string }) {
-  const { data: addons, isLoading, error, refetch, isFetching } = useAddons(projectId)
+  const {
+    data: addons,
+    isLoading,
+    error,
+    refetch,
+    isFetching,
+  } = useAddons(projectId)
   const { data: features } = useFeatures(projectId)
   const deleteAddon = useDeleteAddon(projectId)
 
   const [formTarget, setFormTarget] = useState<Addon | null | "new">(null)
   const [deleteTarget, setDeleteTarget] = useState<Addon | null>(null)
-  const [entitlementsTarget, setEntitlementsTarget] = useState<Addon | null>(null)
-
-  const { data: addonFeatures, isLoading: entitlementsLoading } = useAddonFeatures(
-    projectId, entitlementsTarget?.id ?? "",
+  const [entitlementsTarget, setEntitlementsTarget] = useState<Addon | null>(
+    null
   )
-  const upsertAddonFeature = useUpsertAddonFeature(projectId, entitlementsTarget?.id ?? "")
-  const deleteAddonFeature = useDeleteAddonFeature(projectId, entitlementsTarget?.id ?? "")
+
+  const { data: addonFeatures, isLoading: entitlementsLoading } =
+    useAddonFeatures(projectId, entitlementsTarget?.id ?? "")
+  const upsertAddonFeature = useUpsertAddonFeature(
+    projectId,
+    entitlementsTarget?.id ?? ""
+  )
+  const deleteAddonFeature = useDeleteAddonFeature(
+    projectId,
+    entitlementsTarget?.id ?? ""
+  )
 
   return (
     <div className="flex flex-col gap-4">
       <WriteBanner />
 
       <div className="flex items-center justify-between">
-        <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-          <IconRefresh className={`size-4 ${isFetching ? "animate-spin" : ""}`} />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => refetch()}
+          disabled={isFetching}
+        >
+          <IconRefresh
+            className={`size-4 ${isFetching ? "animate-spin" : ""}`}
+          />
           Refresh
         </Button>
         <Button size="sm" onClick={() => setFormTarget("new")}>
@@ -308,7 +392,9 @@ export function AddonsTab({ projectId }: { projectId: string }) {
       ) : error ? (
         <p className="text-sm text-destructive">{String(error)}</p>
       ) : !addons || addons.length === 0 ? (
-        <p className="text-sm text-muted-foreground py-8 text-center">No addons found</p>
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No addons found
+        </p>
       ) : (
         <Table>
           <TableHeader>
@@ -323,13 +409,22 @@ export function AddonsTab({ projectId }: { projectId: string }) {
           <TableBody>
             {addons.map((a: Addon) => (
               <TableRow key={a.id}>
-                <TableCell><code className="font-mono text-xs">{a.id}</code></TableCell>
-                <TableCell className="font-medium text-sm">{a.name}</TableCell>
                 <TableCell>
-                  <AddonEntitlementsCell projectId={projectId} addonId={a.id} features={features} />
+                  <code className="font-mono text-xs">{a.id}</code>
+                </TableCell>
+                <TableCell className="text-sm font-medium">{a.name}</TableCell>
+                <TableCell>
+                  <AddonEntitlementsCell
+                    projectId={projectId}
+                    addonId={a.id}
+                    features={features}
+                  />
                 </TableCell>
                 <TableCell className="text-center">
-                  <Badge variant={a.active ? "default" : "secondary"} className="text-xs">
+                  <Badge
+                    variant={a.active ? "default" : "secondary"}
+                    className="text-xs"
+                  >
                     {a.active ? "active" : "inactive"}
                   </Badge>
                 </TableCell>
@@ -344,7 +439,12 @@ export function AddonsTab({ projectId }: { projectId: string }) {
                     >
                       <IconAdjustmentsHorizontal className="size-3.5" />
                     </Button>
-                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setFormTarget(a)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0"
+                      onClick={() => setFormTarget(a)}
+                    >
                       <IconPencil className="size-3.5" />
                     </Button>
                     <Button
@@ -385,7 +485,12 @@ export function AddonsTab({ projectId }: { projectId: string }) {
         />
       )}
 
-      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null) }}>
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => {
+          if (!o) setDeleteTarget(null)
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="flex items-center gap-2">
@@ -393,12 +498,17 @@ export function AddonsTab({ projectId }: { projectId: string }) {
               Delete addon?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Addon <span className="font-mono font-medium">{deleteTarget?.id}</span> will be
-              permanently deleted. This will fail if any subscription has it attached, or if it still has entitlements — remove those first via Manage Entitlements.
+              Addon{" "}
+              <span className="font-mono font-medium">{deleteTarget?.id}</span>{" "}
+              will be permanently deleted. This will fail if any subscription
+              has it attached, or if it still has entitlements — remove those
+              first via Manage Entitlements.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {

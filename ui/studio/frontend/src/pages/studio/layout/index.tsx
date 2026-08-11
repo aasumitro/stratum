@@ -1,8 +1,4 @@
-import {
-  Outlet,
-  useNavigate,
-  useParams,
-} from "@tanstack/react-router"
+import { Outlet, useNavigate, useParams } from "@tanstack/react-router"
 import {
   IconActivity,
   IconBrandDatabricks,
@@ -45,27 +41,27 @@ export function StudioLayout() {
   const watchlistUrgent = urgentCount(watchlistData)
 
   return (
-    <div className="flex flex-1 min-h-0">
+    <div className="flex min-h-0 flex-1">
       {/* Sidebar */}
-      <aside className="flex flex-col w-[220px] flex-shrink-0 border-r bg-card/40">
+      <aside className="flex w-55 shrink-0 flex-col border-r bg-card/40">
         {/* Project switcher */}
         <div className="px-3 py-[16.4px]">
           <DropdownMenu>
             <DropdownMenuTrigger
-              className="flex items-center gap-2 w-full rounded-lg px-2.5 py-2 text-sm hover:bg-accent transition-colors text-left outline-none"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm outline-hidden transition-colors hover:bg-accent"
               aria-label="Switch project"
             >
               <span
-                className="size-2.5 rounded-full flex-shrink-0"
+                className="size-2.5 shrink-0 rounded-full"
                 style={{ backgroundColor: currentProject?.color ?? "#6366f1" }}
               />
-              <span className="flex-1 truncate font-medium text-sm">
+              <span className="flex-1 truncate text-sm font-medium">
                 {currentProject?.name ?? "Loading…"}
               </span>
-              <IconChevronDown className="size-3.5 text-muted-foreground flex-shrink-0" />
+              <IconChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
             </DropdownMenuTrigger>
 
-            <DropdownMenuContent align="start" className="w-[200px]">
+            <DropdownMenuContent align="start" className="w-50">
               {otherProjects.length > 0 ? (
                 <>
                   {otherProjects.map((p) => (
@@ -79,7 +75,7 @@ export function StudioLayout() {
                       }
                     >
                       <span
-                        className="size-2 rounded-full flex-shrink-0"
+                        className="size-2 shrink-0 rounded-full"
                         style={{ backgroundColor: p.color }}
                       />
                       <span className="truncate">{p.name}</span>
@@ -99,7 +95,7 @@ export function StudioLayout() {
         <Separator />
 
         {/* Navigation */}
-        <nav className="flex flex-col gap-1 p-3 flex-1">
+        <nav className="flex flex-1 flex-col gap-1 p-3">
           <NavLink
             to="/studio/$projectId/dashboard"
             params={{ projectId }}
@@ -121,7 +117,7 @@ export function StudioLayout() {
             label="Watchlist"
             badge={
               watchlistUrgent > 0 ? (
-                <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold bg-red-500 text-white">
+                <span className="inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold text-white">
                   {watchlistUrgent}
                 </span>
               ) : undefined
@@ -185,10 +181,10 @@ export function StudioLayout() {
         </nav>
 
         {/* Bottom */}
-        <div className="p-3 border-t">
+        <div className="border-t p-3">
           <Button
             variant="ghost"
-            className="w-full justify-start gap-2 text-muted-foreground text-sm"
+            className="w-full justify-start gap-2 text-sm text-muted-foreground"
             onClick={() => navigate({ to: "/" })}
           >
             <IconBrandDatabricks className="size-4" />

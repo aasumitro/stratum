@@ -22,7 +22,12 @@ export function PurgeDialog({ queue, projectId, onClose }: PurgeDialogProps) {
   const purge = usePurgeQueue(projectId)
 
   return (
-    <AlertDialog open onOpenChange={(open) => { if (!open) onClose() }}>
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2">
@@ -32,8 +37,8 @@ export function PurgeDialog({ queue, projectId, onClose }: PurgeDialogProps) {
           <AlertDialogDescription>
             All <span className="font-semibold">{queue.messages}</span> message
             {queue.messages !== 1 ? "s" : ""} in{" "}
-            <span className="font-mono">{queue.name}</span> will be permanently deleted.
-            This cannot be undone.
+            <span className="font-mono">{queue.name}</span> will be permanently
+            deleted. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

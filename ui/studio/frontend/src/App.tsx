@@ -20,12 +20,15 @@ export default function App() {
   }, [])
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="flex h-screen flex-col overflow-hidden">
       <TitleBar />
-      <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex min-h-0 flex-1 flex-col">
         <RouterProvider router={router} />
       </div>
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
       <Toaster richColors position="bottom-right" />
     </div>
   )

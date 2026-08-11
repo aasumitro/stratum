@@ -75,6 +75,7 @@ linters:
       - builtin$
       - examples$
       - node_modules
+      - internal/platform/httpserver/docs   # swag-generated; marker lacks the trailing
 
 formatters:
   enable:
@@ -85,3 +86,4 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - internal/platform/httpserver/docs

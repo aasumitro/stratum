@@ -23,9 +23,9 @@ export function UserDetailPanel({ projectId, authSub }: UserDetailPanelProps) {
 
   if (isLoading) {
     return (
-      <div className="animate-pulse flex flex-col gap-4">
-        <div className="h-20 bg-muted rounded-lg" />
-        <div className="h-40 bg-muted rounded-lg" />
+      <div className="flex animate-pulse flex-col gap-4">
+        <div className="h-20 rounded-lg bg-muted" />
+        <div className="h-40 rounded-lg bg-muted" />
       </div>
     )
   }
@@ -39,15 +39,15 @@ export function UserDetailPanel({ projectId, authSub }: UserDetailPanelProps) {
   return (
     <div className="flex flex-col gap-6">
       {/* Profile card */}
-      <div className="flex items-start gap-4 p-4 rounded-lg border bg-card">
-        <div className="size-12 rounded-full bg-muted flex items-center justify-center text-lg font-semibold flex-shrink-0">
+      <div className="flex items-start gap-4 rounded-lg border bg-card p-4">
+        <div className="flex size-12 shrink-0 items-center justify-center rounded-full bg-muted text-lg font-semibold">
           {initials(detail.full_name)}
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="font-semibold">{detail.full_name || "—"}</p>
           <p className="text-sm text-muted-foreground">{detail.email}</p>
-          <div className="flex items-center gap-2 mt-1.5">
-            <code className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded truncate max-w-[260px]">
+          <div className="mt-1.5 flex items-center gap-2">
+            <code className="max-w-65 truncate rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
               {detail.auth_sub}
             </code>
             <Button
@@ -63,9 +63,11 @@ export function UserDetailPanel({ projectId, authSub }: UserDetailPanelProps) {
             </Button>
           </div>
         </div>
-        <div className="text-right text-xs text-muted-foreground flex-shrink-0">
+        <div className="shrink-0 text-right text-xs text-muted-foreground">
           <p>Last seen</p>
-          <p className="font-medium text-foreground">{formatDate(detail.last_seen_at)}</p>
+          <p className="font-medium text-foreground">
+            {formatDate(detail.last_seen_at)}
+          </p>
         </div>
       </div>
 
@@ -79,9 +81,11 @@ export function UserDetailPanel({ projectId, authSub }: UserDetailPanelProps) {
         </h2>
 
         {!detail.organizations || detail.organizations.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-4 text-center">No organizations</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">
+            No organizations
+          </p>
         ) : (
-          <div className="border rounded-lg overflow-hidden">
+          <div className="overflow-hidden rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>

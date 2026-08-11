@@ -13,20 +13,23 @@ import type {
 } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
-import { formatBytes } from "../components/table-helpers"
+import { formatBytes } from "../components/table-utils"
 import { formatMoney, STATUS_COLORS } from "./utils"
 import { MetricCard } from "./metric-card"
 
 export function DashboardContent({ metrics }: { metrics: ProjectMetrics }) {
   const activeSubscriptions =
     metrics.subscriptions_by_status
-      ?.filter((s: SubscriptionStatus) => s.status === "active" || s.status === "trialing")
+      ?.filter(
+        (s: SubscriptionStatus) =>
+          s.status === "active" || s.status === "trialing"
+      )
       .reduce((acc: number, s: SubscriptionStatus) => acc + s.count, 0) ?? 0
 
   return (
     <div className="flex flex-col gap-6 p-6">
       {/* Row 1 — core metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <MetricCard
           icon={<IconBuildingSkyscraper className="size-5" />}
           label="Total Organizations"
@@ -53,7 +56,7 @@ export function DashboardContent({ metrics }: { metrics: ProjectMetrics }) {
       </div>
 
       {/* Row 2 — growth + storage */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <MetricCard
           icon={<IconCalendarPlus className="size-5" />}
           label="New Organizations (30d)"
@@ -65,7 +68,7 @@ export function DashboardContent({ metrics }: { metrics: ProjectMetrics }) {
           value={formatBytes(metrics.storage_bytes_total)}
         />
         <Card className="p-5">
-          <span className="text-xs text-muted-foreground font-medium block mb-3">
+          <span className="mb-3 block text-xs font-medium text-muted-foreground">
             Subscriptions by Status
           </span>
           {metrics.subscriptions_by_status?.length ? (
@@ -81,7 +84,9 @@ export function DashboardContent({ metrics }: { metrics: ProjectMetrics }) {
               ))}
             </div>
           ) : (
-            <p className="text-xs text-muted-foreground">No subscriptions yet</p>
+            <p className="text-xs text-muted-foreground">
+              No subscriptions yet
+            </p>
           )}
         </Card>
       </div>
@@ -89,21 +94,25 @@ export function DashboardContent({ metrics }: { metrics: ProjectMetrics }) {
       {/* Row 3 — top plans */}
       {metrics.top_plans_by_organization?.length ? (
         <Card className="p-5">
-          <span className="text-xs text-muted-foreground font-medium block mb-3">
+          <span className="mb-3 block text-xs font-medium text-muted-foreground">
             Top Plans by Active Organizations
           </span>
           <div className="flex flex-col gap-2">
-            {metrics.top_plans_by_organization.map((p: PlanCount, i: number) => (
-              <div key={p.plan} className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground w-4 tabular-nums">
-                  {i + 1}.
-                </span>
-                <span className="flex-1 text-sm font-medium capitalize">{p.plan}</span>
-                <Badge variant="secondary" className="tabular-nums">
-                  {p.count} organization{p.count !== 1 ? "s" : ""}
-                </Badge>
-              </div>
-            ))}
+            {metrics.top_plans_by_organization.map(
+              (p: PlanCount, i: number) => (
+                <div key={p.plan} className="flex items-center gap-3">
+                  <span className="w-4 text-xs text-muted-foreground tabular-nums">
+                    {i + 1}.
+                  </span>
+                  <span className="flex-1 text-sm font-medium capitalize">
+                    {p.plan}
+                  </span>
+                  <Badge variant="secondary" className="tabular-nums">
+                    {p.count} organization{p.count !== 1 ? "s" : ""}
+                  </Badge>
+                </div>
+              )
+            )}
           </div>
         </Card>
       ) : null}

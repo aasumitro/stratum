@@ -13,15 +13,15 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 const HEALTH_DOT: Record<string, string> = {
-  ok:       "bg-green-500",
+  ok: "bg-green-500",
   degraded: "bg-amber-500",
-  down:     "bg-red-500",
+  down: "bg-red-500",
 }
 
 const HEALTH_LABEL: Record<string, string> = {
-  ok:       "Healthy",
+  ok: "Healthy",
   degraded: "Degraded",
-  down:     "Down",
+  down: "Down",
 }
 
 function formatMRR(cents: number): string {
@@ -54,28 +54,30 @@ export function ProjectCard({
     ? (HEALTH_LABEL[lastStatus.status] ?? lastStatus.status)
     : "Not checked"
 
-  const latencyLabel = lastStatus?.latency_ms != null && lastStatus.latency_ms > 0
-    ? ` · ${lastStatus.latency_ms}ms`
-    : ""
+  const latencyLabel =
+    lastStatus?.latency_ms != null && lastStatus.latency_ms > 0
+      ? ` · ${lastStatus.latency_ms}ms`
+      : ""
 
   const activeOrganizations = metrics?.active_organizations ?? null
-  const totalSubscriptions = metrics?.subscriptions_by_status
-    ?.reduce((sum, s) => sum + s.count, 0) ?? null
+  const totalSubscriptions =
+    metrics?.subscriptions_by_status?.reduce((sum, s) => sum + s.count, 0) ??
+    null
   const mrr = metrics?.mrr ?? null
 
   return (
     <div
-      className="group relative flex flex-col gap-3 rounded-lg border bg-card p-5 shadow-sm transition-shadow hover:shadow-md cursor-pointer"
+      className="group relative flex cursor-pointer flex-col gap-3 rounded-lg border bg-card p-5 shadow-sm transition-shadow hover:shadow-md"
       style={{ borderLeftColor: project.color, borderLeftWidth: 4 }}
       onClick={() => onSelect(project)}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
           <span
-            className="flex-shrink-0 size-3 rounded-full"
+            className="size-3 shrink-0 rounded-full"
             style={{ backgroundColor: project.color }}
           />
-          <h3 className="font-semibold text-sm truncate">{project.name}</h3>
+          <h3 className="truncate text-sm font-semibold">{project.name}</h3>
         </div>
 
         <DropdownMenu>
@@ -84,7 +86,7 @@ export function ProjectCard({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                className="size-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
               />
             }
             onClick={(e: React.MouseEvent) => e.stopPropagation()}
@@ -98,7 +100,7 @@ export function ProjectCard({
                 onEdit(project)
               }}
             >
-              <IconEdit className="size-4 mr-2" />
+              <IconEdit className="mr-2 size-4" />
               Edit
             </DropdownMenuItem>
             <DropdownMenuSeparator />
@@ -109,39 +111,51 @@ export function ProjectCard({
                 onDelete(project)
               }}
             >
-              <IconTrash className="size-4 mr-2" />
+              <IconTrash className="mr-2 size-4" />
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
 
-      <p className="text-xs text-muted-foreground truncate">{project.api_url}</p>
+      <p className="truncate text-xs text-muted-foreground">
+        {project.api_url}
+      </p>
 
       {/* Health status */}
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <span className={`size-1.5 rounded-full ${dotClass}`} />
-        <span>{statusLabel}{latencyLabel}</span>
+        <span>
+          {statusLabel}
+          {latencyLabel}
+        </span>
       </div>
 
       {/* Live metrics row */}
-      <div className="flex items-center gap-3 pt-1 border-t text-xs text-muted-foreground">
+      <div className="flex items-center gap-3 border-t pt-1 text-xs text-muted-foreground">
         <span title="Active organizations">
           <span className="font-medium text-foreground">
-            {activeOrganizations !== null ? activeOrganizations.toLocaleString() : "—"}
-          </span>{" "}orgs
+            {activeOrganizations !== null
+              ? activeOrganizations.toLocaleString()
+              : "—"}
+          </span>{" "}
+          orgs
         </span>
         <span className="text-border">·</span>
         <span title="Total subscriptions">
           <span className="font-medium text-foreground">
-            {totalSubscriptions !== null ? totalSubscriptions.toLocaleString() : "—"}
-          </span>{" "}subs
+            {totalSubscriptions !== null
+              ? totalSubscriptions.toLocaleString()
+              : "—"}
+          </span>{" "}
+          subs
         </span>
         <span className="text-border">·</span>
         <span title="Monthly recurring revenue">
           <span className="font-medium text-foreground">
             {mrr !== null ? formatMRR(mrr) : "—"}
-          </span>{" "}MRR
+          </span>{" "}
+          MRR
         </span>
       </div>
     </div>

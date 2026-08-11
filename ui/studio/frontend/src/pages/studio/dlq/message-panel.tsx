@@ -1,6 +1,15 @@
 import { useState } from "react"
-import { IconAlertTriangle, IconMailExclamation, IconRefresh, IconRotateClockwise } from "@tabler/icons-react"
-import type { DLQInfo, DLQMessage, RequeueResult } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
+import {
+  IconAlertTriangle,
+  IconMailExclamation,
+  IconRefresh,
+  IconRotateClockwise,
+} from "@tabler/icons-react"
+import type {
+  DLQInfo,
+  DLQMessage,
+  RequeueResult,
+} from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
 import { useMessages, useRequeueMessage } from "@/hooks/use-dlq"
 import {
   AlertDialog,
@@ -30,23 +39,32 @@ interface MessagePanelProps {
 }
 
 export function MessagePanel({ projectId, queue, onClose }: MessagePanelProps) {
-  const { data: messages, isLoading, refetch } = useMessages(projectId, queue.name)
+  const {
+    data: messages,
+    isLoading,
+    refetch,
+  } = useMessages(projectId, queue.name)
   const requeue = useRequeueMessage(projectId)
   const [requeueConfirm, setRequeueConfirm] = useState(false)
 
   return (
     <>
-      <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
-        <SheetContent className="flex flex-col gap-0 w-full sm:max-w-3xl overflow-y-auto">
+      <Sheet
+        open
+        onOpenChange={(open) => {
+          if (!open) onClose()
+        }}
+      >
+        <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-3xl">
           <SheetHeader className="pb-4">
             <SheetTitle className="font-mono text-sm">{queue.name}</SheetTitle>
             <SheetDescription>
-              {queue.messages} message{queue.messages !== 1 ? "s" : ""} in queue ·{" "}
-              {queue.consumers} consumer{queue.consumers !== 1 ? "s" : ""}
+              {queue.messages} message{queue.messages !== 1 ? "s" : ""} in queue
+              · {queue.consumers} consumer{queue.consumers !== 1 ? "s" : ""}
             </SheetDescription>
           </SheetHeader>
 
-          <div className="flex flex-col gap-4 py-4 mx-6">
+          <div className="mx-6 flex flex-col gap-4 py-4">
             {requeue.data && !requeue.data.requeued && requeue.data.lost && (
               <LostMessageAlert
                 result={requeue.data}
@@ -54,9 +72,9 @@ export function MessagePanel({ projectId, queue, onClose }: MessagePanelProps) {
               />
             )}
             {isLoading ? (
-              <div className="flex flex-col gap-3 animate-pulse">
+              <div className="flex animate-pulse flex-col gap-3">
                 {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="rounded-lg bg-muted h-24" />
+                  <div key={i} className="h-24 rounded-lg bg-muted" />
                 ))}
               </div>
             ) : !messages || messages.length === 0 ? (
@@ -73,14 +91,16 @@ export function MessagePanel({ projectId, queue, onClose }: MessagePanelProps) {
             )}
           </div>
 
-          <SheetFooter className="pt-4 mt-auto">
+          <SheetFooter className="mt-auto pt-4">
             <Button
               variant="outline"
               size="sm"
               onClick={() => refetch()}
               disabled={isLoading}
             >
-              <IconRefresh className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
+              <IconRefresh
+                className={`size-4 ${isLoading ? "animate-spin" : ""}`}
+              />
               Refresh
             </Button>
             <Button
@@ -101,8 +121,9 @@ export function MessagePanel({ projectId, queue, onClose }: MessagePanelProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Requeue next message?</AlertDialogTitle>
             <AlertDialogDescription>
-              The next message in <span className="font-mono">{queue.name}</span> will be
-              consumed and republished to its original exchange. This operation cannot be
+              The next message in{" "}
+              <span className="font-mono">{queue.name}</span> will be consumed
+              and republished to its original exchange. This operation cannot be
               undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -143,18 +164,19 @@ function LostMessageAlert({
     <div className="rounded-lg border border-destructive/50 bg-destructive/5 text-sm">
       <div className="flex items-start justify-between gap-3 px-4 py-3">
         <div className="flex items-start gap-2">
-          <IconAlertTriangle className="size-4 shrink-0 mt-0.5 text-destructive" />
-          <div className="flex flex-col gap-1 min-w-0">
+          <IconAlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+          <div className="flex min-w-0 flex-col gap-1">
             <p className="font-medium text-destructive">
               Message lost — republish failed
             </p>
             <p className="text-xs text-muted-foreground">
-              This message was removed from the DLQ but could not be republished.
+              This message was removed from the DLQ but could not be
+              republished.
               {result.error ? ` ${result.error}` : ""} Save the body below and
               republish it manually.
             </p>
-            <div className="flex items-center gap-2 flex-wrap mt-1">
-              <code className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                 {lost.routing_key || "(no routing key)"}
               </code>
               {lost.exchange && (
@@ -167,13 +189,13 @@ function LostMessageAlert({
         </div>
         <button
           onClick={onDismiss}
-          className="text-xs text-muted-foreground hover:text-foreground shrink-0"
+          className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
         >
           dismiss
         </button>
       </div>
       <div className="border-t border-destructive/50 px-4 py-3">
-        <pre className="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground max-h-64 overflow-y-auto">
+        <pre className="max-h-64 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
           {prettyBody || "(empty body)"}
         </pre>
       </div>
@@ -194,14 +216,16 @@ function MessageRow({ index, msg }: { index: number; msg: DLQMessage }) {
   return (
     <div className="rounded-lg border bg-card text-sm">
       <div className="flex items-start justify-between gap-3 px-4 py-3">
-        <div className="flex flex-col gap-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted-foreground">#{index + 1}</span>
-            <code className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded">
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
               {msg.routing_key || "(no routing key)"}
             </code>
             {msg.redelivered && (
-              <Badge variant="secondary" className="text-[10px] h-4">redelivered</Badge>
+              <Badge variant="secondary" className="h-4 text-[10px]">
+                redelivered
+              </Badge>
             )}
           </div>
           {msg.exchange && (
@@ -212,7 +236,7 @@ function MessageRow({ index, msg }: { index: number; msg: DLQMessage }) {
         </div>
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="text-xs text-muted-foreground hover:text-foreground shrink-0"
+          className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
         >
           {expanded ? "hide" : "body"}
         </button>
@@ -220,7 +244,7 @@ function MessageRow({ index, msg }: { index: number; msg: DLQMessage }) {
 
       {expanded && (
         <div className="border-t px-4 py-3">
-          <pre className="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground max-h-64 overflow-y-auto">
+          <pre className="max-h-64 overflow-y-auto font-mono text-xs break-all whitespace-pre-wrap text-muted-foreground">
             {prettyBody || "(empty body)"}
           </pre>
         </div>
