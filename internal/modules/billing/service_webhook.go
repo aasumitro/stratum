@@ -267,7 +267,7 @@ func (s *service) applyExpiredReactivation(
 	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: reactivate subscription: %w", err)
 	}
-	if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
+	if err := s.repo.clearTrialEndAndUpdatePeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: update period on reactivation: %w", err)
 	}
 	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",

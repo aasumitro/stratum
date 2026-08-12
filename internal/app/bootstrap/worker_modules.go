@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"log/slog"
+
 	"github.com/aasumitro/stratum/internal/modules/account"
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/modules/notification"
@@ -50,7 +52,10 @@ func NewWorkerModules(infra *Infra, storageClient *storage.Client) *WorkerModule
 	refMod := reference.New(infra.Pool)
 	organizationMod := organization.New(infra.Pool, infra.MQPublisher)
 	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
-		cfg.Auth.ServiceRoleKey, nil, nil, "")
+		cfg.Auth.ServiceRoleKey, nil, storageClient, "")
+	if cfg.Storage.URL != "" && !accountMod.HasStorage() {
+		slog.Warn("account module: storage configured but client not wired; GDPR avatar deletion will no-op")
+	}
 	billingMod := billing.New(
 		infra.Pool, infra.MQPublisher,
 		billing.ProviderConfig{

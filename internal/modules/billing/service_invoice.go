@@ -86,6 +86,9 @@ func (s *service) regeneratePaymentLink(
 		err = apperr.Internal("PAYMENT_LINK_REGENERATE_FAILED", "failed to regenerate payment link", err)
 	}()
 
+	if _, err := s.repo.findInvoiceByIDAndSubject(ctx, s.querier(ctx), invoiceID, subjectType, subjectID); err != nil {
+		return nil, fmt.Errorf("billing.regeneratePaymentLink: find invoice: %w", err)
+	}
 	if err := s.repo.expirePendingPaymentLinks(ctx, s.querier(ctx), invoiceID); err != nil {
 		return nil, fmt.Errorf("billing.regeneratePaymentLink: %w", err)
 	}

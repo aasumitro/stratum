@@ -506,6 +506,9 @@ func (s *service) revokeAllSessions(ctx context.Context, authSub, sessionID stri
 	if err := s.revokedNS.Set(ctx, "revoked_tokens:"+sessionID, 1, ttl); err != nil {
 		return apperr.Internal("REVOKE_FAILED", "failed to revoke sessions", err)
 	}
+	if err := s.revokedNS.Set(ctx, "revoked_before:"+authSub, time.Now().Unix(), ttl); err != nil {
+		return apperr.Internal("REVOKE_FAILED", "failed to revoke sessions", err)
+	}
 	return nil
 }
 

@@ -28,6 +28,8 @@ vendor/
 *.out
 coverage.txt
 coverage.out
+tests.log
+vuln.log
 
 # Temp
 tmp/

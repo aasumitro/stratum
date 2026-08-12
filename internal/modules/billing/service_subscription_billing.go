@@ -557,8 +557,14 @@ func (s *service) resumeFromCancelled(
 		if err != nil {
 			return err
 		}
-		if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
-			return err
+		if isStillTrialing {
+			if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
+				return err
+			}
+		} else {
+			if err := s.repo.clearTrialEndAndUpdatePeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
+				return err
+			}
 		}
 		if _, err := s.repo.insertHistory(
 			ctx, s.querier(ctx), sub.ID, "resume",

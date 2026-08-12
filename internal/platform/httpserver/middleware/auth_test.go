@@ -161,7 +161,7 @@ func TestAuth_EmptySubject_401(t *testing.T) {
 func TestAuth_RevokedToken_401(t *testing.T) {
 	key, srv := jwksFixture(t)
 	hooks := middleware.AuthHooks{
-		IsRevoked: func(_ context.Context, sessionID string) bool { return sessionID == "revoked-jti" },
+		IsRevoked: func(_ context.Context, _, sessionID string, _ time.Time) bool { return sessionID == "revoked-jti" },
 	}
 	e := authEngine(t, srv.URL, hooks)
 
@@ -187,7 +187,7 @@ func TestAuth_EmptySessionIdentifier_401(t *testing.T) {
 	key, srv := jwksFixture(t)
 	checked := false
 	hooks := middleware.AuthHooks{
-		IsRevoked: func(_ context.Context, _ string) bool {
+		IsRevoked: func(_ context.Context, _, _ string, _ time.Time) bool {
 			checked = true
 			return false
 		},
@@ -218,7 +218,7 @@ func TestAuth_EmptySessionIdentifier_401(t *testing.T) {
 func TestAuth_RevokedToken_BySessionID_401(t *testing.T) {
 	key, srv := jwksFixture(t)
 	hooks := middleware.AuthHooks{
-		IsRevoked: func(_ context.Context, sessionID string) bool { return sessionID == "revoked-session" },
+		IsRevoked: func(_ context.Context, _, sessionID string, _ time.Time) bool { return sessionID == "revoked-session" },
 	}
 	e := authEngine(t, srv.URL, hooks)
 
@@ -241,7 +241,7 @@ func TestAuth_SessionIDTakesPriorityOverJTI(t *testing.T) {
 	key, srv := jwksFixture(t)
 	var checkedWith string
 	hooks := middleware.AuthHooks{
-		IsRevoked: func(_ context.Context, sessionID string) bool {
+		IsRevoked: func(_ context.Context, _, sessionID string, _ time.Time) bool {
 			checkedWith = sessionID
 			return false
 		},
@@ -298,5 +298,76 @@ func TestAuth_CookieFallback_RejectedOnStrictVariant(t *testing.T) {
 func TestNewAuthMiddleware_BadJWKSURL_Errors(t *testing.T) {
 	if _, _, err := middleware.NewAuthMiddleware(t.Context(), config.AuthConfig{JWKSURL: "://bad"}); err == nil {
 		t.Error("expected an error for an invalid JWKS URL")
+	}
+}
+
+func TestAuth_RevokeAll_BlocksAllSessionsBeforeCutoff(t *testing.T) {
+	key, srv := jwksFixture(t)
+
+	revokedSessions := map[string]bool{}
+	cutoffs := map[string]int64{}
+
+	hooks := middleware.AuthHooks{
+		IsRevoked: func(_ context.Context, sub, sessionID string, issuedAt time.Time) bool {
+			if revokedSessions[sessionID] {
+				return true
+			}
+			if cutoff, exists := cutoffs[sub]; exists && issuedAt.Unix() < cutoff {
+				return true
+			}
+			return false
+		},
+	}
+	e := authEngine(t, srv.URL, hooks)
+
+	sub := "revoke-all-user"
+	now := time.Now()
+
+	tokenA := signToken(t, key, jwtgo.MapClaims{
+		"sub":        sub,
+		"session_id": "sess-A",
+		"iat":        now.Add(-time.Hour).Unix(),
+		"exp":        now.Add(time.Hour).Unix(),
+	})
+
+	tokenB := signToken(t, key, jwtgo.MapClaims{
+		"sub":        sub,
+		"session_id": "sess-B",
+		"iat":        now.Add(-30 * time.Minute).Unix(),
+		"exp":        now.Add(time.Hour).Unix(),
+	})
+
+	// Simulate a revoke-all action by setting a cutoff time (now)
+	cutoffs[sub] = now.Unix()
+
+	reqA := httptest.NewRequest(http.MethodGet, "/me", nil)
+	reqA.Header.Set("Authorization", "Bearer "+tokenA)
+	wA := httptest.NewRecorder()
+	e.ServeHTTP(wA, reqA)
+	if wA.Code != http.StatusUnauthorized {
+		t.Errorf("token A (before cutoff): want 401, got %d", wA.Code)
+	}
+
+	reqB := httptest.NewRequest(http.MethodGet, "/me", nil)
+	reqB.Header.Set("Authorization", "Bearer "+tokenB)
+	wB := httptest.NewRecorder()
+	e.ServeHTTP(wB, reqB)
+	if wB.Code != http.StatusUnauthorized {
+		t.Errorf("token B (before cutoff): want 401, got %d", wB.Code)
+	}
+
+	tokenC := signToken(t, key, jwtgo.MapClaims{
+		"sub":        sub,
+		"session_id": "sess-C",
+		"iat":        now.Add(time.Second).Unix(),
+		"exp":        now.Add(time.Hour).Unix(),
+	})
+
+	reqC := httptest.NewRequest(http.MethodGet, "/me", nil)
+	reqC.Header.Set("Authorization", "Bearer "+tokenC)
+	wC := httptest.NewRecorder()
+	e.ServeHTTP(wC, reqC)
+	if wC.Code != http.StatusOK {
+		t.Errorf("token C (after cutoff): want 200, got %d", wC.Code)
 	}
 }

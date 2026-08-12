@@ -102,9 +102,13 @@ func (s *service) listInvitations(ctx context.Context, organizationID string) ([
 	return invitations, nil
 }
 
-func (s *service) revokeInvitation(ctx context.Context, _, id string) error {
-	if err := s.repo.deleteInvitation(ctx, s.pool, id); err != nil {
+func (s *service) revokeInvitation(ctx context.Context, organizationID, id string) error {
+	deleted, err := s.repo.deleteInvitation(ctx, s.pool, organizationID, id)
+	if err != nil {
 		return apperr.Internal("INVITATION_REVOKE_FAILED", "failed to revoke invitation", err)
+	}
+	if !deleted {
+		return apperr.NotFound("INVITATION_NOT_FOUND", "invitation not found", nil)
 	}
 	return nil
 }
@@ -293,7 +297,7 @@ func (s *service) declineInvitation(ctx context.Context, token, email string, em
 	if err != nil {
 		return err
 	}
-	if err := s.repo.deleteInvitation(ctx, s.pool, inv.ID); err != nil {
+	if _, err := s.repo.deleteInvitation(ctx, s.pool, inv.OrganizationID, inv.ID); err != nil {
 		return fmt.Errorf("organization.declineInvitation: %w", err)
 	}
 	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyInvitationDeclined, "organization", inv.OrganizationID,

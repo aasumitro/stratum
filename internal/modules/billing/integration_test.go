@@ -689,6 +689,20 @@ func TestIntegration_ResumeSubscription_CancelledAfterTrialExpired(t *testing.T)
 	if data["status"] != "active" {
 		t.Errorf("after resume with expired trial: want status=active, got %v", data["status"])
 	}
+	if data["trial_end"] != nil {
+		t.Errorf("trial_end must be cleared on resume, got %v", data["trial_end"])
+	}
+
+	var periodEnd time.Time
+	pool.QueryRow(t.Context(), `SELECT period_end FROM billing.subscriptions WHERE id = $1`, subID).Scan(&periodEnd)
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, periodEnd)); err != nil {
+		t.Fatalf("HandleSubscriptionCheck (second): %v", err)
+	}
+	var statusAfterSecondCheck string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&statusAfterSecondCheck)
+	if statusAfterSecondCheck != "active" {
+		t.Errorf("after second expireIfDue check: want status=active (must not re-expire), got %q", statusAfterSecondCheck)
+	}
 }
 
 func TestIntegration_ResumeSubscription_ActiveFails(t *testing.T) {
@@ -917,7 +931,7 @@ func TestIntegration_ExpireIfDue_ActivePastEnd(t *testing.T) {
 	// Force period_end into the past so expireIfDue triggers.
 	past := time.Now().Add(-time.Second)
 	_, err := pool.Exec(t.Context(),
-		`UPDATE billing.subscriptions SET period_end = $1, trial_end = NULL WHERE subject_type = 'organization' AND subject_id = $2`,
+		`UPDATE billing.subscriptions SET status = 'active', period_end = $1, trial_end = NULL WHERE subject_type = 'organization' AND subject_id = $2`,
 		past, orgID)
 	if err != nil {
 		t.Fatalf("set past period_end: %v", err)
@@ -987,7 +1001,7 @@ func TestIntegration_ExpireIfDue_HistoryFailure_RollsBackStatus(t *testing.T) {
 
 	past := time.Now().Add(-time.Second)
 	if _, err := pool.Exec(t.Context(),
-		`UPDATE billing.subscriptions SET period_end = $1, trial_end = NULL WHERE subject_type = 'organization' AND subject_id = $2`,
+		`UPDATE billing.subscriptions SET status = 'active', period_end = $1, trial_end = NULL WHERE subject_type = 'organization' AND subject_id = $2`,
 		past, orgID); err != nil {
 		t.Fatalf("set past period_end: %v", err)
 	}
@@ -6172,5 +6186,126 @@ func TestIntegration_DowngradeSubscription_ConcurrentDoubleSubmit(t *testing.T) 
 	}
 	if plan != "solo" {
 		t.Errorf("want plan solo after both requests settle, got %q", plan)
+	}
+}
+
+// TestIntegration_ExpiredReactivation_ClearsTrialEnd_SurvivesSecondExpireCheck
+// ensures that an expired subscription that gets reactivated via webhook payment
+// must have trial_end cleared (by clearTrialEndAndUpdatePeriod), so a subsequent
+// expireIfDue check does NOT re-expire it via the stale trial_end.
+func TestIntegration_ExpiredReactivation_ClearsTrialEnd_SurvivesSecondExpireCheck(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_str002_expire_react_user"
+		orgID = "00000000-0000-0000-0000-000000000f08"
+		extID = "stripe_sess_f08"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, orgID)
+
+	// Force trial_end and period_end into the past so expireIfDue fires.
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET trial_end = $1, period_end = $1, status = 'trialing' WHERE id = $2`,
+		past, subID); err != nil {
+		t.Fatalf("seed past trial_end/period_end: %v", err)
+	}
+
+	// Run expireIfDue — should expire the subscription.
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, past, true)); err != nil {
+		t.Fatalf("HandleSubscriptionCheck (expire): %v", err)
+	}
+	var statusAfterExpire string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&statusAfterExpire)
+	if statusAfterExpire != "expired" {
+		t.Fatalf("after first check: want status=expired, got %q", statusAfterExpire)
+	}
+
+	// Seed an invoice + payment link, then pay via webhook to reactivate.
+	invID := seedInvoice(pool, subID, "USD", 900)
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
+
+	payload := `{"type":"checkout.session.completed","data":{"object":{"id":"` + extID + `","payment_status":"paid"}}}`
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	// Assert reactivation: status=active, trial_end IS NULL.
+	var status string
+	var trialEnd *time.Time
+	var periodEnd time.Time
+	pool.QueryRow(t.Context(), `SELECT status, trial_end, period_end FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &trialEnd, &periodEnd)
+	if status != "active" {
+		t.Errorf("after reactivation: want status=active, got %q", status)
+	}
+	if trialEnd != nil {
+		t.Errorf("trial_end must be cleared on reactivation, got %v", *trialEnd)
+	}
+
+	// Run expireIfDue a SECOND time — must NOT re-expire the now-active subscription.
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, periodEnd)); err != nil {
+		t.Fatalf("HandleSubscriptionCheck (second): %v", err)
+	}
+	var statusAfterSecondCheck string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&statusAfterSecondCheck)
+	if statusAfterSecondCheck != "active" {
+		t.Errorf("after second expireIfDue check: want status=active (must not re-expire), got %q", statusAfterSecondCheck)
+	}
+}
+
+// TestIntegration_RegeneratePaymentLink_CrossTenant_404_NoMutation verifies
+// that regenerating a payment link using another tenant's invoice ID must
+// return 404 WITHOUT expiring the victim's pending payment link.
+func TestIntegration_RegeneratePaymentLink_CrossTenant_404_NoMutation(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		attacker    = "integ_billing_str004_attacker"
+		attackerOrg = "00000000-0000-0000-0000-000000000f09"
+		victim      = "integ_billing_str004_victim"
+		victimOrg   = "00000000-0000-0000-0000-000000000f0a"
+	)
+	setupBillingTest(t, pool, attackerOrg)
+	setupBillingTest(t, pool, victimOrg)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	for _, pair := range [][2]string{{attackerOrg, attacker}, {victimOrg, victim}} {
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(pair[0], pair[1])); err != nil {
+			t.Fatalf("provision %s: %v", pair[0], err)
+		}
+	}
+
+	victimSubID := getSubscriptionID(pool, victimOrg)
+	victimInvID := seedInvoice(pool, victimSubID, "USD", 900)
+	victimLinkID := seedPaymentLink(pool, victimInvID, "stripe_victim_f0a", "stripe", "USD", 900)
+
+	// Attacker tries to regenerate a payment link for the victim's invoice.
+	e := billing.NewModuleEngine(pool, attacker, attackerOrg)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(
+		http.MethodPost,
+		billingURL(attackerOrg)+"/invoices/"+victimInvID+"/pay/regenerate",
+		"",
+	))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("cross-tenant regenerate: want 404, got %d: %s", w.Code, w.Body)
+	}
+
+	// Victim's payment link must still be pending (not expired by the attacker's request).
+	var linkStatus string
+	pool.QueryRow(t.Context(),
+		`SELECT status FROM billing.payment_links WHERE id = $1`, victimLinkID,
+	).Scan(&linkStatus)
+	if linkStatus != "pending" {
+		t.Errorf("victim's payment link: want status=pending, got %q (attacker mutated it)", linkStatus)
 	}
 }

@@ -567,11 +567,12 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 	}
 
 	now := time.Now()
-	expired := false
-	if sub.TrialEnd != nil && now.After(*sub.TrialEnd) {
-		expired = true
-	} else if sub.PeriodEnd != nil && now.After(*sub.PeriodEnd) {
-		expired = true
+	var expired bool
+	switch sub.Status {
+	case statusTrialing:
+		expired = sub.TrialEnd != nil && now.After(*sub.TrialEnd)
+	default: // statusActive (statusPastDue never reaches expireIfDue — see the status guard above)
+		expired = sub.PeriodEnd != nil && now.After(*sub.PeriodEnd)
 	}
 	if !expired {
 		return nil

@@ -147,6 +147,9 @@ func (m *Module) SetNotificationReader(r contracts.NotificationReader) {
 	m.svc.notifReader = r
 }
 
+// HasStorage reports whether a storage client was wired at construction.
+func (m *Module) HasStorage() bool { return m.svc.store != nil }
+
 // MustBeWired panics if any of the five setters above were never called.
 // Unlike every other module's optional cross-module dependencies (which are
 // deliberately nil-safe and fail open so an unwired reader degrades to

@@ -10,10 +10,13 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	jwtgo "github.com/golang-jwt/jwt/v5"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -22,6 +25,7 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/config"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -721,5 +725,88 @@ func TestIntegration_ListSessions_CursorPagination(t *testing.T) {
 	}
 	if len(seen) != 5 {
 		t.Errorf("want 5 distinct sessions across both pages, got %d", len(seen))
+	}
+}
+
+func TestIntegration_RevokeAllSessions_IsRevoked(t *testing.T) {
+	pool := testPool(t)
+	redisCli := testRedisAccount(t)
+	const authSub = "integ_revokeall_isrevoked"
+	const sessionID = "sess-123"
+
+	// Match the namespace prefix created by NewModuleForTestWithAdminAndRedis
+	accountNS := cache.NewNamespace(redisCli, "account_test")
+
+	// Clean up any lingering state from previous runs
+	redisCli.Del(t.Context(), "account_test:revoked_tokens:"+sessionID)
+	redisCli.Del(t.Context(), "account_test:revoked_before:"+authSub)
+
+	t.Cleanup(func() {
+		redisCli.Del(t.Context(), "account_test:revoked_tokens:"+sessionID)
+		redisCli.Del(t.Context(), "account_test:revoked_before:"+authSub)
+	})
+
+	// Construct engine with Redis so the endpoint can write to it
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{
+			Subject: authSub,
+			Raw: jwtgo.MapClaims{
+				"email":      authSub + "@test.local",
+				"session_id": sessionID,
+				"exp":        float64(time.Now().Add(time.Hour).Unix()),
+			},
+		})
+		c.Next()
+	})
+	noopGate := func(c *gin.Context) { c.Next() }
+	mod := account.NewModuleForTestWithAdminAndRedis(pool, "http://localhost", "dummy", redisCli)
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: noopGate, RateLimit: noopGate, MFA: noopGate})
+
+	// 1. Seed two dummy tokens in the past and one in the future relative to "now".
+	now := time.Now()
+	tokenA_IAT := now.Add(-time.Hour)
+	tokenB_IAT := now.Add(-30 * time.Minute)
+	tokenC_IAT := now.Add(10 * time.Second)
+
+	// Define the exact closure from api_modules.go
+	isRevoked := func(ctx context.Context, authSub, sessionID string, issuedAt time.Time) bool {
+		if ok, _ := accountNS.Exists(ctx, "revoked_tokens:"+sessionID); ok {
+			return true
+		}
+		cutoff, err := accountNS.Get(ctx, "revoked_before:"+authSub)
+		if err != nil {
+			return false // includes redis.Nil (no epoch set)
+		}
+		cutoffUnix, err := strconv.ParseInt(cutoff, 10, 64)
+		if err != nil {
+			return false
+		}
+		return issuedAt.Unix() < cutoffUnix
+	}
+
+	// Before revoking, all should be valid.
+	if isRevoked(t.Context(), authSub, sessionID, tokenA_IAT) {
+		t.Error("token A unexpectedly revoked before cutoff")
+	}
+
+	// Call the real revoke endpoint via the engine.
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/me/sessions/revoke-all", ""))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("revoke-all: want 204, got %d: %s", w.Code, w.Body)
+	}
+
+	// Token A and B (iat before now) should be revoked
+	if !isRevoked(t.Context(), authSub, sessionID, tokenA_IAT) {
+		t.Error("token A should be revoked")
+	}
+	if !isRevoked(t.Context(), authSub, sessionID, tokenB_IAT) {
+		t.Error("token B should be revoked")
+	}
+	// Token C (iat after now) should still be valid, assuming it's a new session
+	if isRevoked(t.Context(), authSub, "sess-new", tokenC_IAT) {
+		t.Error("token C (future iat) should not be revoked")
 	}
 }
