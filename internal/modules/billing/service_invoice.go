@@ -86,10 +86,19 @@ func (s *service) regeneratePaymentLink(
 		err = apperr.Internal("PAYMENT_LINK_REGENERATE_FAILED", "failed to regenerate payment link", err)
 	}()
 
-	if _, err := s.repo.findInvoiceByIDAndSubject(ctx, s.querier(ctx), invoiceID, subjectType, subjectID); err != nil {
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		_, findErr := s.repo.findInvoiceByIDAndSubject(txCtx, tx, invoiceID, subjectType, subjectID)
+		return findErr
+	})
+	if err != nil {
 		return nil, fmt.Errorf("billing.regeneratePaymentLink: find invoice: %w", err)
 	}
-	if err := s.repo.expirePendingPaymentLinks(ctx, s.querier(ctx), invoiceID); err != nil {
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		return s.repo.expirePendingPaymentLinks(txCtx, tx, invoiceID)
+	})
+	if err != nil {
 		return nil, fmt.Errorf("billing.regeneratePaymentLink: %w", err)
 	}
 	return s.createPaymentLink(ctx, subjectType, subjectID, invoiceID)
@@ -142,18 +151,23 @@ func (s *service) getInvoicePDFData(
 }
 
 // createPaymentLink creates a Stripe or Xendit payment link for the invoice.
-// When subjectType is empty, skips ownership check (internal calls like worker auto-invoice).
+// When subjectType is empty, skips ownership check (internal calls like worker auto-invoice);
+// also skips SetOrgContext; only safe for callers guaranteed to run under a BYPASSRLS connection (cmd/worker).
 // Expires any existing pending links for this invoice before creating a new one (idempotency).
 func (s *service) createPaymentLink(
 	ctx context.Context, subjectType, subjectID, invoiceID string,
 ) (*paymentLinkRecord, error) {
 	var inv *invoiceRecord
-	var err error
-	if subjectType != "" {
-		inv, err = s.repo.findInvoiceByIDAndSubject(ctx, s.querier(ctx), invoiceID, subjectType, subjectID)
-	} else {
-		inv, err = s.repo.findInvoiceByID(ctx, s.querier(ctx), invoiceID)
-	}
+	err := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var findErr error
+		if subjectType != "" {
+			inv, findErr = s.repo.findInvoiceByIDAndSubject(txCtx, tx, invoiceID, subjectType, subjectID)
+		} else {
+			inv, findErr = s.repo.findInvoiceByID(txCtx, tx, invoiceID)
+		}
+		return findErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -161,12 +175,23 @@ func (s *service) createPaymentLink(
 		return nil, ErrInvoiceNotPayable
 	}
 
-	if existing, err := s.repo.findActivePaymentLinkByInvoice(ctx, s.querier(ctx), invoiceID); err == nil {
+	var existing *paymentLinkRecord
+	findErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var err error
+		existing, err = s.repo.findActivePaymentLinkByInvoice(txCtx, tx, invoiceID)
+		return err
+	})
+	if findErr == nil {
 		return existing, nil
 	}
 
-	if err := s.repo.expirePendingPaymentLinks(ctx, s.querier(ctx), invoiceID); err != nil {
-		return nil, fmt.Errorf("billing.createPaymentLink: expire pending payment links: %w", err)
+	expErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		return s.repo.expirePendingPaymentLinks(txCtx, tx, invoiceID)
+	})
+	if expErr != nil {
+		return nil, fmt.Errorf("billing.createPaymentLink: expire pending payment links: %w", expErr)
 	}
 
 	label := invoiceID
@@ -187,8 +212,15 @@ func (s *service) createPaymentLink(
 		return nil, err
 	}
 
-	return s.repo.insertPaymentLink(ctx, s.querier(ctx), invoiceID, provider, inv.Currency,
-		inv.AmountCents, &result.ExternalID, &result.URL, result.ExpiresAt)
+	var link *paymentLinkRecord
+	insErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var err error
+		link, err = s.repo.insertPaymentLink(txCtx, tx, invoiceID, provider, inv.Currency,
+			inv.AmountCents, &result.ExternalID, &result.URL, result.ExpiresAt)
+		return err
+	})
+	return link, insErr
 }
 
 // checkoutLineItems builds the hosted checkout page's itemized breakdown

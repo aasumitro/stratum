@@ -310,3 +310,15 @@ func computeAddonIncreaseProration(periodStart, now, periodEnd time.Time, delta 
 	}
 	return int64(float64(unitPriceCents) * float64(delta) * (remaining.Seconds() / total.Seconds()))
 }
+
+func (s *service) withOrgTx(ctx context.Context, subjectType, orgID string, fn func(tx db.Querier) error) error {
+	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		if subjectType != "" {
+			if err := db.SetOrgContext(txCtx, tx, orgID); err != nil {
+				return err
+			}
+		}
+		return fn(tx)
+	})
+}

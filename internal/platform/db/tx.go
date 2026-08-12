@@ -97,6 +97,13 @@ func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx Querier) error) 
 	return nil
 }
 
+// SetOrgContext configures the Postgres app.organization_id setting for the
+// current transaction so RLS policies can evaluate it.
+func SetOrgContext(ctx context.Context, q Querier, orgID string) error {
+	_, err := q.Exec(ctx, "SELECT set_config('app.organization_id', $1, true)", orgID)
+	return err
+}
+
 type pendingEventsKey struct{}
 
 // pendingEventsQueue guards its slice with a mutex — QueueEvent may be

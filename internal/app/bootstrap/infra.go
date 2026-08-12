@@ -48,7 +48,7 @@ type Infra struct {
 // SetupInfra dials OTel, Postgres, Redis, and RabbitMQ in that order,
 // unwinding anything already opened if a later step fails. Call
 // Infra.Close on the successful result to release everything in reverse.
-func SetupInfra(ctx context.Context, cfg *config.Config) (*Infra, error) {
+func SetupInfra(ctx context.Context, cfg *config.Config, postgresURL string) (*Infra, error) {
 	otelProviders, otelShutdown, err := otel.Setup(
 		ctx, cfg.OTel, cfg.ServiceName, cfg.ServiceVersion, cfg.Env == EnvDevelopment,
 	)
@@ -58,7 +58,9 @@ func SetupInfra(ctx context.Context, cfg *config.Config) (*Infra, error) {
 
 	log := logger.New(cfg.Log.Level, cfg.Log.Format, otelProviders.SlogHandler())
 
-	pool, err := db.NewPostgresPool(ctx, cfg.Postgres)
+	pgCfg := cfg.Postgres
+	pgCfg.URL = postgresURL
+	pool, err := db.NewPostgresPool(ctx, pgCfg)
 	if err != nil {
 		_ = otelShutdown(ctx)
 		return nil, fmt.Errorf("setting up postgres: %w", err)

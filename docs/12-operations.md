@@ -23,6 +23,13 @@ make build                # bin/api + bin/worker
 make run-api
 make run-worker
 ```
+
+**Password Provisioning**: In staging and production environments, the `stratum_app` and `stratum_worker` roles created by the migrations start with empty/invalid passwords. You must explicitly provision them from your secrets manager:
+```sql
+ALTER ROLE stratum_app WITH PASSWORD '...';
+ALTER ROLE stratum_worker WITH PASSWORD '...';
+```
+
 Storage buckets auto-create on startup. Verify with `GET /health/ready` (expect 200) and confirm the worker registered its consumers.
 
 ## Health and observability

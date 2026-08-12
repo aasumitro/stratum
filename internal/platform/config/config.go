@@ -67,7 +67,8 @@ type Config struct {
 }
 
 type PostgresConfig struct {
-	URL          string        `env:"POSTGRES_URL,required"`
+	URL          string        `env:"POSTGRES_APP_URL,required"`
+	WorkerURL    string        `env:"POSTGRES_WORKER_URL,required"`
 	MaxOpenConns int32         `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
 	MaxIdleTime  time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
 }

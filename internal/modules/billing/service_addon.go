@@ -110,15 +110,20 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 	if err != nil {
 		return nil, apperr.NotFound("ADDON_NOT_FOUND", "addon not found", ErrAddonNotFound)
 	}
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
+	var sub *subscriptionRecord
+	err = s.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var findErr error
+		sub, findErr = s.repo.findSubscriptionBySubject(txCtx, tx, subjectTypeOrganization, organizationID)
+		return findErr
+	})
 	if err != nil {
 		return nil, apperr.Internal(addonAttachFailedCode, addonAttachFailedMsg, err)
 	}
 
 	var pendingInvoice *invoiceRecord
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = s.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
-
 		if err := s.repo.lockSubscriptionForUpdate(txCtx, tx, sub.ID); err != nil {
 			return err
 		}
@@ -199,7 +204,7 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 		// the invoice is already committed and payable via the regular
 		// POST .../invoices/:id/pay flow, same fail-open convention as
 		// extendSubscription/activateTrialNow.
-		_, _ = s.createPaymentLink(ctx, "", "", pendingInvoice.ID)
+		_, _ = s.createPaymentLink(ctx, subjectTypeOrganization, organizationID, pendingInvoice.ID)
 		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", organizationID,
 			events.InvoiceCreated{
 				OrgID: organizationID, InvoiceID: pendingInvoice.ID,

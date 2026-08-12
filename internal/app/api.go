@@ -27,7 +27,7 @@ func RunAPI() error {
 		return fmt.Errorf("validating config: %w", err)
 	}
 
-	infra, err := bootstrap.SetupInfra(ctx, cfg)
+	infra, err := bootstrap.SetupInfra(ctx, cfg, cfg.Postgres.URL)
 	if err != nil {
 		return err
 	}

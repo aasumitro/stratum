@@ -112,9 +112,25 @@ jobs:
           DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
         run: migrate -path db/migrations -database "$DATABASE_URL" up
 
+      # Migration 000007 creates the stratum_app/stratum_worker roles with no
+      # password — local dev sets one via a Postgres init script mounted into
+      # its container; CI's Postgres service has no equivalent mount, so the
+      # password is set explicitly here. Fixed, non-secret values (matching
+      # the stratum/stratum owner credential already hardcoded below) are
+      # fine — this Postgres instance is created fresh and destroyed at the
+      # end of every run.
+      - name: Provision runtime role passwords
+        env:
+          DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
+        run: |
+          psql "$DATABASE_URL" -c "ALTER ROLE stratum_app WITH PASSWORD 'stratum_app';"
+          psql "$DATABASE_URL" -c "ALTER ROLE stratum_worker WITH PASSWORD 'stratum_worker';"
+
       - name: Test
         env:
           TEST_DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
+          POSTGRES_APP_URL: postgres://stratum_app:stratum_app@localhost:5432/stratum?sslmode=disable
+          POSTGRES_WORKER_URL: postgres://stratum_worker:stratum_worker@localhost:5432/stratum?sslmode=disable
         run: go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 
       - name: Coverage

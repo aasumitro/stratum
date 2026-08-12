@@ -20,7 +20,7 @@ Once a user is authenticated, three layers decide what they can do:
 
 - **Organization scoping** — the organization middleware resolves the active tenant and rejects non-active ones. (A soft-deleted organization returns 403, not 404, because the record is found but not active.)
 - **RBAC** — a fixed three-tier model, `owner > admin > member`. Role-gated routes are enforced by middleware, with role lookups cached in Redis for 30 seconds. On the frontend, RBAC is UI-only (hiding or locking controls); the backend is always the real gate.
-- **Row-level security** — enabled on the billing schema at the database level.
+- **Row-level security** — enabled on the billing schema at the database level using `FORCE ROW LEVEL SECURITY`. A three-role split restricts access: `stratum_app` for the API (enforced by RLS), `stratum_worker` for background jobs (bypasses RLS), and `stratum` (the owner) for migrations.
 
 A few authorization rules worth internalizing: every billing `GET` is visible to any member while every mutation is owner-only; self-service unsuspend only reverses a self-service suspension (a billing hold can't be waved away); and saving an IP allowlist that would lock out the caller is rejected outright.
 

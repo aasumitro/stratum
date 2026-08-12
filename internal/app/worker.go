@@ -23,7 +23,7 @@ func RunWorker() error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	infra, err := bootstrap.SetupInfra(ctx, cfg)
+	infra, err := bootstrap.SetupInfra(ctx, cfg, cfg.Postgres.WorkerURL)
 	if err != nil {
 		return err
 	}
