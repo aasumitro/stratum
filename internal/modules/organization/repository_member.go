@@ -153,16 +153,16 @@ func (r *repository) deleteMembership(ctx context.Context, q db.Querier, organiz
 	return tag.RowsAffected() > 0, nil
 }
 
-func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organizationID, authSub, role string) error {
-	_, err := q.Exec(ctx, `
+func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organizationID, authSub, role string) (bool, error) {
+	tag, err := q.Exec(ctx, `
 		UPDATE organization.memberships SET role = $3
 		WHERE organization_id = $1 AND auth_sub = $2`,
 		organizationID, authSub, role,
 	)
 	if err != nil {
-		return fmt.Errorf("organization.updateMemberRole: %w", err)
+		return false, fmt.Errorf("organization.updateMemberRole: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *repository) getMemberRole(ctx context.Context, q db.Querier, organizationID, authSub string) (string, error) {

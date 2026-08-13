@@ -106,14 +106,8 @@ func (s *service) removeMember(ctx context.Context, organizationID, authSub stri
 	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		var err error
 		removed, err = s.repo.deleteMembership(ctx, tx, organizationID, authSub)
-		if err != nil {
+		if err != nil || !removed {
 			return err
-		}
-		// Idempotent: removing a member who's already gone succeeds without
-		// enqueueing a second MemberRemoved for a removal that didn't
-		// actually happen here.
-		if !removed {
-			return nil
 		}
 		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
 			events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub})
@@ -121,9 +115,10 @@ func (s *service) removeMember(ctx context.Context, organizationID, authSub stri
 	if err != nil {
 		return apperr.Internal("MEMBER_REMOVE_FAILED", "failed to remove member", err)
 	}
-	if removed {
-		s.syncMemberUsage(ctx, organizationID)
+	if !removed {
+		return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
 	}
+	s.syncMemberUsage(ctx, organizationID)
 	return nil
 }
 
@@ -135,8 +130,11 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 		return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
 	}
 
+	var updated bool
 	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
-		if err := s.repo.updateMemberRole(ctx, tx, organizationID, authSub, role); err != nil {
+		var err error
+		updated, err = s.repo.updateMemberRole(ctx, tx, organizationID, authSub, role)
+		if err != nil || !updated {
 			return err
 		}
 		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberRoleChanged, "organization", organizationID,
@@ -144,6 +142,9 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 	})
 	if err != nil {
 		return apperr.Internal("MEMBER_ROLE_UPDATE_FAILED", "failed to update member role", err)
+	}
+	if !updated {
+		return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
 	}
 	return nil
 }
@@ -253,10 +254,10 @@ func (s *service) transferOwnership(ctx context.Context, organizationID, current
 		if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
 			return err
 		}
-		if err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
+		if _, err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
 			return err
 		}
-		if err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
+		if _, err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
 			return err
 		}
 		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOwnershipTransferred, "organization", organizationID,

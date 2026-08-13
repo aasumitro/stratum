@@ -125,12 +125,15 @@ jobs:
         run: |
           psql "$DATABASE_URL" -c "ALTER ROLE stratum_app WITH PASSWORD 'stratum_app';"
           psql "$DATABASE_URL" -c "ALTER ROLE stratum_worker WITH PASSWORD 'stratum_worker';"
+          psql "$DATABASE_URL" -c "ALTER ROLE stratum_webhook WITH PASSWORD 'stratum_webhook';"
 
       - name: Test
         env:
           TEST_DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
           POSTGRES_APP_URL: postgres://stratum_app:stratum_app@localhost:5432/stratum?sslmode=disable
           POSTGRES_WORKER_URL: postgres://stratum_worker:stratum_worker@localhost:5432/stratum?sslmode=disable
+          POSTGRES_WEBHOOK_URL: postgres://stratum_webhook:stratum_webhook@localhost:5432/stratum?sslmode=disable
+          TEST_REDIS_URL: redis://localhost:6379
         run: go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 
       - name: Coverage

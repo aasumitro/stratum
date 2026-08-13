@@ -100,22 +100,20 @@ func TestCrossTenant_OrganizationManagement(t *testing.T) {
 
 	// Sub-resource cases: org A's own ID, but a member (authSub) that
 	// belongs to org B. Both removeMember and updateMemberRole scope their
-	// SQL by organization_id, so a member of a different org simply
-	// matches zero rows — an idempotent no-op the handler reports as 204,
-	// not a 403/404 (confirmed by reading service_member.go /
-	// repository_member.go: deleteMembership/updateMemberRole never check
-	// rows-affected). AssertNoMutation is what actually proves org B's
-	// membership survives untouched.
+	// SQL by organization_id, so a member of a different org matches zero
+	// rows — the repository layer reports that back and the service maps
+	// it to 404, not a silent success. AssertNoMutation still proves org
+	// B's membership survives untouched, independent of the status code.
 	cases = append(cases,
 		testsupport.CrossTenantCase{
 			Name: "removeMember_crossOrgAuthSub", Method: http.MethodDelete,
-			Path: orgBase(two.OrgA) + "/members/" + memberB, WantStatus: http.StatusNoContent,
+			Path: orgBase(two.OrgA) + "/members/" + memberB, WantStatus: http.StatusNotFound,
 			AssertNoMutation: assertMembershipRole(two.OrgB, memberB, "member"),
 		},
 		testsupport.CrossTenantCase{
 			Name: "updateMemberRole_crossOrgAuthSub", Method: http.MethodPatch,
 			Path: orgBase(two.OrgA) + "/members/" + memberB + "/role", Body: `{"role":"admin"}`,
-			WantStatus:       http.StatusNoContent,
+			WantStatus:       http.StatusNotFound,
 			AssertNoMutation: assertMembershipRole(two.OrgB, memberB, "member"),
 		},
 	)
@@ -163,27 +161,12 @@ func assertWebhookEndpointExists(endpointID string) func(t *testing.T, pool *pgx
 
 // TestCrossTenant_Webhooks covers organization's webhook-management routes.
 // The two membership-only routes (create/list) get the standard 403 case;
-// the seven :webhookID sub-resource routes each also get
-// a case where org A's owner calls with org A's own ID but org B's webhook
-// ID — the exact status differs per route depending on how its own
-// service/repository code handles a not-found-scoped-to-caller's-org
-// endpoint (confirmed by reading service_webhook.go/repository_webhook.go,
-// not assumed):
-//   - updateWebhook, rotateWebhookSecret, sendWebhookTestEvent,
-//     listWebhookDeliveries: 404 (findWebhookEndpoint / the UPDATE...
-//     RETURNING both scope by organization_id and surface pgx.ErrNoRows as
-//     WEBHOOK_NOT_FOUND).
-//   - deleteWebhook: 204 — repository.deleteWebhookEndpoint issues a scoped
-//     DELETE with no rows-affected check, so a foreign ID is a silent,
-//     idempotent no-op rather than a 404. AssertNoMutation is what proves
-//     org B's row survives.
-//   - retryWebhookDelivery, retryAllFailedWebhookDeliveries: 500 — both
-//     wrap *every* error (including the not-found from findWebhookEndpoint)
-//     in apperr.Internal("RETRY_FAILED", ...) via a blanket defer that
-//     doesn't special-case pgx.ErrNoRows the way every other webhook method
-//     here does. No data leaks (the query is still correctly scoped), but
-//     the response code is a 500, not a 404 — flagged in this task's
-//     Handoff notes as a real, if minor, inconsistency worth a backlog item.
+// the seven :webhookID sub-resource routes each also get a case where org
+// A's owner calls with org A's own ID but org B's webhook ID — every one
+// of them now reports 404, uniformly, whether the not-found comes from a
+// SELECT (findWebhookEndpoint), an UPDATE...RETURNING, or a scoped DELETE
+// that matched zero rows. AssertNoMutation on deleteWebhook still proves
+// org B's row survives, independent of the status code.
 func TestCrossTenant_Webhooks(t *testing.T) {
 	pool := testPool(t)
 	two := testsupport.SeedTwoOrgs(t, pool)
@@ -212,11 +195,11 @@ func TestCrossTenant_Webhooks(t *testing.T) {
 			WantStatus: http.StatusNotFound},
 		{Name: "retryWebhookDelivery_crossOrgWebhookID", Method: http.MethodPost,
 			Path:       webhooksBaseA + "/" + webhookB + "/deliveries/00000000-0000-0000-0000-000000000000/retry",
-			WantStatus: http.StatusInternalServerError},
+			WantStatus: http.StatusNotFound},
 		{Name: "retryAllFailedWebhookDeliveries_crossOrgWebhookID", Method: http.MethodPost,
-			Path: webhooksBaseA + "/" + webhookB + "/deliveries/retry-failed", WantStatus: http.StatusInternalServerError},
+			Path: webhooksBaseA + "/" + webhookB + "/deliveries/retry-failed", WantStatus: http.StatusNotFound},
 		{Name: "deleteWebhook_crossOrgWebhookID", Method: http.MethodDelete, Path: webhooksBaseA + "/" + webhookB,
-			WantStatus: http.StatusNoContent, AssertNoMutation: assertWebhookEndpointExists(webhookB)},
+			WantStatus: http.StatusNotFound, AssertNoMutation: assertWebhookEndpointExists(webhookB)},
 	}
 
 	testsupport.RunCrossTenantCases(t, engine, pool, two.OwnerA, cases)

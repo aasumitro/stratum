@@ -37,6 +37,10 @@ func RunAPI() error {
 		return err
 	}
 
+	if err := bootstrap.OpenBackgroundPool(ctx, infra); err != nil {
+		return err
+	}
+
 	if cfg.StatsToken == "" && cfg.Env != bootstrap.EnvDevelopment {
 		infra.Log.Warn("STATS_TOKEN not set — /health/stats (goroutine/heap/pool internals) is unauthenticated")
 	}

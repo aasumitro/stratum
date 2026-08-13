@@ -93,6 +93,7 @@ func NewWorkerModules(infra *Infra, storageClient *storage.Client) *WorkerModule
 	billingMod.SetOrganizationCommander(organizationMod)
 	organizationMod.SetBillingReader(billingMod)
 	organizationMod.SetBillingWriter(billingMod)
+	organizationMod.MustBeWired()
 	organizationMod.SetUserReader(accountMod)
 	organizationMod.SetStorageClient(storageClient)
 

@@ -239,6 +239,7 @@ func (h *handler) sendWebhookTestEvent(c *gin.Context) {
 // @Param        webhookID       path  string  true  "Webhook ID"
 // @Success      204             "no content"
 // @Failure      403             {object}  response.Payload  "owner role required"
+// @Failure      404             {object}  response.Payload  "webhook not found"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/webhooks/{webhookID} [delete]
 func (h *handler) deleteWebhook(c *gin.Context) {
@@ -315,6 +316,7 @@ func (h *handler) listWebhookDeliveries(c *gin.Context) {
 // @Param        deliveryID      path  string  true  "Delivery ID"
 // @Success      204             "no content"
 // @Failure      403             {object}  response.Payload  "owner role required"
+// @Failure      404             {object}  response.Payload  "webhook not found"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/webhooks/{webhookID}/deliveries/{deliveryID}/retry [post]
 func (h *handler) retryWebhookDelivery(c *gin.Context) {
@@ -339,6 +341,7 @@ func (h *handler) retryWebhookDelivery(c *gin.Context) {
 // @Param        webhookID       path      string  true  "Webhook ID"
 // @Success      200             {object}  response.Payload{data=object{retried=integer}}
 // @Failure      403             {object}  response.Payload  "owner role required"
+// @Failure      404             {object}  response.Payload  "webhook not found"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/webhooks/{webhookID}/deliveries/retry-failed [post]
 func (h *handler) retryAllFailedWebhookDeliveries(c *gin.Context) {

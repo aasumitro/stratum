@@ -262,10 +262,31 @@ func (s *service) composeAndInsertActivationInvoice(
 }
 
 // getSubscription is also exposed cross-module as contracts.BillingReader's
-// GetSubscriptionBySubject — every non-handler caller only checks err == nil,
-// so classifying here is safe (and errors.Is against the wrapped cause, e.g.
-// pgx.ErrNoRows, still works via apperr.Error.Unwrap).
+// GetSubscriptionBySubject — called either under an ambient transaction (a
+// billing-route caller, already RLS-wrapped) or with no querier in context
+// at all (organization's webhook/invitation/member paths, or the rate-limiter
+// middleware, neither of which owns billing's pool or an RLS-scoped
+// transaction). db.HasQuerier distinguishes the two, same split
+// recordUsage already uses (service_usage.go) for identical reasons:
+// billing.subscriptions has FORCE ROW LEVEL SECURITY, so a bare-pool read
+// with no app.organization_id set is silently filtered to zero rows.
 func (s *service) getSubscription(ctx context.Context, subjectType, subjectID string) (*subscriptionRecord, error) {
+	if db.HasQuerier(ctx) {
+		return s.getSubscriptionTx(ctx, subjectType, subjectID)
+	}
+	var sub *subscriptionRecord
+	err := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		var txErr error
+		sub, txErr = s.getSubscriptionTx(db.WithQuerier(ctx, tx), subjectType, subjectID)
+		return txErr
+	})
+	return sub, err
+}
+
+// getSubscriptionTx is getSubscription's body — every non-handler caller
+// only checks err == nil, so classifying here is safe (and errors.Is against
+// the wrapped cause, e.g. pgx.ErrNoRows, still works via apperr.Error.Unwrap).
+func (s *service) getSubscriptionTx(ctx context.Context, subjectType, subjectID string) (*subscriptionRecord, error) {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

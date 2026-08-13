@@ -39,7 +39,7 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 		ginMode = "debug"
 	}
 
-	auditWriter := audit.NewWriter(infra.Pool, infra.Log, cfg.AuditRetentionDays)
+	auditWriter := audit.NewWriter(infra.BackgroundPool, infra.Log, cfg.AuditRetentionDays)
 
 	corsMW, err := middleware.NewCORSMiddleware(middleware.CORSConfig{
 		AllowedOrigins: middleware.ParseCORSOrigins(cfg.CORSOrigins),

@@ -79,9 +79,15 @@ type PostgresConfig struct {
 	// WebhookURL is required on both binaries because both load this same
 	// struct, but only cmd/api ever opens a pool with it (see
 	// bootstrap.SetupInfra/RunAPI) — cmd/worker never serves webhooks.
-	WebhookURL   string        `env:"POSTGRES_WEBHOOK_URL,required"`
-	MaxOpenConns int32         `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
-	MaxIdleTime  time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
+	WebhookURL   string `env:"POSTGRES_WEBHOOK_URL,required"`
+	MaxOpenConns int32  `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
+	// BackgroundMaxOpenConns sizes Infra.BackgroundPool (cmd/api only) — a
+	// small pool isolating background writes (the audit writer, the OnAuth
+	// last_seen_at update) from request-path connection contention on
+	// Infra.Pool. Same stratum_app role/URL as Infra.Pool; only pool size
+	// differs.
+	BackgroundMaxOpenConns int32         `env:"POSTGRES_BACKGROUND_MAX_OPEN_CONNS" envDefault:"5"`
+	MaxIdleTime            time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
 }
 
 type RedisConfig struct {

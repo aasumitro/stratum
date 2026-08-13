@@ -5,6 +5,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/modules/account"
+	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
@@ -80,4 +81,20 @@ func TestMustBeWired_NoPanicWhenFullyWired(t *testing.T) {
 	m.SetOrganizationReader(stubOrgReader{})
 	m.SetNotificationReader(stubNotifReader{})
 	m.MustBeWired() // must not panic
+}
+
+func TestMustHaveSessionRevocationWired_PanicsWhenUnwired(t *testing.T) {
+	m := account.New(nil, messaging.NoopPublisher{}, "", "", nil, nil, "")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected MustHaveSessionRevocationWired to panic with revokedNS unwired")
+		}
+	}()
+	m.MustHaveSessionRevocationWired()
+}
+
+func TestMustHaveSessionRevocationWired_NoPanicWhenWired(t *testing.T) {
+	revokedNS := cache.NewNamespace(nil, "account")
+	m := account.New(nil, messaging.NoopPublisher{}, "", "", revokedNS, nil, "")
+	m.MustHaveSessionRevocationWired() // must not panic
 }

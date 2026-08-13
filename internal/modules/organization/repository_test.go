@@ -407,8 +407,8 @@ func countMemberRemovedEventsSince(t *testing.T, pool *pgxpool.Pool, orgID strin
 }
 
 // TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent proves that
-// removing a member who's already been removed still succeeds (idempotent
-// delete) but does not enqueue a second MemberRemoved event for a removal
+// removing a member who's already been removed reports 404, not a phantom
+// success, and does not enqueue a second MemberRemoved event for a removal
 // that didn't actually happen.
 func TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent(t *testing.T) {
 	pool := testPool(t)
@@ -453,8 +453,8 @@ func TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent(t *testing.T) {
 
 	w4 := httptest.NewRecorder()
 	e.ServeHTTP(w4, httpserver.JSONTestRequest(http.MethodDelete, "/api/organizations/"+orgID+"/members/sub_phantom_member", ""))
-	if w4.Code != http.StatusNoContent {
-		t.Fatalf("second remove (already gone): want 204, got %d: %s", w4.Code, w4.Body)
+	if w4.Code != http.StatusNotFound {
+		t.Fatalf("second remove (already gone): want 404, got %d: %s", w4.Code, w4.Body)
 	}
 	if n := countMemberRemovedEventsSince(t, pool, orgID, checkpoint2); n != 0 {
 		t.Errorf("second remove (already gone): want 0 MemberRemoved events, got %d", n)

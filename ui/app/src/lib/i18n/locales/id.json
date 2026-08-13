@@ -122,6 +122,7 @@
       "INVALID_ROLE": "Peran harus admin atau anggota.",
       "CANNOT_MODIFY_OWNER": "Anda tidak dapat mengubah peran pemilik.",
       "MEMBER_EXISTS": "Anggota ini sudah ada.",
+      "MEMBER_NOT_FOUND": "Anggota tidak ditemukan.",
       "MEMBER_ADD_FAILED": "Gagal menambahkan anggota.",
       "MEMBER_REMOVE_FAILED": "Gagal menghapus anggota.",
       "MEMBER_ROLE_UPDATE_FAILED": "Gagal memperbarui peran anggota.",

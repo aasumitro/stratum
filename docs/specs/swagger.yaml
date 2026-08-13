@@ -3576,6 +3576,10 @@ paths:
           description: admin role required
           schema:
             $ref: '#/definitions/Payload'
+        "404":
+          description: invitation not found
+          schema:
+            $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Revoke an invitation
@@ -3812,6 +3816,10 @@ paths:
           description: cannot remove the owner, or admin role required
           schema:
             $ref: '#/definitions/Payload'
+        "404":
+          description: member not found
+          schema:
+            $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Remove a member
@@ -3848,6 +3856,10 @@ paths:
             $ref: '#/definitions/Payload'
         "403":
           description: cannot change the owner's role, or admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: member not found
           schema:
             $ref: '#/definitions/Payload'
         "422":
@@ -4172,6 +4184,10 @@ paths:
           description: owner role required
           schema:
             $ref: '#/definitions/Payload'
+        "404":
+          description: webhook not found
+          schema:
+            $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Delete a webhook endpoint
@@ -4322,6 +4338,10 @@ paths:
           description: owner role required
           schema:
             $ref: '#/definitions/Payload'
+        "404":
+          description: webhook not found
+          schema:
+            $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Retry a single webhook delivery
@@ -4364,6 +4384,10 @@ paths:
             $ref: '#/definitions/Payload'
         "403":
           description: owner role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: webhook not found
           schema:
             $ref: '#/definitions/Payload'
       security:

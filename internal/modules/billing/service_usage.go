@@ -104,7 +104,26 @@ func (s *service) getUsage(ctx context.Context, _, subjectID string) ([]usageRec
 	return usage, nil
 }
 
+// checkUsageLimit may be called either under an ambient transaction (a
+// billing-route caller, already RLS-wrapped) or with no querier in context
+// at all (organization's invitation/member paths) — same split recordUsage
+// already uses (above) for identical reasons: billing.subscriptions has
+// FORCE ROW LEVEL SECURITY, so a bare-pool read with no app.organization_id
+// set is silently filtered to zero rows.
 func (s *service) checkUsageLimit(ctx context.Context, organizationID, metric string) (current int64, limit int, err error) {
+	if db.HasQuerier(ctx) {
+		return s.checkUsageLimitTx(ctx, organizationID, metric)
+	}
+	err = s.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
+		var txErr error
+		current, limit, txErr = s.checkUsageLimitTx(db.WithQuerier(ctx, tx), organizationID, metric)
+		return txErr
+	})
+	return current, limit, err
+}
+
+// checkUsageLimitTx is checkUsageLimit's body, unchanged.
+func (s *service) checkUsageLimitTx(ctx context.Context, organizationID, metric string) (current int64, limit int, err error) {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("billing.checkUsageLimit: %w", err)
@@ -142,7 +161,22 @@ func (s *service) checkUsageLimit(ctx context.Context, organizationID, metric st
 // boolean/static entitlement, so there's nothing for an addon to unlock
 // here the way checkUsageLimit folds in addon limit deltas. Revisit if a
 // future addon is meant to grant a boolean/static feature.
+//
+// May be called either under an ambient transaction (a billing-route
+// caller, already RLS-wrapped) or with no querier in context at all
+// (organization's webhook path) — same split recordUsage/checkUsageLimit
+// already use, for identical reasons.
 func (s *service) checkFeatureAccess(ctx context.Context, organizationID, feature string) error {
+	if db.HasQuerier(ctx) {
+		return s.checkFeatureAccessTx(ctx, organizationID, feature)
+	}
+	return s.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
+		return s.checkFeatureAccessTx(db.WithQuerier(ctx, tx), organizationID, feature)
+	})
+}
+
+// checkFeatureAccessTx is checkFeatureAccess's body, unchanged.
+func (s *service) checkFeatureAccessTx(ctx context.Context, organizationID, feature string) error {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return fmt.Errorf("billing.checkFeatureAccess: %w", err)

@@ -88,6 +88,7 @@ func NewAPIModules(
 
 	organizationMod.SetBillingReader(billingMod)
 	organizationMod.SetBillingWriter(billingMod)
+	organizationMod.MustBeWired()
 	organizationMod.SetStorageClient(storageClient)
 	organizationMod.SetUserReader(accountMod)
 	billingMod.SetUserReader(accountMod)
@@ -108,7 +109,7 @@ func NewAPIModules(
 
 	authMW, authSSEMW, err := middleware.NewAuthMiddleware(ctx, cfg.Auth, middleware.AuthHooks{
 		OnAuth: func(ctx context.Context, authSub string) {
-			_, _ = infra.Pool.Exec(ctx, `UPDATE account.users SET last_seen_at = now() WHERE auth_sub = $1`, authSub)
+			_, _ = infra.BackgroundPool.Exec(ctx, `UPDATE account.users SET last_seen_at = now() WHERE auth_sub = $1`, authSub)
 		},
 		IsRevoked: func(ctx context.Context, authSub, sessionID string, issuedAt time.Time) bool {
 			if ok, _ := accountNS.Exists(ctx, "revoked_tokens:"+sessionID); ok {
@@ -133,6 +134,7 @@ func NewAPIModules(
 	}
 
 	accountMod.MustBeWired()
+	accountMod.MustHaveSessionRevocationWired()
 
 	return &APIModules{
 		Organization: organizationMod,

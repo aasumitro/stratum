@@ -217,16 +217,16 @@ func (r *repository) setWebhookHealthWarnedAt(ctx context.Context, q db.Querier,
 func (r *repository) deleteWebhookEndpoint(
 	ctx context.Context, q db.Querier,
 	organizationID, id string,
-) error {
-	_, err := q.Exec(ctx, `
+) (bool, error) {
+	tag, err := q.Exec(ctx, `
 		DELETE FROM organization.webhook_endpoints
 		WHERE organization_id = $1 AND id = $2`,
 		organizationID, id,
 	)
 	if err != nil {
-		return fmt.Errorf("organization.deleteWebhookEndpoint: %w", err)
+		return false, fmt.Errorf("organization.deleteWebhookEndpoint: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // webhookHealth holds the 24h and 3d delivered/total counts for an

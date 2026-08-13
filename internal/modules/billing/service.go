@@ -126,23 +126,23 @@ type service struct {
 // — billing reads its own schema directly rather than through the interface
 // it exports for everyone else.
 func (s *service) findPlanByID(ctx context.Context, id string) (*planRecord, error) {
-	return s.repo.findPlanByID(ctx, s.pool, id)
+	return s.repo.findPlanByID(ctx, s.querier(ctx), id)
 }
 
 func (s *service) listPlansRecords(ctx context.Context) ([]planRecord, error) {
-	return s.repo.listPlans(ctx, s.pool)
+	return s.repo.listPlans(ctx, s.querier(ctx))
 }
 
 func (s *service) listFeaturesRecords(ctx context.Context) ([]featureRecord, error) {
-	return s.repo.listFeatures(ctx, s.pool)
+	return s.repo.listFeatures(ctx, s.querier(ctx))
 }
 
 func (s *service) listAddonsRecords(ctx context.Context) ([]addonRecord, error) {
-	return s.repo.listAddons(ctx, s.pool)
+	return s.repo.listAddons(ctx, s.querier(ctx))
 }
 
 func (s *service) findAddonByID(ctx context.Context, id string) (*addonRecord, error) {
-	return s.repo.findAddonByID(ctx, s.pool, id)
+	return s.repo.findAddonByID(ctx, s.querier(ctx), id)
 }
 
 // planCatalog/plansCatalog/addonCatalog/addonsCatalog/featureCatalog convert

@@ -107,6 +107,23 @@ func (m *Module) SetUserReader(r contracts.UserReader) {
 	m.svc.userReader = r
 }
 
+// MustBeWired panics if billingReader or billingWriter was never wired.
+// Unlike catalogReader, userReader, or store (deliberately nil-safe,
+// genuinely optional features that degrade gracefully when unwired), these
+// two gate checkMemberLimitLocked (seat-limit enforcement) and
+// syncMemberUsage (usage tracking) — security/billing controls this
+// workspace has already treated as production-critical. Call once at
+// startup, after SetBillingReader/SetBillingWriter, so a missing wire is a
+// boot-time panic instead of a silently fail-open control.
+func (m *Module) MustBeWired() {
+	switch {
+	case m.svc.billingReader == nil:
+		panic("organization.Module: billing reader not wired (call SetBillingReader)")
+	case m.svc.billingWriter == nil:
+		panic("organization.Module: billing writer not wired (call SetBillingWriter)")
+	}
+}
+
 // RemoveAllMemberships implements contracts.OrganizationWriter — deletes
 // every membership for a user across all organizations. Called by the
 // account module's GDPR delete-account flow.

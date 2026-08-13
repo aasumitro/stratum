@@ -175,6 +175,17 @@ func (m *Module) MustBeWired() {
 	}
 }
 
+// MustHaveSessionRevocationWired panics if revokedNS was never wired. Call
+// only from cmd/api's bootstrap, never cmd/worker's: cmd/worker
+// intentionally passes a nil revokedNS to New (no HTTP auth path exists
+// there to revoke sessions against), so calling this from worker_modules.go
+// would panic on a correct, intentional configuration.
+func (m *Module) MustHaveSessionRevocationWired() {
+	if m.svc.revokedNS == nil {
+		panic("account.Module: session revocation namespace not wired (revokedNS) — required for cmd/api only")
+	}
+}
+
 // RecordLoginEvent rate-gates and records a login event for the auth middleware hook.
 func (m *Module) RecordLoginEvent(ctx context.Context, authSub, ip, ua string) {
 	m.svc.recordLoginEvent(ctx, authSub, ip, ua)
