@@ -233,7 +233,7 @@ func (h *handler) previewInvitation(c *gin.Context) {
 // @Router       /me/invitations [get]
 func (h *handler) listMyInvitations(c *gin.Context) {
 	email := reqctx.Email(c)
-	if email == "" {
+	if email == "" || !reqctx.EmailVerified(c) {
 		response.List([]myInvitationRecord{}, 0).JSON(c, http.StatusOK)
 		return
 	}

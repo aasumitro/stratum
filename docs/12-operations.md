@@ -24,10 +24,11 @@ make run-api
 make run-worker
 ```
 
-**Password Provisioning**: In staging and production environments, the `stratum_app` and `stratum_worker` roles created by the migrations start with empty/invalid passwords. You must explicitly provision them from your secrets manager:
+**Password Provisioning**: In staging and production environments, the `stratum_app`, `stratum_worker`, and `stratum_webhook` roles created by the migrations start with empty/invalid passwords. You must explicitly provision them from your secrets manager:
 ```sql
 ALTER ROLE stratum_app WITH PASSWORD '...';
 ALTER ROLE stratum_worker WITH PASSWORD '...';
+ALTER ROLE stratum_webhook WITH PASSWORD '...';
 ```
 
 Storage buckets auto-create on startup. Verify with `GET /health/ready` (expect 200) and confirm the worker registered its consumers.
@@ -47,6 +48,22 @@ PostgreSQL is the system of record — back it up per your SLA (define RPO/RTO h
 **Payment reconciliation** — Billing state only advances on a verified gateway webhook. If a customer paid but nothing changed, check that the webhook was received (and its signing secret), then use Studio's support tools to mark the invoice paid as a manual override (which is logged).
 
 **Degraded readiness** — A 503 from `/health/ready` means a dependency check failed; `/health/stats` shows pool and GC pressure. Check Postgres, Redis, and RabbitMQ reachability. Don't restart infrastructure from inside an automated session — surface it to a human.
+
+**Stuck outbox backlog** — Every domain event is written to `messaging.outbox` in the same transaction as the state change it describes, then delivered to RabbitMQ by a `cmd/worker` relay polling every 2 seconds. Alert on:
+```sql
+SELECT count(*) FROM messaging.outbox WHERE published_at IS NULL AND created_at < now() - interval '5 minutes';
+```
+A nonzero result means the relay is stuck (worker process down or wedged) or the broker is unreachable — events are durably queued (nothing is lost), but delivery is delayed. Check the worker process is running and can reach RabbitMQ; `attempts`/`last_error` on the oldest unpublished rows show the last failure the relay recorded for them.
+
+**Stuck webhook-driven payment confirmation** — Any environment that ran the `FORCE ROW LEVEL SECURITY` migration before `stratum_webhook` (the dedicated `BYPASSRLS` role webhook processing now runs on) shipped may have invoices a customer actually paid for, where the provider's webhook silently failed to apply — the webhook routes carry no authenticated org context, so a role still bound by RLS can't see the rows it needs to update. Find candidates:
+```sql
+SELECT i.id, i.status, pl.external_id, pl.provider, s.subject_id
+FROM billing.invoices i
+JOIN billing.payment_links pl ON pl.invoice_id = i.id
+JOIN billing.subscriptions s ON s.id = i.subscription_id
+WHERE i.status = 'pending' AND pl.status = 'pending' AND i.created_at < now() - interval '1 hour';
+```
+Each result needs manual verification against the payment provider's own dashboard (Stripe/Xendit) before marking anything paid by hand via Studio's support tools — a row in this list only means the invoice looks stale, not that it was actually paid.
 
 ## No scheduler
 Stratum has no cron. Anything that looks periodic is either a one-shot RabbitMQ delayed message (dunning, renewal reminders) or lazy/opportunistic work (webhook health computed on delivery). This is a deliberate simplification — adding a scheduler for a single sweep wasn't judged worth the operational surface.

@@ -77,6 +77,23 @@ func RunWorker() error {
 		}
 	})
 
+	// Outbox relay: delivers messaging.outbox rows (written transactionally
+	// by events.Enqueue/EnqueueDelayed) to the broker. A 2-second poll, not
+	// LISTEN/NOTIFY — this codebase has no such infrastructure, and a few
+	// seconds of added latency is an acceptable trade for durability.
+	wg.Go(func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mods.OutboxRelay.RelayBatch(ctx)
+			}
+		}
+	})
+
 	infra.Log.Info("worker running", "consumers", len(consumers))
 	<-ctx.Done()
 	infra.Log.Info("worker shutting down, waiting for in-flight deliveries to finish")

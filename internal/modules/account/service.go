@@ -19,6 +19,7 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/audit"
 	"github.com/aasumitro/stratum/internal/platform/cache"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
@@ -82,17 +83,24 @@ func (s *service) getProfileByEmail(ctx context.Context, email string) (*userRec
 }
 
 func (s *service) updateProfile(ctx context.Context, authSub, fullName, avatarURL string) (*userRecord, error) {
-	u, err := s.repo.updateUser(ctx, s.pool, authSub, fullName, avatarURL)
+	var u *userRecord
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		u, err = s.repo.updateUser(ctx, tx, authSub, fullName, avatarURL)
+		if err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeAccount, events.RoutingKeyUserUpdated, "account", "", events.UserUpdated{
+			UserID:    u.ID,
+			UpdatedAt: u.UpdatedAt,
+		})
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, apperr.NotFound("PROFILE_NOT_FOUND", "profile not found", err)
 		}
 		return nil, apperr.Internal("PROFILE_UPDATE_FAILED", "failed to update profile", err)
 	}
-	events.Publish(ctx, s.pub, events.ExchangeAccount, events.RoutingKeyUserUpdated, "account", "", events.UserUpdated{
-		UserID:    u.ID,
-		UpdatedAt: u.UpdatedAt,
-	})
 	return u, nil
 }
 
@@ -108,32 +116,40 @@ func (s *service) updatePreferences(ctx context.Context, authSub string, prefs j
 // deliberately excludes it. A user who hasn't completed onboarding yet has
 // no account.users row; that's a no-op, not an error.
 func (s *service) syncEmail(ctx context.Context, authSub, email string) error {
-	u, oldEmail, err := s.repo.updateEmail(ctx, s.pool, authSub, email)
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		u, oldEmail, err := s.repo.updateEmail(ctx, tx, authSub, email)
+		if err != nil {
+			return err
+		}
+
+		// Best-effort: the webhook route sits outside the HTTP audit middleware
+		// (same as Stripe/Xendit), so this is the only place this change gets
+		// logged. Deliberately not part of this transaction (uses s.pool, not
+		// tx) — same as before this migration, a failed audit-log write
+		// shouldn't roll back the email change itself.
+		if err := s.repo.insertEmailChangeAuditEvent(ctx, s.pool, authSub, oldEmail, email); err != nil {
+			slog.WarnContext(ctx, "account.syncEmail: audit log insert failed", "auth_sub", authSub, "error", err)
+		}
+
+		return events.Enqueue(ctx, tx,
+			events.ExchangeAccount,
+			events.RoutingKeyUserEmailChanged,
+			"account", "",
+			events.UserEmailChanged{
+				UserID:    u.ID,
+				AuthSub:   authSub,
+				OldEmail:  oldEmail,
+				NewEmail:  email,
+				ChangedAt: u.UpdatedAt,
+			},
+		)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		return apperr.Internal("EMAIL_SYNC_FAILED", "failed to sync email", err)
 	}
-
-	// Best-effort: the webhook route sits outside the HTTP audit middleware
-	// (same as Stripe/Xendit), so this is the only place this change gets logged.
-	if err := s.repo.insertEmailChangeAuditEvent(ctx, s.pool, authSub, oldEmail, email); err != nil {
-		slog.WarnContext(ctx, "account.syncEmail: audit log insert failed", "auth_sub", authSub, "error", err)
-	}
-
-	events.Publish(ctx,
-		s.pub, events.ExchangeAccount,
-		events.RoutingKeyUserEmailChanged,
-		"account", "",
-		events.UserEmailChanged{
-			UserID:    u.ID,
-			AuthSub:   authSub,
-			OldEmail:  oldEmail,
-			NewEmail:  email,
-			ChangedAt: u.UpdatedAt,
-		},
-	)
 	return nil
 }
 
@@ -149,25 +165,37 @@ func (s *service) requestDeleteAccount(ctx context.Context, authSub string) (*ta
 		return nil, apperr.Validation("ACCOUNT_DELETE_FAILED", "transfer or delete your organizations before deleting your account")
 	}
 
-	task, err := s.repo.insertTask(ctx, s.pool, authSub, "delete_account")
+	var task *taskRecord
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		task, err = s.repo.insertTask(ctx, tx, authSub, "delete_account")
+		if err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeAccount, events.RoutingKeyUserDeleteRequest, "account", "",
+			events.UserTaskRequest{TaskID: task.ID, AuthSub: authSub})
+	})
 	if err != nil {
 		return nil, apperr.Internal("ACCOUNT_DELETE_FAILED", "failed to request account deletion", err)
 	}
-
-	events.Publish(ctx, s.pub, events.ExchangeAccount, events.RoutingKeyUserDeleteRequest, "account", "",
-		events.UserTaskRequest{TaskID: task.ID, AuthSub: authSub})
 
 	return task, nil
 }
 
 func (s *service) requestExportData(ctx context.Context, authSub string) (*taskRecord, error) {
-	task, err := s.repo.insertTask(ctx, s.pool, authSub, "export_data")
+	var task *taskRecord
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		task, err = s.repo.insertTask(ctx, tx, authSub, "export_data")
+		if err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeAccount, events.RoutingKeyUserExportRequest, "account", "",
+			events.UserTaskRequest{TaskID: task.ID, AuthSub: authSub})
+	})
 	if err != nil {
 		return nil, apperr.Internal("EXPORT_FAILED", "failed to request data export", err)
 	}
-
-	events.Publish(ctx, s.pub, events.ExchangeAccount, events.RoutingKeyUserExportRequest, "account", "",
-		events.UserTaskRequest{TaskID: task.ID, AuthSub: authSub})
 
 	return task, nil
 }

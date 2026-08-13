@@ -54,6 +54,13 @@ type Config struct {
 	// X-Debug-Country-Code header instead (see RequireGeoIPDBOutsideDev).
 	GeoIPDBPath string `env:"GEOIP_DB_PATH"`
 
+	// WebhookSecretEncryptionKey is the pgcrypto (pgp_sym_encrypt/pgp_sym_decrypt) passphrase
+	// used to encrypt organization.webhook_endpoints' outbound signing secrets at rest. Unlike
+	// the inbound webhook secrets below, an empty value has no safe meaning here — there's no
+	// legitimate "skip encryption" mode — so this is required in every environment, including
+	// development, not gated behind RequireSecretsOutsideDev like STRIPE_WEBHOOK_SECRET etc.
+	WebhookSecretEncryptionKey string `env:"WEBHOOK_SECRET_ENCRYPTION_KEY,required"`
+
 	Postgres PostgresConfig
 	Redis    RedisConfig
 	RabbitMQ RabbitMQConfig
@@ -67,8 +74,12 @@ type Config struct {
 }
 
 type PostgresConfig struct {
-	URL          string        `env:"POSTGRES_APP_URL,required"`
-	WorkerURL    string        `env:"POSTGRES_WORKER_URL,required"`
+	URL       string `env:"POSTGRES_APP_URL,required"`
+	WorkerURL string `env:"POSTGRES_WORKER_URL,required"`
+	// WebhookURL is required on both binaries because both load this same
+	// struct, but only cmd/api ever opens a pool with it (see
+	// bootstrap.SetupInfra/RunAPI) — cmd/worker never serves webhooks.
+	WebhookURL   string        `env:"POSTGRES_WEBHOOK_URL,required"`
 	MaxOpenConns int32         `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
 	MaxIdleTime  time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
 }
@@ -155,14 +166,15 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// RequireWebhookSecretsOutsideDev enforces that every registered webhook
-// route has its verification secret configured once Env isn't
-// "development". Each of these routes' handlers treats an empty secret as
-// "skip verification" — fine for local dev, but an unset secret in any
-// other env means the route silently accepts unsigned/forged payloads that
-// mutate real state (payment status, account email). Call this right after
-// Load() so a missing secret fails startup instead of serving.
-func (c *Config) RequireWebhookSecretsOutsideDev() error {
+// RequireSecretsOutsideDev enforces that every registered webhook route has
+// its verification secret configured and that operational secrets (like
+// STATS_TOKEN) are set once Env isn't "development". Each webhook handler
+// treats an empty secret as "skip verification" — fine for local dev, but
+// an unset secret in any other env means the route silently accepts
+// unsigned/forged payloads that mutate real state (payment status, account
+// email). Call this right after Load() so a missing secret fails startup
+// instead of serving.
+func (c *Config) RequireSecretsOutsideDev() error {
 	if c.Env == envDevelopment {
 		return nil
 	}
@@ -179,8 +191,11 @@ func (c *Config) RequireWebhookSecretsOutsideDev() error {
 	if c.Auth.WebhookSecret == "" {
 		missing = append(missing, "SUPABASE_WEBHOOK_SECRET")
 	}
+	if c.StatsToken == "" {
+		missing = append(missing, "STATS_TOKEN")
+	}
 	if len(missing) > 0 {
-		return fmt.Errorf("config: missing required webhook secret(s) outside development: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("config: missing required secret(s) outside development: %s", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -191,7 +206,7 @@ func (c *Config) RequireWebhookSecretsOutsideDev() error {
 // depends on a working GeoIP lookup — geoip.Resolver's development-only
 // X-Debug-Country-Code override doesn't apply there, so an unset path would
 // silently resolve every request to the same empty-lookup fallback. Call
-// this right after Load(), alongside RequireWebhookSecretsOutsideDev.
+// this right after Load(), alongside RequireSecretsOutsideDev.
 func (c *Config) RequireGeoIPDBOutsideDev() error {
 	if c.Env == envDevelopment {
 		return nil

@@ -114,6 +114,9 @@ type service struct {
 	orgCommander contracts.OrganizationCommander
 	taxReader    contracts.CountryTaxReader
 	orgSuspender contracts.OrganizationSuspender
+	// webhookPool is used by exactly one call site, processWebhook's
+	// db.WithTx — see module.go's New for why.
+	webhookPool *pgxpool.Pool
 }
 
 // findPlanByID/listPlansRecords/listFeaturesRecords/listAddonsRecords/findAddonByID
@@ -231,15 +234,16 @@ func (s *service) querier(ctx context.Context) db.Querier {
 	return db.QuerierFromContext(ctx, s.pool)
 }
 
-// publishAfterCommit queues an event via db.QueueEvent instead of
-// publishing it immediately, so a route still wrapped by the group-level
-// RLS transaction doesn't announce state that might still roll back after
-// this call returns. The RLS middleware flushes the queue only once its
-// transaction actually commits.
-func (s *service) publishAfterCommit(ctx context.Context, routingKey, orgID string, data any) {
-	db.QueueEvent(ctx, func() {
-		events.Publish(ctx, s.pub, events.ExchangeBilling, routingKey, "billing", orgID, data)
-	})
+// enqueueEvent writes an outbox row for a billing domain event using
+// whatever Querier is already active in ctx (the RLS middleware's in-flight
+// transaction when running under it, s.pool otherwise) — so the write
+// commits atomically with any other work already inside that same
+// transaction, now that Enqueue writes straight to the outbox instead of
+// deferring a publish closure until after commit. Callers must propagate a
+// non-nil error rather than swallow it — an outbox row that silently fails
+// to insert reopens the same fire-and-forget gap Enqueue exists to close.
+func (s *service) enqueueEvent(ctx context.Context, routingKey, orgID string, data any) error {
+	return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, routingKey, "billing", orgID, data)
 }
 
 // cycleDays approximates a billing cycle's length in days for proration

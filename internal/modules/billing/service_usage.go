@@ -11,10 +11,18 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
-// Bare repo-call returns below are deliberate — same funnel-into-one-
-// deferred-apperr-classification tradeoff as redeemCoupon (service_coupon.go).
+// recordUsage may be called either under an ambient transaction (the HTTP
+// route, wrapped by the organization RLS middleware) or from a background
+// goroutine with a stripped context and no org identity set anywhere
+// (organization.syncMemberUsage's fire-and-forget member-count sync). Only
+// the latter needs its own transaction — reusing an already-active one would
+// nest db.WithTx and double-apply SetOrgContext for no reason. db.HasQuerier
+// distinguishes the two: true inside the RLS middleware's transaction, false
+// for a bare background context, so recordUsageTx always runs against a
+// Querier with org context already set, whichever branch got it there.
 func (s *service) recordUsage(ctx context.Context, organizationID, metric string, value int64) (err error) {
 	defer func() {
 		if err != nil {
@@ -22,6 +30,17 @@ func (s *service) recordUsage(ctx context.Context, organizationID, metric string
 		}
 	}()
 
+	if db.HasQuerier(ctx) {
+		return s.recordUsageTx(ctx, organizationID, metric, value)
+	}
+	return s.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
+		return s.recordUsageTx(db.WithQuerier(ctx, tx), organizationID, metric, value)
+	})
+}
+
+// Bare repo-call returns below are deliberate — same funnel-into-one-
+// deferred-apperr-classification tradeoff as redeemCoupon (service_coupon.go).
+func (s *service) recordUsageTx(ctx context.Context, organizationID, metric string, value int64) error {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
 	if err != nil {
 		return err
@@ -44,25 +63,27 @@ func (s *service) recordUsage(ctx context.Context, organizationID, metric string
 		return err
 	}
 
-	s.maybeWarnUsageLimit(ctx, organizationID, metric, previous, value)
-	return nil
+	return s.maybeWarnUsageLimit(ctx, organizationID, metric, previous, value)
 }
 
-// maybeWarnUsageLimit publishes UsageLimitWarning the moment usage crosses
+// maybeWarnUsageLimit enqueues UsageLimitWarning the moment usage crosses
 // 90% of the effective limit (plan + any attached addon delta), checked
 // against previous so it fires exactly once per crossing rather than on
-// every subsequent recordUsage call once already over the threshold.
-// Best-effort: a lookup failure here shouldn't fail the usage write that
-// already succeeded, same fail-open convention as the rest of this gate.
-func (s *service) maybeWarnUsageLimit(ctx context.Context, organizationID, metric string, previous, current int64) {
+// every subsequent recordUsage call once already over the threshold. A
+// lookup failure here still shouldn't fail the usage write that already
+// succeeded (same fail-open convention as the rest of this gate) — but once
+// a crossing is confirmed, the enqueue's own error must propagate per
+// events.Enqueue's contract.
+func (s *service) maybeWarnUsageLimit(ctx context.Context, organizationID, metric string, previous, current int64) error {
 	_, limit, err := s.checkUsageLimit(ctx, organizationID, metric)
 	if err != nil || limit < 0 {
-		return
+		return nil
 	}
-	if crossedUsageThreshold(previous, current, limit) {
-		s.publishAfterCommit(ctx, events.RoutingKeyUsageLimitWarning, organizationID,
-			events.UsageLimitWarning{OrgID: organizationID, Metric: metric, Current: current, Limit: limit})
+	if !crossedUsageThreshold(previous, current, limit) {
+		return nil
 	}
+	return s.enqueueEvent(ctx, events.RoutingKeyUsageLimitWarning, organizationID,
+		events.UsageLimitWarning{OrgID: organizationID, Metric: metric, Current: current, Limit: limit})
 }
 
 // crossedUsageThreshold reports whether this usage write newly crossed 90%

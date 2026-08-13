@@ -102,19 +102,28 @@ func (s *service) removeMember(ctx context.Context, organizationID, authSub stri
 	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
 		return apperr.Forbidden("CANNOT_REMOVE_OWNER", "cannot remove the organization owner")
 	}
-	removed, err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub)
+	var removed bool
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		removed, err = s.repo.deleteMembership(ctx, tx, organizationID, authSub)
+		if err != nil {
+			return err
+		}
+		// Idempotent: removing a member who's already gone succeeds without
+		// enqueueing a second MemberRemoved for a removal that didn't
+		// actually happen here.
+		if !removed {
+			return nil
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
+			events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub})
+	})
 	if err != nil {
 		return apperr.Internal("MEMBER_REMOVE_FAILED", "failed to remove member", err)
 	}
-	// Idempotent: removing a member who's already gone succeeds without
-	// re-syncing usage or publishing a second MemberRemoved for a removal
-	// that didn't actually happen here.
-	if !removed {
-		return nil
+	if removed {
+		s.syncMemberUsage(ctx, organizationID)
 	}
-	s.syncMemberUsage(ctx, organizationID)
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
-		events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub})
 	return nil
 }
 
@@ -126,11 +135,16 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 		return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
 	}
 
-	if err := s.repo.updateMemberRole(ctx, s.pool, organizationID, authSub, role); err != nil {
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if err := s.repo.updateMemberRole(ctx, tx, organizationID, authSub, role); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberRoleChanged, "organization", organizationID,
+			events.MemberRoleChanged{OrganizationID: organizationID, AuthSub: authSub, Role: role})
+	})
+	if err != nil {
 		return apperr.Internal("MEMBER_ROLE_UPDATE_FAILED", "failed to update member role", err)
 	}
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRoleChanged, "organization", organizationID,
-		events.MemberRoleChanged{OrganizationID: organizationID, AuthSub: authSub, Role: role})
 	return nil
 }
 
@@ -235,26 +249,17 @@ func (s *service) transferOwnership(ctx context.Context, organizationID, current
 		return errors.New("target is already the owner")
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
-		return err
-	}
-	if err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
-		return err
-	}
-	if err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOwnershipTransferred, "organization", organizationID,
-		events.OwnershipTransferred{OrganizationID: organizationID, PreviousOwner: currentOwner, NewOwner: newOwnerAuthSub})
-	return nil
+	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
+			return err
+		}
+		if err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
+			return err
+		}
+		if err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOwnershipTransferred, "organization", organizationID,
+			events.OwnershipTransferred{OrganizationID: organizationID, PreviousOwner: currentOwner, NewOwner: newOwnerAuthSub})
+	})
 }

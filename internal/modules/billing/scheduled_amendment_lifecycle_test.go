@@ -19,6 +19,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
 // fakeOrgCommander is a minimal contracts.OrganizationCommander for these
@@ -96,7 +97,16 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 	// a live quantity of 3 up front, not a pending invoice.
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
 
-	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
+	// downgradeSubscription locks the subscription row via s.querier(ctx),
+	// which resolves to whatever transaction is already in ctx (the RLS
+	// middleware's, in a live request) — a bare context falls back to the
+	// pool, which db.RequireTx correctly rejects. Wrap the call in a real
+	// transaction here, mirroring how the RLS-wrapped route actually calls it.
+	if err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, _, err := mod.svc.downgradeSubscription(db.WithQuerier(t.Context(), tx),
+			subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil)
+		return err
+	}); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
 	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1, "sub_owner"); err != nil {
@@ -220,14 +230,26 @@ func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testi
 	}
 	// Seeded directly, not via attachAddon — see the CombinedApply test above.
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
-	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
+	// downgradeSubscription locks the subscription row via s.querier(ctx),
+	// which resolves to whatever transaction is already in ctx (the RLS
+	// middleware's, in a live request) — a bare context falls back to the
+	// pool, which db.RequireTx correctly rejects. Wrap the call in a real
+	// transaction here, mirroring how the RLS-wrapped route actually calls it.
+	if err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, _, err := mod.svc.downgradeSubscription(db.WithQuerier(t.Context(), tx),
+			subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil)
+		return err
+	}); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
 	if _, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 1, "sub_owner"); err != nil {
 		t.Fatalf("schedule addon decrease: %v", err)
 	}
 
-	if _, err := mod.svc.cancelSubscription(t.Context(), subjectTypeOrganization, orgID, "sub_owner", "too_expensive", ""); err != nil {
+	if err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, err := mod.svc.cancelSubscription(db.WithQuerier(t.Context(), tx), subjectTypeOrganization, orgID, "sub_owner", "too_expensive", "")
+		return err
+	}); err != nil {
 		t.Fatalf("cancelSubscription: %v", err)
 	}
 
@@ -303,7 +325,16 @@ func TestIntegration_ScheduledAmendmentLifecycle_RedeliverySafety(t *testing.T) 
 	if err != nil {
 		t.Fatalf("seed subscription: %v", err)
 	}
-	if _, _, err := mod.svc.downgradeSubscription(t.Context(), subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil); err != nil {
+	// downgradeSubscription locks the subscription row via s.querier(ctx),
+	// which resolves to whatever transaction is already in ctx (the RLS
+	// middleware's, in a live request) — a bare context falls back to the
+	// pool, which db.RequireTx correctly rejects. Wrap the call in a real
+	// transaction here, mirroring how the RLS-wrapped route actually calls it.
+	if err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, _, err := mod.svc.downgradeSubscription(db.WithQuerier(t.Context(), tx),
+			subjectTypeOrganization, orgID, "solo", cycleMonthly, "sub_owner", nil)
+		return err
+	}); err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
 	if err := r.upsertUsage(t.Context(), pool, orgID, "members", 2, time.Now(), time.Now().AddDate(0, 1, 0)); err != nil {

@@ -77,7 +77,12 @@ func NewModuleEngineWithEmail(pool *pgxpool.Pool, authSub, email string) *gin.En
 	noopGate := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
 	mod := New(pool, messaging.NoopPublisher{}, "", "", nil, nil, "")
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}))
+	// Duplicated rather than shared with organization's own unexported
+	// testSecretEncryptionKey — this package (account) cannot see it, and
+	// the actual value is irrelevant here since no test in this file
+	// exercises webhook encrypt/decrypt.
+	const testWebhookEncryptionKey = "test-webhook-secret-encryption-key-0000"
+	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey))
 	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, MFA: noopGate})
 	return e
 }

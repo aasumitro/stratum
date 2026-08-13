@@ -15,6 +15,10 @@ func TestBlockedIP(t *testing.T) {
 		"0.0.0.0",         // unspecified
 		"::1",             // IPv6 loopback
 		"fc00::1",         // IPv6 ULA
+		"100.64.0.1",      // RFC6598 shared address space
+		"192.0.0.1",       // RFC6890 IETF protocol assignments
+		"198.18.0.1",      // RFC6890 benchmark testing
+		"64:ff9b::1",      // NAT64 well-known prefix
 	}
 	for _, s := range blocked {
 		ip := net.ParseIP(s)

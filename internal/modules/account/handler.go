@@ -485,7 +485,7 @@ func (h *handler) handleSupabaseUserUpdated(c *gin.Context) {
 
 // verifyWebhookSecret compares the X-Webhook-Secret header against the
 // configured secret. An empty configSecret skips verification — only
-// reachable in development, since config.RequireWebhookSecretsOutsideDev
+// reachable in development, since config.RequireSecretsOutsideDev
 // fails startup otherwise.
 func verifyWebhookSecret(headerSecret, configSecret string) bool {
 	if configSecret == "" {

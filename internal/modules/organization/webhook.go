@@ -46,11 +46,12 @@ const (
 // only other worker-side event consumer. Both need the same
 // repo/pool/log; store is used only by the latter.
 type WebhookWorker struct {
-	repo  *repository
-	pool  *pgxpool.Pool
-	pub   messaging.EventPublisher
-	log   *slog.Logger
-	store *storage.Client
+	repo                *repository
+	pool                *pgxpool.Pool
+	pub                 messaging.EventPublisher
+	log                 *slog.Logger
+	store               *storage.Client
+	secretEncryptionKey string // pgcrypto symmetric key for webhook secret columns, set once at construction
 }
 
 // HandleOutboundEvent receives any billing or organization event envelope and fans
@@ -66,7 +67,7 @@ func (w *WebhookWorker) HandleOutboundEvent(ctx context.Context, body []byte) er
 		return nil
 	}
 
-	endpoints, err := w.repo.listEnabledWebhookEndpointsForEvent(ctx, w.pool, env.OrgID, env.Type)
+	endpoints, err := w.repo.listEnabledWebhookEndpointsForEvent(ctx, w.pool, env.OrgID, env.Type, w.secretEncryptionKey)
 	if err != nil {
 		return fmt.Errorf("webhook: list endpoints: %w", err)
 	}
@@ -98,7 +99,7 @@ func (w *WebhookWorker) HandleWebhookRetry(ctx context.Context, body []byte) err
 		return nil // don't re-queue a bad envelope
 	}
 
-	ep, err := w.repo.findWebhookEndpoint(ctx, w.pool, evt.OrganizationID, evt.EndpointID)
+	ep, err := w.repo.findWebhookEndpoint(ctx, w.pool, evt.OrganizationID, evt.EndpointID, w.secretEncryptionKey)
 	if err != nil {
 		return fmt.Errorf("webhook retry: find endpoint: %w", err)
 	}
@@ -135,11 +136,14 @@ func (w *WebhookWorker) checkHealth(ctx context.Context, ep *webhookEndpointReco
 	// that fails again gets a fresh 3-day window before this fires again).
 	if ep.Enabled && ep.AutoDisabledAt == nil && h.Total3d > 0 && h.Delivered3d == 0 {
 		now := time.Now()
-		if err := w.repo.setWebhookEnabled(ctx, w.pool, ep.ID, false, &now); err == nil {
-			events.Publish(ctx, w.pub, events.ExchangeOrganization,
+		_ = db.WithTx(ctx, w.pool, func(tx db.Querier) error {
+			if err := w.repo.setWebhookEnabled(ctx, tx, ep.ID, false, &now); err != nil {
+				return err
+			}
+			return events.Enqueue(ctx, tx, events.ExchangeOrganization,
 				events.RoutingKeyWebhookAutoDisabled, "organization", ep.OrganizationID,
 				events.WebhookAutoDisabled{OrganizationID: ep.OrganizationID, EndpointID: ep.ID, URL: ep.URL})
-		}
+		})
 		return
 	}
 
@@ -154,11 +158,14 @@ func (w *WebhookWorker) checkHealth(ctx context.Context, ep *webhookEndpointReco
 	if ep.HealthWarnedAt != nil && time.Since(*ep.HealthWarnedAt) < 24*time.Hour {
 		return
 	}
-	if err := w.repo.setWebhookHealthWarnedAt(ctx, w.pool, ep.ID, time.Now()); err == nil {
-		events.Publish(ctx, w.pub, events.ExchangeOrganization,
+	_ = db.WithTx(ctx, w.pool, func(tx db.Querier) error {
+		if err := w.repo.setWebhookHealthWarnedAt(ctx, tx, ep.ID, time.Now()); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization,
 			events.RoutingKeyWebhookHealthWarning, "organization", ep.OrganizationID,
 			events.WebhookHealthWarning{OrganizationID: ep.OrganizationID, EndpointID: ep.ID, URL: ep.URL, SuccessPercent: percent})
-	}
+	})
 }
 
 // deliver makes one HTTP POST to the endpoint and records the attempt

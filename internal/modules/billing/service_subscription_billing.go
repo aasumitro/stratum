@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -358,7 +359,16 @@ func (s *service) extendSubscription(
 		if err := s.insertExtensionLineItems(ctx, inv.ID, planInfo, addons, sub.Currency, months); err != nil {
 			return err
 		}
-		return nil
+		// Enqueued inside this transaction — commits before the payment-link
+		// HTTP call below starts, same billingPay-group pattern as every
+		// other site here: the durability guarantee only needs to cover the
+		// DB write and the outbox row, not a successful provider response.
+		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
+			events.InvoiceCreated{
+				OrgID: subjectID, InvoiceID: inv.ID,
+				Plan: sub.Plan, AmountCents: inv.AmountCents,
+				Currency: sub.Currency, DueAt: *inv.DueAt,
+			})
 	})
 	if err != nil {
 		return nil, err
@@ -369,13 +379,6 @@ func (s *service) extendSubscription(
 	// created and can be paid via the regular POST .../invoices/:id/pay flow,
 	// same fail-open convention as provisionSubscription.
 	_, _ = s.createPaymentLink(ctx, subjectType, subjectID, inv.ID)
-
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
-		events.InvoiceCreated{
-			OrgID: subjectID, InvoiceID: inv.ID,
-			Plan: sub.Plan, AmountCents: inv.AmountCents,
-			Currency: sub.Currency, DueAt: *inv.DueAt,
-		})
 
 	s.scheduleRenewalSequence(ctx, &subscriptionRecord{
 		ID: sub.ID, SubjectType: sub.SubjectType,
@@ -487,7 +490,20 @@ func (s *service) activateTrialNow(
 		); err != nil {
 			return err
 		}
-		return nil
+		// Enqueued inside this transaction — see extendSubscription's
+		// comment on why this must commit before the payment-link call below.
+		if err := events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeySubscriptionActivated, "billing", subjectID,
+			events.SubscriptionActivated{
+				OrgID: subjectID, SubscriptionID: updated.ID, Plan: updated.Plan, ActivatedAt: now,
+			}); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
+			events.InvoiceCreated{
+				OrgID: subjectID, InvoiceID: inv.ID,
+				Plan: sub.Plan, AmountCents: inv.AmountCents,
+				Currency: sub.Currency, DueAt: *inv.DueAt,
+			})
 	})
 	if err != nil {
 		return nil, err
@@ -495,17 +511,6 @@ func (s *service) activateTrialNow(
 
 	// Payment link is a convenience, not load-bearing — see extendSubscription.
 	_, _ = s.createPaymentLink(ctx, subjectType, subjectID, inv.ID)
-
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionActivated, "billing", subjectID,
-		events.SubscriptionActivated{
-			OrgID: subjectID, SubscriptionID: updated.ID, Plan: updated.Plan, ActivatedAt: now,
-		})
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
-		events.InvoiceCreated{
-			OrgID: subjectID, InvoiceID: inv.ID,
-			Plan: sub.Plan, AmountCents: inv.AmountCents,
-			Currency: sub.Currency, DueAt: *inv.DueAt,
-		})
 
 	s.scheduleRenewalSequence(ctx, &subscriptionRecord{
 		ID: sub.ID, SubjectType: sub.SubjectType,
@@ -604,14 +609,12 @@ func (s *service) resumeFromCancelled(
 		); err != nil {
 			return err
 		}
-		return nil
+		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", subjectID,
+			events.SubscriptionResumed{OrgID: subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now})
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", subjectID,
-		events.SubscriptionResumed{OrgID: subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now})
 
 	renewalSub := &subscriptionRecord{
 		ID: sub.ID, SubjectType: sub.SubjectType,
@@ -698,10 +701,17 @@ func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord
 	return sub, nil
 }
 
-// scheduleRenewalSequence publishes delayed messages for the renewal flow:
+// scheduleRenewalSequence enqueues delayed messages for the renewal flow:
 // remind (7 days before a normal period end, 2 days before a trial end —
 // trials run exactly 7 days, so a 7-day lead would resolve to ~now and
 // never actually fire), 3 days before → auto-invoice, at end → expire check.
+// Runs after its caller's own state-changing transaction has already
+// committed (every call site calls this post-commit), so there's no
+// transaction left here for an enqueue failure to roll back — errors are
+// logged, not propagated, matching this function's existing "duplicate
+// delayed messages are harmless" tolerance for the class of loss this can
+// still leave (a rare DB-level failure on the outbox insert itself, not a
+// broker outage — the outbox+relay already covers that case durably).
 func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscriptionRecord) {
 	var endTime time.Time
 	isTrial := sub.TrialEnd != nil
@@ -726,19 +736,25 @@ func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscription
 		remindLeadDays = 2
 	}
 	if d := time.Until(endTime.AddDate(0, 0, -remindLeadDays)); d > 0 {
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
-			events.DelayRoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d)
+		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
+			events.DelayRoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d); err != nil {
+			slog.Error("billing.scheduleRenewalSequence: enqueue remind failed", "subscription_id", sub.ID, "error", err)
+		}
 	}
 
 	if d := time.Until(endTime.AddDate(0, 0, -3)); d > 0 {
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
-			events.DelayRoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d)
+		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
+			events.DelayRoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d); err != nil {
+			slog.Error("billing.scheduleRenewalSequence: enqueue auto-invoice failed", "subscription_id", sub.ID, "error", err)
+		}
 	}
 
 	d := time.Until(endTime)
 	if d <= 0 {
 		d = time.Second
 	}
-	events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
-		events.DelayRoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d)
+	if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
+		events.DelayRoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d); err != nil {
+		slog.Error("billing.scheduleRenewalSequence: enqueue expiry check failed", "subscription_id", sub.ID, "error", err)
+	}
 }

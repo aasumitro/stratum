@@ -96,12 +96,11 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 			"subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
 		return nil
 	}
-	events.Publish(ctx, w.svc.pub, events.ExchangeBilling, events.RoutingKeySubscriptionRemind, "billing", sub.SubjectID,
+	return w.svc.enqueueEvent(ctx, events.RoutingKeySubscriptionRemind, sub.SubjectID,
 		events.SubscriptionCheck{
 			SubscriptionID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID,
 			Plan: sub.Plan, ExpectedEnd: check.ExpectedEnd, IsTrial: sub.TrialEnd != nil,
 		})
-	return nil
 }
 
 // reconcileScheduledCancellation takes the row lock covering this renewal
@@ -124,10 +123,9 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 func (w *Worker) reconcileScheduledCancellation(
 	ctx context.Context, check events.SubscriptionCheck,
 ) (*subscriptionRecord, error) {
-	pctx := db.WithPendingEvents(ctx)
 	var sub *subscriptionRecord
-	err := db.WithTx(pctx, w.svc.pool, func(tx db.Querier) error {
-		txCtx := db.WithQuerier(pctx, tx)
+	err := db.WithTx(ctx, w.svc.pool, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
 		q := w.svc.querier(txCtx)
 
 		if err := w.svc.repo.lockSubscriptionForUpdate(txCtx, q, check.SubscriptionID); err != nil {
@@ -160,17 +158,15 @@ func (w *Worker) reconcileScheduledCancellation(
 			&found.Plan, nil, 0, found.Currency, changedBySystem, nil, &phase, &appliedAt); err != nil {
 			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
 		}
-		w.svc.publishAfterCommit(txCtx, events.RoutingKeySubscriptionCancelled, found.SubjectID,
-			events.SubscriptionCancelled{OrgID: found.SubjectID, SubscriptionID: found.ID, CancelledAt: time.Now()})
+		if err := w.svc.enqueueEvent(txCtx, events.RoutingKeySubscriptionCancelled, found.SubjectID,
+			events.SubscriptionCancelled{OrgID: found.SubjectID, SubscriptionID: found.ID, CancelledAt: time.Now()}); err != nil {
+			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: enqueue cancellation: %w", err)
+		}
 		return nil // no invoice — this is the cancellation short-circuit
 	})
 	if err != nil {
 		return nil, err
 	}
-	// Only fires events queued by a transaction that actually committed —
-	// see db.FlushPendingEvents' own doc comment on why this must never run
-	// after a rollback.
-	db.FlushPendingEvents(pctx)
 	return sub, nil
 }
 
@@ -353,7 +349,16 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		); err != nil {
 			return err
 		}
-		return nil
+		// Enqueued inside this transaction — commits before the payment-link
+		// HTTP call below starts, matching every other billingPay-group site:
+		// the durability guarantee only needs to cover the DB write and the
+		// outbox row, not a successful provider response too.
+		return events.Enqueue(txCtx, tx, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", sub.SubjectID,
+			events.InvoiceCreated{
+				OrgID: sub.SubjectID, InvoiceID: inv.ID,
+				Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: inv.Currency, DueAt: *inv.DueAt,
+				FromTrial: sub.Status == statusTrialing,
+			})
 	})
 	if err != nil {
 		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: insert invoice: %w", err)
@@ -363,12 +368,5 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 	if err != nil {
 		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: create payment link: %w", err)
 	}
-
-	events.Publish(ctx, w.svc.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", sub.SubjectID,
-		events.InvoiceCreated{
-			OrgID: sub.SubjectID, InvoiceID: inv.ID,
-			Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: inv.Currency, DueAt: *inv.DueAt,
-			FromTrial: sub.Status == statusTrialing,
-		})
 	return nil
 }

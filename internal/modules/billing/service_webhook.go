@@ -12,15 +12,61 @@ import (
 )
 
 // webhookOutcome collects the events/scheduling a webhook triggers while its
-// DB effects run inside processWebhook's transaction. Publishing is deferred
-// until after that transaction commits — publishing before commit would
-// announce state that might still roll back.
+// DB effects run inside processWebhook's transaction. The events themselves
+// are enqueued inside that same transaction (enqueueWebhookOutcome, called
+// from within it) — outcome only still carries scheduleRenewal forward,
+// since scheduleRenewalSequence deliberately runs after commit (see its own
+// doc comment).
 type webhookOutcome struct {
 	paid            *events.InvoicePaid
 	resumed         *events.SubscriptionResumed
 	extended        *events.SubscriptionExtended
 	failed          *events.InvoiceFailed
 	scheduleRenewal *subscriptionRecord
+}
+
+// enqueueWebhookOutcome writes an outbox row for every event outcome
+// carries, using tx — the same transaction as processWebhook's DB effects —
+// so they commit atomically with the webhook state they describe instead of
+// publishing after the fact. outcome may be nil (a duplicate delivery
+// short-circuited before handleWebhook ran).
+func enqueueWebhookOutcome(ctx context.Context, tx db.Querier, outcome *webhookOutcome) error {
+	if outcome == nil {
+		return nil
+	}
+	if outcome.paid != nil {
+		if err := events.Enqueue(ctx, tx, events.ExchangeBilling, events.RoutingKeyInvoicePaid,
+			"billing", outcome.paid.OrgID, *outcome.paid); err != nil {
+			return err
+		}
+	}
+	if outcome.resumed != nil {
+		if err := events.Enqueue(ctx, tx, events.ExchangeBilling, events.RoutingKeySubscriptionResumed,
+			"billing", outcome.resumed.OrgID, *outcome.resumed); err != nil {
+			return err
+		}
+	}
+	if outcome.extended != nil {
+		if err := events.Enqueue(ctx, tx, events.ExchangeBilling, events.RoutingKeySubscriptionExtended,
+			"billing", outcome.extended.OrgID, *outcome.extended); err != nil {
+			return err
+		}
+	}
+	if outcome.failed != nil {
+		if err := events.Enqueue(ctx, tx, events.ExchangeBilling, events.RoutingKeyInvoiceFailed,
+			"billing", outcome.failed.OrgID, *outcome.failed); err != nil {
+			return err
+		}
+		if err := events.EnqueueDelayed(ctx, tx, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionPaymentRemind,
+			"billing", outcome.failed.OrgID, *outcome.failed, 3*24*time.Hour); err != nil {
+			return err
+		}
+		if err := events.EnqueueDelayed(ctx, tx, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionPaymentFinal,
+			"billing", outcome.failed.OrgID, *outcome.failed, 7*24*time.Hour); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // processWebhook marks (provider, eventID) processed and applies the
@@ -38,7 +84,7 @@ type webhookOutcome struct {
 // external_id can never match for those events (see handleStripeWebhook).
 func (s *service) processWebhook(ctx context.Context, provider, eventID, externalID, invoiceID, normalizedStatus string) error {
 	var outcome *webhookOutcome
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := db.WithTx(ctx, s.webhookPool, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
 		if eventID != "" {
 			inserted, err := s.repo.markWebhookProcessed(txCtx, tx, provider, eventID)
@@ -51,34 +97,16 @@ func (s *service) processWebhook(ctx context.Context, provider, eventID, externa
 		}
 		var err error
 		outcome, err = s.handleWebhook(txCtx, externalID, invoiceID, normalizedStatus)
-		return err
+		if err != nil {
+			return err
+		}
+		return enqueueWebhookOutcome(txCtx, tx, outcome)
 	})
 	if err != nil {
 		return err
 	}
 	if outcome == nil {
 		return nil
-	}
-
-	if outcome.paid != nil {
-		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoicePaid,
-			"billing", outcome.paid.OrgID, *outcome.paid)
-	}
-	if outcome.resumed != nil {
-		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionResumed,
-			"billing", outcome.resumed.OrgID, *outcome.resumed)
-	}
-	if outcome.extended != nil {
-		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionExtended,
-			"billing", outcome.extended.OrgID, *outcome.extended)
-	}
-	if outcome.failed != nil {
-		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceFailed,
-			"billing", outcome.failed.OrgID, *outcome.failed)
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionPaymentRemind,
-			"billing", outcome.failed.OrgID, *outcome.failed, 3*24*time.Hour)
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionPaymentFinal,
-			"billing", outcome.failed.OrgID, *outcome.failed, 7*24*time.Hour)
 	}
 	if outcome.scheduleRenewal != nil {
 		s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)

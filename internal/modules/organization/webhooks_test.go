@@ -18,8 +18,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
+	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 const webhooksTestOrgSlugPrefix = "integ-ws-webhooks-"
@@ -167,8 +169,8 @@ func TestIntegration_Webhooks_RotateSecret_KeepsPreviousForGraceWindow(t *testin
 	var previousSecret string
 	var expiresAt time.Time
 	err := pool.QueryRow(t.Context(),
-		`SELECT secret_plaintext_previous, secret_rotation_expires_at FROM organization.webhook_endpoints WHERE id = $1`,
-		endpointID).Scan(&previousSecret, &expiresAt)
+		`SELECT pgp_sym_decrypt(secret_encrypted_previous, $2)::text, secret_rotation_expires_at FROM organization.webhook_endpoints WHERE id = $1`,
+		endpointID, testWebhookEncryptionKey).Scan(&previousSecret, &expiresAt)
 	if err != nil {
 		t.Fatalf("query rotated row: %v", err)
 	}
@@ -380,38 +382,21 @@ func TestIntegration_Webhooks_ListDeliveries_CursorPagination(t *testing.T) {
 	}
 }
 
-// capturingPublisher records every published event instead of sending it
-// anywhere — lets a test simulate what the real RabbitMQ consumer would do
-// with a published event, without needing a broker in this test binary.
-type capturingPublisher struct {
-	published []capturedEvent
-}
-
-type capturedEvent struct {
-	exchange, routingKey string
-	body                 []byte
-}
-
-func (p *capturingPublisher) Publish(_ context.Context, exchange, routingKey string, body []byte) error {
-	p.published = append(p.published, capturedEvent{exchange, routingKey, body})
-	return nil
-}
-
-func (p *capturingPublisher) PublishDelayed(_ context.Context, exchange, routingKey string, body []byte, _ time.Duration) error {
-	return p.Publish(context.Background(), exchange, routingKey, body)
-}
-
 // TestIntegration_Webhooks_RetryAllFailed regression-tests that the bulk
-// "Retry all failed" action queues one WebhookRetryRequested event per
-// delivery (via a captured publisher, since there's no broker in this test
-// binary) instead of retrying inline on the request goroutine, and that
-// feeding those events through the worker's consumer handler produces the
-// same end result — every failed delivery actually retried.
+// "Retry all failed" action enqueues one WebhookRetryRequested outbox row
+// per delivery instead of retrying inline on the request goroutine, and
+// that feeding those rows' payloads through the worker's consumer handler
+// (the same body a real relay+consumer round trip would deliver) produces
+// the same end result — every failed delivery actually retried. Queried
+// directly from messaging.outbox, not a captured publisher: events.Enqueue
+// never touches the injected EventPublisher at all.
 func TestIntegration_Webhooks_RetryAllFailed(t *testing.T) {
 	pool := testPool(t)
 	orgID := createWebhookTestOrg(t, "retry-all")
-	pub := &capturingPublisher{}
-	e, mod := organization.NewModuleEngineWithPublisher(pool, testAuthSub, pub)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+	})
+	e, mod := organization.NewModuleEngineWithPublisher(pool, testAuthSub, messaging.NoopPublisher{})
 
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -448,16 +433,30 @@ func TestIntegration_Webhooks_RetryAllFailed(t *testing.T) {
 	if hits != 0 {
 		t.Fatalf("receiver hits after retry-failed call = %d, want 0 (delivery happens on the worker consumer)", hits)
 	}
-	if len(pub.published) != 2 {
-		t.Fatalf("published events = %d, want 2", len(pub.published))
+
+	rows, err := pool.Query(t.Context(),
+		`SELECT payload FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+		events.RoutingKeyWebhookRetryRequested, orgID)
+	if err != nil {
+		t.Fatalf("query outbox rows: %v", err)
+	}
+	var payloads [][]byte
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("scan outbox row: %v", err)
+		}
+		payloads = append(payloads, payload)
+	}
+	rows.Close()
+	if len(payloads) != 2 {
+		t.Fatalf("outbox rows = %d, want 2", len(payloads))
 	}
 
-	// simulate the worker consumer processing each queued retry job.
-	for _, evt := range pub.published {
-		if evt.routingKey != "organization.webhook.retry-requested" {
-			t.Fatalf("unexpected routing key %q", evt.routingKey)
-		}
-		if err := mod.Worker.HandleWebhookRetry(t.Context(), evt.body); err != nil {
+	// simulate the worker consumer processing each queued retry job — the
+	// same payload a real relay+consumer round trip would deliver.
+	for _, body := range payloads {
+		if err := mod.Worker.HandleWebhookRetry(t.Context(), body); err != nil {
 			t.Fatalf("HandleWebhookRetry: %v", err)
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
@@ -60,7 +61,18 @@ func TestIntegration_DowngradeSubscription_Active_SchedulesInsteadOfApplying(t *
 		t.Fatalf("seed subscription: %v", err)
 	}
 
-	updated, overage, err := mod.svc.downgradeSubscription(t.Context(), "organization", orgID, "solo", cycleMonthly, "sub_owner", nil)
+	// downgradeSubscription locks the subscription row via s.querier(ctx),
+	// which resolves to whatever transaction is already in ctx (the RLS
+	// middleware's, in a live request) — wrap the call in a real
+	// transaction here, mirroring how the RLS-wrapped route actually calls it.
+	var updated *subscriptionRecord
+	var overage contracts.OverageResolution
+	err = db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		var txErr error
+		updated, overage, txErr = mod.svc.downgradeSubscription(db.WithQuerier(t.Context(), tx),
+			"organization", orgID, "solo", cycleMonthly, "sub_owner", nil)
+		return txErr
+	})
 	if err != nil {
 		t.Fatalf("downgradeSubscription: %v", err)
 	}
@@ -121,7 +133,11 @@ func TestIntegration_DowngradeSubscription_Active_CancellationScheduled_Rejected
 		t.Fatalf("scheduleCancellation: %v", err)
 	}
 
-	_, _, err := mod.svc.downgradeSubscription(t.Context(), "organization", orgID, "solo", cycleMonthly, "sub_owner", nil)
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, _, txErr := mod.svc.downgradeSubscription(db.WithQuerier(t.Context(), tx),
+			"organization", orgID, "solo", cycleMonthly, "sub_owner", nil)
+		return txErr
+	})
 	wantApperrCode(t, err, cancellationScheduledCode)
 
 	fresh, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
@@ -150,7 +166,12 @@ func TestIntegration_UndoScheduledPlanDowngrade_ClearsSchedule(t *testing.T) {
 		t.Fatalf("schedulePlanDowngrade: %v", err)
 	}
 
-	updated, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "organization", orgID, "sub_owner")
+	var updated *subscriptionRecord
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		var txErr error
+		updated, txErr = mod.svc.undoScheduledPlanDowngrade(db.WithQuerier(t.Context(), tx), "organization", orgID, "sub_owner")
+		return txErr
+	})
 	if err != nil {
 		t.Fatalf("undoScheduledPlanDowngrade: %v", err)
 	}
@@ -169,7 +190,10 @@ func TestIntegration_UndoScheduledPlanDowngrade_NothingScheduled(t *testing.T) {
 	mod := NewModuleForTest(pool, nil)
 	seedAmendmentSubscription(t, pool, r, orgID)
 
-	_, err := mod.svc.undoScheduledPlanDowngrade(t.Context(), "organization", orgID, "sub_owner")
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, txErr := mod.svc.undoScheduledPlanDowngrade(db.WithQuerier(t.Context(), tx), "organization", orgID, "sub_owner")
+		return txErr
+	})
 	wantApperrCode(t, err, "NO_SCHEDULED_DOWNGRADE")
 }
 

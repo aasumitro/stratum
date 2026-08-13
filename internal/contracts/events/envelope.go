@@ -3,12 +3,15 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/logger"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
+	"github.com/aasumitro/stratum/internal/platform/outbox"
 )
 
 // Exchange names — the single source of truth for every RabbitMQ exchange
@@ -49,7 +52,7 @@ func Publish(
 	exchange, routingKey, source, orgID string, data any,
 ) {
 	env := Envelope{
-		ID:     uuid.New().String(),
+		ID:     uuid.Must(uuid.NewV7()).String(),
 		Type:   routingKey,
 		Source: source,
 		Time:   time.Now(),
@@ -108,7 +111,7 @@ func PublishDelayed(
 	data any, delay time.Duration,
 ) {
 	env := Envelope{
-		ID:     uuid.New().String(),
+		ID:     uuid.Must(uuid.NewV7()).String(),
 		Type:   routingKey,
 		Source: source,
 		Time:   time.Now(),
@@ -125,4 +128,55 @@ func PublishDelayed(
 		logger.FromContext(ctx).Warn("delayed event publish failed",
 			"exchange", exchange, "routing_key", routingKey, "error", err)
 	}
+}
+
+// Enqueue writes env to the transactional outbox inside q's transaction —
+// the caller is responsible for q being the same transaction as the state
+// change the event describes, so both commit or neither does. Unlike
+// Publish, a failure here must fail the caller's transaction: an outbox row
+// that silently fails to insert reopens the exact fire-and-forget gap this
+// function exists to close. Envelope construction and marshaling live here
+// (it's shared, cross-module vocabulary); the actual row write is
+// internal/platform/outbox's job, since persistence logic doesn't belong
+// next to a shared type/interface package. A cmd/worker relay (also in
+// internal/platform/outbox) delivers the row to the broker afterward,
+// independent of this insert's caller.
+func Enqueue(
+	ctx context.Context, q db.Querier,
+	exchange, routingKey, source, orgID string, data any,
+) error {
+	env := Envelope{
+		ID: uuid.Must(uuid.NewV7()).String(), Type: routingKey, Source: source,
+		Time: time.Now(), OrgID: orgID, Data: data,
+	}
+	body, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("events.Enqueue: marshal: %w", err)
+	}
+	if err := outbox.Enqueue(ctx, q, env.ID, exchange, routingKey, body); err != nil {
+		return fmt.Errorf("events.Enqueue: %w", err)
+	}
+	return nil
+}
+
+// EnqueueDelayed is Enqueue with not_before set in the future — the outbox
+// analogue of PublishDelayed, unifying "publish now" and "publish later"
+// into the relay's single not_before <= now() query instead of a separate
+// delayed-outbox mechanism.
+func EnqueueDelayed(
+	ctx context.Context, q db.Querier,
+	exchange, routingKey, source, orgID string, data any, delay time.Duration,
+) error {
+	env := Envelope{
+		ID: uuid.Must(uuid.NewV7()).String(), Type: routingKey, Source: source,
+		Time: time.Now(), OrgID: orgID, Data: data,
+	}
+	body, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("events.EnqueueDelayed: marshal: %w", err)
+	}
+	if err := outbox.EnqueueDelayed(ctx, q, env.ID, exchange, routingKey, body, delay); err != nil {
+		return fmt.Errorf("events.EnqueueDelayed: %w", err)
+	}
+	return nil
 }

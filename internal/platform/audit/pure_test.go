@@ -103,4 +103,16 @@ func TestRedactSensitiveFields(t *testing.T) {
 			t.Errorf("want scalar JSON returned unchanged, got %q", got)
 		}
 	})
+
+	t.Run("redacts invite code field", func(t *testing.T) {
+		got := redactSensitiveFields([]byte(`{"code":"abc123","organization_id":"org-1"}`))
+		var m map[string]any
+		json.Unmarshal(got, &m)
+		if m["code"] != redactedValue {
+			t.Errorf("code: want redacted, got %v", m["code"])
+		}
+		if m["organization_id"] != "org-1" {
+			t.Errorf("organization_id: want untouched, got %v", m["organization_id"])
+		}
+	})
 }

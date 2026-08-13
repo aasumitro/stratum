@@ -34,12 +34,6 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 			Cache:   cache.NewNamespace(infra.Redis, "ratelimit"),
 		},
 	)
-	webhookRateMW := middleware.NewRateLimitMiddleware(
-		cache.NewRateLimiter(infra.Redis, "webhook"),
-		middleware.ByClientIP,
-		cache.PerMinute(60),
-	)
-
 	ginMode := "release"
 	if cfg.Env == EnvDevelopment {
 		ginMode = "debug"
@@ -91,7 +85,6 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 	mods.Notification.Register(v1, routeDeps)
 
 	webhooks := engine.Group("/webhooks")
-	webhooks.Use(webhookRateMW)
 	if err := mods.Billing.RegisterWebhooks(webhooks); err != nil {
 		auditWriter.Stop()
 		return nil, fmt.Errorf("registering billing webhooks: %w", err)

@@ -156,55 +156,22 @@ func TestWithTx_RollsBackOnPanic(t *testing.T) {
 	}
 }
 
-func TestQueueEvent_RunsOnFlushNotBefore(t *testing.T) {
-	ctx := db.WithPendingEvents(context.Background())
-
-	var ran []string
-	db.QueueEvent(ctx, func() { ran = append(ran, "first") })
-	db.QueueEvent(ctx, func() { ran = append(ran, "second") })
-	if len(ran) != 0 {
-		t.Fatalf("queued events must not run before Flush, ran = %v", ran)
+func TestHasQuerier(t *testing.T) {
+	if db.HasQuerier(context.Background()) {
+		t.Error("bare context should report no querier")
 	}
 
-	db.FlushPendingEvents(ctx)
-	if want := []string{"first", "second"}; !equalStrings(ran, want) {
-		t.Errorf("after flush: ran = %v, want %v (in order)", ran, want)
+	ctx := db.WithQuerier(context.Background(), (*pgxpool.Pool)(nil))
+	if !db.HasQuerier(ctx) {
+		t.Error("context after WithQuerier should report a querier present")
 	}
-}
 
-func TestQueueEvent_FlushIsOneShot(t *testing.T) {
-	ctx := db.WithPendingEvents(context.Background())
-
-	n := 0
-	db.QueueEvent(ctx, func() { n++ })
-	db.FlushPendingEvents(ctx)
-	db.FlushPendingEvents(ctx) // a second flush (e.g. rollback path never called) must not re-run anything
-	if n != 1 {
-		t.Errorf("event ran %d times, want exactly 1", n)
+	// WithoutQuerier stores a literal nil, which must still read as absent —
+	// otherwise a background goroutine derived via context.WithoutCancel
+	// could pick up a stale/cleared querier instead of falling back to the pool.
+	if db.HasQuerier(db.WithoutQuerier(ctx)) {
+		t.Error("WithoutQuerier should clear the querier, not leave one present")
 	}
-}
-
-func TestQueueEvent_NoQueueInContext_RunsImmediately(t *testing.T) {
-	// No enclosing transaction set up a queue (db.WithPendingEvents never
-	// called) — QueueEvent must run fn right away rather than silently
-	// dropping it, since there's nothing that will ever flush it.
-	ran := false
-	db.QueueEvent(context.Background(), func() { ran = true })
-	if !ran {
-		t.Error("QueueEvent without an installed queue should run fn immediately")
-	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestQuerierFromContext(t *testing.T) {

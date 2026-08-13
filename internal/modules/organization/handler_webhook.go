@@ -275,7 +275,7 @@ func (h *handler) listWebhookDeliveries(c *gin.Context) {
 	webhookID := c.Param("webhookID")
 
 	// Verify endpoint belongs to organization.
-	_, err := h.svc.repo.findWebhookEndpoint(c.Request.Context(), h.pool, ws.ID, webhookID)
+	_, err := h.svc.repo.findWebhookEndpoint(c.Request.Context(), h.pool, ws.ID, webhookID, h.svc.secretEncryptionKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			response.Error("WEBHOOK_NOT_FOUND", "webhook not found").JSON(c, http.StatusNotFound)

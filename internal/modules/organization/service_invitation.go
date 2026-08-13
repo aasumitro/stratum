@@ -83,13 +83,18 @@ func (s *service) createInvitation(
 		return nil, fmt.Errorf("organization.createInvitation: %w", err)
 	}
 	expiresAt := time.Now().AddDate(0, 0, 7)
-	inv, err = s.repo.insertInvitation(ctx, s.pool, organizationID, email, role, token, invitedBy, expiresAt)
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		inv, err = s.repo.insertInvitation(ctx, tx, organizationID, email, role, token, invitedBy, expiresAt)
+		if err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberInvited, "organization", organizationID,
+			events.MemberInvited{OrganizationID: organizationID, Email: email, Role: role, InvitedBy: invitedBy, Token: inv.Token})
+	})
 	if err != nil {
 		return nil, fmt.Errorf("organization.createInvitation: %w", err)
 	}
-
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberInvited, "organization", organizationID,
-		events.MemberInvited{OrganizationID: organizationID, Email: email, Role: role, InvitedBy: invitedBy, Token: inv.Token})
 
 	return inv, nil
 }
@@ -297,11 +302,16 @@ func (s *service) declineInvitation(ctx context.Context, token, email string, em
 	if err != nil {
 		return err
 	}
-	if _, err := s.repo.deleteInvitation(ctx, s.pool, inv.OrganizationID, inv.ID); err != nil {
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if _, err := s.repo.deleteInvitation(ctx, tx, inv.OrganizationID, inv.ID); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyInvitationDeclined, "organization", inv.OrganizationID,
+			events.InvitationDeclined{OrganizationID: inv.OrganizationID, InvitedBy: inv.InvitedBy, InviteeEmail: inv.Email})
+	})
+	if err != nil {
 		return fmt.Errorf("organization.declineInvitation: %w", err)
 	}
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyInvitationDeclined, "organization", inv.OrganizationID,
-		events.InvitationDeclined{OrganizationID: inv.OrganizationID, InvitedBy: inv.InvitedBy, InviteeEmail: inv.Email})
 	return nil
 }
 
@@ -344,7 +354,6 @@ func (s *service) requestNewInvitation(ctx context.Context, token, email string,
 	if !emailVerified || !strings.EqualFold(inv.Email, email) {
 		return apperr.Validation("INVITATION_NOT_FOUND", "invitation not found")
 	}
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyInvitationRequested, "organization", inv.OrganizationID,
+	return events.Enqueue(ctx, s.pool, events.ExchangeOrganization, events.RoutingKeyInvitationRequested, "organization", inv.OrganizationID,
 		events.InvitationRequested{OrganizationID: inv.OrganizationID, InvitedBy: inv.InvitedBy, InviteeEmail: inv.Email})
-	return nil
 }

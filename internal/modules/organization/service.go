@@ -24,15 +24,16 @@ var ErrPlanLimitReached = errors.New("plan member limit reached")
 const detailKeyOrganizationID = "organization_id"
 
 type service struct {
-	repo          *repository
-	pool          *pgxpool.Pool
-	pub           messaging.EventPublisher
-	billingReader contracts.BillingReader                // optional; nil = no plan enforcement
-	billingWriter contracts.BillingWriter                // optional; nil = usage not recorded
-	store         *storage.Client                        // optional; nil = storage disabled
-	catalogReader contracts.CatalogReader                // optional; nil = no plan validation on create
-	userReader    contracts.UserReader                   // optional; nil = inviter identity omitted from GET /me/invitations
-	cacheInval    contracts.OrganizationCacheInvalidator // optional; nil = removed members' cached RBAC role self-expires on its own 30s TTL instead of being invalidated immediately
+	repo                *repository
+	pool                *pgxpool.Pool
+	pub                 messaging.EventPublisher
+	billingReader       contracts.BillingReader                // optional; nil = no plan enforcement
+	billingWriter       contracts.BillingWriter                // optional; nil = usage not recorded
+	store               *storage.Client                        // optional; nil = storage disabled
+	catalogReader       contracts.CatalogReader                // optional; nil = no plan validation on create
+	userReader          contracts.UserReader                   // optional; nil = inviter identity omitted from GET /me/invitations
+	cacheInval          contracts.OrganizationCacheInvalidator // optional; nil = removed members' cached RBAC role self-expires on its own 30s TTL instead of being invalidated immediately
+	secretEncryptionKey string                                 // pgcrypto symmetric key for webhook secret columns, set once at construction
 }
 
 // isUniqueViolation reports whether err is (or wraps) a PostgreSQL

@@ -125,7 +125,34 @@ func dialValidated(
 	return nil, dialErr
 }
 
+// blockedNets covers ranges the stdlib net.IP predicates do not have
+// built-in checks for: shared address space (RFC 6598), IETF protocol
+// assignments (RFC 6890), benchmark testing (RFC 6890), and the NAT64
+// well-known prefix (RFC 6052).
+var blockedNets = []*net.IPNet{
+	mustParseCIDR("100.64.0.0/10"), // RFC 6598 shared address space
+	mustParseCIDR("192.0.0.0/24"),  // RFC 6890 IETF protocol assignments
+	mustParseCIDR("198.18.0.0/15"), // RFC 6890 benchmark testing
+	mustParseCIDR("64:ff9b::/96"),  // NAT64 well-known prefix (RFC 6052)
+}
+
+func mustParseCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic("httpclient: invalid CIDR literal " + s)
+	}
+	return n
+}
+
 func blockedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	for _, n := range blockedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

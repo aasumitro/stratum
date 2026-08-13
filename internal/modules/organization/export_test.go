@@ -15,6 +15,11 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
+// testSecretEncryptionKey is the fixed pgcrypto key test-only Module
+// constructors thread through New — real content doesn't matter here,
+// only that it's non-empty and stable within a test run.
+const testSecretEncryptionKey = "test-webhook-secret-encryption-key-0000"
+
 // AllowLoopbackWebhooksForTest relaxes the webhook SSRF guard (https-only,
 // public-IP-only) so tests can use httptest.Server — a loopback http
 // address — as a stand-in webhook receiver. Mutates package-level state;
@@ -88,7 +93,7 @@ func NewHandlerEngineWith(ownerID, callerRole string) *gin.Engine {
 
 // NewModuleForTest creates a Module with a real pool and noop publisher.
 func NewModuleForTest(pool *pgxpool.Pool) *Module {
-	return New(pool, messaging.NoopPublisher{})
+	return New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 }
 
 // RemoveMemberForTest calls the service's removeMember directly, bypassing
@@ -102,7 +107,7 @@ func (m *Module) RemoveMemberForTest(ctx context.Context, organizationID, authSu
 // NewModuleEngine creates a full gin.Engine backed by a real DB module.
 func NewModuleEngine(pool *pgxpool.Pool, authSub string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})
@@ -122,7 +127,7 @@ func NewModuleEngine(pool *pgxpool.Pool, authSub string) *gin.Engine {
 // RabbitMQ consumer would do without needing a broker in this test binary.
 func NewModuleEngineWithPublisher(pool *pgxpool.Pool, authSub string, pub messaging.EventPublisher) (*gin.Engine, *Module) {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, pub)
+	mod := New(pool, pub, testSecretEncryptionKey)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})
@@ -143,7 +148,7 @@ func NewModuleEngineWithPublisher(pool *pgxpool.Pool, authSub string, pub messag
 // owns and has verified email.
 func NewModuleEngineWithEmail(pool *pgxpool.Pool, authSub, email string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"email": email, "user_metadata": map[string]any{"email_verified": true}}})
@@ -162,7 +167,7 @@ func NewModuleEngineWithEmail(pool *pgxpool.Pool, authSub, email string) *gin.En
 // their token carries, even when it matches the invitation.
 func NewModuleEngineWithUnverifiedEmail(pool *pgxpool.Pool, authSub, email string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"email": email, "user_metadata": map[string]any{"email_verified": false}}})
@@ -180,7 +185,7 @@ func NewModuleEngineWithUnverifiedEmail(pool *pgxpool.Pool, authSub, email strin
 // need both a verified-email caller and plan member-limit enforcement.
 func NewModuleEngineWithBillingReaderAndEmail(pool *pgxpool.Pool, authSub, email string, br contracts.BillingReader) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	mod.SetBillingReader(br)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
@@ -198,7 +203,7 @@ func NewModuleEngineWithBillingReaderAndEmail(pool *pgxpool.Pool, authSub, email
 // with a billing writer wired in — use for usage-recording integration tests.
 func NewModuleEngineWithWriter(pool *pgxpool.Pool, authSub string, bw contracts.BillingWriter) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	mod.SetBillingWriter(bw)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
@@ -217,7 +222,7 @@ func NewModuleEngineWithWriter(pool *pgxpool.Pool, authSub string, bw contracts.
 // invitation-accept tests that also need a billing writer wired in.
 func NewModuleEngineWithWriterAndEmail(pool *pgxpool.Pool, authSub, email string, bw contracts.BillingWriter) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	mod.SetBillingWriter(bw)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
@@ -237,7 +242,7 @@ func NewModuleEngineWithWriterAndEmail(pool *pgxpool.Pool, authSub, email string
 // profile (name/email) and a caller identity matching the invitation.
 func NewModuleEngineWithUserReaderAndEmail(pool *pgxpool.Pool, authSub, email string, ur contracts.UserReader) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	mod.SetUserReader(ur)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
@@ -256,7 +261,7 @@ func NewModuleEngineWithUserReaderAndEmail(pool *pgxpool.Pool, authSub, email st
 // integration tests on organization creation.
 func NewModuleEngineWithCatalogReader(pool *pgxpool.Pool, authSub string, cr contracts.CatalogReader) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	mod.SetCatalogReader(cr)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
@@ -278,7 +283,7 @@ func NewModuleEngineWithCatalogReader(pool *pgxpool.Pool, authSub string, cr con
 // (organizationMod.SetCountryResolver).
 func NewModuleEngineWithCountryResolver(pool *pgxpool.Pool, authSub string, r *geoip.Resolver) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	mod.SetCountryResolver(r)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
@@ -297,7 +302,7 @@ func NewModuleEngineWithCountryResolver(pool *pgxpool.Pool, authSub string, r *g
 // batch profile-enrichment path (GET .../members).
 func NewModuleEngineWithUserReader(pool *pgxpool.Pool, authSub string, ur contracts.UserReader) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, messaging.NoopPublisher{})
+	mod := New(pool, messaging.NoopPublisher{}, testSecretEncryptionKey)
 	mod.SetUserReader(ur)
 	e := gin.New()
 	authMW := func(c *gin.Context) {

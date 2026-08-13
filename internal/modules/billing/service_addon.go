@@ -173,7 +173,18 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 				return err
 			}
 			pendingInvoice = inv
-			return nil
+			if inv == nil {
+				return nil // prorated to zero — requestAddonIncrease applied the increase directly, nothing to enqueue
+			}
+			// Enqueued inside this transaction — commits before the
+			// payment-link HTTP call below starts, same billingPay-group
+			// pattern as extendSubscription/activateTrialNow.
+			return events.Enqueue(txCtx, tx, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", organizationID,
+				events.InvoiceCreated{
+					OrgID: organizationID, InvoiceID: inv.ID,
+					Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: sub.Currency,
+					DueAt: *inv.DueAt,
+				})
 		case sub.Status == statusTrialing:
 			if err := s.repo.upsertSubscriptionAddon(txCtx, tx, sub.ID, addonID, quantity); err != nil {
 				return err
@@ -205,12 +216,6 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 		// POST .../invoices/:id/pay flow, same fail-open convention as
 		// extendSubscription/activateTrialNow.
 		_, _ = s.createPaymentLink(ctx, subjectTypeOrganization, organizationID, pendingInvoice.ID)
-		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", organizationID,
-			events.InvoiceCreated{
-				OrgID: organizationID, InvoiceID: pendingInvoice.ID,
-				Plan: sub.Plan, AmountCents: pendingInvoice.AmountCents, Currency: sub.Currency,
-				DueAt: *pendingInvoice.DueAt,
-			})
 	}
 
 	addon, err := s.repo.findAttachedAddon(ctx, s.querier(ctx), sub.ID, addonID)

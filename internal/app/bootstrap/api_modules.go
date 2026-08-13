@@ -66,7 +66,7 @@ func NewAPIModules(
 		return nil, fmt.Errorf("setting up geoip: %w", err)
 	}
 
-	organizationMod := organization.New(infra.Pool, infra.MQPublisher)
+	organizationMod := organization.New(infra.Pool, infra.MQPublisher, cfg.WebhookSecretEncryptionKey)
 	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
 		cfg.Auth.ServiceRoleKey, accountNS, storageClient, cfg.Auth.WebhookSecret)
 	if cfg.Storage.URL != "" && !accountMod.HasStorage() {
@@ -81,7 +81,7 @@ func NewAPIModules(
 		XenditAPIKey:        cfg.Xendit.APIKey,
 		XenditCallbackToken: cfg.Xendit.CallbackToken,
 		XenditAllowedCIDRs:  cfg.Xendit.AllowedCIDRs,
-	}, refMod, organizationMod)
+	}, refMod, organizationMod, infra.WebhookPool)
 	mailClient := mailer.New(cfg.SMTP)
 	notifMod := notification.New(infra.Pool, mailClient,
 		organizationMod, accountMod, cfg.AppURL, infra.Redis)

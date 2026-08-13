@@ -59,6 +59,7 @@ func (r *repository) findSubscriptionBySubject(
 // as a DB constraint since a redemption's active/exhausted status is
 // computed from the coupon's cadence and applied_count, not stored.
 func (r *repository) lockSubscriptionForUpdate(ctx context.Context, q db.Querier, subscriptionID string) error {
+	db.RequireTx(q)
 	var id string
 	err := q.QueryRow(ctx, `SELECT id FROM billing.subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID).Scan(&id)
 	if err != nil {

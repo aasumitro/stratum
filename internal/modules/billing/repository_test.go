@@ -62,6 +62,11 @@ func encodeOrganizationCreatedEvent(organizationID string) []byte {
 
 func cleanupBillingByOrganization(pool *pgxpool.Pool, orgID string) {
 	ctx := context.Background()
+	// Every events.Enqueue call in the code under test writes a real row
+	// here now — tests using a fixed orgID literal (most of this file's
+	// helpers do) would otherwise see a previous run's leftover outbox rows
+	// bleed into an "outbox is empty for this org" assertion.
+	pool.Exec(ctx, `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
 	// webhook_events first — keyed by payment_link external_id, must run before payment_links are deleted
 	pool.Exec(ctx, `
 		DELETE FROM billing.webhook_events we
