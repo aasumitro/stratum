@@ -14,6 +14,13 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
+// placeholderWebhookEncryptionKey is the unmistakable non-secret value .env.example ships for
+// WEBHOOK_SECRET_ENCRYPTION_KEY. RequireSecretsOutsideDev rejects it explicitly outside
+// development so a deployment that copied .env.example forward without generating a real key
+// fails loudly at boot instead of silently encrypting webhook secrets under a passphrase that's
+// public in the repository.
+const placeholderWebhookEncryptionKey = "CHANGE_ME_generate_with_openssl_rand_base64_32"
+
 // Config is the root configuration struct. Nested structs group config
 // by infrastructure concern, mirroring the platform/ package layout.
 type Config struct {
@@ -217,6 +224,9 @@ func (c *Config) RequireSecretsOutsideDev() error {
 	}
 	if c.StatsToken == "" {
 		missing = append(missing, "STATS_TOKEN")
+	}
+	if c.WebhookSecretEncryptionKey == placeholderWebhookEncryptionKey {
+		missing = append(missing, "WEBHOOK_SECRET_ENCRYPTION_KEY (still the .env.example placeholder value)")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required secret(s) outside development: %s", strings.Join(missing, ", "))

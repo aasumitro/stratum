@@ -37,6 +37,6 @@ REVOKE ALL ON ALL TABLES IN SCHEMA ref, organization, account, billing, notifica
 REVOKE USAGE ON SCHEMA ref, organization, account, billing, notification, audit, messaging FROM stratum_app, stratum_worker, stratum_webhook;
 REVOKE CONNECT ON DATABASE stratum FROM stratum_app, stratum_worker, stratum_webhook;
 
-DROP ROLE IF EXISTS stratum_app;
-DROP ROLE IF EXISTS stratum_worker;
-DROP ROLE IF EXISTS stratum_webhook;
+-- Role creation is not this migration's responsibility (see 000008_db_roles.up.sql), so reverting
+-- it does not drop the roles either — their lifecycle belongs to whichever provisioning path
+-- created them.

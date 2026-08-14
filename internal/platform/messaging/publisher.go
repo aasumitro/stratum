@@ -92,13 +92,28 @@ func (p *Publisher) openChannel() error {
 		}
 	}()
 
-	p.mu.Lock()
-	p.ch = ch
-	p.mu.Unlock()
+	p.swapChannel(ch)
 
 	go p.watchChannelClose(ch)
 
 	return nil
+}
+
+// swapChannel installs newCh as the publisher's current channel and closes whatever channel it
+// replaces. Closing the old channel is what makes reopenWithBackoff and watchReconnect safe to
+// race each other: whichever one loses gets its channel closed here by the winner, which both
+// releases the broker-side channel and — because Close() triggers a graceful close, which
+// watchChannelClose already treats as "don't reopen" — lets the loser's watchChannelClose
+// goroutine observe that close and exit, instead of leaking a channel and a parked goroutine.
+func (p *Publisher) swapChannel(newCh *amqp.Channel) {
+	p.mu.Lock()
+	old := p.ch
+	p.ch = newCh
+	p.mu.Unlock()
+
+	if old != nil && old != newCh {
+		_ = old.Close()
+	}
 }
 
 func (p *Publisher) watchReconnect() {

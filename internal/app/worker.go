@@ -23,6 +23,9 @@ func RunWorker() error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	if err := cfg.RequireSecretsOutsideDev(); err != nil {
+		return fmt.Errorf("validating config: %w", err)
+	}
 
 	infra, err := bootstrap.SetupInfra(ctx, cfg, cfg.Postgres.WorkerURL)
 	if err != nil {

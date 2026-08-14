@@ -2,6 +2,7 @@ package outbox_test
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"slices"
 	"sync"
@@ -268,5 +269,84 @@ func TestIntegration_RelayBatch_PoisonRowExhaustsAttempts_HealthyRowStillPublish
 	}
 	if poisonAttemptsAfter != poisonAttempts {
 		t.Errorf("attempts changed from %d to %d after an extra RelayBatch — poison row is still being reclaimed past the cap", poisonAttempts, poisonAttemptsAfter)
+	}
+}
+
+// capturingHandler is a slog.Handler test double that records every emitted slog.Record — used to
+// assert on the exact log line RelayBatch emits for an exhausted row, since that transition has no
+// other observable signal (no counter, no dead-letter, only the log).
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *capturingHandler) find(level slog.Level, message string) (slog.Record, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Level == level && r.Message == message {
+			return r, true
+		}
+	}
+	return slog.Record{}, false
+}
+
+func attrInt64(r slog.Record, key string) (val int64, found bool) {
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			val, found = a.Value.Int64(), true
+			return false
+		}
+		return true
+	})
+	return val, found
+}
+
+// TestIntegration_RelayBatch_ExhaustedRowLogsDistinctExhaustionMessage is the regression test for
+// the outbox exhaustion signal: before this fix, a row's final log line at maxAttempts still read
+// "will retry" — indistinguishable from every retry before it, so an operator had no way to tell a
+// delayed row from a permanently abandoned one. This seeds a row one failure short of the cap,
+// drains until the failure that crosses it fires, and asserts the resulting log line is the
+// distinct ERROR exhaustion message with attempts == maxAttempts, not the ordinary WARN retry line.
+func TestIntegration_RelayBatch_ExhaustedRowLogsDistinctExhaustionMessage(t *testing.T) {
+	const maxAttempts = 20 // must match outbox.maxAttempts (relay.go) — unexported, duplicated here
+	pool := testPool(t)
+
+	seedOutboxRowAtAttempts(t, pool, "test.exhaust-log", maxAttempts-1)
+
+	handler := &capturingHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	pub := &selectiveFailPublisher{failRoutingKeys: map[string]bool{"test.exhaust-log": true}}
+	relay := outbox.NewRelay(pool, pub)
+
+	var attempts int
+	drainUntil(t, relay, func() bool {
+		pool.QueryRow(context.Background(),
+			`SELECT attempts FROM messaging.outbox WHERE routing_key = 'test.exhaust-log'`,
+		).Scan(&attempts)
+		return attempts >= maxAttempts
+	})
+
+	rec, ok := handler.find(slog.LevelError, "outbox: row exhausted, ABANDONED — will never be delivered")
+	if !ok {
+		t.Fatal("no ERROR-level exhaustion log emitted for the row that just crossed maxAttempts")
+	}
+	if logged, ok := attrInt64(rec, "attempts"); !ok || logged != maxAttempts {
+		t.Errorf("exhaustion log attempts = %v (found=%v), want %d", logged, ok, maxAttempts)
 	}
 }

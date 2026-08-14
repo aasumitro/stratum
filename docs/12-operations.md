@@ -18,29 +18,38 @@ All configuration is read from the environment once at startup and passed explic
 ```bash
 cp .env.example .env      # fill required values
 make infra-up
+# provision database roles here — staging/production only, see
+# "Provisioning database roles" below (local dev already did this
+# automatically when the Postgres container first booted)
 make migrate-up
 make build                # bin/api + bin/worker
 make run-api
 make run-worker
 ```
 
-**BYPASSRLS requirement**: `db/migrations/000008` creates the `stratum_app`,
-`stratum_worker`, and `stratum_webhook` roles with `BYPASSRLS`, which PostgreSQL only
-permits when the role executing the migration itself already holds `BYPASSRLS`. This is
-true by accident in local dev/CI (the Postgres container image's default superuser) but is
-not true in a hardened production setup, where the role running `make migrate-up` is
-deliberately not a superuser. In that case, pre-create the three roles with a
-superuser-equivalent connection first, mirroring `deploy/postgres-init/01-app-role.sql`'s
-shape (with real production passwords instead of that script's hardcoded local ones) —
-the migrations' own `CREATE ROLE ... IF NOT EXISTS` blocks are then no-ops. Do this before
-running `make migrate-up` in production.
+**Provisioning database roles**: role creation is deliberately not part of the migration
+pipeline (`ADR-0026`) — `db/migrations/000008` only grants privileges to `stratum_app`,
+`stratum_worker`, and `stratum_webhook`; it never creates them. This is what lets
+`make migrate-up` run without the migrator role itself needing `BYPASSRLS` or `CREATEROLE` —
+PostgreSQL only permits a role that already holds `BYPASSRLS` to grant `BYPASSRLS` to a role
+it creates, so embedding `CREATE ROLE ... BYPASSRLS` inside a migration would force every
+migrator, including a deliberately unprivileged production one, to hold it too.
 
-**Password Provisioning**: In staging and production environments, the `stratum_app`, `stratum_worker`, and `stratum_webhook` roles created by the migrations start with empty/invalid passwords. You must explicitly provision them from your secrets manager:
+Local dev and CI get this for free: `deploy/postgres-init/01-app-role.sql` creates all three
+roles, and either runs automatically (local dev, mounted into the Postgres container's
+`docker-entrypoint-initdb.d`) or as an explicit CI step before migrations. Every other
+environment needs a human to run the equivalent once, with a superuser-equivalent connection,
+**before the first `make migrate-up`** — copy `deploy/postgres-init/01-app-role.sql`'s three
+`CREATE ROLE` statements, substituting real generated passwords for its hardcoded local-dev
+ones:
 ```sql
-ALTER ROLE stratum_app WITH PASSWORD '...';
-ALTER ROLE stratum_worker WITH PASSWORD '...';
-ALTER ROLE stratum_webhook WITH PASSWORD '...';
+CREATE ROLE stratum_app LOGIN PASSWORD '...';
+CREATE ROLE stratum_worker LOGIN PASSWORD '...' BYPASSRLS;
+CREATE ROLE stratum_webhook LOGIN PASSWORD '...' BYPASSRLS;
 ```
+If this step is skipped, `make migrate-up` fails immediately and clearly on `000008`'s first
+`GRANT ... TO stratum_app` with `role "stratum_app" does not exist` — run the step above, then
+retry.
 
 **Upgrading an existing deployment**: `POSTGRES_URL` (the app's old single runtime DSN) is
 replaced by three role-scoped DSNs — `POSTGRES_APP_URL`, `POSTGRES_WORKER_URL`,
@@ -49,10 +58,11 @@ replaced by three role-scoped DSNs — `POSTGRES_APP_URL`, `POSTGRES_WORKER_URL`
 if `WEBHOOK_SECRET_ENCRYPTION_KEY` is unset or empty. `POSTGRES_URL` itself is unchanged as
 the admin DSN `make migrate-up` runs against (see `DATABASE_URL ?= $(POSTGRES_URL)` in the
 Makefile) — only the app's own runtime connections moved. Apply in this order:
-1. Run `make migrate-up` against `POSTGRES_URL`, using a role that already holds the
-   database roles/attributes the migrations need — this creates/updates the `stratum_app`,
-   `stratum_worker`, and `stratum_webhook` roles as part of its DDL.
-2. Provision the three roles' passwords (see Password Provisioning above).
+1. Provisioning database roles (above), if not already done for this environment — migrations
+   no longer create the `stratum_app`/`stratum_worker`/`stratum_webhook` roles as part of their
+   DDL, so this step must complete before the next one, not as a side effect of it.
+2. Run `make migrate-up` against `POSTGRES_URL`, using a role that owns the schemas (no longer
+   needs `BYPASSRLS` or `CREATEROLE`).
 3. Set `POSTGRES_APP_URL`, `POSTGRES_WORKER_URL`, `POSTGRES_WEBHOOK_URL`,
    `WEBHOOK_SECRET_ENCRYPTION_KEY`, and `STATS_TOKEN` in the environment for `api` and
    `worker`.
@@ -76,14 +86,29 @@ PostgreSQL is the system of record — back it up per your SLA (define RPO/RTO h
 
 **Degraded readiness** — A 503 from `/health/ready` means a dependency check failed; `/health/stats` shows pool and GC pressure. Check Postgres, Redis, and RabbitMQ reachability. Don't restart infrastructure from inside an automated session — surface it to a human.
 
-**Stuck outbox backlog** — Every domain event is written to `messaging.outbox` in the same transaction as the state change it describes, then delivered to RabbitMQ by a `cmd/worker` relay polling every 2 seconds. Alert on:
+**Stuck outbox backlog** — Every domain event is written to `messaging.outbox` in the same transaction as the state change it describes, then delivered to RabbitMQ by a `cmd/worker` relay polling every 2 seconds. This alert and the next one are two distinct conditions — check `attempts` before concluding which one you're looking at; a row that has exhausted its retries (`attempts >= 20`) is not "delayed", it is abandoned and will never deliver.
+
+*Delivery delayed, nothing lost* — rows still retrying:
 ```sql
-SELECT count(*) FROM messaging.outbox WHERE published_at IS NULL AND created_at < now() - interval '5 minutes';
+SELECT count(*) FROM messaging.outbox WHERE published_at IS NULL AND attempts < 20 AND created_at < now() - interval '5 minutes';
 ```
-A nonzero result means the relay is stuck (worker process down or wedged) or the broker is unreachable — events are durably queued (nothing is lost), but delivery is delayed. Check the worker process is running and can reach RabbitMQ; `attempts`/`last_error` on the oldest unpublished rows show the last failure the relay recorded for them.
+A nonzero result means the relay is stuck (worker process down or wedged) or the broker is unreachable — these events are durably queued and will deliver once the relay recovers. Check the worker process is running and can reach RabbitMQ; `attempts`/`last_error` on the oldest unpublished rows show the last failure the relay recorded for them.
+
+*Events abandoned, manual replay required* — rows that exhausted every retry:
+```sql
+SELECT count(*) FROM messaging.outbox WHERE published_at IS NULL AND attempts >= 20;
+```
+A nonzero result here means these events were **not** delivered and never will be without operator action — the relay gave up on them (a malformed payload, a permanently-unroutable key), logged each one at `ERROR` (`"outbox: row exhausted, ABANDONED — will never be delivered"`), and moved on. Nothing is queued for later delivery. Inspect `last_error` on the affected rows, fix the underlying cause, then replay:
+```sql
+UPDATE messaging.outbox SET attempts = 0, not_before = now() WHERE id = ANY(:ids);
+```
 
 **Rotating the webhook encryption key** — `WEBHOOK_SECRET_ENCRYPTION_KEY` rotation is a
-4-step, operator-driven procedure; do not skip the verification step.
+4-step, operator-driven procedure; do not skip the verification step. Do not roll back the
+application between steps 1 and 3 once the backfill has started — a rollback to the pre-rotation
+release makes every already-rotated row fail to decrypt (`_PREVIOUS` is unset on that release, so
+the `ELSE` branch of the key-selection `CASE` gets an empty passphrase and `pgcrypto` hard-errors).
+Roll forward instead.
 
 1. Set `WEBHOOK_SECRET_ENCRYPTION_KEY_PREVIOUS` to the current (soon-to-be-old) key, bump
    `WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION` by one, set `WEBHOOK_SECRET_ENCRYPTION_KEY` to

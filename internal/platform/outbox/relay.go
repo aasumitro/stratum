@@ -53,7 +53,13 @@ func (r *Relay) RelayBatch(ctx context.Context) {
 		for _, row := range rows {
 			if err := r.pub.Publish(ctx, row.Exchange, row.RoutingKey, row.Payload); err != nil {
 				_ = recordFailure(ctx, tx, row.ID, err)
-				slog.WarnContext(ctx, "outbox: publish failed, will retry", "id", row.ID, "attempts", row.Attempts+1, "error", err)
+				if row.Attempts+1 >= maxAttempts {
+					slog.ErrorContext(ctx, "outbox: row exhausted, ABANDONED — will never be delivered",
+						"id", row.ID, "exchange", row.Exchange, "routing_key", row.RoutingKey,
+						"attempts", row.Attempts+1, "last_error", err)
+				} else {
+					slog.WarnContext(ctx, "outbox: publish failed, will retry", "id", row.ID, "attempts", row.Attempts+1, "error", err)
+				}
 				continue
 			}
 			if err := markPublished(ctx, tx, row.ID); err != nil {

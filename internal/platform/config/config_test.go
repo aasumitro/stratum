@@ -41,6 +41,9 @@ func TestRequireSecretsOutsideDev(t *testing.T) {
 		{"missing xendit cidrs", func(c *config.Config) { c.Xendit.AllowedCIDRs = nil }},
 		{"missing supabase secret", func(c *config.Config) { c.Auth.WebhookSecret = "" }},
 		{"missing stats token", func(c *config.Config) { c.StatsToken = "" }},
+		{"webhook encryption key is still the .env.example placeholder", func(c *config.Config) {
+			c.WebhookSecretEncryptionKey = "CHANGE_ME_generate_with_openssl_rand_base64_32"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base()
