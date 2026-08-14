@@ -96,6 +96,8 @@ func (p *Publisher) openChannel() error {
 	p.ch = ch
 	p.mu.Unlock()
 
+	go p.watchChannelClose(ch)
+
 	return nil
 }
 
@@ -109,6 +111,58 @@ func (p *Publisher) watchReconnect() {
 			// Will retry on the *next* reconnect signal — acceptable
 			// because Connection itself keeps retrying the underlying
 			// TCP connection independently of this loop.
+		}
+	}
+}
+
+// watchChannelClose watches ch for a broker-initiated close and reopens it with backoff.
+// This is a channel-level failure (the connection stays up but the broker closes this one
+// channel, e.g. on a protocol violation) — distinct from watchReconnect's connection-level
+// failure. A graceful close (Close() called intentionally, so the notify channel closes
+// with no error) does not trigger a reopen.
+func (p *Publisher) watchChannelClose(ch *amqp.Channel) {
+	notify := ch.NotifyClose(make(chan *amqp.Error, 1))
+	err, ok := <-notify
+	if !ok || err == nil {
+		return
+	}
+	p.reopenWithBackoff(ch)
+}
+
+// reopenWithBackoff replaces dead with a freshly opened channel, retrying with capped
+// exponential backoff until it succeeds or dead is no longer the publisher's current
+// channel — meaning watchReconnect, or an earlier winning iteration of this same loop,
+// already replaced it, in which case this loop stands down rather than fighting it. The
+// identity check runs before every attempt (including the first), not once at entry, which
+// is what lets it stand down cleanly mid-retry instead of two loops racing to install a
+// channel. Retry is unbounded: this loop retries a single shared connection-level resource
+// with no per-attempt accumulation cost, unlike the outbox's persisted-row backoff, so
+// there is no equivalent of maxAttempts to cap it against — a broker that stays down keeps
+// this loop backing off (capped at maxBackoff) rather than giving up permanently.
+func (p *Publisher) reopenWithBackoff(dead *amqp.Channel) {
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+
+	for {
+		p.mu.RLock()
+		current := p.ch
+		p.mu.RUnlock()
+		if current != dead {
+			return
+		}
+
+		err := p.openChannel()
+		if err == nil {
+			// openChannel already assigned p.ch and spawned that channel's own
+			// watchChannelClose — nothing left to do.
+			return
+		}
+		p.logger.Warn("failed to reopen publisher channel after channel-level close, retrying", "error", err, "backoff", backoff)
+
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
 		}
 	}
 }

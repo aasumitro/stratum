@@ -37,7 +37,8 @@ type Config struct {
 	// and letting a spoofed header evade per-IP rate limiting).
 	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
 
-	AuditRetentionDays int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
+	AuditRetentionDays  int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
+	OutboxRetentionDays int `env:"OUTBOX_RETENTION_DAYS" envDefault:"30"`
 
 	// StatsToken gates GET /health/stats (goroutine/heap/pool internals —
 	// a reconnaissance surface if reachable from the public internet).
@@ -59,7 +60,16 @@ type Config struct {
 	// the inbound webhook secrets below, an empty value has no safe meaning here — there's no
 	// legitimate "skip encryption" mode — so this is required in every environment, including
 	// development, not gated behind RequireSecretsOutsideDev like STRIPE_WEBHOOK_SECRET etc.
-	WebhookSecretEncryptionKey string `env:"WEBHOOK_SECRET_ENCRYPTION_KEY,required"`
+	WebhookSecretEncryptionKey string `env:"WEBHOOK_SECRET_ENCRYPTION_KEY,required,notEmpty"`
+	// WebhookSecretEncryptionKeyPrevious is the prior pgcrypto passphrase, set
+	// alongside WebhookSecretEncryptionKeyVersion only while a key rotation is
+	// in progress. Empty (the default) means no rotation is in progress — unlike
+	// WebhookSecretEncryptionKey, an empty value here is a legitimate steady
+	// state, so this field is NOT tagged notEmpty.
+	WebhookSecretEncryptionKeyPrevious string `env:"WEBHOOK_SECRET_ENCRYPTION_KEY_PREVIOUS"`
+	// WebhookSecretEncryptionKeyVersion is the version number an operator bumps
+	// by hand alongside setting WebhookSecretEncryptionKeyPrevious when rotating.
+	WebhookSecretEncryptionKeyVersion int `env:"WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION" envDefault:"1"`
 
 	Postgres PostgresConfig
 	Redis    RedisConfig
@@ -102,12 +112,20 @@ type RabbitMQConfig struct {
 // (Supabase or Clerk). JWKSURL is the only required field — we verify
 // tokens via their published JSON Web Key Set rather than a shared secret.
 type AuthConfig struct {
-	JWKSURL        string `env:"AUTH_JWKS_URL,required"`
-	Issuer         string `env:"AUTH_ISSUER,required"`
-	Audience       string `env:"AUTH_AUDIENCE"`
-	AdminURL       string `env:"AUTH_ADMIN_URL"`          // e.g. https://xxx.supabase.co/auth/v1
-	ServiceRoleKey string `env:"AUTH_SERVICE_ROLE_KEY"`   // Supabase service_role key
-	WebhookSecret  string `env:"SUPABASE_WEBHOOK_SECRET"` // shared secret header for the auth.users Database Webhook; empty = skip verification
+	JWKSURL  string `env:"AUTH_JWKS_URL,required"`
+	Issuer   string `env:"AUTH_ISSUER,required"`
+	Audience string `env:"AUTH_AUDIENCE"`
+	AdminURL string `env:"AUTH_ADMIN_URL"` // e.g. https://xxx.supabase.co/auth/v1
+
+	// AccessTokenMaxTTL is the maximum lifetime a Supabase-issued access token
+	// can have in this deployment — must match or exceed the Supabase project's
+	// configured JWT expiry. Used by account.revokeAllSessions to size the
+	// per-user revocation epoch's TTL, since that epoch must outlive every
+	// access token that could still be valid when it's written, not just the
+	// token that triggered the revocation (see docs/02-getting-started.md).
+	AccessTokenMaxTTL time.Duration `env:"AUTH_ACCESS_TOKEN_MAX_TTL" envDefault:"1h"`
+	ServiceRoleKey    string        `env:"AUTH_SERVICE_ROLE_KEY"`   // Supabase service_role key
+	WebhookSecret     string        `env:"SUPABASE_WEBHOOK_SECRET"` // shared secret header for the auth.users Database Webhook; empty = skip verification
 }
 
 type LogConfig struct {

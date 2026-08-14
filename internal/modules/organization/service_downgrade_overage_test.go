@@ -195,7 +195,7 @@ func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
 	})
-	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey)
+	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
 
 	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache(t *testing.T
 
 	orgID := setupOrgWithMembers(t, pool, "test-downgrade-cache")
 	inv := &fakeCacheInvalidator{}
-	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey)
+	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
 	mod.SetCacheInvalidator(inv)
 
 	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)

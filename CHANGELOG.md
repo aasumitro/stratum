@@ -6,6 +6,24 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `OUTBOX_RETENTION_DAYS` (optional, default `30`): hourly sweep deletes published
+  `messaging.outbox` rows older than this many days; unpublished rows are never touched
+- `WEBHOOK_SECRET_ENCRYPTION_KEY_PREVIOUS`/`WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION`
+  (optional): support a zero-downtime `WEBHOOK_SECRET_ENCRYPTION_KEY` rotation — see
+  "Rotating the webhook encryption key" in `docs/12-operations.md`
+- `AUTH_ACCESS_TOKEN_MAX_TTL` (optional, default `1h`): the maximum lifetime a
+  Supabase-issued access token can have in this deployment; used to size the session
+  revocation epoch's TTL
+
+### Changed
+
+- `POSTGRES_URL` is replaced by `POSTGRES_APP_URL`/`POSTGRES_WORKER_URL`/`POSTGRES_WEBHOOK_URL`
+  for the app's own runtime connections; `WEBHOOK_SECRET_ENCRYPTION_KEY` and `STATS_TOKEN`
+  are now required outside development. See "Upgrading an existing deployment" in
+  `docs/12-operations.md` for the required order.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added

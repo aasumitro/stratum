@@ -66,9 +66,9 @@ func NewAPIModules(
 		return nil, fmt.Errorf("setting up geoip: %w", err)
 	}
 
-	organizationMod := organization.New(infra.Pool, infra.MQPublisher, cfg.WebhookSecretEncryptionKey)
+	organizationMod := organization.New(infra.Pool, infra.MQPublisher, cfg.WebhookSecretEncryptionKey, cfg.WebhookSecretEncryptionKeyPrevious, cfg.WebhookSecretEncryptionKeyVersion)
 	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
-		cfg.Auth.ServiceRoleKey, accountNS, storageClient, cfg.Auth.WebhookSecret)
+		cfg.Auth.ServiceRoleKey, accountNS, storageClient, cfg.Auth.WebhookSecret, cfg.Auth.AccessTokenMaxTTL)
 	if cfg.Storage.URL != "" && !accountMod.HasStorage() {
 		slog.Warn("account module: storage configured but client not wired; GDPR avatar deletion will no-op")
 	}

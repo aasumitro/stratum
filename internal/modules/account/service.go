@@ -26,13 +26,14 @@ import (
 )
 
 type service struct {
-	repo           *repository
-	pool           *pgxpool.Pool
-	pub            messaging.EventPublisher
-	adminURL       string // Supabase auth/v1 admin base URL
-	serviceRoleKey string // Supabase service_role key
-	revokedNS      *cache.Namespace
-	store          *storage.Client
+	repo              *repository
+	pool              *pgxpool.Pool
+	pub               messaging.EventPublisher
+	adminURL          string // Supabase auth/v1 admin base URL
+	serviceRoleKey    string // Supabase service_role key
+	revokedNS         *cache.Namespace
+	store             *storage.Client
+	maxAccessTokenTTL time.Duration
 
 	// Cross-schema writers for the GDPR delete-account flow — nil-safe,
 	// wired via Set* after construction like every other optional dependency.
@@ -534,7 +535,7 @@ func (s *service) revokeAllSessions(ctx context.Context, authSub, sessionID stri
 	if err := s.revokedNS.Set(ctx, "revoked_tokens:"+sessionID, 1, ttl); err != nil {
 		return apperr.Internal("REVOKE_FAILED", "failed to revoke sessions", err)
 	}
-	if err := s.revokedNS.Set(ctx, "revoked_before:"+authSub, time.Now().Unix(), ttl); err != nil {
+	if err := s.revokedNS.Set(ctx, "revoked_before:"+authSub, time.Now().Unix(), s.maxAccessTokenTTL); err != nil {
 		return apperr.Internal("REVOKE_FAILED", "failed to revoke sessions", err)
 	}
 	return nil

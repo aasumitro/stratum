@@ -53,6 +53,35 @@ func (p *fakePublisher) PublishDelayed(_ context.Context, _, _ string, _ []byte,
 	return nil
 }
 
+// selectiveFailPublisher fails Publish only for routing keys in failRoutingKeys and
+// records every other publish — used to prove a poison row's repeated failure does not
+// block a healthy row claimed in the same batch.
+type selectiveFailPublisher struct {
+	mu              sync.Mutex
+	failRoutingKeys map[string]bool
+	delivered       []string // "exchange/routingKey"
+}
+
+func (p *selectiveFailPublisher) Publish(_ context.Context, exchange, routingKey string, _ []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failRoutingKeys[routingKey] {
+		return context.DeadlineExceeded
+	}
+	p.delivered = append(p.delivered, exchange+"/"+routingKey)
+	return nil
+}
+
+func (p *selectiveFailPublisher) has(entry string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Contains(p.delivered, entry)
+}
+
+func (p *selectiveFailPublisher) PublishDelayed(_ context.Context, _, _ string, _ []byte, _ time.Duration) error {
+	return nil
+}
+
 func seedOutboxRow(t *testing.T, pool *pgxpool.Pool, routingKey string, notBefore time.Time, publishedAt *time.Time) {
 	t.Helper()
 	id := uuid.Must(uuid.NewV7()).String()
@@ -63,6 +92,25 @@ func seedOutboxRow(t *testing.T, pool *pgxpool.Pool, routingKey string, notBefor
 	)
 	if err != nil {
 		t.Fatalf("seed outbox row %s: %v", routingKey, err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE id = $1`, id)
+	})
+}
+
+// seedOutboxRowAtAttempts inserts a row that is immediately due (not_before defaults to
+// now()) with attempts pre-set to the given value, so a test can put a row one failure
+// short of maxAttempts without driving real backoff through every prior attempt.
+func seedOutboxRowAtAttempts(t *testing.T, pool *pgxpool.Pool, routingKey string, attempts int) {
+	t.Helper()
+	id := uuid.Must(uuid.NewV7()).String()
+	_, err := pool.Exec(t.Context(), `
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload, attempts)
+		VALUES ($1, 'test.exchange', $2, '{}', $3)`,
+		id, routingKey, attempts,
+	)
+	if err != nil {
+		t.Fatalf("seed outbox row %s at attempts=%d: %v", routingKey, attempts, err)
 	}
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE id = $1`, id)
@@ -177,5 +225,48 @@ func TestIntegration_RelayBatch_PublishFailure_RecordsAttemptAndRetries(t *testi
 	}
 	if lastError == nil || *lastError == "" {
 		t.Error("last_error is empty, want the publish error recorded")
+	}
+}
+
+// TestIntegration_RelayBatch_PoisonRowExhaustsAttempts_HealthyRowStillPublishes is the
+// regression test for F-01: before claimUnpublished excluded exhausted rows, a row that
+// could never publish was reclaimed forever. This seeds one row one failure short of the
+// cap and one healthy row, and proves the poison row is claimed exactly once more
+// (crossing the cap, never again), while the healthy row publishes regardless.
+func TestIntegration_RelayBatch_PoisonRowExhaustsAttempts_HealthyRowStillPublishes(t *testing.T) {
+	const maxAttempts = 20 // must match outbox.maxAttempts (relay.go) — unexported, duplicated here
+	pool := testPool(t)
+
+	seedOutboxRowAtAttempts(t, pool, "test.poison", maxAttempts-1)
+	seedOutboxRow(t, pool, "test.healthy-behind-poison", time.Now().Add(-time.Minute), nil)
+
+	pub := &selectiveFailPublisher{failRoutingKeys: map[string]bool{"test.poison": true}}
+	relay := outbox.NewRelay(pool, pub)
+
+	var poisonAttempts int
+	var poisonPublishedAt *time.Time
+	drainUntil(t, relay, func() bool {
+		pool.QueryRow(context.Background(),
+			`SELECT attempts, published_at FROM messaging.outbox WHERE routing_key = 'test.poison'`,
+		).Scan(&poisonAttempts, &poisonPublishedAt)
+		return pub.has("test.exchange/test.healthy-behind-poison") && poisonAttempts >= maxAttempts
+	})
+
+	if poisonPublishedAt != nil {
+		t.Error("poison row got published_at set despite the publisher always failing it")
+	}
+	if poisonAttempts != maxAttempts {
+		t.Errorf("attempts = %d, want exactly %d (attempts < maxAttempts excludes it from every claim past the cap, so it can never be incremented beyond it)", poisonAttempts, maxAttempts)
+	}
+
+	relay.RelayBatch(context.Background())
+	var poisonAttemptsAfter int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT attempts FROM messaging.outbox WHERE routing_key = 'test.poison'`,
+	).Scan(&poisonAttemptsAfter); err != nil {
+		t.Fatalf("query poison row after extra cycle: %v", err)
+	}
+	if poisonAttemptsAfter != poisonAttempts {
+		t.Errorf("attempts changed from %d to %d after an extra RelayBatch — poison row is still being reclaimed past the cap", poisonAttempts, poisonAttemptsAfter)
 	}
 }

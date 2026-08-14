@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,15 +33,17 @@ func New(
 	revokedNS *cache.Namespace,
 	store *storage.Client,
 	webhookSecret string,
+	maxAccessTokenTTL time.Duration,
 ) *Module {
 	svc := &service{
-		repo:           &repository{},
-		pool:           pool,
-		pub:            pub,
-		adminURL:       adminURL,
-		serviceRoleKey: serviceRoleKey,
-		revokedNS:      revokedNS,
-		store:          store,
+		repo:              &repository{},
+		pool:              pool,
+		pub:               pub,
+		adminURL:          adminURL,
+		serviceRoleKey:    serviceRoleKey,
+		revokedNS:         revokedNS,
+		store:             store,
+		maxAccessTokenTTL: maxAccessTokenTTL,
 	}
 	return &Module{svc: svc, Worker: &Worker{svc: svc}, webhookSecret: webhookSecret}
 }

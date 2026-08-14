@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Row is one claimed messaging.outbox record — just enough for the relay to
@@ -65,15 +66,15 @@ func EnqueueDelayed(ctx context.Context, q db.Querier, id, exchange, routingKey 
 // by them. Held for the whole claim-to-mark window, they're what let
 // cmd/worker scale to more than one replica without both claiming the same
 // row.
-func claimUnpublished(ctx context.Context, q db.Querier, limit int) ([]Row, error) {
+func claimUnpublished(ctx context.Context, q db.Querier, limit, maxAttempts int) ([]Row, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id, exchange, routing_key, payload, attempts
 		FROM messaging.outbox
-		WHERE published_at IS NULL AND not_before <= now()
+		WHERE published_at IS NULL AND not_before <= now() AND attempts < $2
 		ORDER BY created_at
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED`,
-		limit,
+		limit, maxAttempts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("outbox.claimUnpublished: %w", err)
@@ -105,14 +106,36 @@ func markPublished(ctx context.Context, q db.Querier, id string) error {
 
 // recordFailure increments attempts and records the error for operator
 // visibility. published_at stays NULL, so the row is picked up again by the
-// next RelayBatch run.
+// next RelayBatch run. not_before is pushed forward by an exponential
+// backoff proportional to attempts, capped at the least(attempts, 10) exponent.
 func recordFailure(ctx context.Context, q db.Querier, id string, publishErr error) error {
 	_, err := q.Exec(ctx, `
-		UPDATE messaging.outbox SET attempts = attempts + 1, last_error = $2 WHERE id = $1`,
+		UPDATE messaging.outbox
+		SET attempts = attempts + 1,
+		    last_error = $2,
+		    not_before = now() + (interval '2 seconds' * power(2, least(attempts, 10)))
+		WHERE id = $1`,
 		id, publishErr.Error(),
 	)
 	if err != nil {
 		return fmt.Errorf("outbox.recordFailure: %w", err)
+	}
+	return nil
+}
+
+// Sweep permanently deletes published messaging.outbox rows older than
+// retentionDays, computed as time.Now().AddDate(0, 0, -retentionDays) —
+// matching audit.Writer.cleanup's cutoff shape, not a SQL-side interval.
+// Unpublished rows (still in flight, or exhausted past maxAttempts) are
+// never touched by this query regardless of age.
+func Sweep(ctx context.Context, pool *pgxpool.Pool, retentionDays int) error {
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	_, err := pool.Exec(ctx,
+		`DELETE FROM messaging.outbox WHERE published_at IS NOT NULL AND published_at < $1`,
+		cutoff,
+	)
+	if err != nil {
+		return fmt.Errorf("outbox.Sweep: %w", err)
 	}
 	return nil
 }

@@ -30,12 +30,13 @@ ALTER TABLE billing.payments NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE billing.invoices NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE billing.subscriptions NO FORCE ROW LEVEL SECURITY;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE stratum IN SCHEMA ref, organization, account, billing, notification, audit
-REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM stratum_app, stratum_worker;
+ALTER DEFAULT PRIVILEGES FOR ROLE stratum IN SCHEMA ref, organization, account, billing, notification, audit, messaging
+REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM stratum_app, stratum_worker, stratum_webhook;
 
-REVOKE ALL ON ALL TABLES IN SCHEMA ref, organization, account, billing, notification, audit FROM stratum_app, stratum_worker;
-REVOKE USAGE ON SCHEMA ref, organization, account, billing, notification, audit FROM stratum_app, stratum_worker;
-REVOKE CONNECT ON DATABASE stratum FROM stratum_app, stratum_worker;
+REVOKE ALL ON ALL TABLES IN SCHEMA ref, organization, account, billing, notification, audit, messaging FROM stratum_app, stratum_worker, stratum_webhook;
+REVOKE USAGE ON SCHEMA ref, organization, account, billing, notification, audit, messaging FROM stratum_app, stratum_worker, stratum_webhook;
+REVOKE CONNECT ON DATABASE stratum FROM stratum_app, stratum_worker, stratum_webhook;
 
 DROP ROLE IF EXISTS stratum_app;
 DROP ROLE IF EXISTS stratum_worker;
+DROP ROLE IF EXISTS stratum_webhook;

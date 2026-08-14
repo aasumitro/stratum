@@ -12,10 +12,3 @@ CREATE TABLE messaging.outbox (
     last_error   TEXT
 );
 CREATE INDEX idx_outbox_unpublished ON messaging.outbox (not_before) WHERE published_at IS NULL;
-
--- messaging is a new schema, unlike 000007_runtime_role's cross-schema DDL
--- against schemas that already had these grants — without this, both
--- stratum_app (API) and stratum_worker (worker) get "permission denied for
--- table outbox" on their very first events.Enqueue call.
-GRANT USAGE ON SCHEMA messaging TO stratum_app, stratum_worker;
-GRANT SELECT, INSERT, UPDATE, DELETE ON messaging.outbox TO stratum_app, stratum_worker;

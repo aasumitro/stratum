@@ -6,15 +6,18 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'stratum_worker') THEN
         CREATE ROLE stratum_worker LOGIN NOINHERIT BYPASSRLS;
     END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'stratum_webhook') THEN
+        CREATE ROLE stratum_webhook LOGIN NOINHERIT BYPASSRLS;
+    END IF;
 END
 $$;
 
-GRANT CONNECT ON DATABASE stratum TO stratum_app, stratum_worker;
-GRANT USAGE ON SCHEMA ref, organization, account, billing, notification, audit TO stratum_app, stratum_worker;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ref, organization, account, billing, notification, audit TO stratum_app, stratum_worker;
+GRANT CONNECT ON DATABASE stratum TO stratum_app, stratum_worker, stratum_webhook;
+GRANT USAGE ON SCHEMA ref, organization, account, billing, notification, audit, messaging TO stratum_app, stratum_worker, stratum_webhook;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ref, organization, account, billing, notification, audit, messaging TO stratum_app, stratum_worker, stratum_webhook;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE stratum IN SCHEMA ref, organization, account, billing, notification, audit
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO stratum_app, stratum_worker;
+ALTER DEFAULT PRIVILEGES FOR ROLE stratum IN SCHEMA ref, organization, account, billing, notification, audit, messaging
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO stratum_app, stratum_worker, stratum_webhook;
 
 ALTER TABLE billing.subscriptions FORCE ROW LEVEL SECURITY;
 ALTER TABLE billing.invoices FORCE ROW LEVEL SECURITY;

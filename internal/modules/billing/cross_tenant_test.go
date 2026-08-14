@@ -45,7 +45,7 @@ const testWebhookEncryptionKey = "test-webhook-secret-encryption-key-0000"
 // RateLimit/Idempotency/MFA stay no-ops.
 func newBillingCrossTenantEngine(pool *pgxpool.Pool, authSub string) (*gin.Engine, *billing.Module) {
 	gin.SetMode(gin.TestMode)
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey)
+	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
 	billingMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, nil)
 	e := gin.New()
 	authMW := func(c *gin.Context) {

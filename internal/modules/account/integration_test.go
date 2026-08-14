@@ -810,3 +810,54 @@ func TestIntegration_RevokeAllSessions_IsRevoked(t *testing.T) {
 		t.Error("token C (future iat) should not be revoked")
 	}
 }
+
+func TestIntegration_RevokeAllSessions_EpochTTLUsesMaxAccessTokenTTL(t *testing.T) {
+	pool := testPool(t)
+	redisCli := testRedisAccount(t)
+	const authSub = "integ_revokeall_epochttl"
+	const sessionID = "sess-123"
+
+	// Clean up any lingering state from previous runs
+	redisCli.Del(t.Context(), "account_test:revoked_tokens:"+sessionID)
+	redisCli.Del(t.Context(), "account_test:revoked_before:"+authSub)
+
+	t.Cleanup(func() {
+		redisCli.Del(t.Context(), "account_test:revoked_tokens:"+sessionID)
+		redisCli.Del(t.Context(), "account_test:revoked_before:"+authSub)
+	})
+
+	// Construct engine with Redis so the endpoint can write to it
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{
+			Subject: authSub,
+			Raw: jwtgo.MapClaims{
+				"email":      authSub + "@test.local",
+				"session_id": sessionID,
+				"exp":        float64(time.Now().Add(2 * time.Minute).Unix()),
+			},
+		})
+		c.Next()
+	})
+	noopGate := func(c *gin.Context) { c.Next() }
+	mod := account.NewModuleForTestWithAdminAndRedis(pool, "http://localhost", "dummy", redisCli)
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: noopGate, RateLimit: noopGate, MFA: noopGate})
+
+	// Call the real revoke endpoint via the engine.
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/me/sessions/revoke-all", ""))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("revoke-all: want 204, got %d: %s", w.Code, w.Body)
+	}
+
+	epochTTL := redisCli.TTL(t.Context(), "account_test:revoked_before:"+authSub).Val()
+	if epochTTL <= 10*time.Minute {
+		t.Errorf("expected epoch TTL > 10m, got %v", epochTTL)
+	}
+
+	sessionTTL := redisCli.TTL(t.Context(), "account_test:revoked_tokens:"+sessionID).Val()
+	if sessionTTL > 2*time.Minute+5*time.Second {
+		t.Errorf("expected session TTL <= 2m5s, got %v", sessionTTL)
+	}
+}

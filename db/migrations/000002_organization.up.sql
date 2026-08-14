@@ -76,6 +76,7 @@ CREATE TABLE organization.webhook_endpoints (
     url                        TEXT        NOT NULL,
     secret_encrypted           BYTEA       NOT NULL,
     secret_encrypted_previous  BYTEA,
+    key_version                SMALLINT    NOT NULL DEFAULT 1,
     secret_rotation_expires_at TIMESTAMPTZ,
     subscribed_events          TEXT[],
     enabled                    BOOLEAN     NOT NULL DEFAULT true,

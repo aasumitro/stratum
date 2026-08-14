@@ -28,13 +28,13 @@ type Module struct {
 	Worker          *WebhookWorker
 }
 
-func New(pool *pgxpool.Pool, pub messaging.EventPublisher, secretEncryptionKey string) *Module {
+func New(pool *pgxpool.Pool, pub messaging.EventPublisher, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
 	repo := &repository{}
-	svc := &service{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey}
+	svc := &service{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
 	return &Module{
 		svc:    svc,
 		pool:   pool,
-		Worker: &WebhookWorker{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, log: slog.Default()},
+		Worker: &WebhookWorker{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
 	}
 }
 

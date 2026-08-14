@@ -88,7 +88,7 @@ func (s *service) createWebhookEndpoint(
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.createWebhookEndpoint: %w", err)
 	}
-	rec, err = s.repo.insertWebhookEndpoint(ctx, s.pool, organizationID, url, secret, subscribedEvents, s.secretEncryptionKey)
+	rec, err = s.repo.insertWebhookEndpoint(ctx, s.pool, organizationID, url, secret, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.createWebhookEndpoint: %w", err)
 	}
@@ -96,7 +96,7 @@ func (s *service) createWebhookEndpoint(
 }
 
 func (s *service) listWebhookEndpoints(ctx context.Context, organizationID string) ([]webhookEndpointRecord, error) {
-	recs, err := s.repo.listWebhookEndpoints(ctx, s.pool, organizationID, s.secretEncryptionKey)
+	recs, err := s.repo.listWebhookEndpoints(ctx, s.pool, organizationID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, apperr.Internal("WEBHOOK_LIST_FAILED", "failed to list webhooks", err)
 	}
@@ -128,7 +128,7 @@ func (s *service) updateWebhookEndpoint(
 		return nil, fmt.Errorf("%w: %s", ErrWebhookURLNotAllowed, err)
 	}
 	if enabled {
-		ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, id, s.secretEncryptionKey)
+		ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, id, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 		if err != nil {
 			return nil, fmt.Errorf("organization.updateWebhookEndpoint: %w", err)
 		}
@@ -138,7 +138,7 @@ func (s *service) updateWebhookEndpoint(
 			return nil, ErrWebhookRotationTestRequired
 		}
 	}
-	return s.repo.updateWebhookEndpoint(ctx, s.pool, organizationID, id, url, enabled, subscribedEvents, s.secretEncryptionKey)
+	return s.repo.updateWebhookEndpoint(ctx, s.pool, organizationID, id, url, enabled, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 }
 
 // rotateWebhookSecret issues a fresh secret, keeping the old one valid for a
@@ -162,7 +162,7 @@ func (s *service) rotateWebhookSecret(
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.rotateWebhookSecret: %w", err)
 	}
-	rec, err = s.repo.rotateWebhookSecret(ctx, s.pool, organizationID, id, newSecret, time.Now().Add(24*time.Hour), s.secretEncryptionKey)
+	rec, err = s.repo.rotateWebhookSecret(ctx, s.pool, organizationID, id, newSecret, time.Now().Add(24*time.Hour), s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.rotateWebhookSecret: %w", err)
 	}
@@ -204,7 +204,7 @@ func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webh
 		}
 	}()
 
-	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKey)
+	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return fmt.Errorf("organization.retryWebhookDelivery: endpoint: %w", err)
 	}
@@ -245,7 +245,7 @@ func (s *service) retryAllFailedWebhookDeliveries(
 		}
 	}()
 
-	if _, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKey); err != nil {
+	if _, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious); err != nil {
 		return 0, fmt.Errorf("organization.retryAllFailedWebhookDeliveries: endpoint: %w", err)
 	}
 	dels, err := s.repo.listFailedWebhookDeliveries(ctx, s.pool, webhookID)
@@ -295,7 +295,7 @@ func (s *service) sendTestEvent(
 		err = apperr.Internal("WEBHOOK_TEST_FAILED", "failed to send test event", err)
 	}()
 
-	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKey)
+	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, false, fmt.Errorf("organization.sendTestEvent: %w", err)
 	}

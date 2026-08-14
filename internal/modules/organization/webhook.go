@@ -46,12 +46,14 @@ const (
 // only other worker-side event consumer. Both need the same
 // repo/pool/log; store is used only by the latter.
 type WebhookWorker struct {
-	repo                *repository
-	pool                *pgxpool.Pool
-	pub                 messaging.EventPublisher
-	log                 *slog.Logger
-	store               *storage.Client
-	secretEncryptionKey string // pgcrypto symmetric key for webhook secret columns, set once at construction
+	repo                        *repository
+	pool                        *pgxpool.Pool
+	pub                         messaging.EventPublisher
+	log                         *slog.Logger
+	store                       *storage.Client
+	secretEncryptionKey         string // pgcrypto symmetric key for webhook secret columns, set once at construction
+	secretEncryptionKeyPrevious string // prior pgcrypto passphrase during a key rotation; empty = no rotation in progress
+	secretEncryptionKeyVersion  int    // version stamped on organization.webhook_endpoints.key_version for newly written/rotated rows
 }
 
 // HandleOutboundEvent receives any billing or organization event envelope and fans
@@ -67,7 +69,7 @@ func (w *WebhookWorker) HandleOutboundEvent(ctx context.Context, body []byte) er
 		return nil
 	}
 
-	endpoints, err := w.repo.listEnabledWebhookEndpointsForEvent(ctx, w.pool, env.OrgID, env.Type, w.secretEncryptionKey)
+	endpoints, err := w.repo.listEnabledWebhookEndpointsForEvent(ctx, w.pool, env.OrgID, env.Type, w.secretEncryptionKeyVersion, w.secretEncryptionKey, w.secretEncryptionKeyPrevious)
 	if err != nil {
 		return fmt.Errorf("webhook: list endpoints: %w", err)
 	}
@@ -99,7 +101,7 @@ func (w *WebhookWorker) HandleWebhookRetry(ctx context.Context, body []byte) err
 		return nil // don't re-queue a bad envelope
 	}
 
-	ep, err := w.repo.findWebhookEndpoint(ctx, w.pool, evt.OrganizationID, evt.EndpointID, w.secretEncryptionKey)
+	ep, err := w.repo.findWebhookEndpoint(ctx, w.pool, evt.OrganizationID, evt.EndpointID, w.secretEncryptionKeyVersion, w.secretEncryptionKey, w.secretEncryptionKeyPrevious)
 	if err != nil {
 		return fmt.Errorf("webhook retry: find endpoint: %w", err)
 	}

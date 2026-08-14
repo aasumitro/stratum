@@ -11,6 +11,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/app/bootstrap"
 	"github.com/aasumitro/stratum/internal/platform/config"
+	"github.com/aasumitro/stratum/internal/platform/outbox"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -90,6 +91,25 @@ func RunWorker() error {
 				return
 			case <-ticker.C:
 				mods.OutboxRelay.RelayBatch(ctx)
+			}
+		}
+	})
+
+	// Hourly retention sweep: deletes published messaging.outbox rows past
+	// OUTBOX_RETENTION_DAYS. Never touches unpublished rows, so a stuck or
+	// exhausted row stays visible to the "Stuck outbox backlog" runbook
+	// query for as long as it remains unpublished.
+	wg.Go(func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := outbox.Sweep(ctx, infra.Pool, cfg.OutboxRetentionDays); err != nil {
+					infra.Log.Warn("outbox retention sweep failed", "error", err)
+				}
 			}
 		}
 	})

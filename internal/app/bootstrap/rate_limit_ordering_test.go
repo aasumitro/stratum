@@ -2,7 +2,9 @@ package bootstrap_test
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,7 +67,7 @@ func TestNonMember_RateLimitHeaderNeverLeaksOrgTier(t *testing.T) {
 	// Real modules, built from their exported constructors only — this
 	// package (bootstrap) is the one place both are meant to be wired
 	// together, matching NewAPIModules in production.
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey)
+	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
 	billingMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{},
 		nil, nil, nil)
 
@@ -133,5 +135,64 @@ func TestNonMember_RateLimitHeaderNeverLeaksOrgTier(t *testing.T) {
 				t.Errorf("X-RateLimit-Limit must be absent on a non-member's 403 (Org must run before RateLimit), got %q", hdr)
 			}
 		})
+	}
+}
+
+func TestWebhookRateLimit_Ceiling(t *testing.T) {
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("TEST_REDIS_URL required")
+	}
+
+	redisClient, err := cache.NewClient(t.Context(), config.RedisConfig{URL: redisURL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = redisClient.Close() })
+
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	ip1 := fmt.Sprintf("%d.%d.%d.%d", b[0], b[1], b[2], b[3])
+	ip2 := fmt.Sprintf("%d.%d.%d.%d", b[4], b[5], b[6], b[7])
+
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+
+	// Mimic the NewAPIRouter webhook setup
+	// We use 10 to keep the test fast, verifying the middleware enforces
+	// whatever ceiling we give it without doing 6000 real HTTP round trips.
+	webhookRateMW := middleware.NewRateLimitMiddleware(
+		cache.NewRateLimiter(redisClient, "webhooks"),
+		middleware.ByClientIP,
+		cache.PerMinute(10),
+	)
+
+	webhooks := e.Group("/webhooks")
+	webhooks.Use(webhookRateMW)
+	webhooks.POST("/dummy", func(c *gin.Context) { c.Status(200) })
+
+	fire := func(ip string) int {
+		req := httpserver.JSONTestRequest(http.MethodPost, "/webhooks/dummy", "")
+		req.RemoteAddr = ip + ":1234"
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// Burn 10 requests from IP 1
+	for i := range 10 {
+		if code := fire(ip1); code != 200 {
+			t.Fatalf("request %d failed early: got %d, want 200", i, code)
+		}
+	}
+
+	// Request 11 from IP 1 should 429
+	if code := fire(ip1); code != http.StatusTooManyRequests {
+		t.Errorf("request 11 from IP 1: got %d, want 429", code)
+	}
+
+	// Request 1 from IP 2 should succeed (limit is per-IP)
+	if code := fire(ip2); code != 200 {
+		t.Errorf("request 1 from IP 2: got %d, want 200", code)
 	}
 }

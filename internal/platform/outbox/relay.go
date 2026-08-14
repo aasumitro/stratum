@@ -15,6 +15,12 @@ import (
 // unbounded batch.
 const batchSize = 100
 
+// maxAttempts is the ceiling on outbox row delivery attempts: claimUnpublished
+// excludes rows at or beyond this count, so a row that can never publish (a
+// malformed payload, a permanently-unroutable key) stops competing for claim
+// slots against every other due row instead of stalling the relay.
+const maxAttempts = 20
+
 // Relay delivers due, unpublished messaging.outbox rows to the broker. One
 // Relay is constructed per cmd/worker process and driven by a ticker (see
 // internal/app/worker.go's RunWorker).
@@ -40,7 +46,7 @@ func NewRelay(pool *pgxpool.Pool, pub messaging.EventPublisher) *Relay {
 // RelayBatch is driven by a ticker with no caller to propagate a failure to.
 func (r *Relay) RelayBatch(ctx context.Context) {
 	err := db.WithTx(ctx, r.pool, func(tx db.Querier) error {
-		rows, err := claimUnpublished(ctx, tx, batchSize)
+		rows, err := claimUnpublished(ctx, tx, batchSize, maxAttempts)
 		if err != nil {
 			return err
 		}
