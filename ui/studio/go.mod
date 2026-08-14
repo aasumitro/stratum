@@ -1,13 +1,13 @@
 module github.com/aasumitro/stratum/studio
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/rabbitmq/amqp091-go v1.13.0
-	github.com/wailsapp/wails/v3 v3.0.0-beta.6
+	github.com/wailsapp/wails/v3 v3.0.0-beta.8
 	github.com/zalando/go-keyring v0.2.8
 	modernc.org/sqlite v1.56.0
 )
