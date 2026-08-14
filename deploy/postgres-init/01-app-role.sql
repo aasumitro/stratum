@@ -7,6 +7,8 @@
 --   3. Staging/production — copy-pasted by an operator with a superuser-equivalent connection,
 --      substituting real generated passwords for the hardcoded local-dev ones below. See
 --      docs/12-operations.md's "Provisioning database roles" runbook.
+-- 02-test-role.sql (same directory) is a separate, test-only concern — never part of a real
+-- deployment — kept in its own numbered file rather than folded in here for exactly that reason.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'stratum_app') THEN

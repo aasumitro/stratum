@@ -9,12 +9,24 @@
 -- it creates, so creating stratum_worker/stratum_webhook here would force the migrator itself to
 -- hold that same elevated privilege.
 
-GRANT CONNECT ON DATABASE stratum TO stratum_app, stratum_worker, stratum_webhook;
+-- current_database() and current_user, not the literal "stratum": PostgreSQL can't parameterise
+-- an identifier in plain DDL, so a literal database/role name only works when the deployment's
+-- database and migrator-owner role happen to be called "stratum". current_database() always names
+-- the database this connection is actually on; current_user is the migrator's own role, which the
+-- "Provisioning database roles" runbook already requires to own the schemas being migrated.
+DO $$
+BEGIN
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO stratum_app, stratum_worker, stratum_webhook', current_database());
+END
+$$;
 GRANT USAGE ON SCHEMA ref, organization, account, billing, notification, audit, messaging TO stratum_app, stratum_worker, stratum_webhook;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ref, organization, account, billing, notification, audit, messaging TO stratum_app, stratum_worker, stratum_webhook;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE stratum IN SCHEMA ref, organization, account, billing, notification, audit, messaging
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO stratum_app, stratum_worker, stratum_webhook;
+DO $$
+BEGIN
+    EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA ref, organization, account, billing, notification, audit, messaging GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO stratum_app, stratum_worker, stratum_webhook', current_user);
+END
+$$;
 
 ALTER TABLE billing.subscriptions FORCE ROW LEVEL SECURITY;
 ALTER TABLE billing.invoices FORCE ROW LEVEL SECURITY;

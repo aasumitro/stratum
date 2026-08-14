@@ -18,6 +18,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testPoolAmendment seeds billing.subscriptions directly and some tests in this file-set create
+// throwaway trigger functions to inject a mid-transaction failure — FORCE ROW LEVEL SECURITY needs
+// BYPASSRLS for the former, CREATE on the billing schema needs schema ownership for the latter.
+// TEST_DATABASE_URL (stratum_test, see deploy/postgres-init/02-test-role.sql) holds both, by
+// design rather than by container-superuser accident — see docs/09-testing.md.
 func testPoolAmendment(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")

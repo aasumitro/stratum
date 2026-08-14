@@ -118,7 +118,9 @@ jobs:
       - name: Provision runtime roles
         env:
           DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
-        run: psql "$DATABASE_URL" -f deploy/postgres-init/01-app-role.sql
+        run: |
+          psql "$DATABASE_URL" -f deploy/postgres-init/01-app-role.sql
+          psql "$DATABASE_URL" -f deploy/postgres-init/02-test-role.sql
 
       - name: Run migrations
         env:
@@ -127,7 +129,7 @@ jobs:
 
       - name: Test
         env:
-          TEST_DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
+          TEST_DATABASE_URL: postgres://stratum_test:stratum_test@localhost:5432/stratum?sslmode=disable
           POSTGRES_APP_URL: postgres://stratum_app:stratum_app@localhost:5432/stratum?sslmode=disable
           POSTGRES_WORKER_URL: postgres://stratum_worker:stratum_worker@localhost:5432/stratum?sslmode=disable
           POSTGRES_WEBHOOK_URL: postgres://stratum_webhook:stratum_webhook@localhost:5432/stratum?sslmode=disable

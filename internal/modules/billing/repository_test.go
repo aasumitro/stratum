@@ -19,6 +19,11 @@ import (
 
 const testAuthSubBilling = "integ_sub_billing_1"
 
+// testPoolBilling seeds billing.subscriptions directly and several integration tests in this
+// package create throwaway trigger functions to inject a mid-transaction failure — FORCE ROW LEVEL
+// SECURITY needs BYPASSRLS for the former, CREATE on billing/public needs schema ownership for the
+// latter. TEST_DATABASE_URL (stratum_test, see deploy/postgres-init/02-test-role.sql) holds both,
+// by design rather than by container-superuser accident — see docs/09-testing.md.
 func testPoolBilling(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")

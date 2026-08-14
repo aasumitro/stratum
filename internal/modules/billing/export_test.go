@@ -123,10 +123,11 @@ func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) 
 func NewWebhookModuleEngineWithPublisher(pool *pgxpool.Pool, authSub, organizationID string, pub messaging.EventPublisher) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	// pool doubles as the webhook pool here — every caller of this helper
-	// connects via TEST_DATABASE_URL (superuser, exempt from RLS either
-	// way), not POSTGRES_APP_URL, so there's no RLS-bypass distinction for
-	// this helper to preserve. webhook_rls_test.go exercises the real
-	// stratum_app/stratum_webhook split directly instead of through here.
+	// connects via TEST_DATABASE_URL (stratum_test, BYPASSRLS by design —
+	// see testPoolBilling), not POSTGRES_APP_URL, so there's no RLS-bypass
+	// distinction for this helper to preserve. webhook_rls_test.go
+	// exercises the real stratum_app/stratum_webhook split directly
+	// instead of through here.
 	mod := New(pool, pub, ProviderConfig{}, nil, nil, pool)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
