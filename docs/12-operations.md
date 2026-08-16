@@ -78,7 +78,7 @@ PostgreSQL is the system of record — back it up per your SLA (define RPO/RTO h
 
 ## Runbooks
 
-**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Consumers are idempotent, so requeue is safe.
+**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Consumers are idempotent, so requeue is safe for a *transient* failure. One `billing.events.dlq` cause is not transient: an `organization.created` event whose cart-selected coupon was exhausted by someone else before provisioning ran — the organization exists (its create request already succeeded) but has no subscription. Requeuing retries the same now-exhausted coupon and fails identically; the fix is to provision the subscription manually via Studio (without the coupon, or with a different one) and purge the dead-lettered event, not requeue it. No alert currently fires when this happens — it's only visible by checking the queue.
 
 **Failing customer webhook** — Endpoints auto-disable after a three-day, 100%-failure window and warn below 70% success over 24 hours. Re-enable is only possible via a passing test event, not a direct toggle. Use the deliveries panel to diagnose, then bulk-retry failed deliveries once the receiver is fixed.
 
