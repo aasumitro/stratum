@@ -483,6 +483,7 @@ func TestIntegration_WebhookHandlers_UnresolvableOwner_NoOp(t *testing.T) {
 func TestIntegration_HandleInvitationRequested(t *testing.T) {
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0000-000000000f19"
+	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
 
 	body := encodeEnvNotif("invreq-01", events.RoutingKeyInvitationRequested, orgID,
 		events.InvitationRequested{OrganizationID: orgID, InvitedBy: "integ_sub_inviter", InviteeEmail: "who@test.com"})

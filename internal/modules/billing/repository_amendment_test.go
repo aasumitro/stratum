@@ -46,12 +46,35 @@ func testPoolAmendment(t *testing.T) *pgxpool.Pool {
 // then silently no-ops (ON CONFLICT DO NOTHING) against the leftover row.
 func cleanupAmendmentSubscription(pool *pgxpool.Pool, orgID string) {
 	ctx := context.Background()
+	// billing.payments/coupon_redemptions/webhook_events also FK to this
+	// org's invoices/subscription — left out, any test that pays an invoice
+	// or redeems a coupon blocks the subscriptions DELETE below via the same
+	// silently-swallowed-error, leftover-row failure mode this function's
+	// doc comment already describes for invoices.
+	pool.Exec(ctx, `
+		DELETE FROM billing.webhook_events we
+		WHERE EXISTS (
+			SELECT 1 FROM billing.payment_links pl
+			JOIN billing.invoices i ON i.id = pl.invoice_id
+			JOIN billing.subscriptions s ON s.id = i.subscription_id
+			WHERE s.subject_type = 'organization' AND s.subject_id = $1
+			  AND we.event_id LIKE pl.external_id || '%'
+		)`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.payments WHERE invoice_id IN (SELECT i.id FROM billing.invoices i JOIN billing.subscriptions s ON s.id = i.subscription_id WHERE s.subject_type = 'organization' AND s.subject_id = $1)`, orgID)
 	pool.Exec(ctx, `DELETE FROM billing.invoice_line_items WHERE invoice_id IN (SELECT i.id FROM billing.invoices i JOIN billing.subscriptions s ON s.id = i.subscription_id WHERE s.subject_type = 'organization' AND s.subject_id = $1)`, orgID)
 	pool.Exec(ctx, `DELETE FROM billing.payment_links WHERE invoice_id IN (SELECT i.id FROM billing.invoices i JOIN billing.subscriptions s ON s.id = i.subscription_id WHERE s.subject_type = 'organization' AND s.subject_id = $1)`, orgID)
-	pool.Exec(ctx, `DELETE FROM billing.invoices WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, orgID)
-	pool.Exec(ctx, `DELETE FROM billing.subscription_history WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.coupon_redemptions WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, orgID)
+	// subscription_addons.pending_invoice_id also FK's to invoices — must go
+	// before the invoices DELETE below, or a subscription mid-amendment
+	// (pending_invoice_id set, exactly what this file's tests create) blocks
+	// it via the same silent-failure chain.
 	pool.Exec(ctx, `DELETE FROM billing.subscription_addons WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.invoices WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.invoice_sequences WHERE organization_id = $1`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.usage WHERE organization_id = $1`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.subscription_history WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, orgID)
 	pool.Exec(ctx, `DELETE FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID)
+	pool.Exec(ctx, `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1 OR payload->>'organization_id' = $1`, orgID)
 }
 
 // seedAmendmentSubscription inserts a fresh active "solo" subscription for

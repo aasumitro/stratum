@@ -20,6 +20,15 @@ func TestSweep(t *testing.T) {
 	id1 := uuid.Must(uuid.NewV7()).String()
 	id2 := uuid.Must(uuid.NewV7()).String()
 	id3 := uuid.Must(uuid.NewV7()).String()
+	// Sweep only ever deletes row 1 (published + past retention) by design —
+	// rows 2 and 3 are asserted to survive it, so this test must remove them
+	// itself. Otherwise row 3 (published_at still NULL) looks exactly like a
+	// real undelivered event to any relay running against this same
+	// database, and it retries forever against a "ex"/"rk" exchange that
+	// was never meant to exist.
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE id = ANY($1)`, []string{id1, id2, id3})
+	})
 
 	// 1. row with published_at set to retentionDays+1 days ago (should be swept)
 	if _, err := pool.Exec(ctx, `INSERT INTO messaging.outbox (id, exchange, routing_key, payload, published_at, created_at) VALUES ($1, 'ex', 'rk', '{}', $2, $2)`, id1, cutoff.Add(-24*time.Hour)); err != nil {

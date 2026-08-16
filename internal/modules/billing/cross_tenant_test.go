@@ -121,6 +121,8 @@ func cleanupBillingRowsOnly(t *testing.T, pool *pgxpool.Pool, organizationID str
 		pool.Exec(ctx, `DELETE FROM billing.coupon_redemptions WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, organizationID)
 		pool.Exec(ctx, `DELETE FROM billing.invoice_line_items WHERE invoice_id IN (SELECT i.id FROM billing.invoices i JOIN billing.subscriptions s ON s.id = i.subscription_id WHERE s.subject_type = 'organization' AND s.subject_id = $1)`, organizationID)
 		pool.Exec(ctx, `DELETE FROM billing.invoices WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1)`, organizationID)
+		pool.Exec(ctx, `DELETE FROM billing.invoice_sequences WHERE organization_id = $1`, organizationID)
+		pool.Exec(ctx, `DELETE FROM billing.usage WHERE organization_id = $1`, organizationID)
 		pool.Exec(ctx, `DELETE FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, organizationID)
 	})
 }

@@ -45,6 +45,10 @@ func testAppPoolWebhookGate(t *testing.T) *pgxpool.Pool {
 func cleanupWebhookGateFixtures(pool *pgxpool.Pool, orgID string) {
 	ctx := context.Background()
 	pool.Exec(ctx, `DELETE FROM organization.webhook_endpoints WHERE organization_id = $1`, orgID)
+	// provisionSubscription seeds a "members" billing.usage row on creation
+	// (see service_subscription.go) — not FK'd to organizations, so it
+	// outlives the subscription delete below unless removed explicitly.
+	pool.Exec(ctx, `DELETE FROM billing.usage WHERE organization_id = $1`, orgID)
 	pool.Exec(ctx, `DELETE FROM organization.organizations WHERE id = $1`, orgID)
 	_ = db.WithTx(ctx, pool, func(tx db.Querier) error {
 		if err := db.SetOrgContext(ctx, tx, orgID); err != nil {

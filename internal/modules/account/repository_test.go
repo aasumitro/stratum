@@ -86,6 +86,12 @@ func TestIntegration_UpsertProfile_CreatesAndReturnsUser(t *testing.T) {
 func TestIntegration_UpdateProfile_PreservesEmptyAvatarURL(t *testing.T) {
 	pool := testPool(t)
 	t.Cleanup(func() {
+		// updateProfile enqueues user.updated keyed by the account's DB id,
+		// not auth_sub (events.UserUpdated only carries UserID) — resolve it
+		// before the users row below is gone.
+		pool.Exec(context.Background(), `
+			DELETE FROM messaging.outbox
+			WHERE payload->'data'->>'user_id' = (SELECT id::text FROM account.users WHERE auth_sub = $1)`, testAuthSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, testAuthSub)
 	})
 
@@ -140,6 +146,7 @@ func TestIntegration_ListAndGetTask(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, sub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, sub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, sub)
 	})
 
 	e := account.NewModuleEngine(pool, sub)
@@ -202,6 +209,7 @@ func TestIntegration_GetTask_ScopedToOwnAuthSub(t *testing.T) {
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, testAuthSub)
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, otherSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, otherSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, testAuthSub)
 	})
 
 	eOwner := account.NewModuleEngine(pool, testAuthSub)
@@ -258,6 +266,7 @@ func TestIntegration_DeleteAccount_NoOwnedOrganization_CreatesTask(t *testing.T)
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, noWsSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, noWsSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, noWsSub)
 	})
 
 	e := account.NewModuleEngine(pool, noWsSub)

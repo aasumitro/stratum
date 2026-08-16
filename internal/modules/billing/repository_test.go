@@ -70,8 +70,14 @@ func cleanupBillingByOrganization(pool *pgxpool.Pool, orgID string) {
 	// Every events.Enqueue call in the code under test writes a real row
 	// here now — tests using a fixed orgID literal (most of this file's
 	// helpers do) would otherwise see a previous run's leftover outbox rows
-	// bleed into an "outbox is empty for this org" assertion.
-	pool.Exec(ctx, `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+	// bleed into an "outbox is empty for this org" assertion. Two key names
+	// because billing.* events envelope the org as "org_id" while
+	// organization.* events (e.g. organization.created, which this org's
+	// own provisioning flow publishes) use "organization_id" — matching only
+	// one left every organization-keyed row permanently unswept.
+	pool.Exec(ctx, `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1 OR payload->>'organization_id' = $1`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.usage WHERE organization_id = $1`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.invoice_sequences WHERE organization_id = $1`, orgID)
 	// webhook_events first — keyed by payment_link external_id, must run before payment_links are deleted
 	pool.Exec(ctx, `
 		DELETE FROM billing.webhook_events we

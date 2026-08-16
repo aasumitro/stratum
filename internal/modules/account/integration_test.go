@@ -45,6 +45,7 @@ func TestIntegration_DeleteAccount_Worker_CompletesTask(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, authSub)
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
@@ -96,6 +97,7 @@ func TestIntegration_DeleteAccount_Worker_RecordsFailedCleanupSteps(t *testing.T
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, authSub)
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
@@ -154,6 +156,7 @@ func TestIntegration_DeleteAccount_Worker_AvatarDeleteFailure_RecordsFailedStep(
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, authSub)
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
@@ -294,6 +297,7 @@ func TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus(t *testing.T) {
 	redis := testRedisAccount(t)
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM account.login_events WHERE auth_sub = $1`, authSub)
 		redis.Del(context.Background(), "account_test:login_gate:"+authSub)
 	})
 
@@ -408,6 +412,7 @@ func TestIntegration_ExportData_Worker_CompletesTask(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, authSub)
 	})
 
 	e := account.NewModuleEngineWithEmail(pool, authSub, "export-worker@test.com")
@@ -466,6 +471,7 @@ func TestIntegration_ExportData_Worker_SectionFailure_FailsWholeExport(t *testin
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, authSub)
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
@@ -610,6 +616,7 @@ func TestIntegration_SupabaseUserUpdated_SyncsEmail(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
 		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE actor = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, authSub)
 	})
 
 	// onboard first, mirroring what onAuthStateChange -> POST /me already does
