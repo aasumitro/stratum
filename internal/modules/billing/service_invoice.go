@@ -26,7 +26,10 @@ func computeCouponDiscount(discountType string, amountCents *int64, percentOff *
 		}
 	case discountTypePercent:
 		if percentOff != nil {
-			discount = subtotal * int64(*percentOff) / 100
+			// Round to nearest cent, not truncate — truncation would bias
+			// every percent-off discount down, systematically overcharging
+			// the customer by up to a cent on every invoice.
+			discount = (subtotal*int64(*percentOff) + 50) / 100
 		}
 	}
 	if discount > subtotal {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -180,8 +181,10 @@ func (s *service) checkMemberLimitLocked(ctx context.Context, q db.Querier, orga
 }
 
 // syncMemberUsage records the current active-member count for organizationID
-// as a fire-and-forget background op. Errors are silently dropped — usage
-// drift is non-critical and will self-correct on the next mutation.
+// as a fire-and-forget background op. Failures are logged (not silently
+// dropped) so usage drift stays visible in the logs — it self-corrects on
+// the next mutation, but an operator should still be able to spot a
+// persistently failing sync.
 func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 	if s.billingWriter == nil {
 		return
@@ -202,9 +205,14 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 		defer cancel()
 		count, err := s.repo.countActiveMembers(ctx, s.pool, organizationID)
 		if err != nil {
+			slog.Error("syncMemberUsage: count active members failed",
+				"organization_id", organizationID, "error", err)
 			return
 		}
-		_ = s.billingWriter.RecordUsage(ctx, organizationID, "members", count)
+		if err := s.billingWriter.RecordUsage(ctx, organizationID, "members", count); err != nil {
+			slog.Error("syncMemberUsage: record usage failed",
+				"organization_id", organizationID, "count", count, "error", err)
+		}
 	}()
 }
 

@@ -212,7 +212,17 @@ func (s *service) attachCartSelections(
 		return fmt.Errorf("billing.attachCartSelections: increment coupon redeemed count: %w", err)
 	}
 	if !ok {
-		return nil
+		// Deliberate fail-loud: the coupon was valid when the org-creation
+		// request was accepted but got exhausted by someone else before this
+		// event was processed. This runs off the organization.created
+		// consumer (consumers.go), strictly after the HTTP response already
+		// reported success, so failing here can't stop org creation — it
+		// rolls back subscription provisioning instead. The consumer retries
+		// (MaxDeliveries: 5) then dead-letters, since exhaustion isn't
+		// transient; the organization is left without a subscription until
+		// someone drains billing.events.dlq. No DLQ alerting exists yet —
+		// accepted tradeoff over silently dropping the discount.
+		return fmt.Errorf("billing.attachCartSelections: %w: coupon exhausted", ErrCouponNotRedeemable)
 	}
 	if err := s.repo.insertCouponRedemption(ctx, q, couponCode, subscriptionID); err != nil {
 		return fmt.Errorf("billing.attachCartSelections: insert coupon redemption: %w", err)
@@ -231,7 +241,10 @@ func (s *service) composeAndInsertActivationInvoice(
 	sub *subscriptionRecord, planInfo *contracts.PlanInfo,
 	plan, currency, countryCode string,
 ) (*events.InvoiceCreated, error) {
-	hasPending, _ := s.repo.hasPendingInvoice(ctx, q, sub.ID)
+	hasPending, err := s.repo.hasPendingInvoice(ctx, q, sub.ID)
+	if err != nil {
+		return nil, fmt.Errorf("billing.composeAndInsertActivationInvoice: check pending invoice: %w", err)
+	}
 	if hasPending {
 		return nil, nil
 	}

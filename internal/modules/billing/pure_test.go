@@ -437,7 +437,9 @@ func TestComputeCouponDiscount(t *testing.T) {
 	}{
 		{"fixed discount under subtotal", "fixed", amount(500), nil, 900, 500},
 		{"fixed discount clamped to subtotal", "fixed", amount(5000), nil, 900, 900},
-		{"percent discount rounds down", "percent", nil, percent(10), 999, 99}, // 999*10/100 = 99.9 -> 99
+		{"percent discount rounds to nearest, up", "percent", nil, percent(10), 999, 100},   // 999*10/100 = 99.9 -> 100
+		{"percent discount rounds to nearest, down", "percent", nil, percent(15), 998, 150}, // 998*15/100 = 149.7 -> 150
+		{"percent discount exact, no rounding", "percent", nil, percent(10), 1000, 100},
 		{"percent discount full", "percent", nil, percent(100), 900, 900},
 		{"nil amount on fixed type is zero", "fixed", nil, nil, 900, 0},
 		{"unknown discount type is zero", "bogus", amount(500), nil, 900, 0},
