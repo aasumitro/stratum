@@ -13,6 +13,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 	"github.com/aasumitro/stratum/internal/platform/logger"
 )
@@ -86,22 +87,28 @@ func (s *service) createOrganization(
 		return nil, err
 	}
 
-	t, err := s.insertOrganizationWithOwner(ctx, slug, name, ownerID, countryCode)
-	if err != nil {
-		return nil, err
-	}
-
 	eventAddons := make([]events.AddonSelection, len(addons))
 	for i, a := range addons {
 		eventAddons[i] = events.AddonSelection{AddonID: a.AddonID, Quantity: a.Quantity}
 	}
 
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOrganizationCreated, "organization", t.ID,
-		events.OrganizationCreated{
-			OrganizationID: t.ID, Slug: t.Slug, Name: t.Name, CreatedBy: t.OwnerID,
-			CountryCode: t.CountryCode, Plan: plan, Cycle: cycle,
-			Addons: eventAddons, CouponCode: couponCode, CreatedAt: t.CreatedAt,
-		})
+	var t *organizationRecord
+	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		t, err = s.insertOrganizationWithOwner(ctx, tx, slug, name, ownerID, countryCode)
+		if err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOrganizationCreated, "organization", t.ID,
+			events.OrganizationCreated{
+				OrganizationID: t.ID, Slug: t.Slug, Name: t.Name, CreatedBy: t.OwnerID,
+				CountryCode: t.CountryCode, Plan: plan, Cycle: cycle,
+				Addons: eventAddons, CouponCode: couponCode, CreatedAt: t.CreatedAt,
+			})
+	})
+	if err != nil {
+		return nil, err
+	}
 	return t, nil
 }
 
@@ -136,25 +143,18 @@ func (s *service) validateCatalogSelections(
 // insertOrganizationWithOwner creates the organization row and its owner
 // membership row atomically — either both exist or neither does, since a
 // membership-less organization would leave its owner unable to access what
-// they just created.
+// they just created. tx is the caller's own transaction (createOrganization's
+// db.WithTx) so the OrganizationCreated outbox row enqueued alongside these
+// two inserts commits or rolls back with them as one unit.
 func (s *service) insertOrganizationWithOwner(
-	ctx context.Context, slug, name, ownerID, countryCode string,
+	ctx context.Context, tx db.Querier, slug, name, ownerID, countryCode string,
 ) (*organizationRecord, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	t, err := s.repo.insertOrganization(ctx, tx, slug, name, ownerID, countryCode)
 	if err != nil {
 		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: %w", err)
 	}
 	if err := s.repo.insertOwnerMembership(ctx, tx, t.ID, ownerID); err != nil {
 		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: commit tx: %w", err)
 	}
 	return t, nil
 }
@@ -211,19 +211,22 @@ func (s *service) deleteOrganization(ctx context.Context, id string) (err error)
 		}
 	}()
 
-	if err := s.repo.softDeleteOrganization(ctx, s.pool, id); err != nil {
-		return fmt.Errorf("organization.deleteOrganization: %w", err)
-	}
-
 	// Logo cleanup used to run synchronously here — moved off the request
 	// path to HandleOrganizationDeleted (service_organization.go, same file,
 	// below), a worker consumer of the same OrganizationDeleted event
-	// published just below. The organization is already soft-deleted by this
-	// point, so the gap between this publish and the worker picking it up is
+	// enqueued below. The organization is already soft-deleted by this
+	// point, so the gap between this enqueue and the worker picking it up is
 	// invisible to callers — the organization middleware already rejects
 	// every request against a soft-deleted org.
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOrganizationDeleted, "organization", id,
-		events.OrganizationDeleted{OrganizationID: id, DeletedAt: time.Now()})
+	if err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if err := s.repo.softDeleteOrganization(ctx, tx, id); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOrganizationDeleted, "organization", id,
+			events.OrganizationDeleted{OrganizationID: id, DeletedAt: time.Now()})
+	}); err != nil {
+		return fmt.Errorf("organization.deleteOrganization: %w", err)
+	}
 	return nil
 }
 
@@ -316,11 +319,16 @@ const suspendReasonSelfService = "Suspended by organization owner"
 // (billing's auto-suspend-on-expiry, error discarded there) as well as the
 // owner-facing HTTP route — safe to classify unconditionally.
 func (s *service) suspendOrganization(ctx context.Context, organizationID, reason string) error {
-	if err := s.repo.suspendOrganization(ctx, s.pool, organizationID, reason); err != nil {
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if err := s.repo.suspendOrganization(ctx, tx, organizationID, reason); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOrganizationSuspended, "organization", organizationID,
+			events.OrganizationSuspended{OrganizationID: organizationID, Reason: reason, SuspendedAt: time.Now()})
+	})
+	if err != nil {
 		return apperr.Internal("ORGANIZATION_SUSPEND_FAILED", "failed to suspend organization", err)
 	}
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOrganizationSuspended, "organization", organizationID,
-		events.OrganizationSuspended{OrganizationID: organizationID, Reason: reason, SuspendedAt: time.Now()})
 	return nil
 }
 
@@ -328,12 +336,13 @@ func (s *service) suspendOrganization(ctx context.Context, organizationID, reaso
 // and internally by selfUnsuspendOrganization, which applies its own
 // classification on top — see there.
 func (s *service) unsuspendOrganization(ctx context.Context, organizationID string) error {
-	if err := s.repo.unsuspendOrganization(ctx, s.pool, organizationID); err != nil {
-		return err
-	}
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOrganizationReactivated, "organization", organizationID,
-		events.OrganizationReactivated{OrganizationID: organizationID, ReactivatedAt: time.Now()})
-	return nil
+	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if err := s.repo.unsuspendOrganization(ctx, tx, organizationID); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOrganizationReactivated, "organization", organizationID,
+			events.OrganizationReactivated{OrganizationID: organizationID, ReactivatedAt: time.Now()})
+	})
 }
 
 // selfUnsuspendOrganization is the owner-facing HTTP route's entry point —

@@ -86,6 +86,12 @@ func TestIntegration_UpsertProfile_CreatesAndReturnsUser(t *testing.T) {
 func TestIntegration_UpdateProfile_PreservesEmptyAvatarURL(t *testing.T) {
 	pool := testPool(t)
 	t.Cleanup(func() {
+		// updateProfile enqueues user.updated keyed by the account's DB id,
+		// not auth_sub (events.UserUpdated only carries UserID) — resolve it
+		// before the users row below is gone.
+		pool.Exec(context.Background(), `
+			DELETE FROM messaging.outbox
+			WHERE payload->'data'->>'user_id' = (SELECT id::text FROM account.users WHERE auth_sub = $1)`, testAuthSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, testAuthSub)
 	})
 
@@ -140,6 +146,7 @@ func TestIntegration_ListAndGetTask(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, sub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, sub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, sub)
 	})
 
 	e := account.NewModuleEngine(pool, sub)
@@ -190,6 +197,42 @@ func TestIntegration_ListAndGetTask(t *testing.T) {
 	}
 }
 
+// TestIntegration_GetTask_ScopedToOwnAuthSub regression-tests that a task
+// belonging to one auth_sub is invisible to a request authenticated as a
+// different one — findTask's WHERE clause pairs id with auth_sub, so a
+// foreign task ID must 404, not return another user's task.
+func TestIntegration_GetTask_ScopedToOwnAuthSub(t *testing.T) {
+	const otherSub = "integ_sub_tasks_other"
+	pool := testPool(t)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, testAuthSub)
+		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, testAuthSub)
+		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, otherSub)
+		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, otherSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, testAuthSub)
+	})
+
+	eOwner := account.NewModuleEngine(pool, testAuthSub)
+	eOwner.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"tasks-scoped@test.com"}`))
+
+	wDel := httptest.NewRecorder()
+	eOwner.ServeHTTP(wDel, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))
+	if wDel.Code != http.StatusAccepted {
+		t.Fatalf("request delete: want 202, got %d: %s", wDel.Code, wDel.Body)
+	}
+	var delResp map[string]any
+	json.NewDecoder(wDel.Body).Decode(&delResp)
+	taskID := delResp["data"].(map[string]any)["id"].(string)
+
+	// a different caller tries to fetch it by ID — must not see it
+	eOther := account.NewModuleEngine(pool, otherSub)
+	wGet := httptest.NewRecorder()
+	eOther.ServeHTTP(wGet, httpserver.JSONTestRequest(http.MethodGet, "/api/me/tasks/"+taskID, ""))
+	if wGet.Code != http.StatusNotFound {
+		t.Fatalf("get task (other user): want 404, got %d: %s", wGet.Code, wGet.Body)
+	}
+}
+
 // --- Account deletion pre-check ---
 
 func TestIntegration_DeleteAccount_WithOwnedOrganization_Fails(t *testing.T) {
@@ -223,6 +266,7 @@ func TestIntegration_DeleteAccount_NoOwnedOrganization_CreatesTask(t *testing.T)
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, noWsSub)
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, noWsSub)
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, noWsSub)
 	})
 
 	e := account.NewModuleEngine(pool, noWsSub)

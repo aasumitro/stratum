@@ -19,6 +19,11 @@ import (
 
 const testAuthSubBilling = "integ_sub_billing_1"
 
+// testPoolBilling seeds billing.subscriptions directly and several integration tests in this
+// package create throwaway trigger functions to inject a mid-transaction failure — FORCE ROW LEVEL
+// SECURITY needs BYPASSRLS for the former, CREATE on billing/public needs schema ownership for the
+// latter. TEST_DATABASE_URL (stratum_test, see deploy/postgres-init/02-test-role.sql) holds both,
+// by design rather than by container-superuser accident — see docs/09-testing.md.
 func testPoolBilling(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -62,6 +67,17 @@ func encodeOrganizationCreatedEvent(organizationID string) []byte {
 
 func cleanupBillingByOrganization(pool *pgxpool.Pool, orgID string) {
 	ctx := context.Background()
+	// Every events.Enqueue call in the code under test writes a real row
+	// here now — tests using a fixed orgID literal (most of this file's
+	// helpers do) would otherwise see a previous run's leftover outbox rows
+	// bleed into an "outbox is empty for this org" assertion. Two key names
+	// because billing.* events envelope the org as "org_id" while
+	// organization.* events (e.g. organization.created, which this org's
+	// own provisioning flow publishes) use "organization_id" — matching only
+	// one left every organization-keyed row permanently unswept.
+	pool.Exec(ctx, `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1 OR payload->>'organization_id' = $1`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.usage WHERE organization_id = $1`, orgID)
+	pool.Exec(ctx, `DELETE FROM billing.invoice_sequences WHERE organization_id = $1`, orgID)
 	// webhook_events first — keyed by payment_link external_id, must run before payment_links are deleted
 	pool.Exec(ctx, `
 		DELETE FROM billing.webhook_events we

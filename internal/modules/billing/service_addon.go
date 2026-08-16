@@ -110,15 +110,20 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 	if err != nil {
 		return nil, apperr.NotFound("ADDON_NOT_FOUND", "addon not found", ErrAddonNotFound)
 	}
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectTypeOrganization, organizationID)
+	var sub *subscriptionRecord
+	err = s.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var findErr error
+		sub, findErr = s.repo.findSubscriptionBySubject(txCtx, tx, subjectTypeOrganization, organizationID)
+		return findErr
+	})
 	if err != nil {
 		return nil, apperr.Internal(addonAttachFailedCode, addonAttachFailedMsg, err)
 	}
 
 	var pendingInvoice *invoiceRecord
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = s.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
-
 		if err := s.repo.lockSubscriptionForUpdate(txCtx, tx, sub.ID); err != nil {
 			return err
 		}
@@ -168,7 +173,18 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 				return err
 			}
 			pendingInvoice = inv
-			return nil
+			if inv == nil {
+				return nil // prorated to zero — requestAddonIncrease applied the increase directly, nothing to enqueue
+			}
+			// Enqueued inside this transaction — commits before the
+			// payment-link HTTP call below starts, same billingPay-group
+			// pattern as extendSubscription/activateTrialNow.
+			return events.Enqueue(txCtx, tx, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", organizationID,
+				events.InvoiceCreated{
+					OrgID: organizationID, InvoiceID: inv.ID,
+					Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: sub.Currency,
+					DueAt: *inv.DueAt,
+				})
 		case sub.Status == statusTrialing:
 			if err := s.repo.upsertSubscriptionAddon(txCtx, tx, sub.ID, addonID, quantity); err != nil {
 				return err
@@ -199,13 +215,7 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 		// the invoice is already committed and payable via the regular
 		// POST .../invoices/:id/pay flow, same fail-open convention as
 		// extendSubscription/activateTrialNow.
-		_, _ = s.createPaymentLink(ctx, "", "", pendingInvoice.ID)
-		events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", organizationID,
-			events.InvoiceCreated{
-				OrgID: organizationID, InvoiceID: pendingInvoice.ID,
-				Plan: sub.Plan, AmountCents: pendingInvoice.AmountCents, Currency: sub.Currency,
-				DueAt: *pendingInvoice.DueAt,
-			})
+		_, _ = s.createPaymentLink(ctx, subjectTypeOrganization, organizationID, pendingInvoice.ID)
 	}
 
 	addon, err := s.repo.findAttachedAddon(ctx, s.querier(ctx), sub.ID, addonID)

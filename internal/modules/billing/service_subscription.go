@@ -42,16 +42,17 @@ func (s *service) provisionSubscription(
 	var sub *subscriptionRecord
 	var planInfo *contracts.PlanInfo
 	var subtotal int64
-	var trialStarted *events.TrialStarted
 	var invoiceCreated *events.InvoiceCreated
 
 	// The DB-local writes below (subscription + history + invoice + line
 	// items/charges) are wrapped in one transaction so a mid-sequence
 	// failure can't leave a subscription with a partially-formed invoice.
-	// Cross-module/external steps (payment-link creation, event publish)
-	// stay outside — they're already best-effort/idempotent, and
-	// publishing an event before its transaction commits would announce
-	// state that might still roll back.
+	// The event enqueues for whatever this provisioning produced are
+	// enqueued inside this same transaction (see below), so they commit or
+	// roll back atomically with the state they describe. Only the
+	// cross-module/external step (payment-link creation) stays outside —
+	// it's already best-effort/idempotent and makes a blocking provider
+	// HTTP call this transaction must not hold a connection open across.
 	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		isNew := true
@@ -125,6 +126,7 @@ func (s *service) provisionSubscription(
 
 		if isNew {
 			action := "activate"
+			var trialStarted *events.TrialStarted
 			if sub.Status == statusTrialing {
 				action = "trial"
 				if sub.TrialEnd != nil {
@@ -135,6 +137,12 @@ func (s *service) provisionSubscription(
 				nil, &plan, subtotal, currency, createdBy, nil); err != nil {
 				return fmt.Errorf("billing.provisionSubscription: insert history: %w", err)
 			}
+			if trialStarted != nil {
+				if err := events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling,
+					events.RoutingKeyTrialStarted, "billing", subjectID, *trialStarted); err != nil {
+					return fmt.Errorf("billing.provisionSubscription: enqueue trial started: %w", err)
+				}
+			}
 		}
 
 		if sub.Status == statusActive && subtotal > 0 {
@@ -144,6 +152,12 @@ func (s *service) provisionSubscription(
 				return err
 			}
 			invoiceCreated = created
+			if created != nil {
+				if err := events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling,
+					events.RoutingKeyInvoiceCreated, "billing", subjectID, *created); err != nil {
+					return fmt.Errorf("billing.provisionSubscription: enqueue invoice created: %w", err)
+				}
+			}
 		}
 		return nil
 	})
@@ -154,15 +168,12 @@ func (s *service) provisionSubscription(
 	// Always (re-)schedule; duplicate delayed messages are harmless — downstream checks are idempotent.
 	s.scheduleRenewalSequence(ctx, sub)
 
-	if trialStarted != nil {
-		events.Publish(ctx, s.pub, events.ExchangeBilling,
-			events.RoutingKeyTrialStarted, "billing", subjectID, *trialStarted)
-	}
 	if invoiceCreated != nil {
-		// Payment link creation is best-effort; the Pay button always creates one on demand.
+		// Payment link creation is best-effort; the Pay button always creates
+		// one on demand. Deliberately after the transaction above (and its
+		// event enqueues) already committed — a blocking provider HTTP call
+		// must never hold that transaction's connection open.
 		_, _ = s.createPaymentLink(ctx, "", "", invoiceCreated.InvoiceID)
-		events.Publish(ctx, s.pub, events.ExchangeBilling,
-			events.RoutingKeyInvoiceCreated, "billing", subjectID, *invoiceCreated)
 	}
 
 	return sub, nil
@@ -201,7 +212,17 @@ func (s *service) attachCartSelections(
 		return fmt.Errorf("billing.attachCartSelections: increment coupon redeemed count: %w", err)
 	}
 	if !ok {
-		return nil
+		// Deliberate fail-loud: the coupon was valid when the org-creation
+		// request was accepted but got exhausted by someone else before this
+		// event was processed. This runs off the organization.created
+		// consumer (consumers.go), strictly after the HTTP response already
+		// reported success, so failing here can't stop org creation — it
+		// rolls back subscription provisioning instead. The consumer retries
+		// (MaxDeliveries: 5) then dead-letters, since exhaustion isn't
+		// transient; the organization is left without a subscription until
+		// someone drains billing.events.dlq. No DLQ alerting exists yet —
+		// accepted tradeoff over silently dropping the discount.
+		return fmt.Errorf("billing.attachCartSelections: %w: coupon exhausted", ErrCouponNotRedeemable)
 	}
 	if err := s.repo.insertCouponRedemption(ctx, q, couponCode, subscriptionID); err != nil {
 		return fmt.Errorf("billing.attachCartSelections: insert coupon redemption: %w", err)
@@ -220,7 +241,10 @@ func (s *service) composeAndInsertActivationInvoice(
 	sub *subscriptionRecord, planInfo *contracts.PlanInfo,
 	plan, currency, countryCode string,
 ) (*events.InvoiceCreated, error) {
-	hasPending, _ := s.repo.hasPendingInvoice(ctx, q, sub.ID)
+	hasPending, err := s.repo.hasPendingInvoice(ctx, q, sub.ID)
+	if err != nil {
+		return nil, fmt.Errorf("billing.composeAndInsertActivationInvoice: check pending invoice: %w", err)
+	}
 	if hasPending {
 		return nil, nil
 	}
@@ -251,10 +275,31 @@ func (s *service) composeAndInsertActivationInvoice(
 }
 
 // getSubscription is also exposed cross-module as contracts.BillingReader's
-// GetSubscriptionBySubject — every non-handler caller only checks err == nil,
-// so classifying here is safe (and errors.Is against the wrapped cause, e.g.
-// pgx.ErrNoRows, still works via apperr.Error.Unwrap).
+// GetSubscriptionBySubject — called either under an ambient transaction (a
+// billing-route caller, already RLS-wrapped) or with no querier in context
+// at all (organization's webhook/invitation/member paths, or the rate-limiter
+// middleware, neither of which owns billing's pool or an RLS-scoped
+// transaction). db.HasQuerier distinguishes the two, same split
+// recordUsage already uses (service_usage.go) for identical reasons:
+// billing.subscriptions has FORCE ROW LEVEL SECURITY, so a bare-pool read
+// with no app.organization_id set is silently filtered to zero rows.
 func (s *service) getSubscription(ctx context.Context, subjectType, subjectID string) (*subscriptionRecord, error) {
+	if db.HasQuerier(ctx) {
+		return s.getSubscriptionTx(ctx, subjectType, subjectID)
+	}
+	var sub *subscriptionRecord
+	err := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		var txErr error
+		sub, txErr = s.getSubscriptionTx(db.WithQuerier(ctx, tx), subjectType, subjectID)
+		return txErr
+	})
+	return sub, err
+}
+
+// getSubscriptionTx is getSubscription's body — every non-handler caller
+// only checks err == nil, so classifying here is safe (and errors.Is against
+// the wrapped cause, e.g. pgx.ErrNoRows, still works via apperr.Error.Unwrap).
+func (s *service) getSubscriptionTx(ctx context.Context, subjectType, subjectID string) (*subscriptionRecord, error) {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -406,13 +451,15 @@ func (s *service) changePlanWithMetadata(
 		}
 	}
 
-	s.publishAfterCommit(ctx, events.RoutingKeySubscriptionActivated, subjectID,
+	if err := s.enqueueEvent(ctx, events.RoutingKeySubscriptionActivated, subjectID,
 		events.SubscriptionActivated{
 			OrgID:          subjectID,
 			SubscriptionID: updated.ID,
 			Plan:           updated.Plan,
 			ActivatedAt:    updated.UpdatedAt,
-		})
+		}); err != nil {
+		return "", nil, err
+	}
 	return historyID, updated, nil
 }
 
@@ -497,12 +544,14 @@ func (s *service) cancelSubscription(
 		return nil, err
 	}
 
-	s.publishAfterCommit(ctx, events.RoutingKeySubscriptionCancelled, subjectID,
+	if err := s.enqueueEvent(ctx, events.RoutingKeySubscriptionCancelled, subjectID,
 		events.SubscriptionCancelled{
 			OrgID:          subjectID,
 			SubscriptionID: sub.ID,
 			CancelledAt:    time.Now(),
-		})
+		}); err != nil {
+		return nil, err
+	}
 	return updated, nil
 }
 
@@ -567,11 +616,12 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 	}
 
 	now := time.Now()
-	expired := false
-	if sub.TrialEnd != nil && now.After(*sub.TrialEnd) {
-		expired = true
-	} else if sub.PeriodEnd != nil && now.After(*sub.PeriodEnd) {
-		expired = true
+	var expired bool
+	switch sub.Status {
+	case statusTrialing:
+		expired = sub.TrialEnd != nil && now.After(*sub.TrialEnd)
+	default: // statusActive (statusPastDue never reaches expireIfDue — see the status guard above)
+		expired = sub.PeriodEnd != nil && now.After(*sub.PeriodEnd)
 	}
 	if !expired {
 		return nil
@@ -586,26 +636,26 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 			nil, 0, sub.Currency, changedBySystem, nil); err != nil {
 			return fmt.Errorf("billing.expireIfDue: insert history: %w", err)
 		}
+		if err := events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeySubscriptionExpired, "billing", sub.SubjectID,
+			events.SubscriptionExpired{OrgID: sub.SubjectID, SubscriptionID: sub.ID, ExpiredAt: now}); err != nil {
+			return fmt.Errorf("billing.expireIfDue: enqueue: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	// SuspendOrganization and the event publish below deliberately stay
-	// outside the transaction above: they're best-effort/idempotent, run
-	// only after the status+history write has durably committed, and a
-	// failure here can't roll that back — it's logged instead of turned
-	// into a function-level error that would just re-run the
-	// already-succeeded writes on retry.
+	// SuspendOrganization deliberately stays outside the transaction above:
+	// it's best-effort/idempotent, runs only after the status+history write
+	// has durably committed, and a failure here can't roll that back — it's
+	// logged instead of turned into a function-level error that would just
+	// re-run the already-succeeded writes on retry.
 	if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
 		if err := s.orgSuspender.SuspendOrganization(ctx, sub.SubjectID, "subscription expired"); err != nil {
 			slog.Error("SuspendOrganization failed", "organization_id", sub.SubjectID, "error", err)
 		}
 	}
-
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionExpired, "billing", sub.SubjectID,
-		events.SubscriptionExpired{OrgID: sub.SubjectID, SubscriptionID: sub.ID, ExpiredAt: now})
 
 	return nil
 }

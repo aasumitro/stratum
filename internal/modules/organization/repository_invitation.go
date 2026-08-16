@@ -106,11 +106,12 @@ func (r *repository) listInvitations(ctx context.Context, q db.Querier, organiza
 	return out, nil
 }
 
-func (r *repository) deleteInvitation(ctx context.Context, q db.Querier, id string) error {
-	if _, err := q.Exec(ctx, `DELETE FROM organization.invitations WHERE id = $1`, id); err != nil {
-		return fmt.Errorf("organization.deleteInvitation: %w", err)
+func (r *repository) deleteInvitation(ctx context.Context, q db.Querier, organizationID, id string) (bool, error) {
+	tag, err := q.Exec(ctx, `DELETE FROM organization.invitations WHERE id = $1 AND organization_id = $2`, id, organizationID)
+	if err != nil {
+		return false, fmt.Errorf("organization.deleteInvitation: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 type myInvitationRecord struct {

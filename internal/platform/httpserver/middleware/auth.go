@@ -68,7 +68,7 @@ type AuthHooks struct {
 	// IsRevoked is called synchronously before the request continues, keyed
 	// by SessionIdentifier(claims). Return true to block with 401. Used for
 	// revoked-token checks.
-	IsRevoked func(ctx context.Context, sessionID string) bool
+	IsRevoked func(ctx context.Context, authSub, sessionID string, issuedAt time.Time) bool
 
 	// OnLogin is called fire-and-forget (goroutine, 200ms timeout) on every
 	// authenticated request. Callers are expected to rate-gate internally.
@@ -181,7 +181,8 @@ func NewAuthMiddleware(
 					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token missing session identifier"})
 					return
 				}
-				if h.IsRevoked(c.Request.Context(), sid) {
+				iatFloat, _ := claims["iat"].(float64)
+				if h.IsRevoked(c.Request.Context(), sub, sid, time.Unix(int64(iatFloat), 0)) {
 					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token has been revoked"})
 					return
 				}

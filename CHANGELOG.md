@@ -6,6 +6,127 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-16
+
+Four rounds of backend security audit remediation since 0.3.0, plus same-day follow-on fixes.
+Round 1 was an external audit (16 findings); rounds 2–4 were independent re-audits of each prior
+round's own new code (11, 6, and 3 findings).
+
+### Added
+
+- Transactional outbox (`messaging.outbox`): every domain event (organization created, GDPR
+  export requested, invoice issued, etc.) now writes durably to the database in the same
+  transaction as the state change it describes, instead of publishing directly to RabbitMQ and
+  silently dropping the event on a broker outage or crash. A `cmd/worker` relay delivers
+  unpublished rows on a 2-second poll
+- `OUTBOX_RETENTION_DAYS` (optional, default `30`): hourly sweep deletes published
+  `messaging.outbox` rows older than this many days; unpublished rows are never touched
+- `cmd/api` and `cmd/worker` now connect to Postgres as separate, minimally-privileged roles
+  (`stratum_app`/`stratum_worker`) instead of one shared owner role; new env vars
+  `POSTGRES_APP_URL`/`POSTGRES_WORKER_URL`. Payment webhooks (`POST /webhooks/stripe`/`xendit`)
+  run through a third, dedicated `stratum_webhook` role and its own connection pool, since those
+  routes have no user session to scope row-level security by — new env var `POSTGRES_WEBHOOK_URL`
+- Webhook signing secrets are now encrypted at rest (`WEBHOOK_SECRET_ENCRYPTION_KEY`, required
+  outside development)
+- `WEBHOOK_SECRET_ENCRYPTION_KEY_PREVIOUS`/`WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION`
+  (optional): support a zero-downtime `WEBHOOK_SECRET_ENCRYPTION_KEY` rotation — see
+  "Rotating the webhook encryption key" in `docs/12-operations.md`
+- `AUTH_ACCESS_TOKEN_MAX_TTL` (optional, default `1h`): the maximum lifetime a
+  Supabase-issued access token can have in this deployment; used to size the session
+  revocation epoch's TTL
+- `POSTGRES_TEST_URL` (dev/CI only): a dedicated `stratum_test` role for the integration
+  suite, replacing an accidental dependency on the CI Postgres image's superuser default —
+  see `docs/09-testing.md`
+- `/webhooks` (inbound Stripe/Xendit/Supabase callbacks) gained a 6000/min per-IP rate-limit
+  backstop, closing the gap left when the IP-keyed limiter was removed from this route earlier
+
+### Changed
+
+- **Deployment order changed**: creating `stratum_app`/`stratum_worker`/`stratum_webhook` is no
+  longer a side effect of `make migrate-up` — they must be provisioned first
+  (`deploy/postgres-init/01-app-role.sql`, automatic in local dev and CI; manual elsewhere, see
+  "Provisioning database roles" in `docs/12-operations.md`). Migrating without doing this now
+  fails immediately and clearly on migration `000008`, instead of the migration creating the
+  roles itself as it did before
+- `billing`'s row-level security policies now carry `FORCE ROW LEVEL SECURITY` — owning a table no
+  longer silently bypasses its own RLS policies
+- `POSTGRES_URL` is replaced by `POSTGRES_APP_URL`/`POSTGRES_WORKER_URL`/`POSTGRES_WEBHOOK_URL`
+  for the app's own runtime connections (still used as the migration-owner DSN); `WEBHOOK_SECRET_ENCRYPTION_KEY`
+  and `STATS_TOKEN` are now required outside development. See "Upgrading an existing deployment"
+  in `docs/12-operations.md` for the required order
+- An exhausted `messaging.outbox` row's alerting is now two distinct conditions instead of one
+  ("delivery delayed, nothing lost" vs. "abandoned, manual replay required") — see
+  `docs/12-operations.md`
+- Organization creation with a cart-selected coupon now fails provisioning (instead of
+  silently dropping the discount) if the coupon is exhausted by someone else between
+  submission and processing — see "Dead-letter backlog" in `docs/12-operations.md` for the
+  operational tradeoff this introduces
+- Percent-off coupon discounts now round to the nearest cent instead of truncating,
+  correcting a systematic under-discount on every percent-off invoice line
+- A background member-usage sync failure is now logged instead of silently dropped (the
+  sync itself is unchanged — still fire-and-forget, still self-corrects on the next mutation)
+
+### Fixed
+
+- A subscription reactivated from `expired` (or resumed from `cancelled` past its trial window)
+  kept a stale `trial_end`, so the next scheduled check could incorrectly re-expire a paying
+  customer's subscription and suspend their organization
+- Revoking an invitation ignored which organization it belonged to — any org admin/owner could
+  delete any pending invitation in the system by ID, not just their own organization's
+  (cross-tenant)
+- Regenerating a payment link could expire another tenant's pending payment link before the
+  ownership check ran (cross-tenant)
+- The worker process's account module was wired with a stub storage client, so GDPR account
+  deletion never actually removed the user's avatar while reporting that step as succeeded
+- "Sign out everywhere" only revoked the *calling* session's access token — other devices'
+  already-issued tokens stayed valid until natural expiry (up to `AUTH_ACCESS_TOKEN_MAX_TTL`)
+  instead of being revoked immediately as documented
+- `GET /me/invitations` returned live invitation tokens without the email-verification check
+  every sibling route already enforced
+- Payment webhooks were IP-rate-limited, producing spurious `429`s under any traffic burst or
+  behind a proxy
+- The rate-limit check ran before the organization-membership check, leaking a target
+  organization's plan tier via response headers on an otherwise-`403` request
+- The SSRF blocklist for outbound webhook URLs didn't cover every shared/special-use address range
+- Organization invite codes were missing from the audit-log redaction list
+- Event envelope IDs were generated as UUIDv4 while documented (and relied on for ordering) as
+  UUIDv7
+- A repository function running a row-lock (`FOR UPDATE`) query now fails loudly if called outside
+  an active transaction, instead of silently running with no isolation guarantee
+- Two fail-open dependencies gating production-critical controls (session revocation, seat-limit
+  and usage tracking) now refuse to start if left unwired, instead of failing open silently
+- Removing a member, changing a member's role, and deleting a webhook endpoint now return `404`
+  for a cross-tenant sub-resource ID instead of a silent `204` no-op; retrying one or all failed
+  webhook deliveries now returns `404` for the same case instead of `500`. No data was ever leaked
+  in either case — API consistency only
+- Background/batch database writes (audit-log flush, last-seen-at updates) now use a separate
+  connection pool from the request-serving path, closing a self-deadlock class under concurrent
+  load — including the specific case where the billing catalog's own helpers could deadlock the
+  whole request pool under concurrency
+- Three silent-failure regressions introduced by the role/RLS split above were caught and fixed
+  the same round: payment-webhook confirmation, background usage recording, and billing
+  feature/limit checks all silently no-op'd under the new restricted roles instead of erroring
+- An outbox row that can never publish (a malformed payload, a permanently-unroutable key) no
+  longer retries forever and stalls the relay — capped at 20 attempts, with backoff between
+  retries
+- The AMQP publisher now self-recovers from a broker-initiated channel close (a capped-backoff
+  retry loop) instead of requiring a process restart, and no longer leaks a channel and a
+  goroutine when that recovery races a connection-level reconnect
+- A secret-placeholder rejection (refusing an obviously-unset value like `CHANGE_ME...` outside
+  development) now runs in `cmd/worker` too — previously only `cmd/api` checked it, even though
+  `cmd/worker` is the binary that actually decrypts webhook secrets
+- Migration `000008` no longer hardcodes the `stratum` database/owner names; on a deployment
+  using a different database name, the previous version failed silently — grants landed on
+  whichever database happened to be named `stratum`, only surfacing once the standard
+  `REVOKE CONNECT ... FROM PUBLIC` hardening step was applied
+- `composeAndInsertActivationInvoice` (billing) no longer silently ignores a database error
+  while checking for a pending invoice, which could have risked creating a duplicate invoice
+  on a transient failure
+
+### Removed
+
+- Empty, unused `deploy/docker-compose.staging.yml` placeholder
+
 ## [0.3.0] - 2026-08-10
 
 ### Added

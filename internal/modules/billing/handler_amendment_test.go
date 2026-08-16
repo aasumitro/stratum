@@ -52,7 +52,10 @@ func (s stubMFAUserReader) IsMFAEnabled(_ context.Context, _ string) (bool, erro
 // against actual middleware behavior, not just read off the route
 // registration line. Every test using this engine needs the caller to have
 // MFA enabled (that's the only state RequireMFAIfEnabled branches on); aal2
-// controls whether their claims carry a verified second factor.
+// controls whether their claims carry a verified second factor. RLS wires
+// the real per-request transaction middleware (not the package's usual
+// no-op) since the undo routes this engine drives take a row lock that
+// requires an actual transaction, same reasoning as NewModuleEngineWithRealRLS.
 func newAmendmentMFAEngine(pool *pgxpool.Pool, authSub, orgID string, aal2 bool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	mod := billing.NewModuleForTest(pool, nil)
@@ -75,7 +78,8 @@ func newAmendmentMFAEngine(pool *pgxpool.Pool, authSub, orgID string, aal2 bool)
 	noopMW := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
 	mod.Register(api, httpserver.RouteDeps{
-		Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW,
+		Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW,
+		RLS: middleware.NewRLSTxMiddleware(pool),
 		MFA: middleware.RequireMFAIfEnabled(stubMFAUserReader{enabled: true}),
 	})
 	return e
@@ -269,7 +273,7 @@ func TestIntegration_UndoDowngrade_NothingScheduled(t *testing.T) {
 	)
 	seedActiveOrgNoSchedule(t, pool, orgID, user)
 
-	e := billing.NewModuleEngine(pool, user, orgID)
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/downgrade/undo", ""))
 	if w.Code != http.StatusUnprocessableEntity {
@@ -290,7 +294,7 @@ func TestIntegration_UndoAddonQuantityChange_NothingScheduled(t *testing.T) {
 		t.Fatalf("seed attached addon: %v", err)
 	}
 
-	e := billing.NewModuleEngine(pool, user, orgID)
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/addons/extra-seat/undo", ""))
 	if w.Code != http.StatusUnprocessableEntity {
@@ -306,7 +310,7 @@ func TestIntegration_UndoCancellation_NothingScheduled(t *testing.T) {
 	)
 	seedActiveOrgNoSchedule(t, pool, orgID, user)
 
-	e := billing.NewModuleEngine(pool, user, orgID)
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel/undo", ""))
 	if w.Code != http.StatusUnprocessableEntity {
@@ -326,7 +330,7 @@ func TestIntegration_DowngradeSubscription_CancellationScheduled_Returns422(t *t
 	)
 	seedActiveOrgWithScheduledCancellation(t, pool, orgID, user)
 
-	e := billing.NewModuleEngine(pool, user, orgID)
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/downgrade",
 		`{"plan":"solo","cycle":"monthly"}`))
@@ -347,7 +351,7 @@ func TestIntegration_UndoDowngrade_ResponseIncludesScheduledPlan(t *testing.T) {
 	)
 	seedActiveOrgWithScheduledDowngrade(t, pool, orgID, user)
 
-	e := billing.NewModuleEngine(pool, user, orgID)
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/downgrade/undo", ""))
 	if w.Code != http.StatusOK {

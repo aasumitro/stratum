@@ -22,7 +22,7 @@ import (
 // IP and never matching a real allowlist entry).
 //
 // An empty cidrs list allows all traffic — config validation
-// (config.RequireWebhookSecretsOutsideDev) refuses to boot outside
+// (config.RequireSecretsOutsideDev) refuses to boot outside
 // development with this route's allowlist unset, but this also logs a
 // warning so an empty list is never silently invisible in this file alone.
 func NewIPAllowlistMiddleware(cidrs []string) (gin.HandlerFunc, error) {

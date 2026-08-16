@@ -183,7 +183,7 @@ const stripeSignatureTolerance = 5 * 60 // 5 minutes in seconds
 
 // verifyStripeSignature validates the Stripe-Signature header via HMAC-SHA256.
 // An empty secret skips verification — only reachable in development, since
-// config.RequireWebhookSecretsOutsideDev fails startup otherwise.
+// config.RequireSecretsOutsideDev fails startup otherwise.
 func verifyStripeSignature(body []byte, sigHeader, secret string) bool {
 	if secret == "" {
 		return true
@@ -222,7 +222,7 @@ func verifyStripeSignature(body []byte, sigHeader, secret string) bool {
 
 // verifyXenditToken checks the x-callback-token header. An empty
 // configToken skips verification — only reachable in development, since
-// config.RequireWebhookSecretsOutsideDev fails startup otherwise.
+// config.RequireSecretsOutsideDev fails startup otherwise.
 func verifyXenditToken(headerToken, configToken string) bool {
 	if configToken == "" {
 		return true

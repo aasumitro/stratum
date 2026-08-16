@@ -37,6 +37,21 @@ type Infra struct {
 	Pool  *pgxpool.Pool
 	Redis *goredis.Client
 
+	// WebhookPool is a BYPASSRLS connection pool used by exactly one call
+	// site (billing's processWebhook) to apply a webhook-driven payment
+	// confirmation, which arrives with no authenticated org context to
+	// satisfy RLS. Only RunAPI opens it — webhooks never reach cmd/worker —
+	// so it stays nil on a worker-built Infra.
+	WebhookPool *pgxpool.Pool
+
+	// BackgroundPool is a small connection pool, credentialed identically to
+	// Pool (same stratum_app role/URL), reserved for background writes that
+	// must not compete with request-handler connections for Pool's slots:
+	// the audit writer's batch flush and the OnAuth hook's last_seen_at
+	// update. Only RunAPI opens it — cmd/worker has no request path for a
+	// second pool to protect — so it stays nil on a worker-built Infra.
+	BackgroundPool *pgxpool.Pool
+
 	MQConn      *messaging.Connection
 	MQPublisher *messaging.Publisher
 
@@ -48,7 +63,7 @@ type Infra struct {
 // SetupInfra dials OTel, Postgres, Redis, and RabbitMQ in that order,
 // unwinding anything already opened if a later step fails. Call
 // Infra.Close on the successful result to release everything in reverse.
-func SetupInfra(ctx context.Context, cfg *config.Config) (*Infra, error) {
+func SetupInfra(ctx context.Context, cfg *config.Config, postgresURL string) (*Infra, error) {
 	otelProviders, otelShutdown, err := otel.Setup(
 		ctx, cfg.OTel, cfg.ServiceName, cfg.ServiceVersion, cfg.Env == EnvDevelopment,
 	)
@@ -58,7 +73,9 @@ func SetupInfra(ctx context.Context, cfg *config.Config) (*Infra, error) {
 
 	log := logger.New(cfg.Log.Level, cfg.Log.Format, otelProviders.SlogHandler())
 
-	pool, err := db.NewPostgresPool(ctx, cfg.Postgres)
+	pgCfg := cfg.Postgres
+	pgCfg.URL = postgresURL
+	pool, err := db.NewPostgresPool(ctx, pgCfg)
 	if err != nil {
 		_ = otelShutdown(ctx)
 		return nil, fmt.Errorf("setting up postgres: %w", err)
@@ -92,11 +109,57 @@ func SetupInfra(ctx context.Context, cfg *config.Config) (*Infra, error) {
 	}, nil
 }
 
-// Close releases every connection SetupInfra opened, in reverse order
-// (mq, redis, postgres, otel).
+// OpenWebhookPool opens Infra.WebhookPool, credentialed for stratum_webhook
+// (cfg.Postgres.WebhookURL). Called only by RunAPI, after SetupInfra
+// succeeds — webhook confirmations never reach cmd/worker, so RunWorker
+// never calls this and WebhookPool stays nil on that Infra. Assigning the
+// opened pool to infra.WebhookPool before returning means RunAPI's
+// already-deferred Infra.Close cleans it up on any later failure, with no
+// separate unwind path needed.
+func OpenWebhookPool(ctx context.Context, infra *Infra) error {
+	pgCfg := infra.Cfg.Postgres
+	pgCfg.URL = pgCfg.WebhookURL
+	pool, err := db.NewPostgresPool(ctx, pgCfg)
+	if err != nil {
+		return fmt.Errorf("setting up webhook postgres pool: %w", err)
+	}
+	infra.WebhookPool = pool
+	return nil
+}
+
+// OpenBackgroundPool opens Infra.BackgroundPool, reusing the same
+// stratum_app role/URL as Infra.Pool (cfg.Postgres.URL) — this is a
+// connection-slot split, not a privilege split, so only MaxOpenConns
+// differs. Called only by RunAPI, after SetupInfra succeeds — cmd/worker
+// has no request path for a second pool to protect, so RunWorker never
+// calls this and BackgroundPool stays nil on that Infra. Assigning the
+// opened pool to infra.BackgroundPool before returning means RunAPI's
+// already-deferred Infra.Close cleans it up on any later failure, with no
+// separate unwind path needed.
+func OpenBackgroundPool(ctx context.Context, infra *Infra) error {
+	pgCfg := infra.Cfg.Postgres
+	pgCfg.MaxOpenConns = infra.Cfg.Postgres.BackgroundMaxOpenConns
+	pool, err := db.NewPostgresPool(ctx, pgCfg)
+	if err != nil {
+		return fmt.Errorf("setting up background postgres pool: %w", err)
+	}
+	infra.BackgroundPool = pool
+	return nil
+}
+
+// Close releases every connection SetupInfra (and, on the API binary,
+// OpenWebhookPool/OpenBackgroundPool) opened, in reverse order (background
+// pool, webhook pool, mq, redis, postgres, otel). BackgroundPool and
+// WebhookPool are nil-checked since RunWorker's Infra never opens either.
 // Errors are discarded: shutdown
 // is best-effort by convention throughout this codebase.
 func (i *Infra) Close(ctx context.Context) {
+	if i.BackgroundPool != nil {
+		i.BackgroundPool.Close()
+	}
+	if i.WebhookPool != nil {
+		i.WebhookPool.Close()
+	}
 	_ = i.mqShutdown()
 	i.Pool.Close()
 	_ = i.redisShutdown()

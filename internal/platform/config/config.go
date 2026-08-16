@@ -14,6 +14,13 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
+// placeholderWebhookEncryptionKey is the unmistakable non-secret value .env.example ships for
+// WEBHOOK_SECRET_ENCRYPTION_KEY. RequireSecretsOutsideDev rejects it explicitly outside
+// development so a deployment that copied .env.example forward without generating a real key
+// fails loudly at boot instead of silently encrypting webhook secrets under a passphrase that's
+// public in the repository.
+const placeholderWebhookEncryptionKey = "CHANGE_ME_generate_with_openssl_rand_base64_32"
+
 // Config is the root configuration struct. Nested structs group config
 // by infrastructure concern, mirroring the platform/ package layout.
 type Config struct {
@@ -37,7 +44,8 @@ type Config struct {
 	// and letting a spoofed header evade per-IP rate limiting).
 	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
 
-	AuditRetentionDays int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
+	AuditRetentionDays  int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
+	OutboxRetentionDays int `env:"OUTBOX_RETENTION_DAYS" envDefault:"30"`
 
 	// StatsToken gates GET /health/stats (goroutine/heap/pool internals —
 	// a reconnaissance surface if reachable from the public internet).
@@ -54,6 +62,22 @@ type Config struct {
 	// X-Debug-Country-Code header instead (see RequireGeoIPDBOutsideDev).
 	GeoIPDBPath string `env:"GEOIP_DB_PATH"`
 
+	// WebhookSecretEncryptionKey is the pgcrypto (pgp_sym_encrypt/pgp_sym_decrypt) passphrase
+	// used to encrypt organization.webhook_endpoints' outbound signing secrets at rest. Unlike
+	// the inbound webhook secrets below, an empty value has no safe meaning here — there's no
+	// legitimate "skip encryption" mode — so this is required in every environment, including
+	// development, not gated behind RequireSecretsOutsideDev like STRIPE_WEBHOOK_SECRET etc.
+	WebhookSecretEncryptionKey string `env:"WEBHOOK_SECRET_ENCRYPTION_KEY,required,notEmpty"`
+	// WebhookSecretEncryptionKeyPrevious is the prior pgcrypto passphrase, set
+	// alongside WebhookSecretEncryptionKeyVersion only while a key rotation is
+	// in progress. Empty (the default) means no rotation is in progress — unlike
+	// WebhookSecretEncryptionKey, an empty value here is a legitimate steady
+	// state, so this field is NOT tagged notEmpty.
+	WebhookSecretEncryptionKeyPrevious string `env:"WEBHOOK_SECRET_ENCRYPTION_KEY_PREVIOUS"`
+	// WebhookSecretEncryptionKeyVersion is the version number an operator bumps
+	// by hand alongside setting WebhookSecretEncryptionKeyPrevious when rotating.
+	WebhookSecretEncryptionKeyVersion int `env:"WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION" envDefault:"1"`
+
 	Postgres PostgresConfig
 	Redis    RedisConfig
 	RabbitMQ RabbitMQConfig
@@ -67,9 +91,20 @@ type Config struct {
 }
 
 type PostgresConfig struct {
-	URL          string        `env:"POSTGRES_URL,required"`
-	MaxOpenConns int32         `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
-	MaxIdleTime  time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
+	URL       string `env:"POSTGRES_APP_URL,required"`
+	WorkerURL string `env:"POSTGRES_WORKER_URL,required"`
+	// WebhookURL is required on both binaries because both load this same
+	// struct, but only cmd/api ever opens a pool with it (see
+	// bootstrap.SetupInfra/RunAPI) — cmd/worker never serves webhooks.
+	WebhookURL   string `env:"POSTGRES_WEBHOOK_URL,required"`
+	MaxOpenConns int32  `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
+	// BackgroundMaxOpenConns sizes Infra.BackgroundPool (cmd/api only) — a
+	// small pool isolating background writes (the audit writer, the OnAuth
+	// last_seen_at update) from request-path connection contention on
+	// Infra.Pool. Same stratum_app role/URL as Infra.Pool; only pool size
+	// differs.
+	BackgroundMaxOpenConns int32         `env:"POSTGRES_BACKGROUND_MAX_OPEN_CONNS" envDefault:"5"`
+	MaxIdleTime            time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
 }
 
 type RedisConfig struct {
@@ -84,12 +119,20 @@ type RabbitMQConfig struct {
 // (Supabase or Clerk). JWKSURL is the only required field — we verify
 // tokens via their published JSON Web Key Set rather than a shared secret.
 type AuthConfig struct {
-	JWKSURL        string `env:"AUTH_JWKS_URL,required"`
-	Issuer         string `env:"AUTH_ISSUER,required"`
-	Audience       string `env:"AUTH_AUDIENCE"`
-	AdminURL       string `env:"AUTH_ADMIN_URL"`          // e.g. https://xxx.supabase.co/auth/v1
-	ServiceRoleKey string `env:"AUTH_SERVICE_ROLE_KEY"`   // Supabase service_role key
-	WebhookSecret  string `env:"SUPABASE_WEBHOOK_SECRET"` // shared secret header for the auth.users Database Webhook; empty = skip verification
+	JWKSURL  string `env:"AUTH_JWKS_URL,required"`
+	Issuer   string `env:"AUTH_ISSUER,required"`
+	Audience string `env:"AUTH_AUDIENCE"`
+	AdminURL string `env:"AUTH_ADMIN_URL"` // e.g. https://xxx.supabase.co/auth/v1
+
+	// AccessTokenMaxTTL is the maximum lifetime a Supabase-issued access token
+	// can have in this deployment — must match or exceed the Supabase project's
+	// configured JWT expiry. Used by account.revokeAllSessions to size the
+	// per-user revocation epoch's TTL, since that epoch must outlive every
+	// access token that could still be valid when it's written, not just the
+	// token that triggered the revocation (see docs/02-getting-started.md).
+	AccessTokenMaxTTL time.Duration `env:"AUTH_ACCESS_TOKEN_MAX_TTL" envDefault:"1h"`
+	ServiceRoleKey    string        `env:"AUTH_SERVICE_ROLE_KEY"`   // Supabase service_role key
+	WebhookSecret     string        `env:"SUPABASE_WEBHOOK_SECRET"` // shared secret header for the auth.users Database Webhook; empty = skip verification
 }
 
 type LogConfig struct {
@@ -154,14 +197,15 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// RequireWebhookSecretsOutsideDev enforces that every registered webhook
-// route has its verification secret configured once Env isn't
-// "development". Each of these routes' handlers treats an empty secret as
-// "skip verification" — fine for local dev, but an unset secret in any
-// other env means the route silently accepts unsigned/forged payloads that
-// mutate real state (payment status, account email). Call this right after
-// Load() so a missing secret fails startup instead of serving.
-func (c *Config) RequireWebhookSecretsOutsideDev() error {
+// RequireSecretsOutsideDev enforces that every registered webhook route has
+// its verification secret configured and that operational secrets (like
+// STATS_TOKEN) are set once Env isn't "development". Each webhook handler
+// treats an empty secret as "skip verification" — fine for local dev, but
+// an unset secret in any other env means the route silently accepts
+// unsigned/forged payloads that mutate real state (payment status, account
+// email). Call this right after Load() so a missing secret fails startup
+// instead of serving.
+func (c *Config) RequireSecretsOutsideDev() error {
 	if c.Env == envDevelopment {
 		return nil
 	}
@@ -178,8 +222,14 @@ func (c *Config) RequireWebhookSecretsOutsideDev() error {
 	if c.Auth.WebhookSecret == "" {
 		missing = append(missing, "SUPABASE_WEBHOOK_SECRET")
 	}
+	if c.StatsToken == "" {
+		missing = append(missing, "STATS_TOKEN")
+	}
+	if c.WebhookSecretEncryptionKey == placeholderWebhookEncryptionKey {
+		missing = append(missing, "WEBHOOK_SECRET_ENCRYPTION_KEY (still the .env.example placeholder value)")
+	}
 	if len(missing) > 0 {
-		return fmt.Errorf("config: missing required webhook secret(s) outside development: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("config: missing required secret(s) outside development: %s", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -190,7 +240,7 @@ func (c *Config) RequireWebhookSecretsOutsideDev() error {
 // depends on a working GeoIP lookup — geoip.Resolver's development-only
 // X-Debug-Country-Code override doesn't apply there, so an unset path would
 // silently resolve every request to the same empty-lookup fallback. Call
-// this right after Load(), alongside RequireWebhookSecretsOutsideDev.
+// this right after Load(), alongside RequireSecretsOutsideDev.
 func (c *Config) RequireGeoIPDBOutsideDev() error {
 	if c.Env == envDevelopment {
 		return nil

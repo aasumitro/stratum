@@ -1,12 +1,15 @@
 package bootstrap
 
 import (
+	"log/slog"
+
 	"github.com/aasumitro/stratum/internal/modules/account"
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/modules/notification"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/modules/reference"
 	"github.com/aasumitro/stratum/internal/platform/mailer"
+	"github.com/aasumitro/stratum/internal/platform/outbox"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -38,6 +41,11 @@ type WorkerModules struct {
 	Reference    *reference.Module
 	Billing      *billing.Module
 	Notification *notification.Module
+	// OutboxRelay delivers messaging.outbox rows to the broker — not a
+	// domain module (it consumes no events, owns no schema other modules
+	// touch), but worker-scoped infrastructure driven by RunWorker's own
+	// ticker alongside the module consumers above.
+	OutboxRelay *outbox.Relay
 }
 
 // NewWorkerModules constructs and cross-wires every module the worker
@@ -48,9 +56,12 @@ func NewWorkerModules(infra *Infra, storageClient *storage.Client) *WorkerModule
 	cfg := infra.Cfg
 
 	refMod := reference.New(infra.Pool)
-	organizationMod := organization.New(infra.Pool, infra.MQPublisher)
+	organizationMod := organization.New(infra.Pool, infra.MQPublisher, cfg.WebhookSecretEncryptionKey, cfg.WebhookSecretEncryptionKeyPrevious, cfg.WebhookSecretEncryptionKeyVersion)
 	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
-		cfg.Auth.ServiceRoleKey, nil, nil, "")
+		cfg.Auth.ServiceRoleKey, nil, storageClient, "", cfg.Auth.AccessTokenMaxTTL)
+	if cfg.Storage.URL != "" && !accountMod.HasStorage() {
+		slog.Warn("account module: storage configured but client not wired; GDPR avatar deletion will no-op")
+	}
 	billingMod := billing.New(
 		infra.Pool, infra.MQPublisher,
 		billing.ProviderConfig{
@@ -63,6 +74,7 @@ func NewWorkerModules(infra *Infra, storageClient *storage.Client) *WorkerModule
 			XenditAllowedCIDRs:  cfg.Xendit.AllowedCIDRs,
 		},
 		refMod, organizationMod,
+		nil, // cmd/worker never serves webhooks; s.webhookPool is never referenced on this instance
 	)
 	mailClient := mailer.New(cfg.SMTP)
 	notifMod := notification.New(infra.Pool, mailClient,
@@ -81,6 +93,7 @@ func NewWorkerModules(infra *Infra, storageClient *storage.Client) *WorkerModule
 	billingMod.SetOrganizationCommander(organizationMod)
 	organizationMod.SetBillingReader(billingMod)
 	organizationMod.SetBillingWriter(billingMod)
+	organizationMod.MustBeWired()
 	organizationMod.SetUserReader(accountMod)
 	organizationMod.SetStorageClient(storageClient)
 
@@ -92,5 +105,6 @@ func NewWorkerModules(infra *Infra, storageClient *storage.Client) *WorkerModule
 		Reference:    refMod,
 		Billing:      billingMod,
 		Notification: notifMod,
+		OutboxRelay:  outbox.NewRelay(infra.Pool, infra.MQPublisher),
 	}
 }

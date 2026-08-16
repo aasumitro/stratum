@@ -5,6 +5,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/app/bootstrap"
 	"github.com/aasumitro/stratum/internal/platform/config"
+	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
 // TestNewWorkerModules_DoesNotPanic guards the wiring in NewWorkerModules
@@ -30,5 +31,21 @@ func TestNewWorkerModules_DoesNotPanic(t *testing.T) {
 	if mods.Organization == nil || mods.Account == nil || mods.Reference == nil ||
 		mods.Billing == nil || mods.Notification == nil {
 		t.Fatal("NewWorkerModules returned a WorkerModules with a nil module")
+	}
+}
+
+func TestNewWorkerModules_StorageClientWired(t *testing.T) {
+	infra := &bootstrap.Infra{
+		Cfg: &config.Config{},
+	}
+
+	modsWithoutStorage := bootstrap.NewWorkerModules(infra, nil)
+	if modsWithoutStorage.Account.HasStorage() {
+		t.Error("expected HasStorage() to return false when storageClient is nil")
+	}
+
+	modsWithStorage := bootstrap.NewWorkerModules(infra, &storage.Client{})
+	if !modsWithStorage.Account.HasStorage() {
+		t.Error("expected HasStorage() to return true when storageClient is non-nil")
 	}
 }

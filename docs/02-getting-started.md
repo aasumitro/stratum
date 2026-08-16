@@ -50,11 +50,13 @@ Everything is read once at startup from the environment (see `.env.example`). Th
 
 | Variable | Purpose |
 |---|---|
-| `POSTGRES_URL` | Postgres connection (required) |
+| `POSTGRES_APP_URL` | Postgres connection for API (`stratum_app` role) (required) |
+| `POSTGRES_WORKER_URL` | Postgres connection for Worker (`stratum_worker` role) (required) |
 | `REDIS_URL` | Redis connection (required) |
 | `RABBITMQ_URL` | RabbitMQ connection (required) |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER` | JWKS endpoint + issuer for token validation (required) |
 | `AUTH_AUDIENCE`, `AUTH_ADMIN_URL`, `AUTH_SERVICE_ROLE_KEY` | Supabase audience + Admin API (sessions, MFA sync) |
+| `AUTH_ACCESS_TOKEN_MAX_TTL` | Max access-token lifetime (must match or exceed Supabase JWT expiry, default: 1h) |
 | `SUPABASE_WEBHOOK_SECRET` | Shared header for the auth.users Database Webhook (email sync) |
 | `STRIPE_*`, `XENDIT_*` | Payment providers (USD / IDR) |
 | `SMTP_*` | Email delivery |

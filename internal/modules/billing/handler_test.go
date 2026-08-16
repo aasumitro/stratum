@@ -119,6 +119,27 @@ func TestXenditWebhook_RejectsWhenTokenSetAndWrongToken(t *testing.T) {
 	}
 }
 
+// TestStripeWebhook_ManyUnsignedRequests_NeverRateLimited guards against an
+// IP-keyed rate limiter ever being reintroduced ahead of /webhooks. Every
+// route in this group is already authenticated by signature/token before
+// any state-changing logic runs, so IP-based limiting adds no security
+// value here and, behind a shared proxy or load balancer (where many
+// distinct callers can resolve to the same client IP), collapses into a
+// single global counter — turning normal provider traffic into spurious
+// 429s. handleStripeWebhook itself never rate-limits; hammering it here
+// proves requests are rejected by signature verification alone, however
+// many arrive, with nothing capable of ever returning 429.
+func TestStripeWebhook_ManyUnsignedRequests_NeverRateLimited(t *testing.T) {
+	engine := billing.NewWebhookEngine("webhook_secret", "")
+	for i := range 200 {
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", `{"type":"checkout.session.completed"}`))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("request %d: want 401 (signature rejection), got %d", i, w.Code)
+		}
+	}
+}
+
 func TestXenditWebhook_AcceptsCorrectToken(t *testing.T) {
 	const token = "correct_token"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhooks/xendit",

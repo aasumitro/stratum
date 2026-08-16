@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -25,6 +24,14 @@ func QuerierFromContext(ctx context.Context, fallback Querier) Querier {
 		return q
 	}
 	return fallback
+}
+
+// HasQuerier reports whether ctx carries a Querier installed by WithQuerier —
+// true inside an ambient transaction (an RLS-wrapped request, or a caller's
+// own db.WithTx), false when only the fallback pool is available.
+func HasQuerier(ctx context.Context) bool {
+	_, ok := ctx.Value(querierKey{}).(Querier)
+	return ok
 }
 
 // WithoutQuerier clears any Querier stashed in ctx by WithQuerier. Use it
@@ -97,55 +104,24 @@ func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx Querier) error) 
 	return nil
 }
 
-type pendingEventsKey struct{}
-
-// pendingEventsQueue guards its slice with a mutex — QueueEvent may be
-// called from goroutines spawned within the same request/transaction, and
-// appending to a shared slice without synchronization is a data race.
-type pendingEventsQueue struct {
-	mu     sync.Mutex
-	events []func()
+// RequireTx panics if q is not an active transaction (*pgx.Tx). Call this
+// at the top of any repository function issuing a `FOR UPDATE` lock — the
+// lock only protects anything for the lifetime of the transaction that
+// holds it; against the bare pool, the lock is acquired and released
+// within the same statement, silently providing no protection at all.
+// Panicking here turns a route-group-membership mistake (billingPay
+// instead of billing, or a new handler in the wrong group) into an
+// immediate, loud 500 instead of a race condition that only shows up
+// under real concurrent load.
+func RequireTx(q Querier) {
+	if _, ok := q.(pgx.Tx); !ok {
+		panic("db.RequireTx: FOR UPDATE query issued without an active transaction")
+	}
 }
 
-// WithPendingEvents installs an empty pending-events queue into ctx, scoped
-// to one request/transaction. Call once, before the transaction begins.
-func WithPendingEvents(ctx context.Context) context.Context {
-	return context.WithValue(ctx, pendingEventsKey{}, &pendingEventsQueue{})
-}
-
-// QueueEvent defers fn until FlushPendingEvents runs — used to publish a
-// domain event only after its enclosing transaction has actually committed,
-// instead of interleaved with the writes that produced it (publishing
-// before commit would announce state that might still roll back). If ctx
-// carries no queue (no enclosing transaction set one up), fn runs
-// immediately — there's nothing to defer it past.
-func QueueEvent(ctx context.Context, fn func()) {
-	q, ok := ctx.Value(pendingEventsKey{}).(*pendingEventsQueue)
-	if !ok {
-		fn()
-		return
-	}
-	q.mu.Lock()
-	q.events = append(q.events, fn)
-	q.mu.Unlock()
-}
-
-// FlushPendingEvents runs every event queued via QueueEvent, in order, then
-// clears the queue. Call only after a successful commit — never after a
-// rollback, since the queued events describe state that was just discarded.
-func FlushPendingEvents(ctx context.Context) {
-	q, ok := ctx.Value(pendingEventsKey{}).(*pendingEventsQueue)
-	if !ok {
-		return
-	}
-	// Copy the queue out and release the lock before running events —
-	// an event running QueueEvent (re-entrant) would otherwise deadlock.
-	q.mu.Lock()
-	events := q.events
-	q.events = nil
-	q.mu.Unlock()
-
-	for _, fn := range events {
-		fn()
-	}
+// SetOrgContext configures the Postgres app.organization_id setting for the
+// current transaction so RLS policies can evaluate it.
+func SetOrgContext(ctx context.Context, q Querier, orgID string) error {
+	_, err := q.Exec(ctx, "SELECT set_config('app.organization_id', $1, true)", orgID)
+	return err
 }

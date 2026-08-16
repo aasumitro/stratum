@@ -67,7 +67,16 @@ func TestIntegration_CancelSubscription_Active_Schedules(t *testing.T) {
 	mod := NewModuleForTest(pool, nil)
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 
-	updated, err := mod.svc.cancelSubscription(t.Context(), "organization", orgID, "sub_owner", "too_expensive", "")
+	// cancelSubscription locks the subscription row via s.querier(ctx),
+	// which resolves to whatever transaction is already in ctx (the RLS
+	// middleware's, in a live request) — wrap the call in a real
+	// transaction here, mirroring how the RLS-wrapped route actually calls it.
+	var updated *subscriptionRecord
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		var txErr error
+		updated, txErr = mod.svc.cancelSubscription(db.WithQuerier(t.Context(), tx), "organization", orgID, "sub_owner", "too_expensive", "")
+		return txErr
+	})
 	if err != nil {
 		t.Fatalf("cancelSubscription: %v", err)
 	}
@@ -120,7 +129,10 @@ func TestIntegration_CancelSubscription_Active_SupersedesOtherScheduledAmendment
 		t.Fatalf("seed scheduled addon change: %v", err)
 	}
 
-	if _, err := mod.svc.cancelSubscription(t.Context(), "organization", orgID, "sub_owner", "too_expensive", ""); err != nil {
+	if err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, txErr := mod.svc.cancelSubscription(db.WithQuerier(t.Context(), tx), "organization", orgID, "sub_owner", "too_expensive", "")
+		return txErr
+	}); err != nil {
 		t.Fatalf("cancelSubscription: %v", err)
 	}
 
@@ -154,7 +166,12 @@ func TestIntegration_UndoScheduledCancellation_ClearsSchedule(t *testing.T) {
 		t.Fatalf("scheduleCancellation: %v", err)
 	}
 
-	updated, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID, "sub_owner")
+	var updated *subscriptionRecord
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		var txErr error
+		updated, txErr = mod.svc.undoScheduledCancellation(db.WithQuerier(t.Context(), tx), "organization", orgID, "sub_owner")
+		return txErr
+	})
 	if err != nil {
 		t.Fatalf("undoScheduledCancellation: %v", err)
 	}
@@ -173,7 +190,10 @@ func TestIntegration_UndoScheduledCancellation_NothingScheduled(t *testing.T) {
 	mod := NewModuleForTest(pool, nil)
 	makeActiveAmendmentSubscription(t, pool, r, orgID)
 
-	_, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID, "sub_owner")
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, txErr := mod.svc.undoScheduledCancellation(db.WithQuerier(t.Context(), tx), "organization", orgID, "sub_owner")
+		return txErr
+	})
 	wantApperrCode(t, err, "NO_SCHEDULED_CANCELLATION")
 }
 
@@ -190,7 +210,10 @@ func TestIntegration_UndoScheduledCancellation_AlreadyCancelled(t *testing.T) {
 		t.Fatalf("force cancelled: %v", err)
 	}
 
-	_, err := mod.svc.undoScheduledCancellation(t.Context(), "organization", orgID, "sub_owner")
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, txErr := mod.svc.undoScheduledCancellation(db.WithQuerier(t.Context(), tx), "organization", orgID, "sub_owner")
+		return txErr
+	})
 	wantApperrCode(t, err, "NO_SCHEDULED_CANCELLATION")
 }
 

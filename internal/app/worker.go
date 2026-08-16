@@ -11,6 +11,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/app/bootstrap"
 	"github.com/aasumitro/stratum/internal/platform/config"
+	"github.com/aasumitro/stratum/internal/platform/outbox"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -22,8 +23,11 @@ func RunWorker() error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	if err := cfg.RequireSecretsOutsideDev(); err != nil {
+		return fmt.Errorf("validating config: %w", err)
+	}
 
-	infra, err := bootstrap.SetupInfra(ctx, cfg)
+	infra, err := bootstrap.SetupInfra(ctx, cfg, cfg.Postgres.WorkerURL)
 	if err != nil {
 		return err
 	}
@@ -73,6 +77,42 @@ func RunWorker() error {
 				return
 			case <-ticker.C:
 				mods.Organization.CleanupExpiredInvitations(ctx)
+			}
+		}
+	})
+
+	// Outbox relay: delivers messaging.outbox rows (written transactionally
+	// by events.Enqueue/EnqueueDelayed) to the broker. A 2-second poll, not
+	// LISTEN/NOTIFY — this codebase has no such infrastructure, and a few
+	// seconds of added latency is an acceptable trade for durability.
+	wg.Go(func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mods.OutboxRelay.RelayBatch(ctx)
+			}
+		}
+	})
+
+	// Hourly retention sweep: deletes published messaging.outbox rows past
+	// OUTBOX_RETENTION_DAYS. Never touches unpublished rows, so a stuck or
+	// exhausted row stays visible to the "Stuck outbox backlog" runbook
+	// query for as long as it remains unpublished.
+	wg.Go(func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := outbox.Sweep(ctx, infra.Pool, cfg.OutboxRetentionDays); err != nil {
+					infra.Log.Warn("outbox retention sweep failed", "error", err)
+				}
 			}
 		}
 	})

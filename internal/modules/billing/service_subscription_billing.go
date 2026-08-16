@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -280,27 +281,37 @@ func (s *service) extendSubscription(
 		}
 	}()
 
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
+	var sub *subscriptionRecord
+	var isPending bool
+	var addons []attachedAddonRecord
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var findErr error
+		sub, findErr = s.repo.findSubscriptionBySubject(txCtx, tx, subjectType, subjectID)
+		if findErr != nil {
+			return findErr
+		}
+		if sub.Status != statusActive || sub.PeriodStart == nil || sub.PeriodEnd == nil {
+			return nil
+		}
+		isPending, findErr = s.repo.hasPendingInvoiceBlockingExtend(txCtx, tx, sub.ID)
+		if findErr != nil || isPending {
+			return findErr
+		}
+		addons, findErr = s.repo.listAttachedAddonsWithPricing(txCtx, tx, sub.ID)
+		return findErr
+	})
 	if err != nil {
 		return nil, err
 	}
-	if sub.Status != statusActive {
+	if sub.Status != statusActive || sub.PeriodStart == nil || sub.PeriodEnd == nil {
 		return nil, ErrSubscriptionNotExtendable
 	}
-	if sub.PeriodStart == nil || sub.PeriodEnd == nil {
-		return nil, ErrSubscriptionNotExtendable
-	}
-
 	if switchToAnnual {
 		if sub.Cycle != cycleMonthly {
 			return nil, ErrAlreadyYearly
 		}
 		months = 12
-	}
-
-	isPending, err := s.repo.hasPendingInvoiceBlockingExtend(ctx, s.querier(ctx), sub.ID)
-	if err != nil {
-		return nil, err
 	}
 	if isPending {
 		return nil, ErrExtensionAlreadyPending
@@ -318,9 +329,8 @@ func (s *service) extendSubscription(
 	if err != nil {
 		return nil, ErrUnknownPlan
 	}
-	addons, err := s.repo.listAttachedAddonsWithPricing(ctx, s.querier(ctx), sub.ID)
-	if err != nil {
-		return nil, fmt.Errorf("billing.extendSubscription: list attached addons: %w", err)
+	if addons == nil {
+		addons = []attachedAddonRecord{}
 	}
 	subtotal := computeExtensionSubtotal(planInfo, sub.Currency, months) +
 		computeExtensionAddonSubtotal(addons, sub.Currency, months)
@@ -338,7 +348,7 @@ func (s *service) extendSubscription(
 	// after commit" shape as provisionSubscription. This route deliberately
 	// doesn't run under the group-level RLS tx (billing/module.go) so that
 	// HTTP call never holds a pooled DB connection open.
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
 		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID,
@@ -349,7 +359,16 @@ func (s *service) extendSubscription(
 		if err := s.insertExtensionLineItems(ctx, inv.ID, planInfo, addons, sub.Currency, months); err != nil {
 			return err
 		}
-		return nil
+		// Enqueued inside this transaction — commits before the payment-link
+		// HTTP call below starts, same billingPay-group pattern as every
+		// other site here: the durability guarantee only needs to cover the
+		// DB write and the outbox row, not a successful provider response.
+		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
+			events.InvoiceCreated{
+				OrgID: subjectID, InvoiceID: inv.ID,
+				Plan: sub.Plan, AmountCents: inv.AmountCents,
+				Currency: sub.Currency, DueAt: *inv.DueAt,
+			})
 	})
 	if err != nil {
 		return nil, err
@@ -359,14 +378,7 @@ func (s *service) extendSubscription(
 	// provider shouldn't block the extension itself; the invoice is already
 	// created and can be paid via the regular POST .../invoices/:id/pay flow,
 	// same fail-open convention as provisionSubscription.
-	_, _ = s.createPaymentLink(ctx, "", "", inv.ID)
-
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
-		events.InvoiceCreated{
-			OrgID: subjectID, InvoiceID: inv.ID,
-			Plan: sub.Plan, AmountCents: inv.AmountCents,
-			Currency: sub.Currency, DueAt: *inv.DueAt,
-		})
+	_, _ = s.createPaymentLink(ctx, subjectType, subjectID, inv.ID)
 
 	s.scheduleRenewalSequence(ctx, &subscriptionRecord{
 		ID: sub.ID, SubjectType: sub.SubjectType,
@@ -401,16 +413,39 @@ func (s *service) activateTrialNow(
 		}
 	}()
 
-	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
+	var sub *subscriptionRecord
+	var composed int64
+	var addonLines []lineItemSpec
+	var couponCode string
+	var discountCents int64
+
+	planInfo := (*contracts.PlanInfo)(nil)
+
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var findErr error
+		sub, findErr = s.repo.findSubscriptionBySubject(txCtx, tx, subjectType, subjectID)
+		if findErr != nil {
+			return findErr
+		}
+		if sub.Status != statusTrialing {
+			return nil
+		}
+		planInfo, findErr = s.planCatalog(txCtx, sub.Plan)
+		if findErr != nil {
+			return findErr
+		}
+		composed, addonLines, couponCode, discountCents, findErr = s.composeInvoiceAmount(
+			txCtx, tx, sub.ID, planInfo, sub.Currency, sub.Cycle)
+		return findErr
+	})
 	if err != nil {
 		return nil, err
 	}
 	if sub.Status != statusTrialing {
 		return nil, ErrSubscriptionNotTrialing
 	}
-
-	planInfo, err := s.planCatalog(ctx, sub.Plan)
-	if err != nil {
+	if planInfo == nil {
 		return nil, ErrUnknownPlan
 	}
 
@@ -418,12 +453,6 @@ func (s *service) activateTrialNow(
 	periodEnd := now.AddDate(0, 1, 0)
 	if sub.Cycle == cycleYearly {
 		periodEnd = now.AddDate(1, 0, 0)
-	}
-
-	composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(ctx,
-		s.querier(ctx), sub.ID, planInfo, sub.Currency, sub.Cycle)
-	if err != nil {
-		return nil, err
 	}
 	taxRate := 0
 	if s.taxReader != nil {
@@ -433,7 +462,7 @@ func (s *service) activateTrialNow(
 
 	// DB-local writes wrapped in one transaction — see extendSubscription for why.
 	var updated *subscriptionRecord
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
 		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID,
@@ -461,25 +490,27 @@ func (s *service) activateTrialNow(
 		); err != nil {
 			return err
 		}
-		return nil
+		// Enqueued inside this transaction — see extendSubscription's
+		// comment on why this must commit before the payment-link call below.
+		if err := events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeySubscriptionActivated, "billing", subjectID,
+			events.SubscriptionActivated{
+				OrgID: subjectID, SubscriptionID: updated.ID, Plan: updated.Plan, ActivatedAt: now,
+			}); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
+			events.InvoiceCreated{
+				OrgID: subjectID, InvoiceID: inv.ID,
+				Plan: sub.Plan, AmountCents: inv.AmountCents,
+				Currency: sub.Currency, DueAt: *inv.DueAt,
+			})
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	// Payment link is a convenience, not load-bearing — see extendSubscription.
-	_, _ = s.createPaymentLink(ctx, "", "", inv.ID)
-
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionActivated, "billing", subjectID,
-		events.SubscriptionActivated{
-			OrgID: subjectID, SubscriptionID: updated.ID, Plan: updated.Plan, ActivatedAt: now,
-		})
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", subjectID,
-		events.InvoiceCreated{
-			OrgID: subjectID, InvoiceID: inv.ID,
-			Plan: sub.Plan, AmountCents: inv.AmountCents,
-			Currency: sub.Currency, DueAt: *inv.DueAt,
-		})
+	_, _ = s.createPaymentLink(ctx, subjectType, subjectID, inv.ID)
 
 	s.scheduleRenewalSequence(ctx, &subscriptionRecord{
 		ID: sub.ID, SubjectType: sub.SubjectType,
@@ -509,7 +540,12 @@ func (s *service) resumeSubscription(
 		}
 	}()
 
-	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var findErr error
+		sub, findErr = s.repo.findSubscriptionBySubject(txCtx, tx, subjectType, subjectID)
+		return findErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -550,15 +586,21 @@ func (s *service) resumeFromCancelled(
 	}
 
 	var updated *subscriptionRecord
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := s.withOrgTx(ctx, subjectTypeOrganization, subjectID, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
 		updated, err = s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, newStatus)
 		if err != nil {
 			return err
 		}
-		if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
-			return err
+		if isStillTrialing {
+			if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
+				return err
+			}
+		} else {
+			if err := s.repo.clearTrialEndAndUpdatePeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
+				return err
+			}
 		}
 		if _, err := s.repo.insertHistory(
 			ctx, s.querier(ctx), sub.ID, "resume",
@@ -567,14 +609,12 @@ func (s *service) resumeFromCancelled(
 		); err != nil {
 			return err
 		}
-		return nil
+		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", subjectID,
+			events.SubscriptionResumed{OrgID: subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now})
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	events.Publish(ctx, s.pub, events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", subjectID,
-		events.SubscriptionResumed{OrgID: subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now})
 
 	renewalSub := &subscriptionRecord{
 		ID: sub.ID, SubjectType: sub.SubjectType,
@@ -600,8 +640,17 @@ func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord
 	if err != nil {
 		return nil, fmt.Errorf("billing.resumeFromExpired: %w: current plan", ErrUnknownPlan)
 	}
-	composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
-		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, sub.Cycle)
+	var composed int64
+	var addonLines []lineItemSpec
+	var couponCode string
+	var discountCents int64
+	err = s.withOrgTx(ctx, subjectTypeOrganization, sub.SubjectID, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		var compErr error
+		composed, addonLines, couponCode, discountCents, compErr = s.composeInvoiceAmount(
+			txCtx, tx, sub.ID, planInfo, sub.Currency, sub.Cycle)
+		return compErr
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -612,7 +661,7 @@ func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord
 	tax := calculateTax(composed, taxRate)
 
 	var inv *invoiceRecord
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = s.withOrgTx(ctx, subjectTypeOrganization, sub.SubjectID, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
 		var err error
 		// Stays "subscription", not "activation": the webhook dispatches
@@ -647,15 +696,22 @@ func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord
 	}
 
 	// Payment link is a convenience, not load-bearing — see extendSubscription.
-	_, _ = s.createPaymentLink(ctx, "", "", inv.ID)
+	_, _ = s.createPaymentLink(ctx, subjectTypeOrganization, sub.SubjectID, inv.ID)
 
 	return sub, nil
 }
 
-// scheduleRenewalSequence publishes delayed messages for the renewal flow:
+// scheduleRenewalSequence enqueues delayed messages for the renewal flow:
 // remind (7 days before a normal period end, 2 days before a trial end —
 // trials run exactly 7 days, so a 7-day lead would resolve to ~now and
 // never actually fire), 3 days before → auto-invoice, at end → expire check.
+// Runs after its caller's own state-changing transaction has already
+// committed (every call site calls this post-commit), so there's no
+// transaction left here for an enqueue failure to roll back — errors are
+// logged, not propagated, matching this function's existing "duplicate
+// delayed messages are harmless" tolerance for the class of loss this can
+// still leave (a rare DB-level failure on the outbox insert itself, not a
+// broker outage — the outbox+relay already covers that case durably).
 func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscriptionRecord) {
 	var endTime time.Time
 	isTrial := sub.TrialEnd != nil
@@ -680,19 +736,25 @@ func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscription
 		remindLeadDays = 2
 	}
 	if d := time.Until(endTime.AddDate(0, 0, -remindLeadDays)); d > 0 {
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
-			events.DelayRoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d)
+		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
+			events.DelayRoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d); err != nil {
+			slog.Error("billing.scheduleRenewalSequence: enqueue remind failed", "subscription_id", sub.ID, "error", err)
+		}
 	}
 
 	if d := time.Until(endTime.AddDate(0, 0, -3)); d > 0 {
-		events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
-			events.DelayRoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d)
+		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
+			events.DelayRoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d); err != nil {
+			slog.Error("billing.scheduleRenewalSequence: enqueue auto-invoice failed", "subscription_id", sub.ID, "error", err)
+		}
 	}
 
 	d := time.Until(endTime)
 	if d <= 0 {
 		d = time.Second
 	}
-	events.PublishDelayed(ctx, s.pub, events.ExchangeBillingDelay,
-		events.DelayRoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d)
+	if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
+		events.DelayRoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d); err != nil {
+		slog.Error("billing.scheduleRenewalSequence: enqueue expiry check failed", "subscription_id", sub.ID, "error", err)
+	}
 }

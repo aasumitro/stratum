@@ -3901,6 +3901,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
+                    },
+                    "404": {
+                        "description": "invitation not found",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
                     }
                 }
             }
@@ -4372,6 +4378,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
+                    },
+                    "404": {
+                        "description": "member not found",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
                     }
                 }
             }
@@ -4428,6 +4440,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "cannot change the owner's role, or admin role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "404": {
+                        "description": "member not found",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -4852,6 +4870,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
+                    },
+                    "404": {
+                        "description": "webhook not found",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
                     }
                 }
             },
@@ -5107,6 +5131,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
+                    },
+                    "404": {
+                        "description": "webhook not found",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
                     }
                 }
             }
@@ -5157,6 +5187,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "404": {
+                        "description": "webhook not found",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }

@@ -6,6 +6,8 @@ package middleware_test
 // (see platform/cache/cache_test.go) when TEST_REDIS_URL isn't set.
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -70,5 +72,64 @@ func TestRateLimit_RunsAfterAuth_KeysBySubjectNotIP(t *testing.T) {
 	// A different subject must get its own bucket regardless of IP.
 	if code := do("user-b", "10.0.0.1"); code != http.StatusOK {
 		t.Errorf("different subject: want 200 (separate bucket), got %d", code)
+	}
+}
+
+// TestByClientIP_KeyFunc_SharesBucketAcrossSubjects proves ByClientIP's
+// failure mode: it collapses every caller behind the same address into one
+// shared counter, regardless of who they are — a real risk for any route
+// sitting behind a shared proxy or load balancer, where many distinct
+// callers can resolve to the same client IP. See
+// TestStripeWebhook_ManyUnsignedRequests_NeverRateLimited in
+// internal/modules/billing/handler_test.go for a regression test against
+// the actual webhook route/handler chain; this test only covers the
+// ByClientIP primitive in isolation, same as its ByAuthenticatedSubject
+// sibling above.
+func TestByClientIP_KeyFunc_SharesBucketAcrossSubjects(t *testing.T) {
+	url := os.Getenv("TEST_REDIS_URL")
+	if url == "" {
+		t.Skip("TEST_REDIS_URL not set")
+	}
+	redisClient, err := cache.NewClient(t.Context(), config.RedisConfig{URL: url})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = redisClient.Close() })
+
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	limiter := cache.NewRateLimiter(redisClient, "test-rl-webhook")
+	rateMW := middleware.NewRateLimitMiddleware(limiter, middleware.ByClientIP, cache.PerHour(1))
+
+	e.GET("/webhooks", rateMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	do := func(ip string) int {
+		req := httptest.NewRequest(http.MethodGet, "/webhooks", nil)
+		req.RemoteAddr = ip + ":12345"
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// ByClientIP ignores everything but the address, so the key must be
+	// randomized per test run, not just per subject (which it never reads)
+	// — a fixed IP would collide with the previous run's still-live bucket
+	// under PerHour(1) and fail nondeterministically.
+	sharedIP := fmt.Sprintf("10.%d.%d.%d", rand.IntN(256), rand.IntN(256), rand.IntN(256))
+	otherIP := fmt.Sprintf("10.%d.%d.%d", rand.IntN(256), rand.IntN(256), rand.IntN(256))
+	for otherIP == sharedIP {
+		otherIP = fmt.Sprintf("10.%d.%d.%d", rand.IntN(256), rand.IntN(256), rand.IntN(256))
+	}
+
+	if code := do(sharedIP); code != http.StatusOK {
+		t.Fatalf("first request for %s: want 200, got %d", sharedIP, code)
+	}
+	if code := do(sharedIP); code != http.StatusTooManyRequests {
+		t.Errorf("second request from the same IP: want 429 (shared IP bucket), got %d", code)
+	}
+
+	// A different IP must get its own bucket.
+	if code := do(otherIP); code != http.StatusOK {
+		t.Errorf("different IP: want 200 (separate bucket), got %d", code)
 	}
 }

@@ -156,11 +156,11 @@ test: ## Run all tests
 
 .PHONY: test-integration
 test-integration: ## Run all tests including integration (requires infra): make test-integration
-	TEST_DATABASE_URL=$(DATABASE_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1
+	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1
 
 .PHONY: test-cover
 test-cover: ## Run all tests (incl. integration) with coverage and print the total %
-	TEST_DATABASE_URL=$(DATABASE_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1 -coverprofile=coverage.out
+	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1 -coverprofile=coverage.out
 	go tool cover -func=coverage.out | tail -1
 
 .PHONY: test-cover-html
@@ -205,7 +205,7 @@ sync-studio-deps: ## Upgrade studio deps to latest
 
 .PHONY: pre-push
 pre-push: verify-modules vet fmt lint vuln ## Mirror the GitHub CI api+web+studio jobs locally
-	TEST_DATABASE_URL=$(DATABASE_URL) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
+	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 	go tool cover -func=coverage.out
 	cd ui/app && npm ci && npm run typecheck && npm run lint && npx prettier --write "**/*.{ts,tsx}" && npm run build
 	cd ui/studio && go vet ./... && gofmt -w . && go build ./...

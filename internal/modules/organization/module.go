@@ -28,13 +28,13 @@ type Module struct {
 	Worker          *WebhookWorker
 }
 
-func New(pool *pgxpool.Pool, pub messaging.EventPublisher) *Module {
+func New(pool *pgxpool.Pool, pub messaging.EventPublisher, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
 	repo := &repository{}
-	svc := &service{repo: repo, pool: pool, pub: pub}
+	svc := &service{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
 	return &Module{
 		svc:    svc,
 		pool:   pool,
-		Worker: &WebhookWorker{repo: repo, pool: pool, pub: pub, log: slog.Default()},
+		Worker: &WebhookWorker{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
 	}
 }
 
@@ -105,6 +105,23 @@ func (m *Module) SetCountryResolver(r *geoip.Resolver) {
 // account module is created.
 func (m *Module) SetUserReader(r contracts.UserReader) {
 	m.svc.userReader = r
+}
+
+// MustBeWired panics if billingReader or billingWriter was never wired.
+// Unlike catalogReader, userReader, or store (deliberately nil-safe,
+// genuinely optional features that degrade gracefully when unwired), these
+// two gate checkMemberLimitLocked (seat-limit enforcement) and
+// syncMemberUsage (usage tracking) — security/billing controls this
+// workspace has already treated as production-critical. Call once at
+// startup, after SetBillingReader/SetBillingWriter, so a missing wire is a
+// boot-time panic instead of a silently fail-open control.
+func (m *Module) MustBeWired() {
+	switch {
+	case m.svc.billingReader == nil:
+		panic("organization.Module: billing reader not wired (call SetBillingReader)")
+	case m.svc.billingWriter == nil:
+		panic("organization.Module: billing writer not wired (call SetBillingWriter)")
+	}
 }
 
 // RemoveAllMemberships implements contracts.OrganizationWriter — deletes
@@ -242,15 +259,20 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 	adminUp := middleware.RequireRole(contracts.RoleOwner, contracts.RoleAdmin)
 
 	ws := r.Group("/organizations")
-	ws.Use(deps.Auth, deps.RateLimit)
+	ws.Use(deps.Auth)
 	{
-		ws.POST("", h.createOrganization)
-		ws.GET("", h.listOrganizations)
-		ws.GET("/join/preview", h.previewInviteCode)
-		ws.POST("/join", h.joinByCode)
+		// Unscoped routes — no org membership required, rate-limited per route
+		// rather than at the group level (the scoped subgroup below needs Org
+		// before RateLimit, and the shared parent Use() can't serve both).
+		ws.POST("", deps.RateLimit, h.createOrganization)
+		ws.GET("", deps.RateLimit, h.listOrganizations)
+		ws.GET("/join/preview", deps.RateLimit, h.previewInviteCode)
+		ws.POST("/join", deps.RateLimit, h.joinByCode)
 
+		// Scoped routes (org membership required, rate-limited after Org
+		// so a non-member gets 403 before the rate limiter ever runs).
 		scoped := ws.Group("/:organizationID")
-		scoped.Use(deps.Org)
+		scoped.Use(deps.Org, deps.RateLimit)
 		{
 			scoped.GET("", h.getOrganization)
 			scoped.PATCH("", ownerOnly, h.updateOrganization)

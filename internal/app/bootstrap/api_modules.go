@@ -3,6 +3,9 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -63,9 +66,12 @@ func NewAPIModules(
 		return nil, fmt.Errorf("setting up geoip: %w", err)
 	}
 
-	organizationMod := organization.New(infra.Pool, infra.MQPublisher)
+	organizationMod := organization.New(infra.Pool, infra.MQPublisher, cfg.WebhookSecretEncryptionKey, cfg.WebhookSecretEncryptionKeyPrevious, cfg.WebhookSecretEncryptionKeyVersion)
 	accountMod := account.New(infra.Pool, infra.MQPublisher, cfg.Auth.AdminURL,
-		cfg.Auth.ServiceRoleKey, accountNS, storageClient, cfg.Auth.WebhookSecret)
+		cfg.Auth.ServiceRoleKey, accountNS, storageClient, cfg.Auth.WebhookSecret, cfg.Auth.AccessTokenMaxTTL)
+	if cfg.Storage.URL != "" && !accountMod.HasStorage() {
+		slog.Warn("account module: storage configured but client not wired; GDPR avatar deletion will no-op")
+	}
 	refMod := reference.New(infra.Pool)
 	billingMod := billing.New(infra.Pool, infra.MQPublisher, billing.ProviderConfig{
 		StripeAPIKey:        cfg.Stripe.APIKey,
@@ -75,13 +81,14 @@ func NewAPIModules(
 		XenditAPIKey:        cfg.Xendit.APIKey,
 		XenditCallbackToken: cfg.Xendit.CallbackToken,
 		XenditAllowedCIDRs:  cfg.Xendit.AllowedCIDRs,
-	}, refMod, organizationMod)
+	}, refMod, organizationMod, infra.WebhookPool)
 	mailClient := mailer.New(cfg.SMTP)
 	notifMod := notification.New(infra.Pool, mailClient,
 		organizationMod, accountMod, cfg.AppURL, infra.Redis)
 
 	organizationMod.SetBillingReader(billingMod)
 	organizationMod.SetBillingWriter(billingMod)
+	organizationMod.MustBeWired()
 	organizationMod.SetStorageClient(storageClient)
 	organizationMod.SetUserReader(accountMod)
 	billingMod.SetUserReader(accountMod)
@@ -102,11 +109,21 @@ func NewAPIModules(
 
 	authMW, authSSEMW, err := middleware.NewAuthMiddleware(ctx, cfg.Auth, middleware.AuthHooks{
 		OnAuth: func(ctx context.Context, authSub string) {
-			_, _ = infra.Pool.Exec(ctx, `UPDATE account.users SET last_seen_at = now() WHERE auth_sub = $1`, authSub)
+			_, _ = infra.BackgroundPool.Exec(ctx, `UPDATE account.users SET last_seen_at = now() WHERE auth_sub = $1`, authSub)
 		},
-		IsRevoked: func(ctx context.Context, sessionID string) bool {
-			ok, _ := accountNS.Exists(ctx, "revoked_tokens:"+sessionID)
-			return ok
+		IsRevoked: func(ctx context.Context, authSub, sessionID string, issuedAt time.Time) bool {
+			if ok, _ := accountNS.Exists(ctx, "revoked_tokens:"+sessionID); ok {
+				return true
+			}
+			cutoff, err := accountNS.Get(ctx, "revoked_before:"+authSub)
+			if err != nil {
+				return false // includes redis.Nil (no epoch set) — same fail-open-on-lookup-miss convention as the line above
+			}
+			cutoffUnix, err := strconv.ParseInt(cutoff, 10, 64)
+			if err != nil {
+				return false
+			}
+			return issuedAt.Unix() < cutoffUnix
 		},
 		OnLogin: func(ctx context.Context, authSub, ip, ua string) {
 			accountMod.RecordLoginEvent(ctx, authSub, ip, ua)
@@ -117,6 +134,7 @@ func NewAPIModules(
 	}
 
 	accountMod.MustBeWired()
+	accountMod.MustHaveSessionRevocationWired()
 
 	return &APIModules{
 		Organization: organizationMod,

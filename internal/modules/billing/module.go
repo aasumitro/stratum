@@ -22,12 +22,21 @@ type Module struct {
 	cfg    ProviderConfig
 }
 
+// New webhookPool is a BYPASSRLS pool used by exactly one call site
+// (service.processWebhook) to apply a webhook-driven payment confirmation,
+// which arrives with no authenticated org context to satisfy RLS. nil on
+// cmd/worker's instance — the worker binary never serves webhooks, so
+// s.webhookPool is simply never referenced there.
 func New(
 	pool *pgxpool.Pool, pub messaging.EventPublisher,
 	cfg ProviderConfig, taxReader contracts.CountryTaxReader,
 	orgSuspender contracts.OrganizationSuspender,
+	webhookPool *pgxpool.Pool,
 ) *Module {
-	svc := &service{repo: &repository{}, pool: pool, pub: pub, provider: cfg, taxReader: taxReader, orgSuspender: orgSuspender}
+	svc := &service{
+		repo: &repository{}, pool: pool, pub: pub, provider: cfg,
+		taxReader: taxReader, orgSuspender: orgSuspender, webhookPool: webhookPool,
+	}
 	return &Module{svc: svc, Worker: &Worker{svc: svc}, cfg: cfg}
 }
 
@@ -195,7 +204,7 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 	r.GET("/billing/coupons/eligible", deps.Auth, deps.RateLimit, h.listEligibleCouponsForNewOrg)
 
 	billing := r.Group("/organizations/:organizationID/billing")
-	billing.Use(deps.Auth, deps.RateLimit, deps.Org, deps.RLS)
+	billing.Use(deps.Auth, deps.Org, deps.RateLimit, deps.RLS)
 	{
 		// Every billing tab is viewable by any member — only mutations
 		// (plan/cancel/resume/extend/activate/pay/addons/coupon redeem/manual
@@ -239,7 +248,7 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 	// all. Each service method wraps its own DB-only writes in db.WithTx
 	// and runs the provider call after that commits (see extendSubscription).
 	billingPay := r.Group("/organizations/:organizationID/billing")
-	billingPay.Use(deps.Auth, deps.RateLimit, deps.Org)
+	billingPay.Use(deps.Auth, deps.Org, deps.RateLimit)
 	{
 		billingPay.POST("/resume", ownerOnly, h.resumeSubscription)
 		billingPay.POST("/extend", ownerOnly, deps.MFA, h.extendSubscription)

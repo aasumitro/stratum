@@ -25,9 +25,18 @@ type webhookEndpointRecord struct {
 	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
-const webhookEndpointColumns = `id, organization_id, url, secret_plaintext, secret_plaintext_previous,
-	secret_rotation_expires_at, subscribed_events, enabled, auto_disabled_at, health_warned_at,
-	created_at, updated_at`
+// webhookEndpointSelectColumns returns the SELECT/RETURNING column list for
+// webhookEndpointRecord; each row's two secret columns are decrypted with currentKeyParam if the
+// row's key_version equals currentVersion, else previousKeyParam.
+func webhookEndpointSelectColumns(currentVersion, currentKeyParam, previousKeyParam int) string {
+	return fmt.Sprintf(`id, organization_id, url,
+		pgp_sym_decrypt(secret_encrypted, CASE key_version WHEN %d THEN $%d ELSE $%d END)::text AS secret_plaintext,
+		pgp_sym_decrypt(secret_encrypted_previous, CASE key_version WHEN %d THEN $%d ELSE $%d END)::text AS secret_plaintext_previous,
+		secret_rotation_expires_at, subscribed_events, enabled, auto_disabled_at, health_warned_at,
+		created_at, updated_at`,
+		currentVersion, currentKeyParam, previousKeyParam,
+		currentVersion, currentKeyParam, previousKeyParam)
+}
 
 func scanWebhookEndpoint(row interface{ Scan(dest ...any) error }, rec *webhookEndpointRecord) error {
 	return row.Scan(
@@ -40,13 +49,14 @@ func scanWebhookEndpoint(row interface{ Scan(dest ...any) error }, rec *webhookE
 func (r *repository) insertWebhookEndpoint(
 	ctx context.Context, q db.Querier,
 	organizationID, url, secretPlaintext string, subscribedEvents []string,
+	currentVersion int, currentKey, previousKey string,
 ) (*webhookEndpointRecord, error) {
 	rec := new(webhookEndpointRecord)
 	err := scanWebhookEndpoint(q.QueryRow(ctx, `
-		INSERT INTO organization.webhook_endpoints (organization_id, url, secret_plaintext, subscribed_events)
-		VALUES ($1, $2, $3, $4)
-		RETURNING `+webhookEndpointColumns,
-		organizationID, url, secretPlaintext, subscribedEvents,
+		INSERT INTO organization.webhook_endpoints (organization_id, url, secret_encrypted, subscribed_events, key_version)
+		VALUES ($1, $2, pgp_sym_encrypt($3, $5), $4, $7)
+		RETURNING `+webhookEndpointSelectColumns(currentVersion, 5, 6),
+		organizationID, url, secretPlaintext, subscribedEvents, currentKey, previousKey, currentVersion,
 	), rec)
 	if err != nil {
 		return nil, fmt.Errorf("organization.insertWebhookEndpoint: %w", err)
@@ -57,13 +67,14 @@ func (r *repository) insertWebhookEndpoint(
 func (r *repository) listWebhookEndpoints(
 	ctx context.Context, q db.Querier,
 	organizationID string,
+	currentVersion int, currentKey, previousKey string,
 ) ([]webhookEndpointRecord, error) {
 	rows, err := q.Query(ctx, `
-		SELECT `+webhookEndpointColumns+`
+		SELECT `+webhookEndpointSelectColumns(currentVersion, 2, 3)+`
 		FROM organization.webhook_endpoints
 		WHERE organization_id = $1
 		ORDER BY created_at DESC`,
-		organizationID,
+		organizationID, currentKey, previousKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("organization.listWebhookEndpoints: %w", err)
@@ -91,14 +102,15 @@ func (r *repository) listWebhookEndpoints(
 func (r *repository) listEnabledWebhookEndpointsForEvent(
 	ctx context.Context, q db.Querier,
 	organizationID, eventType string,
+	currentVersion int, currentKey, previousKey string,
 ) ([]webhookEndpointRecord, error) {
 	rows, err := q.Query(ctx, `
-		SELECT `+webhookEndpointColumns+`
+		SELECT `+webhookEndpointSelectColumns(currentVersion, 3, 4)+`
 		FROM organization.webhook_endpoints
 		WHERE organization_id = $1 AND enabled = true
 		  AND (subscribed_events IS NULL OR array_length(subscribed_events, 1) IS NULL OR $2 = ANY(subscribed_events))
 		ORDER BY created_at`,
-		organizationID, eventType,
+		organizationID, eventType, currentKey, previousKey,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("organization.listEnabledWebhookEndpointsForEvent: %w", err)
@@ -122,13 +134,14 @@ func (r *repository) listEnabledWebhookEndpointsForEvent(
 func (r *repository) findWebhookEndpoint(
 	ctx context.Context, q db.Querier,
 	organizationID, id string,
+	currentVersion int, currentKey, previousKey string,
 ) (*webhookEndpointRecord, error) {
 	rec := new(webhookEndpointRecord)
 	err := scanWebhookEndpoint(q.QueryRow(ctx, `
-		SELECT `+webhookEndpointColumns+`
+		SELECT `+webhookEndpointSelectColumns(currentVersion, 3, 4)+`
 		FROM organization.webhook_endpoints
 		WHERE organization_id = $1 AND id = $2`,
-		organizationID, id,
+		organizationID, id, currentKey, previousKey,
 	), rec)
 	if err != nil {
 		return nil, fmt.Errorf("organization.findWebhookEndpoint: %w", err)
@@ -139,14 +152,15 @@ func (r *repository) findWebhookEndpoint(
 func (r *repository) updateWebhookEndpoint(
 	ctx context.Context, q db.Querier,
 	organizationID, id, url string, enabled bool, subscribedEvents []string,
+	currentVersion int, currentKey, previousKey string,
 ) (*webhookEndpointRecord, error) {
 	rec := new(webhookEndpointRecord)
 	err := scanWebhookEndpoint(q.QueryRow(ctx, `
 		UPDATE organization.webhook_endpoints
 		SET url = $3, enabled = $4, subscribed_events = $5, updated_at = now()
 		WHERE organization_id = $1 AND id = $2
-		RETURNING `+webhookEndpointColumns,
-		organizationID, id, url, enabled, subscribedEvents,
+		RETURNING `+webhookEndpointSelectColumns(currentVersion, 6, 7),
+		organizationID, id, url, enabled, subscribedEvents, currentKey, previousKey,
 	), rec)
 	if err != nil {
 		return nil, fmt.Errorf("organization.updateWebhookEndpoint: %w", err)
@@ -155,19 +169,27 @@ func (r *repository) updateWebhookEndpoint(
 }
 
 // rotateWebhookSecret sets a fresh secret as current, keeps the old one as
-// secret_plaintext_previous for the 24h grace window deliver() signs with,
+// secret_encrypted_previous for the 24h grace window deliver() signs with,
 // and returns the new plaintext secret (shown once, same convention as create).
 func (r *repository) rotateWebhookSecret(
 	ctx context.Context, q db.Querier,
 	organizationID, id, newSecret string, graceExpiresAt time.Time,
+	currentVersion int, currentKey, previousKey string,
 ) (*webhookEndpointRecord, error) {
 	rec := new(webhookEndpointRecord)
 	err := scanWebhookEndpoint(q.QueryRow(ctx, `
 		UPDATE organization.webhook_endpoints
-		SET secret_plaintext_previous = secret_plaintext, secret_plaintext = $3, secret_rotation_expires_at = $4, updated_at = now()
+		SET secret_encrypted_previous = pgp_sym_encrypt(
+				pgp_sym_decrypt(secret_encrypted, CASE key_version WHEN $7 THEN $5 ELSE $6 END)::text,
+				$5
+			),
+			secret_encrypted = pgp_sym_encrypt($3, $5),
+			key_version = $7,
+			secret_rotation_expires_at = $4,
+			updated_at = now()
 		WHERE organization_id = $1 AND id = $2
-		RETURNING `+webhookEndpointColumns,
-		organizationID, id, newSecret, graceExpiresAt,
+		RETURNING `+webhookEndpointSelectColumns(currentVersion, 5, 6),
+		organizationID, id, newSecret, graceExpiresAt, currentKey, previousKey, currentVersion,
 	), rec)
 	if err != nil {
 		return nil, fmt.Errorf("organization.rotateWebhookSecret: %w", err)
@@ -204,16 +226,16 @@ func (r *repository) setWebhookHealthWarnedAt(ctx context.Context, q db.Querier,
 func (r *repository) deleteWebhookEndpoint(
 	ctx context.Context, q db.Querier,
 	organizationID, id string,
-) error {
-	_, err := q.Exec(ctx, `
+) (bool, error) {
+	tag, err := q.Exec(ctx, `
 		DELETE FROM organization.webhook_endpoints
 		WHERE organization_id = $1 AND id = $2`,
 		organizationID, id,
 	)
 	if err != nil {
-		return fmt.Errorf("organization.deleteWebhookEndpoint: %w", err)
+		return false, fmt.Errorf("organization.deleteWebhookEndpoint: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // webhookHealth holds the 24h and 3d delivered/total counts for an

@@ -229,6 +229,7 @@ func (r *repository) getOrganizationStatus(ctx context.Context, q db.Querier, id
 // serialize on the member-limit check-then-insert instead of both reading
 // "under limit" and both inserting past the plan's seat limit.
 func (r *repository) lockOrganizationForUpdate(ctx context.Context, q db.Querier, id string) error {
+	db.RequireTx(q)
 	var got string
 	if err := q.QueryRow(ctx, `SELECT id FROM organization.organizations WHERE id = $1 FOR UPDATE`, id).Scan(&got); err != nil {
 		return fmt.Errorf("organization.lockOrganizationForUpdate: %w", err)

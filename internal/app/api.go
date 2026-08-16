@@ -20,18 +20,26 @@ func RunAPI() error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	if err := cfg.RequireWebhookSecretsOutsideDev(); err != nil {
+	if err := cfg.RequireSecretsOutsideDev(); err != nil {
 		return fmt.Errorf("validating config: %w", err)
 	}
 	if err := cfg.RequireGeoIPDBOutsideDev(); err != nil {
 		return fmt.Errorf("validating config: %w", err)
 	}
 
-	infra, err := bootstrap.SetupInfra(ctx, cfg)
+	infra, err := bootstrap.SetupInfra(ctx, cfg, cfg.Postgres.URL)
 	if err != nil {
 		return err
 	}
 	defer infra.Close(context.Background())
+
+	if err := bootstrap.OpenWebhookPool(ctx, infra); err != nil {
+		return err
+	}
+
+	if err := bootstrap.OpenBackgroundPool(ctx, infra); err != nil {
+		return err
+	}
 
 	if cfg.StatsToken == "" && cfg.Env != bootstrap.EnvDevelopment {
 		infra.Log.Warn("STATS_TOKEN not set — /health/stats (goroutine/heap/pool internals) is unauthenticated")

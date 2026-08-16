@@ -14,6 +14,12 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
+// Duplicated rather than shared with organization's own unexported
+// testSecretEncryptionKey — this external test package (organization_test)
+// cannot see it, and the actual value is irrelevant here since no test in
+// this file exercises webhook encrypt/decrypt.
+const testWebhookEncryptionKey = "test-webhook-secret-encryption-key-0000"
+
 func TestResolveDowngradeOverage(t *testing.T) {
 	pool := testPool(t)
 
@@ -174,9 +180,11 @@ func TestResolveDowngradeOverage(t *testing.T) {
 }
 
 // TestResolveDowngradeOverage_PublishesMemberRemovedEvents confirms the
-// bulk removal path publishes organization.member.removed once per removed
-// member (matching removeMember's single-member path), not skip
-// notification entirely just because the removal happened in bulk.
+// bulk removal path enqueues an organization.member.removed outbox row once
+// per removed member (matching removeMember's single-member path), not skip
+// notification entirely just because the removal happened in bulk. Queried
+// directly from messaging.outbox, not a captured publisher: events.Enqueue
+// never touches the injected EventPublisher at all.
 func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	pool := testPool(t)
 	t.Cleanup(func() {
@@ -184,8 +192,10 @@ func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	})
 
 	orgID := setupOrgWithMembers(t, pool, "test-downgrade-events")
-	pub := &capturingPublisher{}
-	mod := organization.New(pool, pub)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+	})
+	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
 
 	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)
 	if err != nil {
@@ -195,25 +205,33 @@ func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 		t.Fatalf("expected 3 members removed, got %d: %v", len(res.RemovedMemberAuthSubs), res.RemovedMemberAuthSubs)
 	}
 
+	rows, err := pool.Query(t.Context(),
+		`SELECT payload FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+		events.RoutingKeyMemberRemoved, orgID)
+	if err != nil {
+		t.Fatalf("query outbox rows: %v", err)
+	}
 	var publishedSubs []string
-	for _, evt := range pub.published {
-		if evt.routingKey != events.RoutingKeyMemberRemoved {
-			continue
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("scan outbox row: %v", err)
 		}
-		env, err := events.Decode[events.MemberRemoved](evt.body)
+		env, err := events.Decode[events.MemberRemoved](payload)
 		if err != nil {
-			t.Fatalf("decode published event: %v", err)
+			t.Fatalf("decode outbox payload: %v", err)
 		}
 		publishedSubs = append(publishedSubs, env.AuthSub)
 	}
+	rows.Close()
 
 	if len(publishedSubs) != len(res.RemovedMemberAuthSubs) {
-		t.Fatalf("published %d member-removed events, want one per removed member (%d): published=%v removed=%v",
+		t.Fatalf("outbox has %d member-removed rows, want one per removed member (%d): got=%v removed=%v",
 			len(publishedSubs), len(res.RemovedMemberAuthSubs), publishedSubs, res.RemovedMemberAuthSubs)
 	}
 	for _, removed := range res.RemovedMemberAuthSubs {
 		if !slices.Contains(publishedSubs, removed) {
-			t.Errorf("no member-removed event published for %s", removed)
+			t.Errorf("no member-removed outbox row for %s", removed)
 		}
 	}
 }
@@ -246,7 +264,7 @@ func TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache(t *testing.T
 
 	orgID := setupOrgWithMembers(t, pool, "test-downgrade-cache")
 	inv := &fakeCacheInvalidator{}
-	mod := organization.New(pool, messaging.NoopPublisher{})
+	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
 	mod.SetCacheInvalidator(inv)
 
 	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)

@@ -17,6 +17,11 @@ type APIRouter struct {
 	AuditWriter *audit.Writer
 }
 
+// webhookRateLimit is a per-IP requests-per-minute backstop on the public
+// /webhooks group — not a tuned production ceiling, a defense against
+// unbounded request/HMAC-compute volume (the audit's own suggested value).
+const webhookRateLimit = 6000
+
 // NewAPIRouter builds the gin engine (CORS, body-size limit, health,
 // rate limiting, audit logging), mounts every module's routes plus the
 // public webhook routes, and wraps it in an httpserver.Server ready to
@@ -35,17 +40,16 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 		},
 	)
 	webhookRateMW := middleware.NewRateLimitMiddleware(
-		cache.NewRateLimiter(infra.Redis, "webhook"),
+		cache.NewRateLimiter(infra.Redis, "webhooks"),
 		middleware.ByClientIP,
-		cache.PerMinute(60),
+		cache.PerMinute(webhookRateLimit),
 	)
-
 	ginMode := "release"
 	if cfg.Env == EnvDevelopment {
 		ginMode = "debug"
 	}
 
-	auditWriter := audit.NewWriter(infra.Pool, infra.Log, cfg.AuditRetentionDays)
+	auditWriter := audit.NewWriter(infra.BackgroundPool, infra.Log, cfg.AuditRetentionDays)
 
 	corsMW, err := middleware.NewCORSMiddleware(middleware.CORSConfig{
 		AllowedOrigins: middleware.ParseCORSOrigins(cfg.CORSOrigins),

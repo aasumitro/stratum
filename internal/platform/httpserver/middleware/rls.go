@@ -79,7 +79,7 @@ func NewRLSTxMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 			return
 		}
 
-		ctx := db.WithPendingEvents(c.Request.Context())
+		ctx := c.Request.Context()
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "database error"})
@@ -139,10 +139,6 @@ func NewRLSTxMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 			return
 		}
 
-		// Events a service method queued via db.QueueEvent (instead of
-		// publishing immediately) only fire once the transaction that
-		// produced their state is durably committed.
-		db.FlushPendingEvents(ctx)
 		flush()
 	}
 }

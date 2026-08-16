@@ -432,6 +432,7 @@ func TestIntegration_ExportByActor_CSV_DateRange(t *testing.T) {
 
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE actor = $1`, actor)
+		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE actor = 'someone_else'`)
 	})
 
 	now := time.Now().UTC()
@@ -471,6 +472,7 @@ func TestIntegration_ListByActorCursor_AcrossOrganizations(t *testing.T) {
 
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE actor = $1`, actor)
+		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE actor = 'not_this_actor'`)
 	})
 
 	base := time.Now().UTC()

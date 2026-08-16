@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,15 +33,17 @@ func New(
 	revokedNS *cache.Namespace,
 	store *storage.Client,
 	webhookSecret string,
+	maxAccessTokenTTL time.Duration,
 ) *Module {
 	svc := &service{
-		repo:           &repository{},
-		pool:           pool,
-		pub:            pub,
-		adminURL:       adminURL,
-		serviceRoleKey: serviceRoleKey,
-		revokedNS:      revokedNS,
-		store:          store,
+		repo:              &repository{},
+		pool:              pool,
+		pub:               pub,
+		adminURL:          adminURL,
+		serviceRoleKey:    serviceRoleKey,
+		revokedNS:         revokedNS,
+		store:             store,
+		maxAccessTokenTTL: maxAccessTokenTTL,
 	}
 	return &Module{svc: svc, Worker: &Worker{svc: svc}, webhookSecret: webhookSecret}
 }
@@ -147,6 +150,9 @@ func (m *Module) SetNotificationReader(r contracts.NotificationReader) {
 	m.svc.notifReader = r
 }
 
+// HasStorage reports whether a storage client was wired at construction.
+func (m *Module) HasStorage() bool { return m.svc.store != nil }
+
 // MustBeWired panics if any of the five setters above were never called.
 // Unlike every other module's optional cross-module dependencies (which are
 // deliberately nil-safe and fail open so an unwired reader degrades to
@@ -169,6 +175,17 @@ func (m *Module) MustBeWired() {
 		panic("account.Module: organization reader not wired (call SetOrganizationReader)")
 	case m.svc.notifReader == nil:
 		panic("account.Module: notification reader not wired (call SetNotificationReader)")
+	}
+}
+
+// MustHaveSessionRevocationWired panics if revokedNS was never wired. Call
+// only from cmd/api's bootstrap, never cmd/worker's: cmd/worker
+// intentionally passes a nil revokedNS to New (no HTTP auth path exists
+// there to revoke sessions against), so calling this from worker_modules.go
+// would panic on a correct, intentional configuration.
+func (m *Module) MustHaveSessionRevocationWired() {
+	if m.svc.revokedNS == nil {
+		panic("account.Module: session revocation namespace not wired (revokedNS) — required for cmd/api only")
 	}
 }
 

@@ -59,6 +59,7 @@ func (r *repository) findSubscriptionBySubject(
 // as a DB constraint since a redemption's active/exhausted status is
 // computed from the coupon's cadence and applied_count, not stored.
 func (r *repository) lockSubscriptionForUpdate(ctx context.Context, q db.Querier, subscriptionID string) error {
+	db.RequireTx(q)
 	var id string
 	err := q.QueryRow(ctx, `SELECT id FROM billing.subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID).Scan(&id)
 	if err != nil {
@@ -236,6 +237,27 @@ func (r *repository) updateSubscriptionPeriod(
 	)
 	if err != nil {
 		return fmt.Errorf("billing.updateSubscriptionPeriod: %w", err)
+	}
+	return nil
+}
+
+// clearTrialEndAndUpdatePeriod sets the period and clears trial_end in one
+// statement — used when a subscription is definitively leaving the trialing
+// state (expired-reactivation, or resume-from-cancelled past the trial
+// window). The shared updateSubscriptionPeriod is intentionally not modified
+// to avoid breaking the isStillTrialing branch that must preserve trial_end.
+func (r *repository) clearTrialEndAndUpdatePeriod(
+	ctx context.Context, q db.Querier,
+	id string, periodStart, periodEnd time.Time,
+) error {
+	_, err := q.Exec(ctx, `
+		UPDATE billing.subscriptions
+		SET period_start = $2, period_end = $3, trial_end = NULL, updated_at = now()
+		WHERE id = $1`,
+		id, periodStart, periodEnd,
+	)
+	if err != nil {
+		return fmt.Errorf("billing.clearTrialEndAndUpdatePeriod: %w", err)
 	}
 	return nil
 }

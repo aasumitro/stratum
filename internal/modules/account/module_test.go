@@ -2,9 +2,11 @@ package account_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/modules/account"
+	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
@@ -18,7 +20,7 @@ type stubOrgReader struct{ contracts.OrganizationReader }
 type stubNotifReader struct{ contracts.NotificationReader }
 
 func newUnwiredModule() *account.Module {
-	return account.New(nil, messaging.NoopPublisher{}, "", "", nil, nil, "")
+	return account.New(nil, messaging.NoopPublisher{}, "", "", nil, nil, "", time.Hour)
 }
 
 func TestMustBeWired_PanicsWhenAnyDependencyUnwired(t *testing.T) {
@@ -80,4 +82,20 @@ func TestMustBeWired_NoPanicWhenFullyWired(t *testing.T) {
 	m.SetOrganizationReader(stubOrgReader{})
 	m.SetNotificationReader(stubNotifReader{})
 	m.MustBeWired() // must not panic
+}
+
+func TestMustHaveSessionRevocationWired_PanicsWhenUnwired(t *testing.T) {
+	m := account.New(nil, messaging.NoopPublisher{}, "", "", nil, nil, "", time.Hour)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected MustHaveSessionRevocationWired to panic with revokedNS unwired")
+		}
+	}()
+	m.MustHaveSessionRevocationWired()
+}
+
+func TestMustHaveSessionRevocationWired_NoPanicWhenWired(t *testing.T) {
+	revokedNS := cache.NewNamespace(nil, "account")
+	m := account.New(nil, messaging.NoopPublisher{}, "", "", revokedNS, nil, "", time.Hour)
+	m.MustHaveSessionRevocationWired() // must not panic
 }

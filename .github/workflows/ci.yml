@@ -107,6 +107,21 @@ jobs:
       - name: Install migrate
         run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 
+      # Migration 000008 no longer creates the stratum_app/stratum_worker/stratum_webhook
+      # roles — it only grants privileges to them, assuming they already exist, so the
+      # migrator role never needs BYPASSRLS or CREATEROLE itself. Local dev gets this for
+      # free via a Postgres init script mounted into its container;
+      # CI's Postgres service has no equivalent mount, so this step reuses that same script
+      # explicitly, before migrations run. Fixed, non-secret passwords (matching the
+      # stratum/stratum owner credential already hardcoded below) are fine — this Postgres
+      # instance is created fresh and destroyed at the end of every run.
+      - name: Provision runtime roles
+        env:
+          DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
+        run: |
+          psql "$DATABASE_URL" -f deploy/postgres-init/01-app-role.sql
+          psql "$DATABASE_URL" -f deploy/postgres-init/02-test-role.sql
+
       - name: Run migrations
         env:
           DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
@@ -114,7 +129,11 @@ jobs:
 
       - name: Test
         env:
-          TEST_DATABASE_URL: postgres://stratum:stratum@localhost:5432/stratum?sslmode=disable
+          TEST_DATABASE_URL: postgres://stratum_test:stratum_test@localhost:5432/stratum?sslmode=disable
+          POSTGRES_APP_URL: postgres://stratum_app:stratum_app@localhost:5432/stratum?sslmode=disable
+          POSTGRES_WORKER_URL: postgres://stratum_worker:stratum_worker@localhost:5432/stratum?sslmode=disable
+          POSTGRES_WEBHOOK_URL: postgres://stratum_webhook:stratum_webhook@localhost:5432/stratum?sslmode=disable
+          TEST_REDIS_URL: redis://localhost:6379
         run: go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 
       - name: Coverage

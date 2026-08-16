@@ -18,6 +18,7 @@ Anything unit-testable without a database is written as a **pure function** on p
 - `messaging.NoopPublisher{}` stands in for RabbitMQ.
 - Each module's `export_test.go` exposes test engines (`NewHandlerEngine`, `NewModuleForTest`, `NewModuleEngine`, …).
 - Integration tests skip when `TEST_DATABASE_URL` is unset, use fixed UUIDv7 data for isolation, and clean up with `t.Cleanup`.
+- **`TEST_DATABASE_URL` points at `stratum_test`, a test-only role** (`POSTGRES_TEST_URL` in `.env.example`; created by `deploy/postgres-init/02-test-role.sql`) — not the migration-owner superuser. It holds `BYPASSRLS` directly (needed to seed `billing.subscriptions`/`invoices`/`payments`/`payment_links`, which carry `FORCE ROW LEVEL SECURITY`, directly) and is a member of `stratum`, the schema owner — membership, not a pile of per-privilege `GRANT`s, because several billing integration tests create a throwaway trigger function to inject a mid-transaction failure and then `DROP` it in `t.Cleanup`, and `DROP TRIGGER`/`DROP FUNCTION` check table/object *ownership*, not `CREATE`/`TRIGGER` privilege — a role merely granted those privileges can create the trigger but not drop it, leaving it attached to break every later test on that table. `stratum_test` is never provisioned outside local dev/CI and never appears in `docs/12-operations.md`'s production runbook — it exists purely so the suite doesn't need a superuser.
 
 ## Running
 

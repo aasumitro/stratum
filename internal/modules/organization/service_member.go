@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -102,19 +103,23 @@ func (s *service) removeMember(ctx context.Context, organizationID, authSub stri
 	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
 		return apperr.Forbidden("CANNOT_REMOVE_OWNER", "cannot remove the organization owner")
 	}
-	removed, err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub)
+	var removed bool
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		removed, err = s.repo.deleteMembership(ctx, tx, organizationID, authSub)
+		if err != nil || !removed {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
+			events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub})
+	})
 	if err != nil {
 		return apperr.Internal("MEMBER_REMOVE_FAILED", "failed to remove member", err)
 	}
-	// Idempotent: removing a member who's already gone succeeds without
-	// re-syncing usage or publishing a second MemberRemoved for a removal
-	// that didn't actually happen here.
 	if !removed {
-		return nil
+		return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
 	}
 	s.syncMemberUsage(ctx, organizationID)
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
-		events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub})
 	return nil
 }
 
@@ -126,11 +131,22 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 		return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
 	}
 
-	if err := s.repo.updateMemberRole(ctx, s.pool, organizationID, authSub, role); err != nil {
+	var updated bool
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		var err error
+		updated, err = s.repo.updateMemberRole(ctx, tx, organizationID, authSub, role)
+		if err != nil || !updated {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberRoleChanged, "organization", organizationID,
+			events.MemberRoleChanged{OrganizationID: organizationID, AuthSub: authSub, Role: role})
+	})
+	if err != nil {
 		return apperr.Internal("MEMBER_ROLE_UPDATE_FAILED", "failed to update member role", err)
 	}
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRoleChanged, "organization", organizationID,
-		events.MemberRoleChanged{OrganizationID: organizationID, AuthSub: authSub, Role: role})
+	if !updated {
+		return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
+	}
 	return nil
 }
 
@@ -165,8 +181,10 @@ func (s *service) checkMemberLimitLocked(ctx context.Context, q db.Querier, orga
 }
 
 // syncMemberUsage records the current active-member count for organizationID
-// as a fire-and-forget background op. Errors are silently dropped — usage
-// drift is non-critical and will self-correct on the next mutation.
+// as a fire-and-forget background op. Failures are logged (not silently
+// dropped) so usage drift stays visible in the logs — it self-corrects on
+// the next mutation, but an operator should still be able to spot a
+// persistently failing sync.
 func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 	if s.billingWriter == nil {
 		return
@@ -187,9 +205,14 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 		defer cancel()
 		count, err := s.repo.countActiveMembers(ctx, s.pool, organizationID)
 		if err != nil {
+			slog.Error("syncMemberUsage: count active members failed",
+				"organization_id", organizationID, "error", err)
 			return
 		}
-		_ = s.billingWriter.RecordUsage(ctx, organizationID, "members", count)
+		if err := s.billingWriter.RecordUsage(ctx, organizationID, "members", count); err != nil {
+			slog.Error("syncMemberUsage: record usage failed",
+				"organization_id", organizationID, "count", count, "error", err)
+		}
 	}()
 }
 
@@ -235,26 +258,17 @@ func (s *service) transferOwnership(ctx context.Context, organizationID, current
 		return errors.New("target is already the owner")
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
-		return err
-	}
-	if err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
-		return err
-	}
-	if err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-
-	events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyOwnershipTransferred, "organization", organizationID,
-		events.OwnershipTransferred{OrganizationID: organizationID, PreviousOwner: currentOwner, NewOwner: newOwnerAuthSub})
-	return nil
+	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
+			return err
+		}
+		if _, err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
+			return err
+		}
+		if _, err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
+			return err
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOwnershipTransferred, "organization", organizationID,
+			events.OwnershipTransferred{OrganizationID: organizationID, PreviousOwner: currentOwner, NewOwner: newOwnerAuthSub})
+	})
 }

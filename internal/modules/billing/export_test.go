@@ -106,7 +106,7 @@ type referenceStub interface {
 // nil ref leaves the tax rate unwired — tax defaults to 0 (see service.go's
 // optional-dependency comments).
 func NewModuleForTest(pool *pgxpool.Pool, ref referenceStub) *Module {
-	return New(pool, messaging.NoopPublisher{}, ProviderConfig{}, ref, nil)
+	return New(pool, messaging.NoopPublisher{}, ProviderConfig{}, ref, nil, nil)
 }
 
 // NewWebhookModuleEngine creates a gin.Engine with both billing routes (authed)
@@ -122,7 +122,13 @@ func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) 
 // concurrent deliveries) instead of discarding it via NoopPublisher.
 func NewWebhookModuleEngineWithPublisher(pool *pgxpool.Pool, authSub, organizationID string, pub messaging.EventPublisher) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := New(pool, pub, ProviderConfig{}, nil, nil)
+	// pool doubles as the webhook pool here — every caller of this helper
+	// connects via TEST_DATABASE_URL (stratum_test, BYPASSRLS by design —
+	// see testPoolBilling), not POSTGRES_APP_URL, so there's no RLS-bypass
+	// distinction for this helper to preserve. webhook_rls_test.go
+	// exercises the real stratum_app/stratum_webhook split directly
+	// instead of through here.
+	mod := New(pool, pub, ProviderConfig{}, nil, nil, pool)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})

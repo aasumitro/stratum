@@ -83,6 +83,7 @@ func (h *handler) addMember(c *gin.Context) {
 // @Success      204             "no content"
 // @Failure      400             {object}  response.Payload  "cannot remove yourself"
 // @Failure      403             {object}  response.Payload  "cannot remove the owner, or admin role required"
+// @Failure      404             {object}  response.Payload  "member not found"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/members/{authSub} [delete]
 func (h *handler) removeMember(c *gin.Context) {
@@ -123,6 +124,7 @@ type updateMemberRoleRequest struct {
 // @Success      204             "no content"
 // @Failure      422             {object}  response.Payload  "validation failed"
 // @Failure      403             {object}  response.Payload  "cannot change the owner's role, or admin role required"
+// @Failure      404             {object}  response.Payload  "member not found"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/members/{authSub}/role [patch]
 func (h *handler) updateMemberRole(c *gin.Context) {

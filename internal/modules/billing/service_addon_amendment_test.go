@@ -181,7 +181,13 @@ func TestIntegration_DetachAddon_Trialing_DeletesImmediately(t *testing.T) {
 	sub := seedAmendmentTrialSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
 
-	if err := mod.svc.detachAddon(t.Context(), orgID, "extra-seat", "sub_owner"); err != nil {
+	// detachAddon locks the subscription row via s.querier(ctx), which
+	// resolves to whatever transaction is already in ctx (the RLS
+	// middleware's, in a live request) — wrap the call in a real
+	// transaction here, mirroring how the RLS-wrapped route actually calls it.
+	if err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		return mod.svc.detachAddon(db.WithQuerier(t.Context(), tx), orgID, "extra-seat", "sub_owner")
+	}); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 
@@ -202,7 +208,9 @@ func TestIntegration_DetachAddon_Active_SchedulesRemoval_RowSurvives(t *testing.
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 3)
 
-	if err := mod.svc.detachAddon(t.Context(), orgID, "extra-seat", "sub_owner"); err != nil {
+	if err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		return mod.svc.detachAddon(db.WithQuerier(t.Context(), tx), orgID, "extra-seat", "sub_owner")
+	}); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 
@@ -232,7 +240,10 @@ func TestIntegration_DetachAddon_Active_CancellationScheduled_Rejected(t *testin
 		t.Fatalf("scheduleCancellation: %v", err)
 	}
 
-	wantApperrCode(t, mod.svc.detachAddon(t.Context(), orgID, "extra-seat", "sub_owner"), cancellationScheduledCode)
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		return mod.svc.detachAddon(db.WithQuerier(t.Context(), tx), orgID, "extra-seat", "sub_owner")
+	})
+	wantApperrCode(t, err, cancellationScheduledCode)
 
 	addons, err := r.listAttachedAddonsWithPricing(t.Context(), pool, sub.ID)
 	if err != nil {
@@ -254,7 +265,12 @@ func TestIntegration_UndoScheduledAddonQuantityChange_ClearsSchedule(t *testing.
 		t.Fatalf("seed schedule: %v", err)
 	}
 
-	updated, err := mod.svc.undoScheduledAddonQuantityChange(t.Context(), orgID, "extra-seat", "sub_owner")
+	var updated *attachedAddonRecord
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		var txErr error
+		updated, txErr = mod.svc.undoScheduledAddonQuantityChange(db.WithQuerier(t.Context(), tx), orgID, "extra-seat", "sub_owner")
+		return txErr
+	})
 	if err != nil {
 		t.Fatalf("undo: %v", err)
 	}
@@ -274,7 +290,10 @@ func TestIntegration_UndoScheduledAddonQuantityChange_NothingScheduled(t *testin
 	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
 	seedAmendmentAddon(t, pool, r, sub.ID, "extra-seat", 5)
 
-	_, err := mod.svc.undoScheduledAddonQuantityChange(t.Context(), orgID, "extra-seat", "sub_owner")
+	err := db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		_, txErr := mod.svc.undoScheduledAddonQuantityChange(db.WithQuerier(t.Context(), tx), orgID, "extra-seat", "sub_owner")
+		return txErr
+	})
 	wantApperrCode(t, err, "NO_SCHEDULED_ADDON_CHANGE")
 }
 

@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,18 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 )
+
+// setupScratchTable creates (and schedules cleanup for) a throwaway table
+// used to prove the middleware's commit/rollback boundary with a real DB
+// write instead of an in-memory side effect — the same convention
+// internal/platform/db/db_test.go uses for its own WithTx tests.
+func setupScratchTable(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS public.rls_scratch (id text primary key)`); err != nil {
+		t.Fatalf("create scratch table: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(context.Background(), `DROP TABLE IF EXISTS public.rls_scratch`) })
+}
 
 // rlsTestPool opens a pool capped at one connection, which makes a
 // connection leaked by a panic path (the bug this test guards against)
@@ -88,50 +101,65 @@ func TestIntegration_RLSTxMiddleware_PanicDoesNotLeakConnection(t *testing.T) {
 	}
 }
 
-// TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit regression-
-// tests the db.QueueEvent/FlushPendingEvents plumbing this middleware
-// drives: an event queued during a request that ultimately fails (rolled
-// back) must never fire, and one queued during a successful request
-// (committed) must fire exactly once, after the commit.
-func TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit(t *testing.T) {
+// TestIntegration_RLSTxMiddleware_CommitsOnlyOn2xx proves the middleware's
+// own commit/rollback boundary with a real write made through the request's
+// tx-scoped querier (db.QuerierFromContext) — the same querier
+// events.Enqueue calls made from inside a handler under this middleware
+// rely on to make an outbox row commit atomically with the rest of a
+// request's writes. A write made on a request that ultimately fails (4xx)
+// must never persist; one made on a successful (2xx) request must.
+func TestIntegration_RLSTxMiddleware_CommitsOnlyOn2xx(t *testing.T) {
 	pool := rlsTestPool(t)
+	setupScratchTable(t, pool)
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
 	e.Use(func(c *gin.Context) {
-		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws_rls_event_test"})
+		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws_rls_commit_test"})
 		c.Next()
 	})
 	e.Use(middleware.NewRLSTxMiddleware(pool))
 
-	var fired []string
 	e.GET("/fail", func(c *gin.Context) {
-		db.QueueEvent(c.Request.Context(), func() { fired = append(fired, "fail") })
+		tx := db.QuerierFromContext(c.Request.Context(), nil)
+		_, _ = tx.Exec(c.Request.Context(), `INSERT INTO public.rls_scratch (id) VALUES ('fail')`)
 		c.Status(http.StatusBadRequest)
 	})
 	e.GET("/succeed", func(c *gin.Context) {
-		db.QueueEvent(c.Request.Context(), func() { fired = append(fired, "succeed") })
+		tx := db.QuerierFromContext(c.Request.Context(), nil)
+		_, _ = tx.Exec(c.Request.Context(), `INSERT INTO public.rls_scratch (id) VALUES ('succeed')`)
 		c.Status(http.StatusOK)
 	})
 
 	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/fail", nil))
-	if len(fired) != 0 {
-		t.Fatalf("event queued on a rolled-back request must not fire, fired = %v", fired)
-	}
-
 	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/succeed", nil))
-	if len(fired) != 1 || fired[0] != "succeed" {
-		t.Errorf("fired = %v, want exactly [\"succeed\"]", fired)
+
+	var ids []string
+	rows, err := pool.Query(context.Background(), `SELECT id FROM public.rls_scratch`)
+	if err != nil {
+		t.Fatalf("query scratch rows: %v", err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	if len(ids) != 1 || ids[0] != "succeed" {
+		t.Errorf("surviving rows = %v, want exactly [\"succeed\"] (the /fail write must have rolled back)", ids)
 	}
 }
 
 // TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack covers
 // bufferedWriter's cap: a handler writing more than responseBufferCap must
-// fail the request (500) with the transaction rolled back — proven the
-// same way TestIntegration_RLSTxMiddleware_QueuedEventFlushesOnlyOnCommit
-// proves rollback above: a db.QueueEvent callback queued during the
-// request must never fire.
+// fail the request (500) with the transaction rolled back — proven the same
+// way TestIntegration_RLSTxMiddleware_CommitsOnlyOn2xx proves rollback
+// above, with a real write through the request's tx-scoped querier.
 func TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack(t *testing.T) {
 	pool := rlsTestPool(t)
+	setupScratchTable(t, pool)
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
 	e.Use(func(c *gin.Context) {
@@ -140,9 +168,9 @@ func TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack(t *testing.T) 
 	})
 	e.Use(middleware.NewRLSTxMiddleware(pool))
 
-	var fired []string
 	e.GET("/toolarge", func(c *gin.Context) {
-		db.QueueEvent(c.Request.Context(), func() { fired = append(fired, "toolarge") })
+		tx := db.QuerierFromContext(c.Request.Context(), nil)
+		_, _ = tx.Exec(c.Request.Context(), `INSERT INTO public.rls_scratch (id) VALUES ('toolarge')`)
 		c.Status(http.StatusOK)
 		oversized := make([]byte, 6<<20) // 6MB > the 5MB cap
 		_, _ = c.Writer.Write(oversized)
@@ -154,8 +182,12 @@ func TestIntegration_RLSTxMiddleware_ResponseExceedsCap_RollsBack(t *testing.T) 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("response exceeding the buffer cap: want 500, got %d", w.Code)
 	}
-	if len(fired) != 0 {
-		t.Fatalf("event queued on a cap-exceeded (rolled-back) request must not fire, fired = %v", fired)
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM public.rls_scratch WHERE id = 'toolarge'`).Scan(&count); err != nil {
+		t.Fatalf("count scratch rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("write made during a cap-exceeded (rolled-back) request must not persist, count = %d", count)
 	}
 }
 

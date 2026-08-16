@@ -37,11 +37,19 @@ func (s *service) resolveDowngradeOverage(
 			res.RemovedMemberAuthSubs = toRemove
 			res.AutoSelectedMemberSubs = autoSelected
 		}
+		if !dryRun {
+			for _, authSub := range toRemove {
+				if err := events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
+					events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub}); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	})
 
 	if err == nil && !dryRun {
-		s.publishMemberRemovalSideEffects(ctx, organizationID, res.RemovedMemberAuthSubs)
+		s.runMemberRemovalSideEffects(ctx, organizationID, res.RemovedMemberAuthSubs)
 	}
 
 	return res, err
@@ -103,24 +111,23 @@ func (s *service) resolveMemberOverage(
 	return toRemove, autoSelected, nil
 }
 
-// publishMemberRemovalSideEffects runs the post-commit work for a downgrade's bulk
-// member removal: usage-cache resync, one event per removed member (published only
-// after the transaction has actually committed — matches removeMember's
-// single-member path in service_member.go, so a bulk downgrade removal notifies its
-// members the same way an individual removal already does), and per-member role-cache
-// invalidation (also matching removeMember's handler_member.go invalidateRole call:
-// without it a bulk-removed member keeps their cached RBAC role, and with it access
-// to the organization, until the cache's own TTL expires on its own). No-op if
+// runMemberRemovalSideEffects runs the post-commit work for a downgrade's bulk
+// member removal: usage-cache resync and per-member role-cache invalidation
+// (matching removeMember's handler_member.go invalidateRole call: without it
+// a bulk-removed member keeps their cached RBAC role, and with it access to
+// the organization, until the cache's own TTL expires on its own). The
+// MemberRemoved events themselves are enqueued transactionally inside
+// resolveDowngradeOverage's own db.WithTx above, not here — these two
+// remaining steps are best-effort cache maintenance, not durability-sensitive,
+// so they still run only after that transaction has committed. No-op if
 // nothing was actually removed.
-func (s *service) publishMemberRemovalSideEffects(ctx context.Context, organizationID string, removedAuthSubs []string) {
+func (s *service) runMemberRemovalSideEffects(ctx context.Context, organizationID string, removedAuthSubs []string) {
 	if len(removedAuthSubs) == 0 {
 		return
 	}
 	s.syncMemberUsage(ctx, organizationID)
-	for _, authSub := range removedAuthSubs {
-		events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyMemberRemoved, "organization", organizationID,
-			events.MemberRemoved{OrganizationID: organizationID, AuthSub: authSub})
-		if s.cacheInval != nil {
+	if s.cacheInval != nil {
+		for _, authSub := range removedAuthSubs {
 			s.cacheInval.InvalidateMemberRole(ctx, organizationID, authSub)
 		}
 	}

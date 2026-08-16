@@ -45,6 +45,13 @@ var ErrWebhookFeatureNotAvailable = errors.New("organization: webhooks are not a
 // (must be https, must resolve to a publicly routable address).
 var ErrWebhookURLNotAllowed = errors.New("organization: webhook url is not allowed")
 
+// ErrWebhookDeliveryMismatch - the delivery ID exists but belongs to a
+// different endpoint than the one in the request path. Maps to the same
+// 404 as a delivery ID that doesn't exist at all, deliberately — telling
+// the two apart would confirm to a caller that a delivery ID they don't
+// own exists somewhere, which the plain "not found" response never does.
+var ErrWebhookDeliveryMismatch = errors.New("organization: webhook delivery does not belong to this endpoint")
+
 // validateWebhookURL is a var so tests can relax it for httptest.Server
 // (loopback, http) stand-in receivers — see AllowLoopbackWebhooksForTest in
 // export_test.go.
@@ -81,7 +88,7 @@ func (s *service) createWebhookEndpoint(
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.createWebhookEndpoint: %w", err)
 	}
-	rec, err = s.repo.insertWebhookEndpoint(ctx, s.pool, organizationID, url, secret, subscribedEvents)
+	rec, err = s.repo.insertWebhookEndpoint(ctx, s.pool, organizationID, url, secret, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.createWebhookEndpoint: %w", err)
 	}
@@ -89,7 +96,7 @@ func (s *service) createWebhookEndpoint(
 }
 
 func (s *service) listWebhookEndpoints(ctx context.Context, organizationID string) ([]webhookEndpointRecord, error) {
-	recs, err := s.repo.listWebhookEndpoints(ctx, s.pool, organizationID)
+	recs, err := s.repo.listWebhookEndpoints(ctx, s.pool, organizationID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, apperr.Internal("WEBHOOK_LIST_FAILED", "failed to list webhooks", err)
 	}
@@ -121,7 +128,7 @@ func (s *service) updateWebhookEndpoint(
 		return nil, fmt.Errorf("%w: %s", ErrWebhookURLNotAllowed, err)
 	}
 	if enabled {
-		ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, id)
+		ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, id, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 		if err != nil {
 			return nil, fmt.Errorf("organization.updateWebhookEndpoint: %w", err)
 		}
@@ -131,7 +138,7 @@ func (s *service) updateWebhookEndpoint(
 			return nil, ErrWebhookRotationTestRequired
 		}
 	}
-	return s.repo.updateWebhookEndpoint(ctx, s.pool, organizationID, id, url, enabled, subscribedEvents)
+	return s.repo.updateWebhookEndpoint(ctx, s.pool, organizationID, id, url, enabled, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 }
 
 // rotateWebhookSecret issues a fresh secret, keeping the old one valid for a
@@ -155,7 +162,7 @@ func (s *service) rotateWebhookSecret(
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.rotateWebhookSecret: %w", err)
 	}
-	rec, err = s.repo.rotateWebhookSecret(ctx, s.pool, organizationID, id, newSecret, time.Now().Add(24*time.Hour))
+	rec, err = s.repo.rotateWebhookSecret(ctx, s.pool, organizationID, id, newSecret, time.Now().Add(24*time.Hour), s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.rotateWebhookSecret: %w", err)
 	}
@@ -163,8 +170,12 @@ func (s *service) rotateWebhookSecret(
 }
 
 func (s *service) deleteWebhookEndpoint(ctx context.Context, organizationID, id string) error {
-	if err := s.repo.deleteWebhookEndpoint(ctx, s.pool, organizationID, id); err != nil {
+	deleted, err := s.repo.deleteWebhookEndpoint(ctx, s.pool, organizationID, id)
+	if err != nil {
 		return apperr.Internal("WEBHOOK_DELETE_FAILED", "failed to delete webhook", err)
+	}
+	if !deleted {
+		return apperr.NotFound("WEBHOOK_NOT_FOUND", "webhook not found", nil)
 	}
 	return nil
 }
@@ -184,11 +195,16 @@ func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webh
 	defer func() {
 		if err != nil {
 			logger.FromContext(ctx).Error("retryWebhookDelivery failed", "error", err)
-			err = apperr.Internal("RETRY_FAILED", "retry failed", err)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows), errors.Is(err, ErrWebhookDeliveryMismatch):
+				err = apperr.NotFound("WEBHOOK_NOT_FOUND", "webhook not found", err)
+			default:
+				err = apperr.Internal("RETRY_FAILED", "retry failed", err)
+			}
 		}
 	}()
 
-	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID)
+	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return fmt.Errorf("organization.retryWebhookDelivery: endpoint: %w", err)
 	}
@@ -197,7 +213,7 @@ func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webh
 		return fmt.Errorf("organization.retryWebhookDelivery: delivery: %w", err)
 	}
 	if del.EndpointID != ep.ID {
-		return errors.New("delivery does not belong to endpoint")
+		return fmt.Errorf("organization.retryWebhookDelivery: %w", ErrWebhookDeliveryMismatch)
 	}
 	payload, err := retryPayload(del, ep.ID)
 	if err != nil {
@@ -220,11 +236,16 @@ func (s *service) retryAllFailedWebhookDeliveries(
 	defer func() {
 		if err != nil {
 			logger.FromContext(ctx).Error("retryAllFailedWebhookDeliveries failed", "error", err)
-			n, err = 0, apperr.Internal("RETRY_FAILED", "retry failed", err)
+			n = 0
+			if errors.Is(err, pgx.ErrNoRows) {
+				err = apperr.NotFound("WEBHOOK_NOT_FOUND", "webhook not found", err)
+				return
+			}
+			err = apperr.Internal("RETRY_FAILED", "retry failed", err)
 		}
 	}()
 
-	if _, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID); err != nil {
+	if _, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious); err != nil {
 		return 0, fmt.Errorf("organization.retryAllFailedWebhookDeliveries: endpoint: %w", err)
 	}
 	dels, err := s.repo.listFailedWebhookDeliveries(ctx, s.pool, webhookID)
@@ -232,8 +253,10 @@ func (s *service) retryAllFailedWebhookDeliveries(
 		return 0, fmt.Errorf("organization.retryAllFailedWebhookDeliveries: %w", err)
 	}
 	for i := range dels {
-		events.Publish(ctx, s.pub, events.ExchangeOrganization, events.RoutingKeyWebhookRetryRequested, "organization", organizationID,
-			events.WebhookRetryRequested{OrganizationID: organizationID, EndpointID: webhookID, DeliveryID: dels[i].ID})
+		if err := events.Enqueue(ctx, s.pool, events.ExchangeOrganization, events.RoutingKeyWebhookRetryRequested, "organization", organizationID,
+			events.WebhookRetryRequested{OrganizationID: organizationID, EndpointID: webhookID, DeliveryID: dels[i].ID}); err != nil {
+			return 0, fmt.Errorf("organization.retryAllFailedWebhookDeliveries: enqueue: %w", err)
+		}
 	}
 	return len(dels), nil
 }
@@ -272,7 +295,7 @@ func (s *service) sendTestEvent(
 		err = apperr.Internal("WEBHOOK_TEST_FAILED", "failed to send test event", err)
 	}()
 
-	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID)
+	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, false, fmt.Errorf("organization.sendTestEvent: %w", err)
 	}

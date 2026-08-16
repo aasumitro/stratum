@@ -77,6 +77,7 @@ func (h *handler) listInvitations(c *gin.Context) {
 // @Param        organizationID  path  string  true  "Organization ID"
 // @Param        invitationID    path  string  true  "Invitation ID"
 // @Success      204             "no content"
+// @Failure      404             {object}  response.Payload  "invitation not found"
 // @Failure      403             {object}  response.Payload  "admin role required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/invitations/{invitationID} [delete]
@@ -232,7 +233,7 @@ func (h *handler) previewInvitation(c *gin.Context) {
 // @Router       /me/invitations [get]
 func (h *handler) listMyInvitations(c *gin.Context) {
 	email := reqctx.Email(c)
-	if email == "" {
+	if email == "" || !reqctx.EmailVerified(c) {
 		response.List([]myInvitationRecord{}, 0).JSON(c, http.StatusOK)
 		return
 	}

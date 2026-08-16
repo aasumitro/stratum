@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
 CREATE SCHEMA IF NOT EXISTS organization;
 
 CREATE TABLE organization.organizations (
@@ -51,13 +53,15 @@ CREATE TABLE organization.invitations (
 CREATE INDEX idx_invitations_token        ON organization.invitations (token) WHERE status = 'pending';
 CREATE INDEX idx_invitations_organization ON organization.invitations (organization_id);
 
--- secret_plaintext holds the signing secret exactly as generated, never
--- hashed — the worker signs deliveries with it verbatim, so a one-way hash
--- would make that impossible; named to say so rather than imply a
--- protection that was never there.
+-- secret_encrypted / secret_encrypted_previous hold the signing secret
+-- pgp_sym_encrypt-encrypted, never in plaintext — decrypted only at read
+-- time by the query layer, which is the one place that needs the raw value
+-- (the worker signs deliveries with it verbatim, so a one-way hash would
+-- make that impossible; encryption keeps it recoverable while keeping it
+-- unreadable at rest).
 -- subscribed_events: NULL/empty = every event (same "empty = allow all"
 -- convention as organization.settings' allowed_ips).
--- secret_plaintext_previous / secret_rotation_expires_at: 24h dual-signature
+-- secret_encrypted_previous / secret_rotation_expires_at: 24h dual-signature
 -- window on rotation — deliver() signs with the current secret always, plus
 -- the previous one until this expires, so the receiver can verify against
 -- either while they migrate.
@@ -70,8 +74,9 @@ CREATE TABLE organization.webhook_endpoints (
     id                         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id            UUID        NOT NULL REFERENCES organization.organizations(id) ON DELETE CASCADE,
     url                        TEXT        NOT NULL,
-    secret_plaintext           TEXT        NOT NULL,
-    secret_plaintext_previous  TEXT,
+    secret_encrypted           BYTEA       NOT NULL,
+    secret_encrypted_previous  BYTEA,
+    key_version                SMALLINT    NOT NULL DEFAULT 1,
     secret_rotation_expires_at TIMESTAMPTZ,
     subscribed_events          TEXT[],
     enabled                    BOOLEAN     NOT NULL DEFAULT true,

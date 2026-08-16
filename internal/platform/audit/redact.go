@@ -26,6 +26,7 @@ var sensitiveFieldNames = map[string]bool{
 	"service_role_key": true,
 	"credential":       true,
 	"credentials":      true,
+	"code":             true,
 }
 
 // redactSensitiveFields walks a JSON value at any nesting depth (objects and

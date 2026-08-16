@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
+	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 const testAuthSub = "integ_sub_ws_1"
@@ -146,6 +148,65 @@ func TestIntegration_CreateOrganization_KnownPlan_Succeeds(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	orgID, _ = resp["data"].(map[string]any)["id"].(string)
+}
+
+// alwaysFailPublisher errors on every call — proves createOrganization's
+// outbox write is independent of broker health, unlike the older
+// fire-and-forget publish behavior, which silently dropped the event on a
+// failing publisher with no trace left behind.
+type alwaysFailPublisher struct{}
+
+func (alwaysFailPublisher) Publish(context.Context, string, string, []byte) error {
+	return errors.New("publisher unavailable")
+}
+func (alwaysFailPublisher) PublishDelayed(context.Context, string, string, []byte, time.Duration) error {
+	return errors.New("publisher unavailable")
+}
+
+// TestIntegration_CreateOrganization_PublisherFailure_StillCreatesWithOutboxRow
+// injects a publisher that always errors and proves createOrganization still
+// succeeds (the organization is created) with an OrganizationCreated row
+// durably present in messaging.outbox — rather than silently dropping it,
+// where a broker hiccup at exactly this moment would leave the organization
+// provisioned with no subscription and no trace of the lost event anywhere.
+func TestIntegration_CreateOrganization_PublisherFailure_StillCreatesWithOutboxRow(t *testing.T) {
+	pool := testPool(t)
+	const slug = "integ-ws-pubfail"
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+			pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+		}
+	})
+
+	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub, alwaysFailPublisher{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations",
+		`{"slug":"`+slug+`","name":"Integ WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201 even with a failing publisher (Enqueue never touches the publisher), got %d: %s", w.Code, w.Body)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID, _ = resp["data"].(map[string]any)["id"].(string)
+	if orgID == "" {
+		t.Fatal("response carried no organization id")
+	}
+
+	var count int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM messaging.outbox
+		WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+		events.RoutingKeyOrganizationCreated, orgID,
+	).Scan(&count); err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("want exactly 1 outbox row for the new organization's OrganizationCreated event, got %d", count)
+	}
 }
 
 func TestIntegration_CreateOrganization_UnknownAddon_RejectedBeforeDBWrite(t *testing.T) {
@@ -312,33 +373,52 @@ func TestIntegration_AddAndRemoveMember(t *testing.T) {
 	}
 }
 
-// countMemberRemovedEvents returns how many MemberRemoved events a
-// capturingPublisher recorded — used to prove removeMember only publishes
-// once per actual removal, never for a no-op delete of an already-removed
-// member.
-func countMemberRemovedEvents(pub *capturingPublisher) int {
-	n := 0
-	for _, evt := range pub.published {
-		if evt.routingKey == events.RoutingKeyMemberRemoved {
-			n++
-		}
+// dbNow reads Postgres's own clock — used as a checkpoint instead of Go's
+// time.Now() so a "events created after this point" query can't be thrown
+// off by clock skew between the test process and a containerized Postgres
+// (observed in practice: a wall-clock checkpoint captured a moment after an
+// event's outbox row committed still compared as "before" that row's
+// created_at, because the container's clock ran fractionally ahead).
+func dbNow(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(context.Background(), `SELECT now()`).Scan(&now); err != nil {
+		t.Fatalf("read db now(): %v", err)
+	}
+	return now
+}
+
+// countMemberRemovedEventsSince returns how many MemberRemoved outbox rows
+// for orgID were created after since — used to prove removeMember only
+// enqueues once per actual removal, never for a no-op delete of an
+// already-removed member. Queried directly from messaging.outbox, not a
+// captured publisher: events.Enqueue never touches the injected
+// EventPublisher at all.
+func countMemberRemovedEventsSince(t *testing.T, pool *pgxpool.Pool, orgID string, since time.Time) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2 AND created_at > $3`,
+		events.RoutingKeyMemberRemoved, orgID, since,
+	).Scan(&n); err != nil {
+		t.Fatalf("count outbox rows: %v", err)
 	}
 	return n
 }
 
 // TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent proves that
-// removing a member who's already been removed still succeeds (idempotent
-// delete) but does not publish a second MemberRemoved event for a removal
+// removing a member who's already been removed reports 404, not a phantom
+// success, and does not enqueue a second MemberRemoved event for a removal
 // that didn't actually happen.
 func TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent(t *testing.T) {
 	pool := testPool(t)
-	pub := &capturingPublisher{}
-	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub, pub)
+	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub, messaging.NoopPublisher{})
 
 	var orgID string
 	t.Cleanup(func() {
 		if orgID != "" {
 			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+			pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
 		}
 	})
 
@@ -358,25 +438,25 @@ func TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent(t *testing.T) {
 		t.Fatalf("add member: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 
-	pub.published = nil // drop the create/add-member events, only care about removeMember below
+	checkpoint1 := dbNow(t, pool) // only care about removeMember's own enqueue below, not create/add-member's
 
 	w3 := httptest.NewRecorder()
 	e.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodDelete, "/api/organizations/"+orgID+"/members/sub_phantom_member", ""))
 	if w3.Code != http.StatusNoContent {
 		t.Fatalf("first remove: want 204, got %d: %s", w3.Code, w3.Body)
 	}
-	if n := countMemberRemovedEvents(pub); n != 1 {
+	if n := countMemberRemovedEventsSince(t, pool, orgID, checkpoint1); n != 1 {
 		t.Fatalf("first remove: want 1 MemberRemoved event, got %d", n)
 	}
 
-	pub.published = nil
+	checkpoint2 := dbNow(t, pool)
 
 	w4 := httptest.NewRecorder()
 	e.ServeHTTP(w4, httpserver.JSONTestRequest(http.MethodDelete, "/api/organizations/"+orgID+"/members/sub_phantom_member", ""))
-	if w4.Code != http.StatusNoContent {
-		t.Fatalf("second remove (already gone): want 204, got %d: %s", w4.Code, w4.Body)
+	if w4.Code != http.StatusNotFound {
+		t.Fatalf("second remove (already gone): want 404, got %d: %s", w4.Code, w4.Body)
 	}
-	if n := countMemberRemovedEvents(pub); n != 0 {
+	if n := countMemberRemovedEventsSince(t, pool, orgID, checkpoint2); n != 0 {
 		t.Errorf("second remove (already gone): want 0 MemberRemoved events, got %d", n)
 	}
 }
@@ -1950,6 +2030,230 @@ func TestIntegration_ListMyInvitations(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("pending invitation for the caller's email not found in GET /me/invitations response: %v", data)
+	}
+}
+
+func TestIntegration_ListMyInvitations_UnverifiedEmail_ReturnsEmpty(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv6","name":"Invite WS 6","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"unverified-invitee@test.com","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+
+	inviteeEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_invitee", "unverified-invitee@test.com")
+	w3 := httptest.NewRecorder()
+	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodGet, "/api/me/invitations", ""))
+	if w3.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w3.Code, w3.Body)
+	}
+	var listResp map[string]any
+	json.NewDecoder(w3.Body).Decode(&listResp)
+	data := listResp["data"].([]any)
+	if len(data) != 0 {
+		t.Errorf("expected empty list for unverified email, got %v", data)
+	}
+	if strings.Contains(w3.Body.String(), `"token"`) {
+		t.Errorf("response body must never contain a token key when the email-verified check fails, got %s", w3.Body.String())
+	}
+}
+
+func TestIntegration_PreviewInvitation_UnverifiedEmail_ReturnsEmailMismatch(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv7","name":"Invite WS 7","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"unverified-preview@test.com","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+	var token string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
+		orgID, "unverified-preview@test.com",
+	).Scan(&token); err != nil {
+		t.Fatalf("fetch invitation token: %v", err)
+	}
+
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_preview", "unverified-preview@test.com")
+	w3 := httptest.NewRecorder()
+	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodGet, "/api/invitations/preview?token="+token, ""))
+	if w3.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d: %s", w3.Code, w3.Body)
+	}
+	var errResp map[string]any
+	json.NewDecoder(w3.Body).Decode(&errResp)
+	if code := errResp["status"].(map[string]any)["code"]; code != "INVITATION_EMAIL_MISMATCH" {
+		t.Errorf("want code INVITATION_EMAIL_MISMATCH, got %v", code)
+	}
+}
+
+func TestIntegration_DeclineInvitation_UnverifiedEmail_ReturnsEmailMismatch(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv8","name":"Invite WS 8","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"unverified-decline@test.com","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+	var token string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
+		orgID, "unverified-decline@test.com",
+	).Scan(&token); err != nil {
+		t.Fatalf("fetch invitation token: %v", err)
+	}
+
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_decline", "unverified-decline@test.com")
+	w3 := httptest.NewRecorder()
+	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/decline", `{"token":"`+token+`"}`))
+	if w3.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d: %s", w3.Code, w3.Body)
+	}
+	var errResp map[string]any
+	json.NewDecoder(w3.Body).Decode(&errResp)
+	if code := errResp["status"].(map[string]any)["code"]; code != "INVITATION_EMAIL_MISMATCH" {
+		t.Errorf("want code INVITATION_EMAIL_MISMATCH, got %v", code)
+	}
+}
+
+func TestIntegration_AcceptInvitation_UnverifiedEmail_ReturnsEmailMismatch(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv9","name":"Invite WS 9","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"unverified-accept@test.com","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+	var token string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
+		orgID, "unverified-accept@test.com",
+	).Scan(&token); err != nil {
+		t.Fatalf("fetch invitation token: %v", err)
+	}
+
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_accept", "unverified-accept@test.com")
+	w3 := httptest.NewRecorder()
+	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept", `{"token":"`+token+`"}`))
+	if w3.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d: %s", w3.Code, w3.Body)
+	}
+	var errResp map[string]any
+	json.NewDecoder(w3.Body).Decode(&errResp)
+	if code := errResp["status"].(map[string]any)["code"]; code != "INVITATION_EMAIL_MISMATCH" {
+		t.Errorf("want code INVITATION_EMAIL_MISMATCH, got %v", code)
+	}
+}
+
+// TestIntegration_RequestNewInvitation_UnverifiedEmail_ReturnsNotFound differs
+// from its four sibling unverified-email tests in expected error code:
+// requestNewInvitation's service method (service_invitation.go) reports an
+// unverified caller as INVITATION_NOT_FOUND, not INVITATION_EMAIL_MISMATCH —
+// deliberately not distinguishing "wrong email" from "unverified email" here
+// avoids telling an unauthenticated-feeling caller anything about whether a
+// pending invitation exists for a token they don't control.
+func TestIntegration_RequestNewInvitation_UnverifiedEmail_ReturnsNotFound(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-inv10","name":"Invite WS 10","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"unverified-requestnew@test.com","role":"member"}`))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
+	}
+	var token string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
+		orgID, "unverified-requestnew@test.com",
+	).Scan(&token); err != nil {
+		t.Fatalf("fetch invitation token: %v", err)
+	}
+
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_requestnew", "unverified-requestnew@test.com")
+	w3 := httptest.NewRecorder()
+	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/request-new", `{"token":"`+token+`"}`))
+	if w3.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d: %s", w3.Code, w3.Body)
+	}
+	var errResp map[string]any
+	json.NewDecoder(w3.Body).Decode(&errResp)
+	if code := errResp["status"].(map[string]any)["code"]; code != "INVITATION_NOT_FOUND" {
+		t.Errorf("want code INVITATION_NOT_FOUND, got %v", code)
 	}
 }
 
