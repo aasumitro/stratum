@@ -11,7 +11,7 @@
 # settings validation calls time.LoadLocation and would otherwise reject every
 # IANA name on this base.
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.27
 ARG SERVICE_VERSION=dev
 
 FROM golang:${GO_VERSION}-alpine AS build

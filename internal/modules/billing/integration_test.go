@@ -11,9 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -2944,9 +2944,9 @@ func TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce(t *testing.T
 	// what proves they aren't deduplicated) — a fixed literal would collide
 	// with billing.webhook_events rows a prior local run already committed,
 	// so every ID here is generated fresh per run instead.
-	runSuffix := uuid.NewString()[:8]
+	runSuffix := uuid.New().String()[:8]
 	user := "integ_billing_wh_race_user_" + runSuffix
-	orgID := uuid.NewString()
+	orgID := uuid.New().String()
 	extID := "stripe_sess_race_" + runSuffix
 	setupBillingTest(t, pool, orgID)
 

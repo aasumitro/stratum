@@ -117,8 +117,7 @@ func Error(code, message string, details ...any) *Payload {
 // payload and status code. A *apperr.Error carries its own code/message/kind;
 // anything else is treated as an unclassified internal error.
 func FromError(c *gin.Context, err error) {
-	var ae *apperr.Error
-	if errors.As(err, &ae) {
+	if ae, ok := errors.AsType[*apperr.Error](err); ok {
 		Error(ae.Code, ae.Message, detailsOf(ae)...).JSON(c, ae.Kind.HTTPStatus())
 		return
 	}

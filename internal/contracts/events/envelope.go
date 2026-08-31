@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/logger"
@@ -52,7 +51,7 @@ func Publish(
 	exchange, routingKey, source, orgID string, data any,
 ) {
 	env := Envelope{
-		ID:     uuid.Must(uuid.NewV7()).String(),
+		ID:     uuid.NewV7().String(),
 		Type:   routingKey,
 		Source: source,
 		Time:   time.Now(),
@@ -111,7 +110,7 @@ func PublishDelayed(
 	data any, delay time.Duration,
 ) {
 	env := Envelope{
-		ID:     uuid.Must(uuid.NewV7()).String(),
+		ID:     uuid.NewV7().String(),
 		Type:   routingKey,
 		Source: source,
 		Time:   time.Now(),
@@ -146,7 +145,7 @@ func Enqueue(
 	exchange, routingKey, source, orgID string, data any,
 ) error {
 	env := Envelope{
-		ID: uuid.Must(uuid.NewV7()).String(), Type: routingKey, Source: source,
+		ID: uuid.NewV7().String(), Type: routingKey, Source: source,
 		Time: time.Now(), OrgID: orgID, Data: data,
 	}
 	body, err := json.Marshal(env)
@@ -168,7 +167,7 @@ func EnqueueDelayed(
 	exchange, routingKey, source, orgID string, data any, delay time.Duration,
 ) error {
 	env := Envelope{
-		ID: uuid.Must(uuid.NewV7()).String(), Type: routingKey, Source: source,
+		ID: uuid.NewV7().String(), Type: routingKey, Source: source,
 		Time: time.Now(), OrgID: orgID, Data: data,
 	}
 	body, err := json.Marshal(env)

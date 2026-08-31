@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/platform/outbox"
@@ -85,7 +85,7 @@ func (p *selectiveFailPublisher) PublishDelayed(_ context.Context, _, _ string, 
 
 func seedOutboxRow(t *testing.T, pool *pgxpool.Pool, routingKey string, notBefore time.Time, publishedAt *time.Time) {
 	t.Helper()
-	id := uuid.Must(uuid.NewV7()).String()
+	id := uuid.NewV7().String()
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO messaging.outbox (id, exchange, routing_key, payload, not_before, published_at)
 		VALUES ($1, 'test.exchange', $2, '{}', $3, $4)`,
@@ -104,7 +104,7 @@ func seedOutboxRow(t *testing.T, pool *pgxpool.Pool, routingKey string, notBefor
 // short of maxAttempts without driving real backoff through every prior attempt.
 func seedOutboxRowAtAttempts(t *testing.T, pool *pgxpool.Pool, routingKey string, attempts int) {
 	t.Helper()
-	id := uuid.Must(uuid.NewV7()).String()
+	id := uuid.NewV7().String()
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO messaging.outbox (id, exchange, routing_key, payload, attempts)
 		VALUES ($1, 'test.exchange', $2, '{}', $3)`,

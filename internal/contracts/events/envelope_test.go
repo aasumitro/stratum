@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
@@ -75,8 +75,8 @@ func TestPublish_GeneratesUUIDv7(t *testing.T) {
 		"organization", "org-1", map[string]string{"k": "v"})
 
 	id := decodeEnvelopeID(t, pub.body)
-	if id.Version() != 7 {
-		t.Errorf("envelope ID version = %d, want 7 (uuidv7)", id.Version())
+	if v := uuidVersion(id); v != 7 {
+		t.Errorf("envelope ID version = %d, want 7 (uuidv7)", v)
 	}
 }
 
@@ -89,8 +89,8 @@ func TestPublishDelayed_GeneratesUUIDv7(t *testing.T) {
 		"billing", "org-1", map[string]string{"k": "v"}, time.Minute)
 
 	id := decodeEnvelopeID(t, pub.body)
-	if id.Version() != 7 {
-		t.Errorf("envelope ID version = %d, want 7 (uuidv7)", id.Version())
+	if v := uuidVersion(id); v != 7 {
+		t.Errorf("envelope ID version = %d, want 7 (uuidv7)", v)
 	}
 }
 
@@ -161,8 +161,8 @@ func TestIntegration_Enqueue_RoundTripsSamePayloadAsPublish(t *testing.T) {
 	}
 
 	id := decodeEnvelopeID(t, payload)
-	if id.Version() != 7 {
-		t.Errorf("outbox row's envelope ID version = %d, want 7 (uuidv7)", id.Version())
+	if v := uuidVersion(id); v != 7 {
+		t.Errorf("outbox row's envelope ID version = %d, want 7 (uuidv7)", v)
 	}
 }
 
@@ -210,3 +210,8 @@ func decodeEnvelopeID(t *testing.T, body []byte) uuid.UUID {
 	}
 	return id
 }
+
+// uuidVersion extracts the RFC 9562 version number — the high nibble of
+// octet 6. stdlib uuid.UUID (unlike github.com/google/uuid) exposes no
+// Version() accessor.
+func uuidVersion(u uuid.UUID) int { return int(u[6] >> 4) }
