@@ -17,7 +17,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 const testAuthSub = "integ_sub_ws_1"
@@ -150,26 +149,13 @@ func TestIntegration_CreateOrganization_KnownPlan_Succeeds(t *testing.T) {
 	orgID, _ = resp["data"].(map[string]any)["id"].(string)
 }
 
-// alwaysFailPublisher errors on every call — proves createOrganization's
-// outbox write is independent of broker health, unlike the older
-// fire-and-forget publish behavior, which silently dropped the event on a
-// failing publisher with no trace left behind.
-type alwaysFailPublisher struct{}
-
-func (alwaysFailPublisher) Publish(context.Context, string, string, []byte) error {
-	return errors.New("publisher unavailable")
-}
-func (alwaysFailPublisher) PublishDelayed(context.Context, string, string, []byte, time.Duration) error {
-	return errors.New("publisher unavailable")
-}
-
-// TestIntegration_CreateOrganization_PublisherFailure_StillCreatesWithOutboxRow
-// injects a publisher that always errors and proves createOrganization still
-// succeeds (the organization is created) with an OrganizationCreated row
-// durably present in messaging.outbox — rather than silently dropping it,
-// where a broker hiccup at exactly this moment would leave the organization
-// provisioned with no subscription and no trace of the lost event anywhere.
-func TestIntegration_CreateOrganization_PublisherFailure_StillCreatesWithOutboxRow(t *testing.T) {
+// TestIntegration_CreateOrganization_WritesOutboxRowInCreateTransaction
+// proves createOrganization persists the OrganizationCreated event as a row in
+// messaging.outbox as part of the same transaction that creates the
+// organization. Delivery to the broker happens later, out of band, from that
+// durable row — so a broker outage at creation time cannot lose the event or
+// leave the organization provisioned with no trace of it.
+func TestIntegration_CreateOrganization_WritesOutboxRowInCreateTransaction(t *testing.T) {
 	pool := testPool(t)
 	const slug = "integ-ws-pubfail"
 
@@ -181,12 +167,12 @@ func TestIntegration_CreateOrganization_PublisherFailure_StillCreatesWithOutboxR
 		}
 	})
 
-	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub, alwaysFailPublisher{})
+	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations",
 		`{"slug":"`+slug+`","name":"Integ WS","plan":"solo","cycle":"monthly"}`))
 	if w.Code != http.StatusCreated {
-		t.Fatalf("want 201 even with a failing publisher (Enqueue never touches the publisher), got %d: %s", w.Code, w.Body)
+		t.Fatalf("want 201 (Enqueue writes the outbox row in-transaction, no broker involved), got %d: %s", w.Code, w.Body)
 	}
 
 	var resp map[string]any
@@ -391,9 +377,8 @@ func dbNow(t *testing.T, pool *pgxpool.Pool) time.Time {
 // countMemberRemovedEventsSince returns how many MemberRemoved outbox rows
 // for orgID were created after since — used to prove removeMember only
 // enqueues once per actual removal, never for a no-op delete of an
-// already-removed member. Queried directly from messaging.outbox, not a
-// captured publisher: events.Enqueue never touches the injected
-// EventPublisher at all.
+// already-removed member. Read straight from messaging.outbox, since that
+// is where events.Enqueue writes the row, in the removal's own transaction.
 func countMemberRemovedEventsSince(t *testing.T, pool *pgxpool.Pool, orgID string, since time.Time) int {
 	t.Helper()
 	var n int
@@ -412,7 +397,7 @@ func countMemberRemovedEventsSince(t *testing.T, pool *pgxpool.Pool, orgID strin
 // that didn't actually happen.
 func TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent(t *testing.T) {
 	pool := testPool(t)
-	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub, messaging.NoopPublisher{})
+	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub)
 
 	var orgID string
 	t.Cleanup(func() {

@@ -7,7 +7,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // NewHandlerEngine wires billing handlers with no service and fixed context.
@@ -102,25 +101,17 @@ type referenceStub interface {
 	contracts.CountryTaxReader
 }
 
-// NewModuleForTest creates a Module with a real pool and noop publisher. A
-// nil ref leaves the tax rate unwired — tax defaults to 0 (see service.go's
+// NewModuleForTest creates a Module backed by a real pool. A nil ref leaves
+// the tax rate unwired — tax defaults to 0 (see service.go's
 // optional-dependency comments).
 func NewModuleForTest(pool *pgxpool.Pool, ref referenceStub) *Module {
-	return New(pool, messaging.NoopPublisher{}, ProviderConfig{}, ref, nil, nil)
+	return New(pool, ProviderConfig{}, ref, nil, nil)
 }
 
 // NewWebhookModuleEngine creates a gin.Engine with both billing routes (authed)
 // and public webhook routes (/webhooks/stripe, /webhooks/xendit), backed by a
 // real DB. ProviderConfig is empty so webhook secrets are bypassed (dev mode).
 func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) *gin.Engine {
-	return NewWebhookModuleEngineWithPublisher(pool, authSub, organizationID, messaging.NoopPublisher{})
-}
-
-// NewWebhookModuleEngineWithPublisher is NewWebhookModuleEngine with an
-// injectable publisher, for tests that need to observe what a webhook
-// delivery publishes (e.g. asserting an event fires exactly once under
-// concurrent deliveries) instead of discarding it via NoopPublisher.
-func NewWebhookModuleEngineWithPublisher(pool *pgxpool.Pool, authSub, organizationID string, pub messaging.EventPublisher) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	// pool doubles as the webhook pool here — every caller of this helper
 	// connects via TEST_DATABASE_URL (stratum_test, BYPASSRLS by design —
@@ -128,7 +119,7 @@ func NewWebhookModuleEngineWithPublisher(pool *pgxpool.Pool, authSub, organizati
 	// distinction for this helper to preserve. webhook_rls_test.go
 	// exercises the real stratum_app/stratum_webhook split directly
 	// instead of through here.
-	mod := New(pool, pub, ProviderConfig{}, nil, nil, pool)
+	mod := New(pool, ProviderConfig{}, nil, nil, pool)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})

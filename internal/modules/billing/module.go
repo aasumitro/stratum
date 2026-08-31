@@ -10,7 +10,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // Module owns subscriptions, invoices, payment links, and the plan/feature/
@@ -28,13 +27,13 @@ type Module struct {
 // cmd/worker's instance — the worker binary never serves webhooks, so
 // s.webhookPool is simply never referenced there.
 func New(
-	pool *pgxpool.Pool, pub messaging.EventPublisher,
+	pool *pgxpool.Pool,
 	cfg ProviderConfig, taxReader contracts.CountryTaxReader,
 	orgSuspender contracts.OrganizationSuspender,
 	webhookPool *pgxpool.Pool,
 ) *Module {
 	svc := &service{
-		repo: &repository{}, pool: pool, pub: pub, provider: cfg,
+		repo: &repository{}, pool: pool, provider: cfg,
 		taxReader: taxReader, orgSuspender: orgSuspender, webhookPool: webhookPool,
 	}
 	return &Module{svc: svc, Worker: &Worker{svc: svc}, cfg: cfg}

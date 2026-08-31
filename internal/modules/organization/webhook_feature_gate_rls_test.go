@@ -21,7 +21,6 @@ import (
 
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/platform/db"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 func testAppPoolWebhookGate(t *testing.T) *pgxpool.Pool {
@@ -97,7 +96,7 @@ func TestCreateWebhookEndpoint_FeatureGate_NoAmbientTx(t *testing.T) {
 		t.Fatalf("seed subscription: %v", err)
 	}
 
-	billingMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, nil)
+	billingMod := billing.New(pool, billing.ProviderConfig{}, nil, nil, nil)
 
 	AllowLoopbackWebhooksForTest() // relax the https/public-IP SSRF guard for this test binary
 	mod := NewModuleForTest(pool)

@@ -13,7 +13,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -28,13 +27,13 @@ type Module struct {
 	Worker          *WebhookWorker
 }
 
-func New(pool *pgxpool.Pool, pub messaging.EventPublisher, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
+func New(pool *pgxpool.Pool, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
 	repo := &repository{}
-	svc := &service{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
+	svc := &service{repo: repo, pool: pool, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
 	return &Module{
 		svc:    svc,
 		pool:   pool,
-		Worker: &WebhookWorker{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
+		Worker: &WebhookWorker{repo: repo, pool: pool, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
 	}
 }
 

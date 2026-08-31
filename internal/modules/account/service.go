@@ -21,14 +21,12 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
 type service struct {
 	repo              *repository
 	pool              *pgxpool.Pool
-	pub               messaging.EventPublisher
 	adminURL          string // Supabase auth/v1 admin base URL
 	serviceRoleKey    string // Supabase service_role key
 	revokedNS         *cache.Namespace

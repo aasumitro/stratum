@@ -27,7 +27,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/audit"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // auditEngine mirrors organization.NewModuleEngine but mounts the real
@@ -36,7 +35,7 @@ import (
 // must Stop() it to force a synchronous flush before querying audit.events.
 func auditEngine(pool *pgxpool.Pool, authSub string, w *audit.Writer) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	mod := organization.New(pool, messaging.NoopPublisher{}, "test-webhook-secret-encryption-key-0000", "", 1)
+	mod := organization.New(pool, "test-webhook-secret-encryption-key-0000", "", 1)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})

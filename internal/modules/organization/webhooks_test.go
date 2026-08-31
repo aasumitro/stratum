@@ -21,7 +21,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 const webhooksTestOrgSlugPrefix = "integ-ws-webhooks-"
@@ -387,16 +386,16 @@ func TestIntegration_Webhooks_ListDeliveries_CursorPagination(t *testing.T) {
 // per delivery instead of retrying inline on the request goroutine, and
 // that feeding those rows' payloads through the worker's consumer handler
 // (the same body a real relay+consumer round trip would deliver) produces
-// the same end result — every failed delivery actually retried. Queried
-// directly from messaging.outbox, not a captured publisher: events.Enqueue
-// never touches the injected EventPublisher at all.
+// the same end result — every failed delivery actually retried. Published
+// events are asserted by reading messaging.outbox directly, since that is
+// where events.Enqueue writes them, in the same transaction as the change.
 func TestIntegration_Webhooks_RetryAllFailed(t *testing.T) {
 	pool := testPool(t)
 	orgID := createWebhookTestOrg(t, "retry-all")
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
 	})
-	e, mod := organization.NewModuleEngineWithPublisher(pool, testAuthSub, messaging.NoopPublisher{})
+	e, mod := organization.NewModuleEngineWithPublisher(pool, testAuthSub)
 
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

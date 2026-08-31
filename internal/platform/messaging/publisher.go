@@ -50,20 +50,31 @@ type Publisher struct {
 	conn   *Connection
 	logger *slog.Logger
 
+	// ctx is the process shutdown context. Every watcher goroutine selects
+	// on ctx.Done() so a shutdown stops them instead of leaving one retrying
+	// a dead broker forever.
+	ctx context.Context
+	// wg tracks the watcher goroutines (watchReconnect, and one
+	// watchChannelClose per opened channel) so Close can wait for them to
+	// unwind before the process exits.
+	wg sync.WaitGroup
+
 	mu sync.RWMutex
 	ch *amqp.Channel
 }
 
 // NewPublisher opens a confirm-mode channel on conn and starts a
 // background goroutine that re-opens the channel after every reconnect.
-func NewPublisher(conn *Connection, logger *slog.Logger) (*Publisher, error) {
-	p := &Publisher{conn: conn, logger: logger}
+// ctx is the process shutdown context; the background watchers stop when it
+// is cancelled.
+func NewPublisher(ctx context.Context, conn *Connection, logger *slog.Logger) (*Publisher, error) {
+	p := &Publisher{conn: conn, logger: logger, ctx: ctx}
 
 	if err := p.openChannel(); err != nil {
 		return nil, fmt.Errorf("messaging.NewPublisher: %w", err)
 	}
 
-	go p.watchReconnect()
+	p.wg.Go(p.watchReconnect)
 
 	return p, nil
 }
@@ -94,7 +105,12 @@ func (p *Publisher) openChannel() error {
 
 	p.swapChannel(ch)
 
-	go p.watchChannelClose(ch)
+	// wg.Go here is reached from watchReconnect and reopenWithBackoff, which
+	// are themselves wg-tracked. That is safe only because watchReconnect is
+	// started once in NewPublisher and returns solely on ctx.Done(): it holds
+	// the WaitGroup counter >= 1 for the whole process lifetime, so this Add
+	// can never race Close's wg.Wait from a zero counter.
+	p.wg.Go(func() { p.watchChannelClose(ch) })
 
 	return nil
 }
@@ -119,7 +135,11 @@ func (p *Publisher) swapChannel(newCh *amqp.Channel) {
 func (p *Publisher) watchReconnect() {
 	for {
 		reconnected := p.conn.NotifyReconnect()
-		<-reconnected
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-reconnected:
+		}
 
 		if err := p.openChannel(); err != nil {
 			p.logger.Error("publisher failed to reopen channel after reconnect", "error", err)
@@ -137,9 +157,13 @@ func (p *Publisher) watchReconnect() {
 // with no error) does not trigger a reopen.
 func (p *Publisher) watchChannelClose(ch *amqp.Channel) {
 	notify := ch.NotifyClose(make(chan *amqp.Error, 1))
-	err, ok := <-notify
-	if !ok || err == nil {
+	select {
+	case <-p.ctx.Done():
 		return
+	case err, ok := <-notify:
+		if !ok || err == nil {
+			return
+		}
 	}
 	p.reopenWithBackoff(ch)
 }
@@ -159,6 +183,10 @@ func (p *Publisher) reopenWithBackoff(dead *amqp.Channel) {
 	const maxBackoff = 30 * time.Second
 
 	for {
+		if p.ctx.Err() != nil {
+			return
+		}
+
 		p.mu.RLock()
 		current := p.ch
 		p.mu.RUnlock()
@@ -174,7 +202,11 @@ func (p *Publisher) reopenWithBackoff(dead *amqp.Channel) {
 		}
 		p.logger.Warn("failed to reopen publisher channel after channel-level close, retrying", "error", err, "backoff", backoff)
 
-		time.Sleep(backoff)
+		select {
+		case <-time.After(backoff):
+		case <-p.ctx.Done():
+			return
+		}
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
@@ -252,15 +284,24 @@ func (p *Publisher) PublishDelayed(ctx context.Context, exchange, routingKey str
 	})
 }
 
-// Close closes the publisher's channel. The underlying Connection is
-// owned by main.go and closed separately.
+// Close closes the publisher's channel and waits for the watcher goroutines
+// to return. The underlying Connection is owned by main.go and closed
+// separately.
 func (p *Publisher) Close() error {
 	p.mu.RLock()
 	ch := p.ch
 	p.mu.RUnlock()
 
+	var err error
 	if ch != nil {
-		return ch.Close()
+		err = ch.Close()
 	}
-	return nil
+
+	// wg.Wait cannot deadlock here: both RunAPI and RunWorker only reach this
+	// call — through the deferred Infra.Close → mqShutdown chain — after their
+	// signal context is already Done, so every watcher has already observed
+	// ctx.Done() and is on its way out. Each watcher's select reaches that
+	// case with no blocking work in front of it.
+	p.wg.Wait()
+	return err
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // webhookRLSPools opens the three roles a real deployment splits webhook
@@ -149,7 +148,7 @@ func cleanupWebhookFixture(testPool *pgxpool.Pool, orgID string) {
 func webhookEngine(t *testing.T, appPool, webhookPool *pgxpool.Pool) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	mod := billing.New(appPool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, webhookPool)
+	mod := billing.New(appPool, billing.ProviderConfig{}, nil, nil, webhookPool)
 	e := gin.New()
 	if err := mod.RegisterWebhooks(e.Group("/webhooks")); err != nil {
 		t.Fatalf("register webhooks: %v", err)
