@@ -33,6 +33,12 @@ func NewNamespace(client *redis.Client, prefix string) *Namespace {
 	return &Namespace{client: client, prefix: prefix}
 }
 
+// maxValueBytes caps a single cached value at 1 MiB — guards against a
+// single oversized write bloating Redis memory. Enforced for string and
+// []byte values, the only kinds large enough to matter (ints, bools and
+// the like stringify to a handful of bytes).
+const maxValueBytes = 1 << 20
+
 func (n *Namespace) key(k string) string {
 	return fmt.Sprintf("%s:%s", n.prefix, k)
 }
@@ -45,8 +51,20 @@ func (n *Namespace) Get(ctx context.Context, key string) (string, error) {
 	return n.client.Get(ctx, n.key(key)).Result()
 }
 
-// Set stores value at key with optional ttl (0 means no expiry).
+// Set stores value at key with optional ttl (0 means no expiry). A
+// string or []byte value larger than maxValueBytes is rejected without
+// touching Redis.
 func (n *Namespace) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
+	switch v := value.(type) {
+	case string:
+		if len(v) > maxValueBytes {
+			return fmt.Errorf("cache.Set: value exceeds %d bytes", maxValueBytes)
+		}
+	case []byte:
+		if len(v) > maxValueBytes {
+			return fmt.Errorf("cache.Set: value exceeds %d bytes", maxValueBytes)
+		}
+	}
 	return n.client.Set(ctx, n.key(key), value, ttl).Err()
 }
 
@@ -55,6 +73,16 @@ func (n *Namespace) Set(ctx context.Context, key string, value any, ttl time.Dur
 // idempotency in-flight guard) where two concurrent callers must not both
 // proceed.
 func (n *Namespace) SetNX(ctx context.Context, key string, value any, ttl time.Duration) (bool, error) {
+	switch v := value.(type) {
+	case string:
+		if len(v) > maxValueBytes {
+			return false, fmt.Errorf("cache.SetNX: value exceeds %d bytes", maxValueBytes)
+		}
+	case []byte:
+		if len(v) > maxValueBytes {
+			return false, fmt.Errorf("cache.SetNX: value exceeds %d bytes", maxValueBytes)
+		}
+	}
 	return n.client.SetNX(ctx, n.key(key), value, ttl).Result()
 }
 

@@ -105,6 +105,12 @@ type PostgresConfig struct {
 	// differs.
 	BackgroundMaxOpenConns int32         `env:"POSTGRES_BACKGROUND_MAX_OPEN_CONNS" envDefault:"5"`
 	MaxIdleTime            time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
+	// StatementTimeout is passed to Postgres verbatim as the
+	// statement_timeout runtime parameter on every pooled connection, so a
+	// runaway query is aborted instead of holding a connection open
+	// indefinitely. Postgres parses the value (e.g. "30s", "30000", "0"),
+	// not this code; "0" disables the timeout entirely.
+	StatementTimeout string `env:"POSTGRES_STATEMENT_TIMEOUT" envDefault:"30s"`
 }
 
 type RedisConfig struct {

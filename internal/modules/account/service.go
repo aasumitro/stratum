@@ -201,17 +201,38 @@ func (s *service) requestExportData(ctx context.Context, authSub string) (*taskR
 	return task, nil
 }
 
+// criticalCleanupSteps names the delete-account cleanup steps that erase or
+// anonymize personal data living in another schema. A failure in any of
+// these blocks the deletion: executeDeleteAccount returns an error before
+// the user row is removed, so the delete-account consumer redelivers (its
+// MaxDeliveries cap, then a monitored dead-letter queue) and the whole
+// idempotent handler runs again. Steps not listed here (login_events,
+// avatar) are best-effort — their failure is only recorded in the task
+// result's failed_steps so a partial cleanup is visible rather than silent.
+var criticalCleanupSteps = map[string]bool{
+	"notifications":   true,
+	"memberships":     true,
+	"audit_log":       true,
+	"billing_history": true,
+}
+
 // executeDeleteAccount is called by the worker, not by HTTP handlers. It
 // removes the user's data from every schema that references auth_sub.
 // True cross-schema atomicity isn't available without 2PC once these steps
-// go through module contracts rather than a shared transaction, so each
-// step is best-effort: a failure is logged and recorded on the task result
-// (failed_steps) rather than silently discarded, so a partial deletion is
-// visible instead of silent.
+// go through module contracts rather than a shared transaction, so the
+// cleanup is split by how much a failure matters (see criticalCleanupSteps):
+// if a critical step fails this returns an error before deleting the user
+// row — leaving the task 'processing' for the consumer to retry — so an
+// account is never reported erased while its personal data still exists
+// elsewhere. Best-effort failures are logged and recorded on the task
+// result (failed_steps) rather than blocking completion.
 func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub string) error {
 	_ = s.repo.markTaskProcessing(ctx, s.pool, taskID)
 
-	failedSteps := s.runDeleteAccountCleanupSteps(ctx, authSub)
+	failedCritical, failedBestEffort := s.runDeleteAccountCleanupSteps(ctx, authSub)
+	if len(failedCritical) > 0 {
+		return fmt.Errorf("account.executeDeleteAccount: critical cleanup steps failed, will retry: %v", failedCritical)
+	}
 
 	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
 		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
@@ -220,16 +241,17 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 
 	s.bestEffortDeleteSupabaseUser(ctx, authSub)
 
-	return s.completeDeleteAccountTask(ctx, taskID, failedSteps)
+	return s.completeDeleteAccountTask(ctx, taskID, failedBestEffort)
 }
 
-// runDeleteAccountCleanupSteps runs every best-effort cross-schema cleanup
-// step (plus wiping the avatar blob) and returns the names of the ones that
-// failed. Each failure is logged and reported here rather than silently
-// discarded, so a partial deletion is visible instead of silent — see the
-// executeDeleteAccount doc comment above for why this can't be a single
-// cross-schema transaction.
-func (s *service) runDeleteAccountCleanupSteps(ctx context.Context, authSub string) []string {
+// runDeleteAccountCleanupSteps runs every cross-schema cleanup step (plus
+// wiping the avatar blob) and returns the names of the ones that failed,
+// split into critical (personal-data erasure/anonymization in another
+// schema — see criticalCleanupSteps) and best-effort. Each failure is
+// logged here rather than silently discarded — see the executeDeleteAccount
+// doc comment above for why this can't be a single cross-schema transaction
+// and what a critical failure triggers.
+func (s *service) runDeleteAccountCleanupSteps(ctx context.Context, authSub string) (failedCritical, failedBestEffort []string) {
 	steps := []struct {
 		name string
 		run  func() error
@@ -266,15 +288,18 @@ func (s *service) runDeleteAccountCleanupSteps(ctx context.Context, authSub stri
 		}},
 	}
 
-	var failedSteps []string
 	for _, step := range steps {
 		if err := step.run(); err != nil {
 			slog.ErrorContext(ctx, "account.executeDeleteAccount: cleanup step failed",
-				"auth_sub", authSub, "step", step.name, "error", err)
-			failedSteps = append(failedSteps, step.name)
+				"auth_sub", authSub, "step", step.name, "critical", criticalCleanupSteps[step.name], "error", err)
+			if criticalCleanupSteps[step.name] {
+				failedCritical = append(failedCritical, step.name)
+			} else {
+				failedBestEffort = append(failedBestEffort, step.name)
+			}
 		}
 	}
-	return failedSteps
+	return failedCritical, failedBestEffort
 }
 
 // bestEffortDeleteSupabaseUser removes the Supabase auth user so they cannot

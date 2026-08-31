@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -268,11 +269,35 @@ func (s *service) uploadLogo(ctx context.Context, organizationID string, r io.Re
 	return s.repo.updateLogoURL(ctx, s.pool, organizationID, logoURL)
 }
 
+// localeFormat is a BCP-47 language(-REGION) shape check: two or three
+// letters, optionally followed by a two-letter region ("en", "en-US",
+// "id"). Deliberately a format check rather than a curated allowlist —
+// there is no locale catalog to draw from, and this rejects injection
+// payloads and typos without a list that goes stale.
+var localeFormat = regexp.MustCompile(`^[A-Za-z]{2,3}(-[A-Za-z]{2})?$`)
+
+// validateSettings rejects a timezone the Go runtime can't resolve and a
+// locale outside the BCP-47 shape, so a bogus value is never persisted.
+// timezone "" resolves to UTC without error, but the request struct already
+// requires a non-empty value, so that case never reaches here.
+func validateSettings(timezone, locale string) error {
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return apperr.Validation("SETTINGS_INVALID", "invalid timezone")
+	}
+	if !localeFormat.MatchString(locale) {
+		return apperr.Validation("SETTINGS_INVALID", "invalid locale")
+	}
+	return nil
+}
+
 func (s *service) updateSettings(
 	ctx context.Context,
 	organizationID, timezone, locale, callerIP string,
 	allowedIPs *[]string,
 ) error {
+	if err := validateSettings(timezone, locale); err != nil {
+		return err
+	}
 	// A nil allowedIPs means the field was omitted from the request — nothing
 	// to lock anyone out of, since the allowlist isn't changing.
 	if allowedIPs != nil && ipLocksOutCaller(callerIP, *allowedIPs) {

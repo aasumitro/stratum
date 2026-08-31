@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +73,45 @@ func TestNamespace_SetNX_Atomicity(t *testing.T) {
 	second, err := ns.SetNX(ctx, "lock", "1", time.Minute)
 	if err != nil || second {
 		t.Errorf("second SetNX = (%v, %v), want (false, nil) — key already held", second, err)
+	}
+}
+
+func TestNamespace_ValueSizeGuard(t *testing.T) {
+	ns := cache.NewNamespace(testClient(t), "test-ns-size")
+	ctx := t.Context()
+
+	const limit = 1 << 20 // must match cache.maxValueBytes (namespace.go)
+	oversized := strings.Repeat("x", limit+1)
+	atLimit := strings.Repeat("x", limit)
+
+	// Set: over the limit is rejected and never written.
+	_ = ns.Delete(ctx, "big")
+	if err := ns.Set(ctx, "big", oversized, time.Minute); err == nil {
+		t.Error("Set with a >1 MiB value: want error, got nil")
+	}
+	if ok, _ := ns.Exists(ctx, "big"); ok {
+		t.Error("Set rejected an oversized value but the key was created")
+	}
+
+	// Set: exactly at the limit, and a small value, both succeed.
+	if err := ns.Set(ctx, "at-limit", atLimit, time.Minute); err != nil {
+		t.Errorf("Set with a 1 MiB value: want nil, got %v", err)
+	}
+	if err := ns.Set(ctx, "small", "v", time.Minute); err != nil {
+		t.Errorf("Set with a small value: want nil, got %v", err)
+	}
+
+	// SetNX: same guard.
+	_ = ns.Delete(ctx, "big-nx")
+	_ = ns.Delete(ctx, "at-limit-nx")
+	if _, err := ns.SetNX(ctx, "big-nx", []byte(oversized), time.Minute); err == nil {
+		t.Error("SetNX with a >1 MiB value: want error, got nil")
+	}
+	if ok, _ := ns.Exists(ctx, "big-nx"); ok {
+		t.Error("SetNX rejected an oversized value but the key was created")
+	}
+	if ok, err := ns.SetNX(ctx, "at-limit-nx", atLimit, time.Minute); err != nil || !ok {
+		t.Errorf("SetNX with a 1 MiB value: want (true, nil), got (%v, %v)", ok, err)
 	}
 }
 
