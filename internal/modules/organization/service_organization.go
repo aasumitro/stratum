@@ -282,10 +282,10 @@ var localeFormat = regexp.MustCompile(`^[A-Za-z]{2,3}(-[A-Za-z]{2})?$`)
 // requires a non-empty value, so that case never reaches here.
 func validateSettings(timezone, locale string) error {
 	if _, err := time.LoadLocation(timezone); err != nil {
-		return apperr.Validation("SETTINGS_INVALID", "invalid timezone")
+		return apperr.Validation("INVALID_TIMEZONE", "invalid timezone")
 	}
 	if !localeFormat.MatchString(locale) {
-		return apperr.Validation("SETTINGS_INVALID", "invalid locale")
+		return apperr.Validation("INVALID_LOCALE", "invalid locale")
 	}
 	return nil
 }
