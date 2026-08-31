@@ -89,6 +89,9 @@ func (h *handler) addMember(c *gin.Context) {
 func (h *handler) removeMember(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 	subject := reqctx.Subject(c)
+	// Semantic audit label — set before the self/owner guards so a rejected
+	// removal attempt is also recorded under this action, not a bare DELETE.
+	c.Set("audit.action", "member.removed")
 
 	authSub := c.Param("authSub")
 	if authSub == subject {

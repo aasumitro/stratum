@@ -193,6 +193,9 @@ func (h *handler) updateWebhook(c *gin.Context) {
 func (h *handler) rotateWebhookSecret(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 	webhookID := c.Param("webhookID")
+	// Semantic audit label so a secret rotation is findable by intent, not
+	// just as a bare POST to the rotate-secret route.
+	c.Set("audit.action", "webhook.secret_rotated")
 
 	rec, secret, err := h.svc.rotateWebhookSecret(c.Request.Context(), ws.ID, webhookID)
 	if err != nil {
