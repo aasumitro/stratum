@@ -71,7 +71,9 @@
       "INVITE_CODE_INVALID": "Kode undangan tidak valid atau dinonaktifkan.",
       "JOIN_ALREADY_MEMBER": "Anda sudah menjadi anggota organisasi ini.",
       "SELF_REMOVAL": "Anda tidak dapat menghapus diri sendiri.",
+      "SELF_SUSPENSION": "Anda tidak dapat menangguhkan diri sendiri.",
       "CANNOT_REMOVE_OWNER": "Anda tidak dapat menghapus pemilik organisasi.",
+      "CANNOT_SUSPEND_OWNER": "Anda tidak dapat menangguhkan pemilik organisasi.",
       "CANNOT_DEMOTE_OWNER": "Anda tidak dapat mengubah peran pemilik.",
       "LOGO_MISSING": "File logo wajib diisi.",
       "LOGO_TOO_LARGE": "Logo harus di bawah 2 MB.",
@@ -128,6 +130,10 @@
       "MEMBER_ADD_FAILED": "Gagal menambahkan anggota.",
       "MEMBER_REMOVE_FAILED": "Gagal menghapus anggota.",
       "MEMBER_ROLE_UPDATE_FAILED": "Gagal memperbarui peran anggota.",
+      "MEMBER_ALREADY_SUSPENDED": "Anggota ini sudah ditangguhkan.",
+      "MEMBER_NOT_SUSPENDED": "Anggota ini tidak ditangguhkan.",
+      "MEMBER_SUSPEND_FAILED": "Gagal menangguhkan anggota.",
+      "MEMBER_REINSTATE_FAILED": "Gagal memulihkan anggota.",
       "INVALID_CURSOR": "Cursor yang diberikan tidak valid.",
       "NOTIFICATIONS_FETCH_FAILED": "Gagal memuat notifikasi.",
       "UNREAD_COUNT_FAILED": "Gagal menghitung notifikasi belum dibaca.",
@@ -378,6 +384,14 @@
       "member_role_changed": {
         "title": "Peran diubah",
         "body": "Peran Anda di \"{{organization_name}}\" telah diubah menjadi {{role}}."
+      },
+      "member_suspended": {
+        "title": "Akses ditangguhkan",
+        "body": "Akses Anda ke \"{{organization_name}}\" telah ditangguhkan."
+      },
+      "member_reinstated": {
+        "title": "Akses dipulihkan",
+        "body": "Akses Anda ke \"{{organization_name}}\" telah dipulihkan."
       },
       "ownership_transferred": {
         "title": "Anda kini menjadi pemilik",
@@ -706,7 +720,6 @@
       "downloadTemplate": "Unduh Template",
       "seatGateTitle": "Anda telah mencapai batas anggota",
       "seatGateDescription": "Tingkatkan paket Anda atau tambahkan slot anggota untuk mengelola lebih banyak anggota tim.",
-      "suspendComingSoon": "Segera hadir",
       "importSubmit": "Impor",
       "importResult": "Berhasil mengimpor {{count}} anggota.",
       "searchPlaceholder": "Cari nama atau email…",
@@ -715,6 +728,17 @@
       "copyEmail": "Salin email",
       "emailCopied": "Email disalin",
       "removeConsequence": "Langsung kehilangan akses. Berkas mereka tetap dimiliki organisasi. Ini tercatat di audit log.",
+      "suspendTitle": "Tangguhkan anggota?",
+      "suspendDescription": "{{name}} akan kehilangan akses ke organisasi ini sampai dipulihkan.",
+      "suspendConsequence": "Kehilangan akses seketika. Dapat dibatalkan — pulihkan kapan saja. Berkas mereka tetap milik organisasi. Tercatat di audit.",
+      "suspended": "Anggota ditangguhkan",
+      "suspendFailed": "Gagal menangguhkan anggota",
+      "suspendedBadge": "Ditangguhkan",
+      "reinstate": "Pulihkan",
+      "reinstateTitle": "Pulihkan anggota?",
+      "reinstateDescription": "{{name}} akan mendapatkan kembali akses ke organisasi ini.",
+      "reinstated": "Anggota dipulihkan",
+      "reinstateFailed": "Gagal memulihkan anggota",
       "inviteMember": "Undang anggota",
       "importPreview": "Pratinjau {{count}} baris",
       "importValidCount": "✓ {{count}} valid",

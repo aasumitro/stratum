@@ -4323,6 +4323,71 @@ const docTemplate = `{
                 }
             }
         },
+        "/organizations/{organizationID}/members/{authSub}/reinstate": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin/owner only. Restores a suspended member's access, subject to the plan seat limit at reinstate time.",
+                "tags": [
+                    "organization"
+                ],
+                "summary": "Reinstate a suspended member",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Member's auth subject",
+                        "name": "authSub",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "no content"
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "cannot reinstate the owner, or admin role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "404": {
+                        "description": "member not found",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "409": {
+                        "description": "member is not suspended",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "member limit reached for your current plan",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
         "/organizations/{organizationID}/members/{authSub}/role": {
             "patch": {
                 "security": [
@@ -4387,6 +4452,71 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "validation failed",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organizationID}/members/{authSub}/suspend": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Admin/owner only. Temporarily revokes the member's access to this organization without deleting the membership. Cannot suspend yourself or the organization owner.",
+                "tags": [
+                    "organization"
+                ],
+                "summary": "Suspend a member",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organizationID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Member's auth subject",
+                        "name": "authSub",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "no content"
+                    },
+                    "400": {
+                        "description": "cannot suspend yourself",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "403": {
+                        "description": "cannot suspend the owner, or admin role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "404": {
+                        "description": "member not found",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "409": {
+                        "description": "member already suspended",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -6634,6 +6764,9 @@ const docTemplate = `{
                 },
                 "role": {
                     "type": "string"
+                },
+                "status": {
+                    "type": "string"
                 }
             }
         },
@@ -6653,6 +6786,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "role": {
+                    "type": "string"
+                },
+                "status": {
                     "type": "string"
                 }
             }

@@ -578,6 +578,54 @@ func (w *Worker) HandleMemberRoleChanged(ctx context.Context, body []byte) error
 	return nil
 }
 
+// HandleMemberSuspended notifies the affected member (in-app only) that
+// their access to an organization was suspended. The message lands in the
+// member's own feed — user-scoped, not org-scoped — so they still read it
+// despite having lost org access.
+func (w *Worker) HandleMemberSuspended(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.MemberSuspended](body)
+	if err != nil {
+		return fmt.Errorf("notification.HandleMemberSuspended: decode: %w", err)
+	}
+	name := w.svc.resolveOrganizationName(ctx, evt.OrganizationID)
+	sub := evt.AuthSub
+	payload, _ := json.Marshal(map[string]any{payloadKeyOrganizationName: name})
+	_, err = w.svc.send(
+		ctx, evt.OrganizationID, &sub,
+		"in_app", "member_suspended", "Access suspended",
+		fmt.Sprintf("Your access to %q has been suspended. Contact an admin of that organization to restore it.", name),
+		payload,
+	)
+
+	if err != nil {
+		return fmt.Errorf("notification.HandleMemberSuspended: %w", err)
+	}
+	return nil
+}
+
+// HandleMemberReinstated notifies the affected member (in-app only) that
+// their suspended access to an organization was restored.
+func (w *Worker) HandleMemberReinstated(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.MemberReinstated](body)
+	if err != nil {
+		return fmt.Errorf("notification.HandleMemberReinstated: decode: %w", err)
+	}
+	name := w.svc.resolveOrganizationName(ctx, evt.OrganizationID)
+	sub := evt.AuthSub
+	payload, _ := json.Marshal(map[string]any{payloadKeyOrganizationName: name})
+	_, err = w.svc.send(
+		ctx, evt.OrganizationID, &sub,
+		"in_app", "member_reinstated", "Access restored",
+		fmt.Sprintf("Your access to %q has been restored.", name),
+		payload,
+	)
+
+	if err != nil {
+		return fmt.Errorf("notification.HandleMemberReinstated: %w", err)
+	}
+	return nil
+}
+
 // HandleOwnershipTransferred notifies the new owner (in-app only) — the outgoing owner is not notified.
 func (w *Worker) HandleOwnershipTransferred(ctx context.Context, body []byte) error {
 	evt, err := events.Decode[events.OwnershipTransferred](body)

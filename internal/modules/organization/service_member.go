@@ -35,7 +35,7 @@ func (s *service) listMembers(ctx context.Context, organizationID string) ([]mem
 
 	out := make([]memberView, len(rows))
 	for i, r := range rows {
-		mv := memberView{ID: r.ID, OrganizationID: r.OrganizationID, AuthSub: r.AuthSub, Role: r.Role, JoinedAt: r.JoinedAt}
+		mv := memberView{ID: r.ID, OrganizationID: r.OrganizationID, AuthSub: r.AuthSub, Role: r.Role, Status: r.Status, JoinedAt: r.JoinedAt}
 		if p, ok := profiles[r.AuthSub]; ok {
 			if p.Email != "" {
 				mv.Email = &p.Email
@@ -152,6 +152,89 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 
 func (s *service) getMemberRole(ctx context.Context, organizationID, authSub string) (string, error) {
 	return s.repo.getMemberRole(ctx, s.pool, organizationID, authSub)
+}
+
+// suspendMember revokes a member's access to one organization without
+// deleting the membership row — role, join date, and identity survive. The
+// seat is freed (countActiveMembers excludes suspended rows), so
+// syncMemberUsage reports the lower count to billing. The owner can never be
+// the target.
+func (s *service) suspendMember(ctx context.Context, organizationID, authSub string) error {
+	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+		return apperr.Forbidden("CANNOT_SUSPEND_OWNER", "cannot suspend the organization owner")
+	}
+
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		updated, err := s.repo.setMemberStatus(ctx, tx, organizationID, authSub, "suspended", "active")
+		if err != nil {
+			return err
+		}
+		if !updated {
+			st, sErr := s.repo.getMemberStatus(ctx, tx, organizationID, authSub)
+			if sErr != nil {
+				return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
+			}
+			if st == "suspended" {
+				return apperr.Conflict("MEMBER_ALREADY_SUSPENDED", "member is already suspended")
+			}
+			return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberSuspended, "organization", organizationID,
+			events.MemberSuspended{OrganizationID: organizationID, AuthSub: authSub})
+	})
+	if err != nil {
+		if _, ok := errors.AsType[*apperr.Error](err); ok {
+			return err
+		}
+		return apperr.Internal("MEMBER_SUSPEND_FAILED", "failed to suspend member", err)
+	}
+
+	s.syncMemberUsage(ctx, organizationID)
+	return nil
+}
+
+// reinstateMember restores a suspended member's access. Because reinstating
+// re-consumes a seat, it re-runs the plan member-limit check under the
+// organization row lock (an org that downgraded while the member was
+// suspended may now be at its cap) — over the limit, the member stays
+// suspended and the caller gets PLAN_LIMIT_REACHED, never a partial state.
+func (s *service) reinstateMember(ctx context.Context, organizationID, authSub string) error {
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		if lockErr := s.repo.lockOrganizationForUpdate(ctx, tx, organizationID); lockErr != nil {
+			return lockErr
+		}
+		if limitErr := s.checkMemberLimitLocked(ctx, tx, organizationID); limitErr != nil {
+			return limitErr
+		}
+		updated, err := s.repo.setMemberStatus(ctx, tx, organizationID, authSub, "active", "suspended")
+		if err != nil {
+			return err
+		}
+		if !updated {
+			st, sErr := s.repo.getMemberStatus(ctx, tx, organizationID, authSub)
+			if sErr != nil {
+				return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
+			}
+			if st == "active" {
+				return apperr.Conflict("MEMBER_NOT_SUSPENDED", "member is not suspended")
+			}
+			return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", nil)
+		}
+		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyMemberReinstated, "organization", organizationID,
+			events.MemberReinstated{OrganizationID: organizationID, AuthSub: authSub})
+	})
+	if err != nil {
+		if errors.Is(err, ErrPlanLimitReached) {
+			return apperr.Validation("PLAN_LIMIT_REACHED", "member limit reached for your current plan")
+		}
+		if _, ok := errors.AsType[*apperr.Error](err); ok {
+			return err
+		}
+		return apperr.Internal("MEMBER_REINSTATE_FAILED", "failed to reinstate member", err)
+	}
+
+	s.syncMemberUsage(ctx, organizationID)
+	return nil
 }
 
 // checkMemberLimitLocked re-checks the organization's plan member limit

@@ -36,8 +36,10 @@ billing.events|notification.invoice-created|[billing.invoice.created]|5|2s|1m0s|
 billing.events|notification.invoice-failed|[billing.invoice.failed]|5|2s|1m0s|notification.events.dlx|notification.invoice-failed|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.invoice-paid|[billing.invoice.paid]|5|2s|1m0s|notification.events.dlx|notification.invoice-paid|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.member-invited|[organization.member.invited]|5|2s|1m0s|notification.events.dlx|notification.member-invited|notification.events.dlx|notification.events.dlq|10
+organization.events|notification.member-reinstated|[organization.member.reinstated]|5|2s|1m0s|notification.events.dlx|notification.member-reinstated|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.member-removed|[organization.member.removed]|5|2s|1m0s|notification.events.dlx|notification.member-removed|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.member-role-changed|[organization.member.role-changed]|5|2s|1m0s|notification.events.dlx|notification.member-role-changed|notification.events.dlx|notification.events.dlq|10
+organization.events|notification.member-suspended|[organization.member.suspended]|5|2s|1m0s|notification.events.dlx|notification.member-suspended|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.organization-created|[organization.created]|5|2s|1m0s|notification.events.dlx|notification.organization-created|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.organization-deleted|[organization.deleted]|5|2s|1m0s|notification.events.dlx|notification.organization-deleted|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.organization-reactivated|[organization.reactivated]|5|2s|1m0s|notification.events.dlx|notification.organization-reactivated|notification.events.dlx|notification.events.dlq|10
@@ -59,7 +61,7 @@ billing.events|organization.webhook-billing|[billing.invoice.created billing.inv
 organization.events|organization.webhook-organization|[organization.created organization.member.invited]|3|5s|1m0s|organization.events.dlx|organization.webhook-organization|organization.events.dlx|organization.events.dlq|10
 organization.events|organization.webhook-retry|[organization.webhook.retry-requested]|3|5s|1m0s|organization.events.dlx|organization.webhook-retry|organization.events.dlx|organization.events.dlq|1`
 
-const goldenConsumerCount = 36
+const goldenConsumerCount = 38
 
 // consumerTopologyLines renders consumers to the same pipe-delimited format
 // goldenConsumerTopology was captured in, sorted by queue name (the golden
@@ -89,7 +91,7 @@ func consumerTopologyLines(consumers []*messaging.Consumer) []string {
 
 // TestNewConsumers_MatchesGoldenTopology guards bootstrap.NewConsumers'
 // full output against drift — queue name, binding keys, exchange, DLX, and
-// prefetch count for all 36 entries, each contributed by one module's own
+// prefetch count for all 38 entries, each contributed by one module's own
 // Consumers() method. A dropped or altered entry fails this test with a
 // line-level diff instead of surfacing as a silently misrouted message.
 func TestNewConsumers_MatchesGoldenTopology(t *testing.T) {

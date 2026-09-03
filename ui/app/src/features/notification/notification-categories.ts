@@ -53,6 +53,8 @@ export const CHANNEL_CATEGORY: Record<string, NotificationCategory> = {
   organization_deleted: "organization",
   member_removed: "members",
   member_role_changed: "members",
+  member_suspended: "members",
+  member_reinstated: "members",
   invite: "members",
   invitation_requested: "members",
   ownership_transferred: "organization",

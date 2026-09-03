@@ -27,11 +27,6 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
 import { toastWithUndo } from "@/components/shared/toast-with-undo"
 import { ConfirmationDialog } from "@/components/shared/confirmation-dialog"
 import { EmptyState } from "@/components/shared/empty-state"
@@ -42,6 +37,8 @@ import {
   useOrganizationMembers,
   useChangeMemberRole,
   useRemoveMember,
+  useSuspendMember,
+  useReinstateMember,
   useLeaveOrganization,
 } from "@/features/organization/hooks/use-members"
 import {
@@ -107,6 +104,14 @@ export function MembersTable({ organizationId, currentRole }: Props) {
     authSub: string
     name: string
   } | null>(null)
+  const [suspendTarget, setSuspendTarget] = useState<{
+    authSub: string
+    name: string
+  } | null>(null)
+  const [reinstateTarget, setReinstateTarget] = useState<{
+    authSub: string
+    name: string
+  } | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<Invitation | null>(null)
   const [resendTarget, setResendTarget] = useState<Invitation | null>(null)
 
@@ -118,6 +123,10 @@ export function MembersTable({ organizationId, currentRole }: Props) {
   const { mutate: changeRole } = useChangeMemberRole(organizationId)
   const { mutate: removeMember, isPending: removing } =
     useRemoveMember(organizationId)
+  const { mutate: suspendMember, isPending: suspending } =
+    useSuspendMember(organizationId)
+  const { mutate: reinstateMember, isPending: reinstating } =
+    useReinstateMember(organizationId)
   const { mutate: leaveOrganization, isPending: leaving } =
     useLeaveOrganization(organizationId)
   const { mutate: revoke, isPending: revoking } =
@@ -273,18 +282,30 @@ export function MembersTable({ organizationId, currentRole }: Props) {
       <>
         {canManage && !isThisOwner && !isSelf && (
           <div className="flex items-center gap-1">
-            <Tooltip>
-              {/* Disabled buttons don't fire hover events, so the tooltip
-                  trigger is the wrapping span, not the button itself. */}
-              <TooltipTrigger render={<span className="inline-flex" />}>
-                <Button variant="ghost" size="sm" disabled>
-                  {t("organization.members.suspend")}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {t("organization.members.suspendComingSoon")}
-              </TooltipContent>
-            </Tooltip>
+            {m.status === "suspended" ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  setReinstateTarget({
+                    authSub: m.auth_sub,
+                    name: memberName(m),
+                  })
+                }
+              >
+                {t("organization.members.reinstate")}
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  setSuspendTarget({ authSub: m.auth_sub, name: memberName(m) })
+                }
+              >
+                {t("organization.members.suspend")}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -420,6 +441,14 @@ export function MembersTable({ organizationId, currentRole }: Props) {
                                     {t("organization.members.you")}
                                   </Badge>
                                 )}
+                                {row.data.status === "suspended" && (
+                                  <StatusBadge
+                                    status="suspended"
+                                    label={t(
+                                      "organization.members.suspendedBadge"
+                                    )}
+                                  />
+                                )}
                               </span>
                               <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
                                 {row.data.email && (
@@ -534,6 +563,13 @@ export function MembersTable({ organizationId, currentRole }: Props) {
                             {t("organization.members.pendingBadge")}
                           </Badge>
                         )}
+                        {row.kind === "member" &&
+                          row.data.status === "suspended" && (
+                            <StatusBadge
+                              status="suspended"
+                              label={t("organization.members.suspendedBadge")}
+                            />
+                          )}
                       </div>
                       {row.kind === "member" && (
                         <div className="mt-0.5 flex flex-col items-start gap-0.5 text-xs text-muted-foreground">
@@ -609,6 +645,52 @@ export function MembersTable({ organizationId, currentRole }: Props) {
           onConfirm={() =>
             removeMember(removeTarget.authSub, {
               onSuccess: () => setRemoveTarget(null),
+            })
+          }
+        >
+          {null}
+        </ConfirmationDialog>
+      )}
+
+      {suspendTarget && (
+        <ConfirmationDialog
+          open
+          onOpenChange={(open) => !open && setSuspendTarget(null)}
+          render={<span className="hidden" />}
+          nativeButton={false}
+          title={t("organization.members.suspendTitle")}
+          description={t("organization.members.suspendDescription", {
+            name: suspendTarget.name,
+          })}
+          consequences={[t("organization.members.suspendConsequence")]}
+          confirmLabel={t("organization.members.suspend")}
+          pending={suspending}
+          onConfirm={() =>
+            suspendMember(suspendTarget.authSub, {
+              onSuccess: () => setSuspendTarget(null),
+            })
+          }
+        >
+          {null}
+        </ConfirmationDialog>
+      )}
+
+      {reinstateTarget && (
+        <ConfirmationDialog
+          open
+          onOpenChange={(open) => !open && setReinstateTarget(null)}
+          render={<span className="hidden" />}
+          nativeButton={false}
+          title={t("organization.members.reinstateTitle")}
+          description={t("organization.members.reinstateDescription", {
+            name: reinstateTarget.name,
+          })}
+          confirmLabel={t("organization.members.reinstate")}
+          destructive={false}
+          pending={reinstating}
+          onConfirm={() =>
+            reinstateMember(reinstateTarget.authSub, {
+              onSuccess: () => setReinstateTarget(null),
             })
           }
         >

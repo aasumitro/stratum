@@ -1,5 +1,6 @@
 export type OrganizationStatus = "active" | "suspended" | "deleted"
 export type OrganizationRole = "owner" | "admin" | "member"
+export type MemberStatus = "active" | "suspended"
 
 export interface Organization {
   id: string
@@ -41,6 +42,7 @@ export interface Member {
   organization_id: string
   auth_sub: string
   role: OrganizationRole
+  status: MemberStatus
   joined_at: string
   email?: string
   full_name?: string

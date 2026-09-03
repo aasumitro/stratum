@@ -239,6 +239,8 @@ func (m *Module) CleanupExpiredInvitations(ctx context.Context) {
 //	POST   /organizations/:organizationID/members
 //	DELETE /organizations/:organizationID/members/:authSub
 //	PATCH  /organizations/:organizationID/members/:authSub/role
+//	POST   /organizations/:organizationID/members/:authSub/suspend
+//	POST   /organizations/:organizationID/members/:authSub/reinstate
 //
 //	GET    /organizations/join/preview — read-only organization + owner details before the caller commits to joining
 //	POST   /organizations/join
@@ -290,6 +292,8 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 			scoped.POST("/members/import", adminUp, h.importMembers)
 			scoped.DELETE("/members/:authSub", adminUp, h.removeMember)
 			scoped.PATCH("/members/:authSub/role", adminUp, h.updateMemberRole)
+			scoped.POST("/members/:authSub/suspend", adminUp, h.suspendMember)
+			scoped.POST("/members/:authSub/reinstate", adminUp, h.reinstateMember)
 
 			scoped.GET("/audit-log", adminUp, h.auditLog)
 			scoped.GET("/audit-log/export", adminUp, h.exportAuditLog)
