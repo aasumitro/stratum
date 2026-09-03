@@ -320,10 +320,6 @@ func TestResumeSubscription_OwnerAllowed(t *testing.T) {
 	}
 }
 
-// --- regenerate payment link tests ---
-
-// regeneratePaymentLink resolves currency from the subscription.
-
 // --- usage tests ---
 
 func TestRecordUsage_MissingMetric(t *testing.T) {
@@ -414,7 +410,6 @@ func rbacOwnerOnlyCases() []struct {
 		body   string
 	}{
 		{http.MethodPost, "/billing/invoices/inv_01/pay", ""},
-		{http.MethodPost, "/billing/invoices/inv_01/pay/regenerate", ""},
 		{http.MethodPost, "/billing/usage", `{"metric":"members","value":1}`},
 		{http.MethodPost, "/billing/extend", `{"months":1}`},
 		{http.MethodPost, "/billing/activate", ""},

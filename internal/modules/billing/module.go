@@ -177,7 +177,6 @@ func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 //	GET    /organizations/:organizationID/billing/invoices
 //	POST   /organizations/:organizationID/billing/invoices/:invoiceID/pay
 //	GET    /organizations/:organizationID/billing/payments
-//	POST   /organizations/:organizationID/billing/invoices/:invoiceID/pay/regenerate
 //	GET    /organizations/:organizationID/billing/payment-links
 //	GET    /organizations/:organizationID/billing/usage
 //	POST   /organizations/:organizationID/billing/usage
@@ -253,7 +252,6 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billingPay.POST("/extend", ownerOnly, deps.MFA, h.extendSubscription)
 		billingPay.POST("/activate", ownerOnly, deps.MFA, h.activateTrialNow)
 		billingPay.POST("/invoices/:invoiceID/pay", ownerOnly, deps.Idempotency, h.createPaymentLink)
-		billingPay.POST("/invoices/:invoiceID/pay/regenerate", ownerOnly, deps.Idempotency, h.regeneratePaymentLink)
 		// attachAddon moved here from the RLS group above: a non-trialing
 		// increase now creates a gating invoice and makes the same blocking
 		// payment-link HTTP call every other route in this group makes —

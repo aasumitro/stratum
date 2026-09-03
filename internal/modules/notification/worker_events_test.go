@@ -579,6 +579,56 @@ func TestIntegration_SendEmail_SkippedWhenEmailPreferenceDisabled(t *testing.T) 
 	assertNotifChannelExists(t, pool, orgID, "subscription_expired")
 }
 
+func TestIntegration_HandleMemberInvited_EmailSkippedWhenPreferenceDisabled(t *testing.T) {
+	pool := testPoolNotif(t)
+	const orgID = "00000000-0000-0000-0000-000000000f22"
+	const authSub = "integ_sub_notif_invite_optout"
+	const email = "optout-invitee@test.com"
+	t.Cleanup(func() {
+		cleanupNotifByOrganization(pool, orgID)
+		pool.Exec(context.Background(), `DELETE FROM notification.preferences WHERE auth_sub = $1`, authSub)
+	})
+
+	// a registered invitee who has opted out of the invite email specifically
+	if _, err := pool.Exec(t.Context(),
+		`INSERT INTO notification.preferences (auth_sub, channel, event_type, enabled) VALUES ($1, 'email', 'invite', false)`,
+		authSub,
+	); err != nil {
+		t.Fatalf("insert email preference: %v", err)
+	}
+
+	mod := notification.New(pool, deadMailer(), nil,
+		stubMemberInvitedUserReader{authSub: authSub, email: email}, "https://app.test", nil)
+	env := events.Envelope{
+		ID: "notif-invite-optout-01", Type: events.RoutingKeyMemberInvited,
+		Source: "organization", Time: time.Now(),
+		Data: events.MemberInvited{
+			OrganizationID: orgID, Email: email, Role: "member", InvitedBy: testAuthSubNotif,
+		},
+	}
+	b, _ := json.Marshal(env)
+	if err := mod.Worker.HandleMemberInvited(t.Context(), b); err != nil {
+		t.Fatalf("HandleMemberInvited: %v", err)
+	}
+
+	var emailCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM notification.messages WHERE organization_id = $1 AND kind = 'email' AND channel = 'invite'`, orgID,
+	).Scan(&emailCount)
+	if emailCount != 0 {
+		t.Errorf("invite email disabled by preference must not send/record, got %d email rows", emailCount)
+	}
+	// the in-app copy is governed by a separate preference and still fires
+	var inAppCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM notification.messages WHERE organization_id = $1 AND kind = 'in_app' AND channel = 'invite' AND auth_sub = $2`,
+		orgID, authSub,
+	).Scan(&inAppCount)
+	if inAppCount == 0 {
+		t.Error("in-app invite copy should still fire when only the email preference is disabled")
+	}
+}
+
 // --- decode-error edge cases: a malformed body must surface the decode error ---
 
 func TestWorker_Handlers_DecodeError(t *testing.T) {

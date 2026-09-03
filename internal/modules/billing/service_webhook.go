@@ -264,13 +264,22 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 	}
 
 	// Mark subscription past_due on a confirmed payment failure so callers can
-	// gate access without waiting for the subscription-check to fire at period_end.
+	// gate access without waiting for the subscription-check to fire at
+	// period_end. Only a failed payment for a period-backing invoice
+	// ("subscription" renewal or "activation") means the subscription's own
+	// period is unpaid — a failed "extension" or "addon_increase" payment is
+	// additive, the current period is still covered, so past-dueing it would
+	// wrongly mark a current subscription for termination at period_end.
 	if normalizedStatus == statusFailed {
 		sub, err := s.repo.findSubscriptionByID(ctx, s.querier(ctx), link.subscriptionID)
 		if err != nil {
 			return nil, fmt.Errorf("billing.handleWebhook: find subscription for past-due check: %w", err)
 		}
-		if sub.Status == statusActive {
+		inv, err := s.repo.findInvoiceByID(ctx, s.querier(ctx), link.invoiceID)
+		if err != nil {
+			return nil, fmt.Errorf("billing.handleWebhook: find invoice for past-due check: %w", err)
+		}
+		if sub.Status == statusActive && (inv.Kind == "subscription" || inv.Kind == "activation") {
 			if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusPastDue); err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: mark subscription past due: %w", err)
 			}

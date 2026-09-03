@@ -3125,71 +3125,6 @@
                 }
             }
         },
-        "/organizations/{organizationID}/billing/invoices/{invoiceID}/pay/regenerate": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Owner only. Issues a fresh payment link for an invoice, replacing an expired/failed one.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "billing"
-                ],
-                "summary": "Regenerate a payment link",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Organization ID",
-                        "name": "organizationID",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Invoice ID",
-                        "name": "invoiceID",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "allOf": [
-                                {
-                                    "$ref": "#/definitions/Payload"
-                                },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "data": {
-                                            "$ref": "#/definitions/paymentLinkRecord"
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    "401": {
-                        "description": "missing/invalid auth token",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    },
-                    "403": {
-                        "description": "owner role required",
-                        "schema": {
-                            "$ref": "#/definitions/Payload"
-                        }
-                    }
-                }
-            }
-        },
         "/organizations/{organizationID}/billing/invoices/{invoiceID}/pdf": {
             "get": {
                 "security": [
@@ -5974,6 +5909,7 @@
                 },
                 "quantity": {
                     "type": "integer",
+                    "maximum": 10000,
                     "minimum": 1
                 }
             }

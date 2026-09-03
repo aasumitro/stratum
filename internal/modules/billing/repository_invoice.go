@@ -265,6 +265,29 @@ func (r *repository) voidPendingInvoicesAndLinks(ctx context.Context, q db.Queri
 	return err
 }
 
+// failPendingInvoicesAndLinks is voidPendingInvoicesAndLinks with the
+// invoice target status changed from 'void' to 'failed': called when a
+// subscription expires unpaid rather than when a pending invoice is
+// superseded. The subscription's own billing period is over, so every
+// still-pending invoice on it is a genuinely dead payment attempt — 'void'
+// would read as "cancelled before anyone tried to pay", 'failed' records
+// that the money was owed and never came. No kind filter: once the
+// subscription is gone, an unpaid additive invoice (extension, addon
+// increase) is just as dead as an unpaid renewal.
+func (r *repository) failPendingInvoicesAndLinks(ctx context.Context, q db.Querier, subscriptionID string) error {
+	_, err := q.Exec(ctx, `
+		WITH failed AS (
+			UPDATE billing.invoices SET status = 'failed', updated_at = now()
+			WHERE subscription_id = $1 AND status = 'pending'
+			RETURNING id
+		)
+		UPDATE billing.payment_links SET status = 'expired'
+		WHERE invoice_id IN (SELECT id FROM failed)`,
+		subscriptionID,
+	)
+	return err
+}
+
 // voidInvoiceAndLinks is voidPendingInvoicesAndLinks scoped to one invoice
 // instead of every pending invoice on a subscription — used to supersede a
 // single stale addon-increase invoice on a repeat request without touching

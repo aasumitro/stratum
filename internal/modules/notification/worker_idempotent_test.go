@@ -42,7 +42,7 @@ func TestIdempotent_MalformedBody_StillCallsNext(t *testing.T) {
 func TestIntegration_Idempotent_SkipsRedeliveredEvent(t *testing.T) {
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0000-000000000f07"
-	// A real envelope ID is always a UUID (events.Publish uses uuid.New()) —
+	// A real envelope ID is always a UUID (events.Enqueue uses uuid.NewV7()) —
 	// notification.processed_events.event_id is typed uuid, so this must be
 	// one too, unlike the short "trial-01"-style IDs elsewhere in this file
 	// that never mattered before nothing consumed the ID.

@@ -213,13 +213,10 @@ func TestCrossTenant_AddonUsageCoupon(t *testing.T) {
 // transaction, since these routes make blocking Stripe/Xendit calls; worth
 // confirming they're still correctly ownership-checked despite that).
 // createPaymentLink is the one
-// sub-resource-bearing route here (:invoiceID) — it funnels through the
-// same createPaymentLink/createPaymentLinkForOwner path
-// TestIntegration_RegeneratePaymentLink_CrossTenant_404_NoMutation already
-// proved returns 404 for a foreign invoice ID (createPaymentLinkForOwner's
-// own defer maps pgx.ErrNoRows to apperr.NotFound), confirmed again here by
-// reading service_invoice.go directly rather than assuming the same status
-// carries over. attachAddon's addonID (in the request body) is a global
+// sub-resource-bearing route here (:invoiceID) — it funnels through
+// createPaymentLink/createPaymentLinkForOwner, whose own defer maps
+// pgx.ErrNoRows to apperr.NotFound, so a foreign invoice ID returns 404;
+// confirmed here rather than assumed. attachAddon's addonID (in the request body) is a global
 // catalog ID, not another org's resource, so it stays membership-only per
 // the route inventory's classification.
 func TestCrossTenant_BillingPay(t *testing.T) {

@@ -71,42 +71,6 @@ func (s *service) listPaymentLinks(ctx context.Context, subjectType, subjectID s
 	return links, nil
 }
 
-// regeneratePaymentLink deliberately does not distinguish ErrInvoiceNotPayable
-// from any other failure (unlike createPaymentLink's own handler) — matches
-// the pre-migration handler, which only special-cased ErrNoRows here.
-func (s *service) regeneratePaymentLink(
-	ctx context.Context, subjectType, subjectID, invoiceID string,
-) (link *paymentLinkRecord, err error) {
-	defer func() {
-		if err == nil {
-			return
-		}
-		link = nil
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = apperr.NotFound("INVOICE_NOT_FOUND", "invoice not found", err)
-			return
-		}
-		err = apperr.Internal("PAYMENT_LINK_REGENERATE_FAILED", "failed to regenerate payment link", err)
-	}()
-
-	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
-		txCtx := db.WithQuerier(ctx, tx)
-		_, findErr := s.repo.findInvoiceByIDAndSubject(txCtx, tx, invoiceID, subjectType, subjectID)
-		return findErr
-	})
-	if err != nil {
-		return nil, fmt.Errorf("billing.regeneratePaymentLink: find invoice: %w", err)
-	}
-	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
-		txCtx := db.WithQuerier(ctx, tx)
-		return s.repo.expirePendingPaymentLinks(txCtx, tx, invoiceID)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("billing.regeneratePaymentLink: %w", err)
-	}
-	return s.createPaymentLink(ctx, subjectType, subjectID, invoiceID)
-}
-
 func (s *service) listPayments(ctx context.Context, subjectType, subjectID string) ([]paymentRecord, error) {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {

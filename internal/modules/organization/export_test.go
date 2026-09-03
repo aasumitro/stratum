@@ -105,25 +105,16 @@ func (m *Module) RemoveMemberForTest(ctx context.Context, organizationID, authSu
 
 // NewModuleEngine creates a full gin.Engine backed by a real DB module.
 func NewModuleEngine(pool *pgxpool.Pool, authSub string) *gin.Engine {
-	gin.SetMode(gin.TestMode)
-	mod := New(pool, testSecretEncryptionKey, "", 1)
-	e := gin.New()
-	authMW := func(c *gin.Context) {
-		c.Set("auth.claims", middleware.Claims{Subject: authSub})
-		c.Next()
-	}
-	orgMW := middleware.NewOrganizationMiddleware(mod)
-	noopGate := func(c *gin.Context) { c.Next() }
-	api := e.Group("/api")
-	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
+	e, _ := NewModuleEngineAndModule(pool, authSub)
 	return e
 }
 
-// NewModuleEngineWithPublisher is NewModuleEngine but also returns the
-// Module — use for tests that take an event the module wrote to the outbox
-// and feed it into a Worker handler directly, simulating what the real
-// RabbitMQ consumer would do without needing a broker in this test binary.
-func NewModuleEngineWithPublisher(pool *pgxpool.Pool, authSub string) (*gin.Engine, *Module) {
+// NewModuleEngineAndModule is NewModuleEngine but also returns the *Module
+// handle — use it when a test needs to reach past the HTTP surface: to feed
+// an event the module wrote to the outbox straight into a Worker handler
+// (simulating the real RabbitMQ consumer with no broker in this binary), or
+// to stub a module dependency via mod.Set* before exercising the routes.
+func NewModuleEngineAndModule(pool *pgxpool.Pool, authSub string) (*gin.Engine, *Module) {
 	gin.SetMode(gin.TestMode)
 	mod := New(pool, testSecretEncryptionKey, "", 1)
 	e := gin.New()

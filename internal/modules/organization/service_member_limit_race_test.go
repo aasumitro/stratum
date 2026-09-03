@@ -87,7 +87,7 @@ func TestIntegration_AddMember_ConcurrentAdds_LimitEnforced(t *testing.T) {
 	pool := testPool(t)
 	orgID := insertRaceTestOrg(t, pool, "race-add-member", "race_add_owner")
 
-	engine, mod := organization.NewModuleEngineWithPublisher(pool, "race_add_owner")
+	engine, mod := organization.NewModuleEngineAndModule(pool, "race_add_owner")
 	mod.SetBillingReader(stubMemberLimitReader{limit: 2})
 
 	targets := []string{"race_add_member_1", "race_add_member_2"}
@@ -123,7 +123,7 @@ func TestIntegration_JoinByCode_ConcurrentJoins_LimitEnforced(t *testing.T) {
 	joiners := []string{"race_joiner_1", "race_joiner_2"}
 	engines := make([]http.Handler, len(joiners))
 	for i, sub := range joiners {
-		e, mod := organization.NewModuleEngineWithPublisher(pool, sub)
+		e, mod := organization.NewModuleEngineAndModule(pool, sub)
 		mod.SetBillingReader(stubMemberLimitReader{limit: 2})
 		engines[i] = e
 	}

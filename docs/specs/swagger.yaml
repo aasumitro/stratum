@@ -183,6 +183,7 @@ definitions:
       addon_id:
         type: string
       quantity:
+        maximum: 10000
         minimum: 1
         type: integer
     required:
@@ -3110,46 +3111,6 @@ paths:
       security:
       - BearerAuth: []
       summary: Create a payment link
-      tags:
-      - billing
-  /organizations/{organizationID}/billing/invoices/{invoiceID}/pay/regenerate:
-    post:
-      description: Owner only. Issues a fresh payment link for an invoice, replacing
-        an expired/failed one.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: Invoice ID
-        in: path
-        name: invoiceID
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  $ref: '#/definitions/paymentLinkRecord'
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: owner role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Regenerate a payment link
       tags:
       - billing
   /organizations/{organizationID}/billing/invoices/{invoiceID}/pdf:

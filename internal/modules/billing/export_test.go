@@ -72,7 +72,6 @@ func NewHandlerEngineWithCaller(callerSub, ownerSub string) *gin.Engine {
 	e.POST("/billing/extend", ownerOnly, h.extendSubscription)
 	e.POST("/billing/activate", ownerOnly, h.activateTrialNow)
 	e.POST("/billing/invoices/:invoiceID/pay", ownerOnly, h.createPaymentLink)
-	e.POST("/billing/invoices/:invoiceID/pay/regenerate", ownerOnly, h.regeneratePaymentLink)
 	e.POST("/billing/usage", ownerOnly, h.recordUsage)
 	e.POST("/billing/coupons/redeem", ownerOnly, h.redeemCoupon)
 	e.POST("/billing/addons", ownerOnly, h.attachAddon)

@@ -395,7 +395,7 @@ func TestIntegration_Webhooks_RetryAllFailed(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
 	})
-	e, mod := organization.NewModuleEngineWithPublisher(pool, testAuthSub)
+	e, mod := organization.NewModuleEngineAndModule(pool, testAuthSub)
 
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

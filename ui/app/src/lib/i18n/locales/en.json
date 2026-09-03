@@ -173,7 +173,6 @@
       "INVOICES_FETCH_FAILED": "Failed to load invoices.",
       "PAYMENT_LINKS_FETCH_FAILED": "Failed to load payment links.",
       "INVOICE_NOT_FOUND": "Invoice not found.",
-      "PAYMENT_LINK_REGENERATE_FAILED": "Failed to regenerate the payment link.",
       "PAYMENTS_FETCH_FAILED": "Failed to load payments.",
       "PAYMENT_LINK_CREATE_FAILED": "Failed to create the payment link.",
       "PREVIEW_FAILED": "Failed to preview the invoice.",
@@ -1343,9 +1342,6 @@
       "pdfFailed": "Failed to download PDF",
       "previewPdf": "Preview PDF",
       "previewFailed": "Failed to preview PDF",
-      "regenerate": "Regenerate",
-      "regenerating": "Regenerating…",
-      "regenerateFailed": "Failed to regenerate payment link",
       "numberCol": "Number",
       "awaitingPayment": "Awaiting payment ↻"
     },

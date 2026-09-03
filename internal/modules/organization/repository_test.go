@@ -167,7 +167,7 @@ func TestIntegration_CreateOrganization_WritesOutboxRowInCreateTransaction(t *te
 		}
 	})
 
-	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub)
+	e := organization.NewModuleEngine(pool, testAuthSub)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations",
 		`{"slug":"`+slug+`","name":"Integ WS","plan":"solo","cycle":"monthly"}`))
@@ -397,7 +397,7 @@ func countMemberRemovedEventsSince(t *testing.T, pool *pgxpool.Pool, orgID strin
 // that didn't actually happen.
 func TestIntegration_RemoveMember_AlreadyRemoved_NoPhantomEvent(t *testing.T) {
 	pool := testPool(t)
-	e, _ := organization.NewModuleEngineWithPublisher(pool, testAuthSub)
+	e := organization.NewModuleEngine(pool, testAuthSub)
 
 	var orgID string
 	t.Cleanup(func() {

@@ -81,11 +81,13 @@ export const CHANNEL_CATEGORY: Record<string, NotificationCategory> = {
 export const EVENT_TYPE_CATEGORY: Record<string, NotificationCategory> = {
   organization_deleted: "organization",
   member_removed: "members",
+  invite: "members",
   invoice_paid: "billing",
   invoice_failed: "billing",
   invoice_payment_remind: "billing",
   invoice_payment_final: "billing",
   subscription_remind: "billing",
+  subscription_expired: "billing",
   usage_limit_warning: "billing",
   webhook_health_warning: "organization",
   webhook_auto_disabled: "organization",

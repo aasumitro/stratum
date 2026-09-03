@@ -434,8 +434,12 @@ func (w *Worker) HandleSubscriptionPaymentFinal(ctx context.Context, body []byte
 // when that email already belongs to a registered account — an in-app
 // notification too, so an existing user isn't stuck needing the email link
 // to discover the invite.
-// authSub is empty for the email send — invitee may not be registered yet,
-// so no preference check.
+//
+// The invitee is resolved before either send: a registered invitee's auth_sub
+// gates both the email and the in-app copy on their "invite" notification
+// preferences. An unregistered invitee has no account to hold a preference, so
+// their auth_sub is empty and sendEmail skips the check — the invite email
+// always goes out in that case, since it's the only way they can act on it.
 func (w *Worker) HandleMemberInvited(ctx context.Context, body []byte) error {
 	evt, err := events.Decode[events.MemberInvited](body)
 	if err != nil {
@@ -451,22 +455,27 @@ func (w *Worker) HandleMemberInvited(ctx context.Context, body []byte) error {
 		}
 	}
 
-	w.svc.sendEmail(ctx, evt.OrganizationID, evt.Email, "", "invite", locale, mailer.TemplateData{
+	var inviteeSub string
+	if w.svc.userReader != nil {
+		if user, err := w.svc.userReader.GetUserByEmail(ctx, evt.Email); err == nil && user != nil {
+			inviteeSub = user.AuthSub
+		}
+	}
+
+	w.svc.sendEmail(ctx, evt.OrganizationID, evt.Email, inviteeSub, "invite", locale, mailer.TemplateData{
 		OrganizationName: orgName,
 		InviteURL:        fmt.Sprintf("%s/invitations/accept?token=%s", w.svc.appURL, evt.Token),
 	})
 
-	if w.svc.userReader != nil {
-		if user, err := w.svc.userReader.GetUserByEmail(ctx, evt.Email); err == nil && user != nil {
-			payload, _ := json.Marshal(map[string]any{payloadKeyOrganizationName: orgName})
-			if _, err := w.svc.send(ctx, evt.OrganizationID, &user.AuthSub, "in_app", "invite",
-				"You've been invited",
-				fmt.Sprintf("You've been invited to join %q.", orgName),
-				payload,
-			); err != nil {
-				slog.Warn("in-app invite notification failed", "org_id",
-					evt.OrganizationID, "auth_sub", user.AuthSub, "error", err)
-			}
+	if inviteeSub != "" {
+		payload, _ := json.Marshal(map[string]any{payloadKeyOrganizationName: orgName})
+		if _, err := w.svc.send(ctx, evt.OrganizationID, &inviteeSub, "in_app", "invite",
+			"You've been invited",
+			fmt.Sprintf("You've been invited to join %q.", orgName),
+			payload,
+		); err != nil {
+			slog.Warn("in-app invite notification failed", "org_id",
+				evt.OrganizationID, "auth_sub", inviteeSub, "error", err)
 		}
 	}
 
