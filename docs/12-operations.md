@@ -103,6 +103,23 @@ A nonzero result here means these events were **not** delivered and never will b
 UPDATE messaging.outbox SET attempts = 0, not_before = now() WHERE id = ANY(:ids);
 ```
 
+*Delayed billing events left on the retired delay topology* — run once per environment that ran a build from before delayed events were consolidated onto the outbox. Those builds enqueued the expiry check, renewal reminder, auto-invoice, and dunning notices onto the `billing.delay` direct exchange, whose parking queues had no TTL and no consumer, so every such row parks undelivered under a short legacy routing key. Rewrite the unpublished ones onto the real exchange and routing keys:
+```sql
+UPDATE messaging.outbox
+   SET exchange = 'billing.events',
+       routing_key = CASE routing_key
+         WHEN 'subscription-check'          THEN 'billing.subscription.check'
+         WHEN 'subscription-remind'         THEN 'billing.subscription.remind'
+         WHEN 'subscription-auto-invoice'   THEN 'billing.subscription.auto-invoice'
+         WHEN 'subscription-payment-remind' THEN 'billing.subscription.payment-remind'
+         WHEN 'subscription-payment-final'  THEN 'billing.subscription.payment-final'
+       END
+ WHERE published_at IS NULL
+   AND routing_key IN ('subscription-check', 'subscription-remind', 'subscription-auto-invoice',
+                       'subscription-payment-remind', 'subscription-payment-final');
+```
+Rows already published into the legacy parking queues are not recoverable this way — the hourly `ReconcileOverdueSubscriptions` sweep covers the subscription-expiry consequence; a missed one-time reminder or dunning notice is accepted loss. Afterward the five legacy `*-delay` parking queues (`billing.subscription-check-delay`, `-remind-delay`, `-auto-invoice-delay`, `-payment-remind-delay`, `-payment-final-delay`) and the `billing.delay` exchange are unused and can be deleted (`rabbitmqctl delete_queue billing.subscription-check-delay` … and `rabbitmqctl delete_exchange billing.delay`); leaving them is harmless, nothing publishes to them.
+
 **Rotating the webhook encryption key** — `WEBHOOK_SECRET_ENCRYPTION_KEY` rotation is a
 4-step, operator-driven procedure; do not skip the verification step. Do not roll back the
 application between steps 1 and 3 once the backfill has started — a rollback to the pre-rotation
@@ -141,4 +158,10 @@ WHERE i.status = 'pending' AND pl.status = 'pending' AND i.created_at < now() - 
 Each result needs manual verification against the payment provider's own dashboard (Stripe/Xendit) before marking anything paid by hand via Studio's support tools — a row in this list only means the invoice looks stale, not that it was actually paid.
 
 ## No scheduler
-Stratum has no cron. Anything that looks periodic is either a one-shot RabbitMQ delayed message (dunning, renewal reminders) or lazy/opportunistic work (webhook health computed on delivery). This is a deliberate simplification — adding a scheduler for a single sweep wasn't judged worth the operational surface.
+Stratum has no cron. Anything that looks periodic is one of:
+
+- **A future-dated outbox row.** Dunning notices, renewal reminders, and the end-of-period expiry check are written to `messaging.outbox` with a future `not_before`; the relay claims each only once it comes due and publishes it like any immediate event. The delay is a timestamp in the database, not a broker plugin or a scheduler.
+- **A worker-local ticker.** `cmd/worker` runs a handful of `time.Ticker` goroutines in-process — the outbox relay (2s), the outbox retention sweep (hourly), expired-invitation cleanup (hourly), and `ReconcileOverdueSubscriptions` (hourly), which re-enqueues an expiry check for any active/trialing subscription already past its end date so a lost scheduled check can't leave a lapsed subscription entitled. These are not external jobs; they stop when the worker stops.
+- **Lazy/opportunistic work** — e.g. webhook health computed on delivery.
+
+Adding a general-purpose scheduler still isn't judged worth the operational surface.

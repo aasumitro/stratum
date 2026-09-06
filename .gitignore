@@ -10,6 +10,10 @@ bin/
 .env
 .env.local
 .env.*.local
+# staging stack — real secrets and the operator's licensed GeoIP db, never committed
+# (deploy/.env.staging.example IS tracked)
+deploy/.env.staging
+deploy/secrets/
 
 # IDE
 .idea/

@@ -275,6 +275,30 @@ func TestExtendSubscription_PlainMonthsValid(t *testing.T) {
 	}
 }
 
+// --- attach addon tests ---
+
+// attachAddonRequest.Quantity is bounded omitempty,min=1,max=10000 — a
+// value above the cap must be rejected at the binding layer (nonsense
+// invoice prevention), a value at the cap must bind through to the service.
+func TestAttachAddon_QuantityAboveCap(t *testing.T) {
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/addons", `{"addon_id":"extra-seat","quantity":20000}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422 for quantity above the 10000 cap, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestAttachAddon_QuantityAtCapBindsThrough(t *testing.T) {
+	defer func() { recover() }() // svc is nil; panic after a successful bind is expected
+	w := httptest.NewRecorder()
+	billing.NewHandlerEngineWithCaller("sub_owner", "sub_owner").ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/billing/addons", `{"addon_id":"extra-seat","quantity":10000}`))
+	if w.Code == http.StatusUnprocessableEntity {
+		t.Errorf("quantity=10000 is at the cap and should bind successfully, got 422: %s", w.Body)
+	}
+}
+
 // --- resume subscription tests ---
 
 func TestResumeSubscription_NonOwnerForbidden(t *testing.T) {
@@ -295,10 +319,6 @@ func TestResumeSubscription_OwnerAllowed(t *testing.T) {
 		t.Errorf("owner should not get 403")
 	}
 }
-
-// --- regenerate payment link tests ---
-
-// regeneratePaymentLink resolves currency from the subscription.
 
 // --- usage tests ---
 
@@ -390,7 +410,6 @@ func rbacOwnerOnlyCases() []struct {
 		body   string
 	}{
 		{http.MethodPost, "/billing/invoices/inv_01/pay", ""},
-		{http.MethodPost, "/billing/invoices/inv_01/pay/regenerate", ""},
 		{http.MethodPost, "/billing/usage", `{"metric":"members","value":1}`},
 		{http.MethodPost, "/billing/extend", `{"months":1}`},
 		{http.MethodPost, "/billing/activate", ""},

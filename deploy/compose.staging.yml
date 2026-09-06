@@ -1,0 +1,126 @@
+# Staging stack for Stratum — full backend brought up with Podman.
+#
+#   cd code/stratum
+#   cp deploy/.env.staging.example deploy/.env.staging   # then fill in the CHANGE_ME values
+#   # place a MaxMind-licensed GeoLite2-Country.mmdb at deploy/secrets/
+#   podman compose -f deploy/compose.staging.yml up --build -d
+#
+# Infra image tags match deploy/docker-compose.local.yml deliberately. Nothing
+# here is Docker-specific; `podman compose` is the only supported driver.
+#
+# The `migrate` service applies db/migrations once and exits; `api` and `worker`
+# wait for it to finish cleanly (and for every infra healthcheck) before starting.
+
+name: stratum-staging
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stratum
+      POSTGRES_PASSWORD: stratum
+      POSTGRES_DB: stratum
+    volumes:
+      - pgdata:/var/lib/postgresql
+      # Creates the stratum_app / stratum_worker / stratum_webhook login roles
+      # (db/migrations/000008 grants to them but does not create them). Only the
+      # app-role script — never 02-test-role.sql, which is local/CI only.
+      - ./postgres-init/01-app-role.sql:/docker-entrypoint-initdb.d/01-app-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stratum -d stratum"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4.3-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: stratum
+      RABBITMQ_DEFAULT_PASS: stratum
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate:v4.18.2
+    restart: "no"
+    env_file: [.env.staging]
+    volumes:
+      - ../db/migrations:/migrations:ro
+    # Shell form so $DATABASE_URL is read from the container env (.env.staging),
+    # not interpolated by compose. $$ escapes compose's own interpolation.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['migrate -path=/migrations -database="$$DATABASE_URL" up']
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: api
+      args:
+        SERVICE_VERSION: ${SERVICE_VERSION:-staging}
+    restart: unless-stopped
+    env_file: [.env.staging]
+    environment:
+      APP_ENV: staging
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - ./secrets/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: worker
+      args:
+        SERVICE_VERSION: ${SERVICE_VERSION:-staging}
+    restart: unless-stopped
+    env_file: [.env.staging]
+    environment:
+      APP_ENV: staging
+    volumes:
+      - ./secrets/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  rabbitmqdata:
+  redisdata:

@@ -12,7 +12,6 @@ import (
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/testsupport"
 )
 
@@ -45,8 +44,8 @@ const testWebhookEncryptionKey = "test-webhook-secret-encryption-key-0000"
 // RateLimit/Idempotency/MFA stay no-ops.
 func newBillingCrossTenantEngine(pool *pgxpool.Pool, authSub string) (*gin.Engine, *billing.Module) {
 	gin.SetMode(gin.TestMode)
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
-	billingMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, nil)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
+	billingMod := billing.New(pool, billing.ProviderConfig{}, nil, nil, nil)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})
@@ -214,13 +213,10 @@ func TestCrossTenant_AddonUsageCoupon(t *testing.T) {
 // transaction, since these routes make blocking Stripe/Xendit calls; worth
 // confirming they're still correctly ownership-checked despite that).
 // createPaymentLink is the one
-// sub-resource-bearing route here (:invoiceID) — it funnels through the
-// same createPaymentLink/createPaymentLinkForOwner path
-// TestIntegration_RegeneratePaymentLink_CrossTenant_404_NoMutation already
-// proved returns 404 for a foreign invoice ID (createPaymentLinkForOwner's
-// own defer maps pgx.ErrNoRows to apperr.NotFound), confirmed again here by
-// reading service_invoice.go directly rather than assuming the same status
-// carries over. attachAddon's addonID (in the request body) is a global
+// sub-resource-bearing route here (:invoiceID) — it funnels through
+// createPaymentLink/createPaymentLinkForOwner, whose own defer maps
+// pgx.ErrNoRows to apperr.NotFound, so a foreign invoice ID returns 404;
+// confirmed here rather than assumed. attachAddon's addonID (in the request body) is a global
 // catalog ID, not another org's resource, so it stays membership-only per
 // the route inventory's classification.
 func TestCrossTenant_BillingPay(t *testing.T) {

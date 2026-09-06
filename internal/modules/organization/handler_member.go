@@ -89,6 +89,9 @@ func (h *handler) addMember(c *gin.Context) {
 func (h *handler) removeMember(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 	subject := reqctx.Subject(c)
+	// Semantic audit label — set before the self/owner guards so a rejected
+	// removal attempt is also recorded under this action, not a bare DELETE.
+	c.Set("audit.action", "member.removed")
 
 	authSub := c.Param("authSub")
 	if authSub == subject {
@@ -141,6 +144,79 @@ func (h *handler) updateMemberRole(c *gin.Context) {
 		return
 	}
 	if err := h.svc.updateMemberRole(c.Request.Context(), ws.ID, authSub, req.Role); err != nil {
+		response.FromError(c, err)
+		return
+	}
+	h.invalidateRole(c, ws.ID, authSub)
+	c.Status(http.StatusNoContent)
+}
+
+// suspendMember godoc
+// @Summary      Suspend a member
+// @Description  Admin/owner only. Temporarily revokes the member's access to this organization without deleting the membership. Cannot suspend yourself or the organization owner.
+// @Tags         organization
+// @Security     BearerAuth
+// @Param        organizationID  path  string  true  "Organization ID"
+// @Param        authSub         path  string  true  "Member's auth subject"
+// @Success      204             "no content"
+// @Failure      400             {object}  response.Payload  "cannot suspend yourself"
+// @Failure      403             {object}  response.Payload  "cannot suspend the owner, or admin role required"
+// @Failure      404             {object}  response.Payload  "member not found"
+// @Failure      409             {object}  response.Payload  "member already suspended"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/members/{authSub}/suspend [post]
+func (h *handler) suspendMember(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+	subject := reqctx.Subject(c)
+	// Semantic audit label — set before the self/owner guards so a rejected
+	// attempt is also recorded under this action, not a bare POST.
+	c.Set("audit.action", "member.suspended")
+
+	authSub := c.Param("authSub")
+	if authSub == subject {
+		response.Error("SELF_SUSPENSION", "cannot suspend yourself").JSON(c, http.StatusBadRequest)
+		return
+	}
+	if authSub == ws.OwnerID {
+		response.Error("CANNOT_SUSPEND_OWNER", "cannot suspend the organization owner").JSON(c, http.StatusForbidden)
+		return
+	}
+
+	if err := h.svc.suspendMember(c.Request.Context(), ws.ID, authSub); err != nil {
+		response.FromError(c, err)
+		return
+	}
+	h.invalidateRole(c, ws.ID, authSub)
+	c.Status(http.StatusNoContent)
+}
+
+// reinstateMember godoc
+// @Summary      Reinstate a suspended member
+// @Description  Admin/owner only. Restores a suspended member's access, subject to the plan seat limit at reinstate time.
+// @Tags         organization
+// @Security     BearerAuth
+// @Param        organizationID  path  string  true  "Organization ID"
+// @Param        authSub         path  string  true  "Member's auth subject"
+// @Success      204             "no content"
+// @Failure      403             {object}  response.Payload  "cannot reinstate the owner, or admin role required"
+// @Failure      404             {object}  response.Payload  "member not found"
+// @Failure      409             {object}  response.Payload  "member is not suspended"
+// @Failure      422             {object}  response.Payload  "member limit reached for your current plan"
+// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Router       /organizations/{organizationID}/members/{authSub}/reinstate [post]
+func (h *handler) reinstateMember(c *gin.Context) {
+	ws, _ := middleware.OrganizationFromContext(c)
+	c.Set("audit.action", "member.reinstated")
+
+	authSub := c.Param("authSub")
+	// The owner is never suspended, so this is unreachable in practice — kept
+	// for a clear error and symmetry with suspendMember.
+	if authSub == ws.OwnerID {
+		response.Error("CANNOT_SUSPEND_OWNER", "cannot reinstate the organization owner").JSON(c, http.StatusForbidden)
+		return
+	}
+
+	if err := h.svc.reinstateMember(c.Request.Context(), ws.ID, authSub); err != nil {
 		response.FromError(c, err)
 		return
 	}

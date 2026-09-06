@@ -611,7 +611,7 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 		return fmt.Errorf("billing.expireIfDue: %w", err)
 	}
 
-	if sub.Status != statusActive && sub.Status != statusTrialing {
+	if sub.Status != statusActive && sub.Status != statusTrialing && sub.Status != statusPastDue {
 		return nil
 	}
 
@@ -620,7 +620,10 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 	switch sub.Status {
 	case statusTrialing:
 		expired = sub.TrialEnd != nil && now.After(*sub.TrialEnd)
-	default: // statusActive (statusPastDue never reaches expireIfDue — see the status guard above)
+	default: // statusActive or statusPastDue — both expire once now is past period_end.
+		// A past_due subscription's own renewal payment failed; letting it
+		// through here is what finally terminates it (and suspends the org)
+		// at period_end instead of leaving it delinquent forever.
 		expired = sub.PeriodEnd != nil && now.After(*sub.PeriodEnd)
 	}
 	if !expired {
@@ -639,6 +642,16 @@ func (s *service) expireIfDue(ctx context.Context, subscriptionID string) error 
 		if err := events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeySubscriptionExpired, "billing", sub.SubjectID,
 			events.SubscriptionExpired{OrgID: sub.SubjectID, SubscriptionID: sub.ID, ExpiredAt: now}); err != nil {
 			return fmt.Errorf("billing.expireIfDue: enqueue: %w", err)
+		}
+		// The subscription is over, so its unpaid invoices are over: mark
+		// every still-pending invoice failed and its links expired, in this
+		// same transaction. Deliberately emits no per-invoice event —
+		// SubscriptionExpired (above) already tells every consumer the
+		// subscription is dead; a billing.invoice.failed alongside it would
+		// trigger a fresh "payment failed" notification and dunning cycle
+		// for a subscription that no longer exists.
+		if err := s.repo.failPendingInvoicesAndLinks(ctx, s.querier(ctx), sub.ID); err != nil {
+			return fmt.Errorf("billing.expireIfDue: fail pending invoices: %w", err)
 		}
 		return nil
 	})

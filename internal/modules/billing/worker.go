@@ -68,11 +68,12 @@ func (w *Worker) HandleSubscriptionCheck(ctx context.Context, body []byte) error
 // still matches the subscription's current end date. scheduleRenewalSequence
 // is called every time period_end/trial_end changes (extend, reactivate,
 // resume, plan change), but the previously-scheduled delayed message for the
-// old end date is never cancelled — this platform's events.PublishDelayed has
-// no cancellation primitive. A message whose ExpectedEnd no longer matches
-// the subscription's current end date is one of those leftovers: a fresh
-// message for the new end date was already published by whatever changed it,
-// so this one should no-op rather than act on a date that's no longer real.
+// old end date is never cancelled — this platform's delayed-message path
+// (events.EnqueueDelayed) has no cancellation primitive. A message whose
+// ExpectedEnd no longer matches the subscription's current end date is one
+// of those leftovers: a fresh message for the new end date was already
+// enqueued by whatever changed it, so this one should no-op rather than act
+// on a date that's no longer real.
 func staleSubscriptionCheck(sub *subscriptionRecord, check events.SubscriptionCheck) bool {
 	currentEnd := sub.PeriodEnd
 	if check.IsTrial {

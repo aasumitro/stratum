@@ -77,7 +77,7 @@ func (r *repository) findOrganizationsByMember(ctx context.Context, q db.Querier
 		SELECT t.id, t.slug, t.name, t.status, t.owner_id, m.role, m.joined_at, t.created_at, t.updated_at
 		FROM organization.organizations t
 		JOIN organization.memberships m ON m.organization_id = t.id
-		WHERE m.auth_sub = $1 AND t.status != 'deleted'
+		WHERE m.auth_sub = $1 AND m.status = 'active' AND t.status != 'deleted'
 		ORDER BY m.joined_at`,
 		authSub,
 	)

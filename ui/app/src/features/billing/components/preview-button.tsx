@@ -24,7 +24,7 @@ export function PreviewButton({ invoiceId, organizationId }: Props) {
       ),
     onMutate: () => {
       // Open synchronously in the click handler to bypass popup blockers —
-      // same pattern as pay-button/regenerate-button.
+      // same pattern as pay-button.
       winRef.current = window.open("", "_blank")
     },
     onSuccess: (blobUrl) => {

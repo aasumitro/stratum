@@ -736,15 +736,15 @@ func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscription
 		remindLeadDays = 2
 	}
 	if d := time.Until(endTime.AddDate(0, 0, -remindLeadDays)); d > 0 {
-		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
-			events.DelayRoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d); err != nil {
+		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBilling,
+			events.RoutingKeySubscriptionRemind, "billing", sub.SubjectID, checkPayload, d); err != nil {
 			slog.Error("billing.scheduleRenewalSequence: enqueue remind failed", "subscription_id", sub.ID, "error", err)
 		}
 	}
 
 	if d := time.Until(endTime.AddDate(0, 0, -3)); d > 0 {
-		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
-			events.DelayRoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d); err != nil {
+		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBilling,
+			events.RoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d); err != nil {
 			slog.Error("billing.scheduleRenewalSequence: enqueue auto-invoice failed", "subscription_id", sub.ID, "error", err)
 		}
 	}
@@ -753,8 +753,8 @@ func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscription
 	if d <= 0 {
 		d = time.Second
 	}
-	if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBillingDelay,
-		events.DelayRoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d); err != nil {
+	if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBilling,
+		events.RoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d); err != nil {
 		slog.Error("billing.scheduleRenewalSequence: enqueue expiry check failed", "subscription_id", sub.ID, "error", err)
 	}
 }

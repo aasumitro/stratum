@@ -127,6 +127,24 @@ func OpenWebhookPool(ctx context.Context, infra *Infra) error {
 	return nil
 }
 
+// validateBackgroundPoolSize rejects a background-pool size that would
+// either starve background writes (<= 0) or let the background pool claim
+// as many or more server connections than the main request pool
+// (background >= main), defeating the connection-slot split the two pools
+// exist to provide.
+func validateBackgroundPoolSize(background, main int32) error {
+	if background <= 0 {
+		return fmt.Errorf("POSTGRES_BACKGROUND_MAX_OPEN_CONNS must be > 0")
+	}
+	if background >= main {
+		return fmt.Errorf(
+			"POSTGRES_BACKGROUND_MAX_OPEN_CONNS (%d) must be smaller than POSTGRES_MAX_OPEN_CONNS (%d)",
+			background, main,
+		)
+	}
+	return nil
+}
+
 // OpenBackgroundPool opens Infra.BackgroundPool, reusing the same
 // stratum_app role/URL as Infra.Pool (cfg.Postgres.URL) — this is a
 // connection-slot split, not a privilege split, so only MaxOpenConns
@@ -137,6 +155,12 @@ func OpenWebhookPool(ctx context.Context, infra *Infra) error {
 // already-deferred Infra.Close cleans it up on any later failure, with no
 // separate unwind path needed.
 func OpenBackgroundPool(ctx context.Context, infra *Infra) error {
+	if err := validateBackgroundPoolSize(
+		infra.Cfg.Postgres.BackgroundMaxOpenConns, infra.Cfg.Postgres.MaxOpenConns,
+	); err != nil {
+		return fmt.Errorf("bootstrap.OpenBackgroundPool: %w", err)
+	}
+
 	pgCfg := infra.Cfg.Postgres
 	pgCfg.MaxOpenConns = infra.Cfg.Postgres.BackgroundMaxOpenConns
 	pool, err := db.NewPostgresPool(ctx, pgCfg)

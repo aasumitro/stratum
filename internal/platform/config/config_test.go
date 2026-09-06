@@ -194,3 +194,42 @@ func TestLoad_AuthAccessTokenMaxTTL(t *testing.T) {
 		t.Errorf("expected AccessTokenMaxTTL to be 2h, got %v", cfg.Auth.AccessTokenMaxTTL)
 	}
 }
+
+func TestLoad_PostgresStatementTimeout(t *testing.T) {
+	setRequiredEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("POSTGRES_APP_URL", "postgres://u:p@localhost:5432/db")
+		t.Setenv("POSTGRES_WORKER_URL", "postgres://u:p@localhost:5432/db")
+		t.Setenv("POSTGRES_WEBHOOK_URL", "postgres://u:p@localhost:5432/db")
+		t.Setenv("REDIS_URL", "redis://localhost:6379")
+		t.Setenv("RABBITMQ_URL", "amqp://localhost:5672")
+		t.Setenv("AUTH_JWKS_URL", "https://example.com/.well-known/jwks.json")
+		t.Setenv("AUTH_ISSUER", "https://example.com")
+		t.Setenv("WEBHOOK_SECRET_ENCRYPTION_KEY", "a-real-key")
+	}
+
+	t.Run("defaults to 30s", func(t *testing.T) {
+		setRequiredEnv(t)
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Postgres.StatementTimeout != "30s" {
+			t.Errorf("expected StatementTimeout default to be %q, got %q", "30s", cfg.Postgres.StatementTimeout)
+		}
+	})
+
+	t.Run("reads POSTGRES_STATEMENT_TIMEOUT", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("POSTGRES_STATEMENT_TIMEOUT", "0")
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Postgres.StatementTimeout != "0" {
+			t.Errorf("expected StatementTimeout to be %q, got %q", "0", cfg.Postgres.StatementTimeout)
+		}
+	})
+}

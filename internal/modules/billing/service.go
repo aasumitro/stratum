@@ -11,7 +11,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/db"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 const (
@@ -107,7 +106,6 @@ func countryFromCurrency(currency string) string {
 type service struct {
 	repo         *repository
 	pool         *pgxpool.Pool
-	pub          messaging.EventPublisher
 	provider     ProviderConfig
 	userReader   contracts.UserReader
 	orgReader    contracts.OrganizationReader

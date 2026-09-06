@@ -45,14 +45,6 @@ func RunAPI() error {
 		infra.Log.Warn("STATS_TOKEN not set — /health/stats (goroutine/heap/pool internals) is unauthenticated")
 	}
 
-	// Declare the billing delay exchange so the API can publish delayed messages.
-	// The parking queue is declared by the worker binary.
-	if setupCh, chErr := infra.MQConn.Channel(); chErr == nil {
-		_ = setupCh.ExchangeDeclare("billing.delay", "direct",
-			true, false, false, false, nil)
-		_ = setupCh.Close()
-	}
-
 	var storageClient *storage.Client
 	if cfg.Storage.URL != "" {
 		storageClient = storage.New(storage.Config{

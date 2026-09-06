@@ -29,6 +29,8 @@ CREATE TABLE organization.memberships (
     auth_sub        TEXT        NOT NULL,
     role            TEXT        NOT NULL DEFAULT 'member'
                                 CHECK (role IN ('owner', 'admin', 'member')),
+    status          TEXT        NOT NULL DEFAULT 'active'
+                                CHECK (status IN ('active', 'suspended')),
     joined_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (organization_id, auth_sub)
 );

@@ -11,7 +11,6 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // Duplicated rather than shared with organization's own unexported
@@ -182,9 +181,9 @@ func TestResolveDowngradeOverage(t *testing.T) {
 // TestResolveDowngradeOverage_PublishesMemberRemovedEvents confirms the
 // bulk removal path enqueues an organization.member.removed outbox row once
 // per removed member (matching removeMember's single-member path), not skip
-// notification entirely just because the removal happened in bulk. Queried
-// directly from messaging.outbox, not a captured publisher: events.Enqueue
-// never touches the injected EventPublisher at all.
+// notification entirely just because the removal happened in bulk. The
+// rows are asserted by reading messaging.outbox directly, since that is
+// where events.Enqueue writes them, in the same transaction as the removal.
 func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	pool := testPool(t)
 	t.Cleanup(func() {
@@ -195,7 +194,7 @@ func TestResolveDowngradeOverage_PublishesMemberRemovedEvents(t *testing.T) {
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
 	})
-	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	mod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 
 	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)
 	if err != nil {
@@ -264,7 +263,7 @@ func TestResolveDowngradeOverage_InvalidatesRemovedMembersRoleCache(t *testing.T
 
 	orgID := setupOrgWithMembers(t, pool, "test-downgrade-cache")
 	inv := &fakeCacheInvalidator{}
-	mod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	mod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod.SetCacheInvalidator(inv)
 
 	res, err := mod.ResolveDowngradeOverage(t.Context(), orgID, nil, 1, false)

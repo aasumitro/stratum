@@ -12,7 +12,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -28,7 +27,6 @@ type Module struct {
 
 func New(
 	pool *pgxpool.Pool,
-	pub messaging.EventPublisher,
 	adminURL, serviceRoleKey string,
 	revokedNS *cache.Namespace,
 	store *storage.Client,
@@ -38,7 +36,6 @@ func New(
 	svc := &service{
 		repo:              &repository{},
 		pool:              pool,
-		pub:               pub,
 		adminURL:          adminURL,
 		serviceRoleKey:    serviceRoleKey,
 		revokedNS:         revokedNS,

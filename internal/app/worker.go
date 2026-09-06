@@ -33,11 +33,6 @@ func RunWorker() error {
 	}
 	defer infra.Close(context.Background())
 
-	if err := bootstrap.DeclareWorkerDelayQueues(infra.MQConn); err != nil {
-		return fmt.Errorf("declaring worker delay topology: %w", err)
-	}
-	infra.Log.Info("worker delay topology declared")
-
 	// Bucket existence is ensured by the API on its own startup (see
 	// api.go) — not repeated here, since it's the same idempotent setup
 	// running twice for no benefit. The worker only ever deletes existing
@@ -65,7 +60,6 @@ func RunWorker() error {
 	for _, c := range consumers {
 		wg.Go(func() { c.Run(ctx) })
 	}
-	wg.Go(func() { bootstrap.RunDelayTopologyReconnectLoop(ctx, infra.MQConn, infra.Log) })
 
 	// Hourly cleanup of expired organization invitations.
 	wg.Go(func() {
@@ -77,6 +71,23 @@ func RunWorker() error {
 				return
 			case <-ticker.C:
 				mods.Organization.CleanupExpiredInvitations(ctx)
+			}
+		}
+	})
+
+	// Hourly safety net: re-enqueue an expiry check for any active/trialing
+	// subscription already past its end date, in case its originally
+	// scheduled SubscriptionCheck was lost. Expiry only — see
+	// billing.ReconcileOverdueSubscriptions.
+	wg.Go(func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mods.Billing.ReconcileOverdueSubscriptions(ctx)
 			}
 		}
 	})

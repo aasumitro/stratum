@@ -199,6 +199,38 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleMemberRoleChanged), log),
 
+		// notification: member suspended alert (in-app, to the affected member)
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},
+			Queue: messaging.QueueSpec{
+				Name:                 "notification.member-suspended",
+				BindingKeys:          []string{events.RoutingKeyMemberSuspended},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeNotificationDLX,
+				DeadLetterRoutingKey: "notification.member-suspended",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.Idempotent(m.Worker.HandleMemberSuspended), log),
+
+		// notification: member reinstated alert (in-app, to the affected member)
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},
+			Queue: messaging.QueueSpec{
+				Name:                 "notification.member-reinstated",
+				BindingKeys:          []string{events.RoutingKeyMemberReinstated},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeNotificationDLX,
+				DeadLetterRoutingKey: "notification.member-reinstated",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.Idempotent(m.Worker.HandleMemberReinstated), log),
+
 		// notification: ownership transferred alert to new owner
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},
@@ -359,7 +391,8 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleSubscriptionResumed), log),
 
-		// notification: dunning day-3 payment reminder (via billing.delay DLX)
+		// notification: dunning day-3 payment reminder (outbox row with
+		// not_before 3 days out; the relay publishes it here once it comes due)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{
@@ -375,7 +408,8 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleSubscriptionPaymentRemind), log),
 
-		// notification: dunning day-7 final warning (via billing.delay DLX)
+		// notification: dunning day-7 final warning (outbox row with not_before
+		// 7 days out; the relay publishes it here once it comes due)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{

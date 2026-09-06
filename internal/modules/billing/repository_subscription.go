@@ -174,6 +174,50 @@ func (r *repository) activateTrialImmediately(
 	return s, nil
 }
 
+// overdueSubscription is the minimal projection ReconcileOverdueSubscriptions
+// needs to re-enqueue a missed expiry check.
+type overdueSubscription struct {
+	ID          string
+	SubjectType string
+	SubjectID   string
+	IsTrial     bool
+	ExpectedEnd time.Time
+}
+
+// listOverdueSubscriptions returns every active/trialing subscription whose
+// current period end (trial_end for a trial, else period_end) is already in
+// the past — the set whose scheduled SubscriptionCheck should have expired
+// them but may have been lost. past_due is deliberately excluded: it reaches
+// the same expireIfDue path once its period_end passes and needs no
+// reconciliation here.
+func (r *repository) listOverdueSubscriptions(ctx context.Context, q db.Querier) ([]overdueSubscription, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, subject_type, subject_id,
+		       status = 'trialing' AS is_trial,
+		       COALESCE(trial_end, period_end) AS expected_end
+		FROM billing.subscriptions
+		WHERE status IN ('active', 'trialing')
+		  AND COALESCE(trial_end, period_end) < now()`)
+	if err != nil {
+		return nil, fmt.Errorf("billing.listOverdueSubscriptions: %w", err)
+	}
+
+	var out []overdueSubscription
+	for rows.Next() {
+		var s overdueSubscription
+		if err := rows.Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.IsTrial, &s.ExpectedEnd); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("billing.listOverdueSubscriptions: scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listOverdueSubscriptions: %w", err)
+	}
+	return out, nil
+}
+
 func (r *repository) findSubscriptionByID(ctx context.Context, q db.Querier, id string) (*subscriptionRecord, error) {
 	s := new(subscriptionRecord)
 	err := q.QueryRow(ctx,

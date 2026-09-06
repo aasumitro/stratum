@@ -13,6 +13,7 @@ type membershipRecord struct {
 	OrganizationID string    `json:"organization_id"`
 	AuthSub        string    `json:"auth_sub"`
 	Role           string    `json:"role"`
+	Status         string    `json:"status"`
 	JoinedAt       time.Time `json:"joined_at"`
 }
 
@@ -22,6 +23,7 @@ type memberView struct {
 	OrganizationID string    `json:"organization_id"`
 	AuthSub        string    `json:"auth_sub"`
 	Role           string    `json:"role"`
+	Status         string    `json:"status"`
 	JoinedAt       time.Time `json:"joined_at"`
 	Email          *string   `json:"email,omitempty"`
 	FullName       *string   `json:"full_name,omitempty"`
@@ -73,7 +75,7 @@ func (r *repository) removeAllMemberships(ctx context.Context, q db.Querier, aut
 
 func (r *repository) listMembers(ctx context.Context, q db.Querier, organizationID string) ([]membershipRecord, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, organization_id, auth_sub, role, joined_at
+		SELECT id, organization_id, auth_sub, role, status, joined_at
 		FROM organization.memberships
 		WHERE organization_id = $1
 		ORDER BY joined_at`,
@@ -87,7 +89,7 @@ func (r *repository) listMembers(ctx context.Context, q db.Querier, organization
 	var out []membershipRecord
 	for rows.Next() {
 		var m membershipRecord
-		if err := rows.Scan(&m.ID, &m.OrganizationID, &m.AuthSub, &m.Role, &m.JoinedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.OrganizationID, &m.AuthSub, &m.Role, &m.Status, &m.JoinedAt); err != nil {
 			return nil, fmt.Errorf("organization.listMembers: scan: %w", err)
 		}
 		out = append(out, m)
@@ -100,7 +102,7 @@ func (r *repository) listMembers(ctx context.Context, q db.Querier, organization
 
 func (r *repository) listMemberAuthSubs(ctx context.Context, q db.Querier, organizationID string) ([]string, error) {
 	rows, err := q.Query(ctx,
-		`SELECT auth_sub FROM organization.memberships WHERE organization_id = $1`,
+		`SELECT auth_sub FROM organization.memberships WHERE organization_id = $1 AND status = 'active'`,
 		organizationID,
 	)
 	if err != nil {
@@ -165,11 +167,43 @@ func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organiz
 	return tag.RowsAffected() > 0, nil
 }
 
+// setMemberStatus flips a membership between 'active' and 'suspended', but
+// only when the row is currently in expectStatus — so a concurrent caller
+// that already made the transition loses the race cleanly (RowsAffected 0)
+// instead of both sides believing they did it. Reports whether a row moved.
+func (r *repository) setMemberStatus(ctx context.Context, q db.Querier, organizationID, authSub, newStatus, expectStatus string) (bool, error) {
+	tag, err := q.Exec(ctx, `
+		UPDATE organization.memberships SET status = $3
+		WHERE organization_id = $1 AND auth_sub = $2 AND status = $4`,
+		organizationID, authSub, newStatus, expectStatus,
+	)
+	if err != nil {
+		return false, fmt.Errorf("organization.setMemberStatus: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// getMemberStatus reads a membership's status with no filter on it — used to
+// tell "no such member" apart from "already in the target state" when
+// setMemberStatus's guarded UPDATE matches nothing.
+func (r *repository) getMemberStatus(ctx context.Context, q db.Querier, organizationID, authSub string) (string, error) {
+	var status string
+	err := q.QueryRow(ctx, `
+		SELECT status FROM organization.memberships
+		WHERE organization_id = $1 AND auth_sub = $2`,
+		organizationID, authSub,
+	).Scan(&status)
+	if err != nil {
+		return "", fmt.Errorf("organization.getMemberStatus: %w", err)
+	}
+	return status, nil
+}
+
 func (r *repository) getMemberRole(ctx context.Context, q db.Querier, organizationID, authSub string) (string, error) {
 	var role string
 	err := q.QueryRow(ctx, `
 		SELECT role FROM organization.memberships
-		WHERE organization_id = $1 AND auth_sub = $2`,
+		WHERE organization_id = $1 AND auth_sub = $2 AND status = 'active'`,
 		organizationID, authSub,
 	).Scan(&role)
 	if err != nil {
@@ -193,7 +227,7 @@ func (r *repository) updateOrganizationOwner(ctx context.Context, q db.Querier, 
 func (r *repository) countActiveMembers(ctx context.Context, q db.Querier, organizationID string) (int64, error) {
 	var n int64
 	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM organization.memberships WHERE organization_id = $1`,
+		`SELECT COUNT(*) FROM organization.memberships WHERE organization_id = $1 AND status = 'active'`,
 		organizationID,
 	).Scan(&n)
 	if err != nil {

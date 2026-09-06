@@ -13,7 +13,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -28,13 +27,13 @@ type Module struct {
 	Worker          *WebhookWorker
 }
 
-func New(pool *pgxpool.Pool, pub messaging.EventPublisher, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
+func New(pool *pgxpool.Pool, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
 	repo := &repository{}
-	svc := &service{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
+	svc := &service{repo: repo, pool: pool, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
 	return &Module{
 		svc:    svc,
 		pool:   pool,
-		Worker: &WebhookWorker{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
+		Worker: &WebhookWorker{repo: repo, pool: pool, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
 	}
 }
 
@@ -240,6 +239,8 @@ func (m *Module) CleanupExpiredInvitations(ctx context.Context) {
 //	POST   /organizations/:organizationID/members
 //	DELETE /organizations/:organizationID/members/:authSub
 //	PATCH  /organizations/:organizationID/members/:authSub/role
+//	POST   /organizations/:organizationID/members/:authSub/suspend
+//	POST   /organizations/:organizationID/members/:authSub/reinstate
 //
 //	GET    /organizations/join/preview — read-only organization + owner details before the caller commits to joining
 //	POST   /organizations/join
@@ -291,6 +292,8 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 			scoped.POST("/members/import", adminUp, h.importMembers)
 			scoped.DELETE("/members/:authSub", adminUp, h.removeMember)
 			scoped.PATCH("/members/:authSub/role", adminUp, h.updateMemberRole)
+			scoped.POST("/members/:authSub/suspend", adminUp, h.suspendMember)
+			scoped.POST("/members/:authSub/reinstate", adminUp, h.reinstateMember)
 
 			scoped.GET("/audit-log", adminUp, h.auditLog)
 			scoped.GET("/audit-log/export", adminUp, h.exportAuditLog)

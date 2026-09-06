@@ -183,6 +183,7 @@ definitions:
       addon_id:
         type: string
       quantity:
+        maximum: 10000
         minimum: 1
         type: integer
     required:
@@ -704,6 +705,8 @@ definitions:
         type: string
       role:
         type: string
+      status:
+        type: string
     type: object
   membershipRecord:
     properties:
@@ -716,6 +719,8 @@ definitions:
       organization_id:
         type: string
       role:
+        type: string
+      status:
         type: string
     type: object
   messageRecord:
@@ -3112,46 +3117,6 @@ paths:
       summary: Create a payment link
       tags:
       - billing
-  /organizations/{organizationID}/billing/invoices/{invoiceID}/pay/regenerate:
-    post:
-      description: Owner only. Issues a fresh payment link for an invoice, replacing
-        an expired/failed one.
-      parameters:
-      - description: Organization ID
-        in: path
-        name: organizationID
-        required: true
-        type: string
-      - description: Invoice ID
-        in: path
-        name: invoiceID
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            allOf:
-            - $ref: '#/definitions/Payload'
-            - properties:
-                data:
-                  $ref: '#/definitions/paymentLinkRecord'
-              type: object
-        "401":
-          description: missing/invalid auth token
-          schema:
-            $ref: '#/definitions/Payload'
-        "403":
-          description: owner role required
-          schema:
-            $ref: '#/definitions/Payload'
-      security:
-      - BearerAuth: []
-      summary: Regenerate a payment link
-      tags:
-      - billing
   /organizations/{organizationID}/billing/invoices/{invoiceID}/pdf:
     get:
       parameters:
@@ -3825,6 +3790,49 @@ paths:
       summary: Remove a member
       tags:
       - organization
+  /organizations/{organizationID}/members/{authSub}/reinstate:
+    post:
+      description: Admin/owner only. Restores a suspended member's access, subject
+        to the plan seat limit at reinstate time.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Member's auth subject
+        in: path
+        name: authSub
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: cannot reinstate the owner, or admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: member not found
+          schema:
+            $ref: '#/definitions/Payload'
+        "409":
+          description: member is not suspended
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: member limit reached for your current plan
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Reinstate a suspended member
+      tags:
+      - organization
   /organizations/{organizationID}/members/{authSub}/role:
     patch:
       consumes:
@@ -3869,6 +3877,50 @@ paths:
       security:
       - BearerAuth: []
       summary: Change a member's role
+      tags:
+      - organization
+  /organizations/{organizationID}/members/{authSub}/suspend:
+    post:
+      description: Admin/owner only. Temporarily revokes the member's access to this
+        organization without deleting the membership. Cannot suspend yourself or the
+        organization owner.
+      parameters:
+      - description: Organization ID
+        in: path
+        name: organizationID
+        required: true
+        type: string
+      - description: Member's auth subject
+        in: path
+        name: authSub
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+        "400":
+          description: cannot suspend yourself
+          schema:
+            $ref: '#/definitions/Payload'
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "403":
+          description: cannot suspend the owner, or admin role required
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: member not found
+          schema:
+            $ref: '#/definitions/Payload'
+        "409":
+          description: member already suspended
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Suspend a member
       tags:
       - organization
   /organizations/{organizationID}/members/import:

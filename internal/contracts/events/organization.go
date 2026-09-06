@@ -10,6 +10,8 @@ const (
 	RoutingKeyMemberInvited           = "organization.member.invited"
 	RoutingKeyMemberRemoved           = "organization.member.removed"
 	RoutingKeyMemberRoleChanged       = "organization.member.role-changed"
+	RoutingKeyMemberSuspended         = "organization.member.suspended"
+	RoutingKeyMemberReinstated        = "organization.member.reinstated"
 	RoutingKeyOwnershipTransferred    = "organization.ownership.transferred"
 	RoutingKeyInvitationRequested     = "organization.invitation.requested"
 	RoutingKeyInvitationDeclined      = "organization.invitation.declined"
@@ -79,6 +81,20 @@ type OrganizationDeleted struct {
 
 // MemberRemoved is published when a member is removed from an organization.
 type MemberRemoved struct {
+	OrganizationID string `json:"organization_id"`
+	AuthSub        string `json:"auth_sub"`
+}
+
+// MemberSuspended is published when a member's access to an organization is
+// suspended — the membership row survives, but the member resolves to no
+// role until reinstated. Notification tells the affected member in-app.
+type MemberSuspended struct {
+	OrganizationID string `json:"organization_id"`
+	AuthSub        string `json:"auth_sub"`
+}
+
+// MemberReinstated is published when a suspended member's access is restored.
+type MemberReinstated struct {
 	OrganizationID string `json:"organization_id"`
 	AuthSub        string `json:"auth_sub"`
 }

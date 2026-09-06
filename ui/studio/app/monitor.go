@@ -221,7 +221,16 @@ func (s *MonitorService) StartPoller(projectID string, intervalSeconds int) erro
 	s.mu.Unlock()
 
 	go func() {
+		// Recover as the first statement of the cleanup defer so a panic in
+		// pollCheck (HTTP I/O, JSON decode, a DB write) stops this one poller
+		// and is logged instead of taking down the whole process. The map
+		// cleanup below still runs on the way out, so the poller reports as
+		// stopped and the user can start it again — same end state as a
+		// cancelled poller.
 		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("monitor poller for %s panicked: %v", projectID, r)
+			}
 			s.mu.Lock()
 			if h, ok := s.pollers[projectID]; ok && h.gen == gen {
 				delete(s.pollers, projectID)

@@ -9,12 +9,10 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -33,14 +31,14 @@ func encodeOrganizationDeleted(orgID string) []byte {
 // ever touching the pool, so a nil pool is safe to pass here.
 
 func TestHandleOrganizationDeleted_MalformedBody_NoOp(t *testing.T) {
-	mod := organization.New(nil, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	mod := organization.New(nil, testWebhookEncryptionKey, "", 1)
 	if err := mod.Worker.HandleOrganizationDeleted(t.Context(), []byte("not json")); err != nil {
 		t.Fatalf("malformed body should not error (don't re-queue a bad envelope): %v", err)
 	}
 }
 
 func TestHandleOrganizationDeleted_NilStore_NoOp(t *testing.T) {
-	mod := organization.New(nil, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1) // SetStorageClient never called
+	mod := organization.New(nil, testWebhookEncryptionKey, "", 1) // SetStorageClient never called
 	body := encodeOrganizationDeleted(uuid.New().String())
 	if err := mod.Worker.HandleOrganizationDeleted(t.Context(), body); err != nil {
 		t.Fatalf("unconfigured storage should no-op, not error: %v", err)
@@ -98,7 +96,7 @@ func TestHandleOrganizationDeleted_PurgesLogo(t *testing.T) {
 
 	fakeStorage := newFakeStorageServer()
 	defer fakeStorage.srv.Close()
-	mod := organization.New(nil, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	mod := organization.New(nil, testWebhookEncryptionKey, "", 1)
 	mod.SetStorageClient(fakeStorage.client())
 
 	body := encodeOrganizationDeleted(orgID)

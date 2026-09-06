@@ -62,6 +62,9 @@ func TestIntegration_DeleteAccount_Worker_CompletesTask(t *testing.T) {
 	taskID := resp["data"].(map[string]any)["id"].(string)
 
 	mod := account.NewModuleForTest(pool)
+	mod.SetOrganizationWriter(okWriter{})
+	mod.SetNotificationWriter(okWriter{})
+	mod.SetBillingWriter(okWriter{})
 	if err := mod.Worker.HandleDeleteAccount(t.Context(), encodeUserTaskEvent(events.RoutingKeyUserDeleteRequest, taskID, authSub)); err != nil {
 		t.Fatalf("HandleDeleteAccount: %v", err)
 	}
@@ -80,8 +83,9 @@ func TestIntegration_DeleteAccount_Worker_CompletesTask(t *testing.T) {
 }
 
 // erroringWriter implements contracts.OrganizationWriter, contracts.NotificationWriter,
-// and contracts.BillingWriter, always failing — used to verify that a cleanup-step
-// failure during account deletion is recorded on the task instead of silently discarded.
+// and contracts.BillingWriter, always failing — used to verify that a failed
+// critical (PII-bearing) cleanup step during account deletion blocks completion
+// and leaves the task to be retried.
 type erroringWriter struct{}
 
 func (erroringWriter) RemoveAllMemberships(context.Context, string) error { return errors.New("boom") }
@@ -91,8 +95,26 @@ func (erroringWriter) RecordUsage(context.Context, string, string, int64) error 
 }
 func (erroringWriter) AnonymizeHistory(context.Context, string) error { return errors.New("boom") }
 
-func TestIntegration_DeleteAccount_Worker_RecordsFailedCleanupSteps(t *testing.T) {
-	const authSub = "integ_profile_delete_worker_partial"
+// okWriter implements the same three writer contracts with no-op success —
+// wired by the delete tests whose subject isn't a writer failure, so the
+// critical notifications/memberships/billing-history steps don't fail merely
+// for being unwired.
+type okWriter struct{}
+
+func (okWriter) RemoveAllMemberships(context.Context, string) error       { return nil }
+func (okWriter) DeleteAllForUser(context.Context, string) error           { return nil }
+func (okWriter) RecordUsage(context.Context, string, string, int64) error { return nil }
+func (okWriter) AnonymizeHistory(context.Context, string) error           { return nil }
+
+// TestIntegration_DeleteAccount_Worker_CriticalCleanupFailure_RetriesTask
+// proves a failed PII-bearing cleanup step (here the notifications,
+// memberships and billing-history writers all error) blocks the deletion:
+// the handler returns an error, the account.users row is left intact, and
+// the task stays 'processing' so the consumer's redelivery re-runs the whole
+// idempotent handler — rather than the account being reported erased with
+// personal data still live in other schemas.
+func TestIntegration_DeleteAccount_Worker_CriticalCleanupFailure_RetriesTask(t *testing.T) {
+	const authSub = "integ_profile_delete_worker_critical_fail"
 	pool := testPool(t)
 	t.Cleanup(func() {
 		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
@@ -101,7 +123,7 @@ func TestIntegration_DeleteAccount_Worker_RecordsFailedCleanupSteps(t *testing.T
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker-partial@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker-critical@test.com"}`))
 
 	wDel := httptest.NewRecorder()
 	e.ServeHTTP(wDel, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))
@@ -117,39 +139,28 @@ func TestIntegration_DeleteAccount_Worker_RecordsFailedCleanupSteps(t *testing.T
 	mod.SetOrganizationWriter(erroringWriter{})
 	mod.SetNotificationWriter(erroringWriter{})
 	mod.SetBillingWriter(erroringWriter{})
-	if err := mod.Worker.HandleDeleteAccount(t.Context(), encodeUserTaskEvent(events.RoutingKeyUserDeleteRequest, taskID, authSub)); err != nil {
-		t.Fatalf("HandleDeleteAccount: %v", err)
+	if err := mod.Worker.HandleDeleteAccount(t.Context(), encodeUserTaskEvent(events.RoutingKeyUserDeleteRequest, taskID, authSub)); err == nil {
+		t.Fatal("HandleDeleteAccount: want a non-nil error when a critical cleanup step fails")
+	}
+
+	var userCount int
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM account.users WHERE auth_sub = $1`, authSub).Scan(&userCount)
+	if userCount != 1 {
+		t.Errorf("account.users row: want it left intact (1) while PII cleanup is unfinished, got %d", userCount)
 	}
 
 	var status string
-	var result []byte
-	pool.QueryRow(t.Context(), `SELECT status, result FROM account.tasks WHERE id = $1`, taskID).Scan(&status, &result)
-	if status != "completed" {
-		t.Fatalf("task status: want completed (best-effort), got %q", status)
-	}
-
-	var parsed struct {
-		Deleted     bool     `json:"deleted"`
-		FailedSteps []string `json:"failed_steps"`
-	}
-	if err := json.Unmarshal(result, &parsed); err != nil {
-		t.Fatalf("unmarshal task result: %v", err)
-	}
-	wantFailed := []string{"notifications", "memberships", "billing_history"}
-	if len(parsed.FailedSteps) != len(wantFailed) {
-		t.Fatalf("failed_steps: want %v, got %v", wantFailed, parsed.FailedSteps)
-	}
-	for _, step := range wantFailed {
-		if !slices.Contains(parsed.FailedSteps, step) {
-			t.Errorf("failed_steps missing %q, got %v", step, parsed.FailedSteps)
-		}
+	pool.QueryRow(t.Context(), `SELECT status FROM account.tasks WHERE id = $1`, taskID).Scan(&status)
+	if status != "processing" {
+		t.Errorf("task status: want processing (consumer redelivery retries), got %q", status)
 	}
 }
 
 // TestIntegration_DeleteAccount_Worker_AvatarDeleteFailure_RecordsFailedStep
-// proves the avatar-blob cleanup step is tracked the same way as the other
-// five best-effort steps: a failing storage backend must show up in
-// failed_steps, not be silently dropped.
+// proves the avatar-blob cleanup step is best-effort: a failing storage
+// backend shows up in the task result's failed_steps and the deletion still
+// completes (user row gone), rather than blocking completion the way a
+// critical step's failure does.
 func TestIntegration_DeleteAccount_Worker_AvatarDeleteFailure_RecordsFailedStep(t *testing.T) {
 	const authSub = "integ_profile_delete_worker_avatar_fail"
 	pool := testPool(t)
@@ -178,6 +189,9 @@ func TestIntegration_DeleteAccount_Worker_AvatarDeleteFailure_RecordsFailedStep(
 	t.Cleanup(failingStorage.Close)
 
 	mod := account.NewModuleForTestWithStore(pool, storage.New(storage.Config{BaseURL: failingStorage.URL}))
+	mod.SetOrganizationWriter(okWriter{})
+	mod.SetNotificationWriter(okWriter{})
+	mod.SetBillingWriter(okWriter{})
 	if err := mod.Worker.HandleDeleteAccount(t.Context(), encodeUserTaskEvent(events.RoutingKeyUserDeleteRequest, taskID, authSub)); err != nil {
 		t.Fatalf("HandleDeleteAccount: %v", err)
 	}

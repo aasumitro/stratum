@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -26,7 +25,6 @@ const detailKeyOrganizationID = "organization_id"
 type service struct {
 	repo                        *repository
 	pool                        *pgxpool.Pool
-	pub                         messaging.EventPublisher
 	billingReader               contracts.BillingReader                // optional; nil = no plan enforcement
 	billingWriter               contracts.BillingWriter                // optional; nil = usage not recorded
 	store                       *storage.Client                        // optional; nil = storage disabled

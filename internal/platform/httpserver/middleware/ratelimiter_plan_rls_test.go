@@ -25,7 +25,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/config"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 func testAppPoolRateLimit(t *testing.T) *pgxpool.Pool {
@@ -104,7 +103,7 @@ func TestRateLimitMiddleware_ResolvesRealPlanRate_NoAmbientTx(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = redisClient.Close() })
 
-	billingMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, nil)
+	billingMod := billing.New(pool, billing.ProviderConfig{}, nil, nil, nil)
 
 	gin.SetMode(gin.TestMode)
 	e := gin.New()

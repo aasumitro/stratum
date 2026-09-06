@@ -12,7 +12,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -34,16 +33,16 @@ func NewHandlerEngine() *gin.Engine {
 	return e
 }
 
-// NewModuleForTest creates a Module with a real pool and noop publisher.
+// NewModuleForTest creates a Module backed by a real pool.
 func NewModuleForTest(pool *pgxpool.Pool) *Module {
-	return New(pool, messaging.NoopPublisher{}, "", "", nil, nil, "", time.Hour)
+	return New(pool, "", "", nil, nil, "", time.Hour)
 }
 
 // NewModuleForTestWithStore is NewModuleForTest but also wires a storage
 // client — needed to exercise executeDeleteAccount's avatar-blob cleanup
 // step against a fake/failing storage backend.
 func NewModuleForTestWithStore(pool *pgxpool.Pool, store *storage.Client) *Module {
-	return New(pool, messaging.NoopPublisher{}, "", "", nil, store, "", time.Hour)
+	return New(pool, "", "", nil, store, "", time.Hour)
 }
 
 // NewModuleForTestWithAdminAndRedis is NewModuleForTest but also wires a
@@ -52,7 +51,7 @@ func NewModuleForTestWithStore(pool *pgxpool.Pool, store *storage.Client) *Modul
 // behind both (recordLoginEvent early-returns with a nil revokedNS, and
 // syncMFAStatusOnLogin early-returns with no admin creds configured).
 func NewModuleForTestWithAdminAndRedis(pool *pgxpool.Pool, adminURL, serviceRoleKey string, redis *goredis.Client) *Module {
-	return New(pool, messaging.NoopPublisher{}, adminURL, serviceRoleKey, cache.NewNamespace(redis, "account_test"), nil, "", time.Hour)
+	return New(pool, adminURL, serviceRoleKey, cache.NewNamespace(redis, "account_test"), nil, "", time.Hour)
 }
 
 // NewModuleEngine creates a full gin.Engine backed by a real DB module,
@@ -78,13 +77,13 @@ func NewModuleEngineWithEmail(pool *pgxpool.Pool, authSub, email string) *gin.En
 	}
 	noopGate := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
-	mod := New(pool, messaging.NoopPublisher{}, "", "", nil, nil, "", time.Hour)
+	mod := New(pool, "", "", nil, nil, "", time.Hour)
 	// Duplicated rather than shared with organization's own unexported
 	// testSecretEncryptionKey — this package (account) cannot see it, and
 	// the actual value is irrelevant here since no test in this file
 	// exercises webhook encrypt/decrypt.
 	const testWebhookEncryptionKey = "test-webhook-secret-encryption-key-0000"
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, MFA: noopGate})
 	return e
 }
@@ -102,7 +101,7 @@ func NewModuleEngineWithAdmin(pool *pgxpool.Pool, authSub, adminURL, serviceRole
 	}
 	noopGate := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
-	New(pool, messaging.NoopPublisher{}, adminURL, serviceRoleKey, nil, nil, "", time.Hour).
+	New(pool, adminURL, serviceRoleKey, nil, nil, "", time.Hour).
 		Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, MFA: noopGate})
 	return e
 }
@@ -114,6 +113,6 @@ func NewWebhookModuleEngine(pool *pgxpool.Pool, webhookSecret string) *gin.Engin
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
 	webhooks := e.Group("/webhooks")
-	New(pool, messaging.NoopPublisher{}, "", "", nil, nil, webhookSecret, time.Hour).RegisterWebhooks(webhooks)
+	New(pool, "", "", nil, nil, webhookSecret, time.Hour).RegisterWebhooks(webhooks)
 	return e
 }
