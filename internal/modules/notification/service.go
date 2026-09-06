@@ -46,18 +46,18 @@ type listResult struct {
 func (s *service) send(
 	ctx context.Context,
 	organizationID string, authSub *string,
-	kind, channel, subject, body string,
+	channel, eventType, subject, body string,
 	payload json.RawMessage,
 ) (*messageRecord, error) {
 	if authSub != nil {
-		allowed, err := s.repo.isPreferenceEnabled(ctx, s.pool, *authSub, kind, channel)
+		allowed, err := s.repo.isPreferenceEnabled(ctx, s.pool, *authSub, channel, eventType)
 		if err != nil {
 			// Fail open: mirrors sendEmail's handling of the identical error —
 			// isPreferenceEnabled's own no-rows case already defaults to
 			// allowed, so a real lookup error keeps that same default instead
 			// of being misread as an explicit opt-out.
 			slog.Warn("notification preference check failed, sending anyway",
-				"auth_sub", *authSub, "kind", kind, "channel", channel, "error", err)
+				"auth_sub", *authSub, "channel", channel, "event_type", eventType, "error", err)
 		} else if !allowed {
 			return nil, nil
 		}
@@ -70,11 +70,11 @@ func (s *service) send(
 	// correct immediately, not just a default placeholder.
 	sentAt := time.Now()
 	msg, err := s.repo.insertMessage(ctx, s.pool, organizationID,
-		authSub, kind, channel, subject, body, payload, "sent", &sentAt)
+		authSub, channel, eventType, subject, body, payload, "sent", &sentAt)
 	if err != nil {
 		return nil, fmt.Errorf("notification.send: %w", err)
 	}
-	if kind == "in_app" && authSub != nil && s.redis != nil {
+	if channel == "in_app" && authSub != nil && s.redis != nil {
 		if err := s.redis.Publish(ctx, "notif:"+*authSub, "1").Err(); err != nil {
 			slog.Error("failed to publish notification event", "auth_sub", *authSub, "error", err)
 		}
