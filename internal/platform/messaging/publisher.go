@@ -29,10 +29,6 @@ type EventPublisher interface {
 	// platform/messaging back up to contracts (platform must not depend
 	// on contracts; contracts and modules depend on platform).
 	Publish(ctx context.Context, exchange, routingKey string, body []byte) error
-
-	// PublishDelayed sends body to exchange with a per-message TTL.
-	// Used with a parking queue (no consumer) + DLX to achieve delayed delivery.
-	PublishDelayed(ctx context.Context, exchange, routingKey string, body []byte, delay time.Duration) error
 }
 
 // Publisher is the concrete EventPublisher backed by amqp091-go, with
@@ -214,9 +210,10 @@ func (p *Publisher) reopenWithBackoff(dead *amqp.Channel) {
 	}
 }
 
-// publish is the shared send-and-confirm implementation. mandatory=true for
-// normal publishes (broker must route it); false for delayed/parking queues.
-func (p *Publisher) publish(ctx context.Context, exchange, routingKey string, mandatory bool, msg amqp.Publishing) error {
+// publish is the shared send-and-confirm implementation. It always publishes
+// with mandatory=true so the broker returns an unroutable message (logged by
+// openChannel's NotifyReturn listener) rather than silently confirming it.
+func (p *Publisher) publish(ctx context.Context, exchange, routingKey string, msg amqp.Publishing) error {
 	// Carry the producer's trace context in message headers so the consumer
 	// (see consumer.go's handleDelivery) can continue the same trace instead
 	// of starting a disconnected one.
@@ -237,7 +234,7 @@ func (p *Publisher) publish(ctx context.Context, exchange, routingKey string, ma
 		return fmt.Errorf("publisher channel not ready")
 	}
 
-	confirmation, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchange, routingKey, mandatory, false, msg)
+	confirmation, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchange, routingKey, true, false, msg)
 	if err != nil {
 		return fmt.Errorf("publishing to %s/%s: %w", exchange, routingKey, err)
 	}
@@ -263,23 +260,10 @@ func (p *Publisher) publish(ctx context.Context, exchange, routingKey string, ma
 
 // Publish implements EventPublisher. It blocks until the broker confirms receipt or confirmTimeout elapses.
 func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, body []byte) error {
-	return p.publish(ctx, exchange, routingKey, true, amqp.Publishing{
+	return p.publish(ctx, exchange, routingKey, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		Timestamp:    time.Now(),
-		Body:         body,
-	})
-}
-
-// PublishDelayed implements EventPublisher. Sets a per-message TTL via the Expiration header.
-// The target exchange should route to a parking queue whose DLX delivers to the real consumer queue once the TTL expires.
-func (p *Publisher) PublishDelayed(ctx context.Context, exchange, routingKey string, body []byte, delay time.Duration) error {
-	ms := max(delay.Milliseconds(), 1)
-	return p.publish(ctx, exchange, routingKey, false, amqp.Publishing{ // mandatory: false — parking queue may not exist yet on first deploy
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		Timestamp:    time.Now(),
-		Expiration:   fmt.Sprintf("%d", ms),
 		Body:         body,
 	})
 }

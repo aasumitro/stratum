@@ -18,7 +18,6 @@ import (
 const (
 	ExchangeOrganization = "organization.events"
 	ExchangeBilling      = "billing.events"
-	ExchangeBillingDelay = "billing.delay"
 	ExchangeAccount      = "account.events"
 )
 

@@ -123,7 +123,7 @@ func TestIntegration_EnqueueDelayed_SetsFutureNotBefore(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	if err := events.EnqueueDelayed(t.Context(), tx, events.ExchangeBillingDelay,
+	if err := events.EnqueueDelayed(t.Context(), tx, events.ExchangeBilling,
 		"billing.retry", "billing", "org-1", map[string]string{"k": "v"}, time.Hour); err != nil {
 		t.Fatalf("EnqueueDelayed: %v", err)
 	}

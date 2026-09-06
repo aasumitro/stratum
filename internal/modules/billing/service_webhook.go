@@ -57,11 +57,11 @@ func enqueueWebhookOutcome(ctx context.Context, tx db.Querier, outcome *webhookO
 			"billing", outcome.failed.OrgID, *outcome.failed); err != nil {
 			return err
 		}
-		if err := events.EnqueueDelayed(ctx, tx, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionPaymentRemind,
+		if err := events.EnqueueDelayed(ctx, tx, events.ExchangeBilling, events.RoutingKeySubscriptionPaymentRemind,
 			"billing", outcome.failed.OrgID, *outcome.failed, 3*24*time.Hour); err != nil {
 			return err
 		}
-		if err := events.EnqueueDelayed(ctx, tx, events.ExchangeBillingDelay, events.DelayRoutingKeySubscriptionPaymentFinal,
+		if err := events.EnqueueDelayed(ctx, tx, events.ExchangeBilling, events.RoutingKeySubscriptionPaymentFinal,
 			"billing", outcome.failed.OrgID, *outcome.failed, 7*24*time.Hour); err != nil {
 			return err
 		}

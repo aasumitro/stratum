@@ -51,4 +51,4 @@ One metric is tracked today — `members` — recorded automatically (and fire-a
 
 ## Renewal and dunning
 
-Renewal reminders and overdue-payment (dunning) notices are scheduled with RabbitMQ delayed messages — a day-3 reminder and a day-7 final notice. Trials use a shorter 2-day lead, and trial-specific email copy makes clear the reader is on a trial rather than a paid renewal.
+Renewal reminders and overdue-payment (dunning) notices are scheduled as transactional-outbox rows with a future `not_before` — a day-3 reminder and a day-7 final notice — which the relay publishes once they come due. Trials use a shorter 2-day lead, and trial-specific email copy makes clear the reader is on a trial rather than a paid renewal. An hourly `ReconcileOverdueSubscriptions` sweep in the worker backstops expiry: it re-enqueues an expiry check for any active or trialing subscription already past its end date, so a lost scheduled check still results in the subscription being expired and its organization suspended.

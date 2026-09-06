@@ -3176,8 +3176,8 @@ func TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce(t *testing.T
 		return n
 	}
 	failedCount := countOutbox(events.RoutingKeyInvoiceFailed)
-	remindCount := countOutbox(events.DelayRoutingKeySubscriptionPaymentRemind)
-	finalCount := countOutbox(events.DelayRoutingKeySubscriptionPaymentFinal)
+	remindCount := countOutbox(events.RoutingKeySubscriptionPaymentRemind)
+	finalCount := countOutbox(events.RoutingKeySubscriptionPaymentFinal)
 	if failedCount != 1 {
 		t.Errorf("want exactly 1 InvoiceFailed outbox row from 2 concurrent distinct-eventID failed deliveries, got %d", failedCount)
 	}
@@ -6363,5 +6363,64 @@ func TestIntegration_ExpiredReactivation_ClearsTrialEnd_SurvivesSecondExpireChec
 	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&statusAfterSecondCheck)
 	if statusAfterSecondCheck != "active" {
 		t.Errorf("after second expireIfDue check: want status=active (must not re-expire), got %q", statusAfterSecondCheck)
+	}
+}
+
+// TestIntegration_ReconcileOverdueSubscriptions_EnqueuesForOverdueOnly proves
+// the hourly safety net enqueues exactly one billing.subscription.check on
+// the real exchange for an active subscription already past period_end, and
+// nothing for a healthy one. It fails without ReconcileOverdueSubscriptions
+// (no rows enqueued at all).
+func TestIntegration_ReconcileOverdueSubscriptions_EnqueuesForOverdueOnly(t *testing.T) {
+	pool := testPoolBilling(t)
+
+	overdueOrg := uuid.New().String()
+	healthyOrg := uuid.New().String()
+	setupBillingTest(t, pool, overdueOrg)
+	setupBillingTest(t, pool, healthyOrg)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	provision := func(orgID string) string {
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+			encodeOrganizationCreatedEventFor(orgID, "reconcile_user_"+orgID[:8])); err != nil {
+			t.Fatalf("provision %s: %v", orgID, err)
+		}
+		return getSubscriptionID(pool, orgID)
+	}
+	overdueSub := provision(overdueOrg)
+	provision(healthyOrg)
+
+	// One subscription active but a full period past its end, the other active and healthy.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'active', trial_end = NULL,
+		 period_start = now() - interval '40 days', period_end = now() - interval '1 hour' WHERE id = $1`,
+		overdueSub); err != nil {
+		t.Fatalf("force overdue: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'active', trial_end = NULL,
+		 period_end = now() + interval '20 days' WHERE subject_id = $1`, healthyOrg); err != nil {
+		t.Fatalf("force healthy: %v", err)
+	}
+
+	// Drop provisioning outbox rows so the check-row count below is unambiguous.
+	pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, overdueOrg)
+	pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, healthyOrg)
+
+	mod.ReconcileOverdueSubscriptions(t.Context())
+
+	countChecks := func(orgID string) int {
+		var n int
+		pool.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM messaging.outbox
+			 WHERE exchange = $1 AND routing_key = $2 AND payload->>'org_id' = $3`,
+			events.ExchangeBilling, events.RoutingKeySubscriptionCheck, orgID).Scan(&n)
+		return n
+	}
+	if got := countChecks(overdueOrg); got != 1 {
+		t.Errorf("overdue subscription: want exactly 1 billing.subscription.check outbox row, got %d", got)
+	}
+	if got := countChecks(healthyOrg); got != 0 {
+		t.Errorf("healthy subscription: want 0 billing.subscription.check outbox rows, got %d", got)
 	}
 }
