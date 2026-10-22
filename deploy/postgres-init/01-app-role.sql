@@ -1,4 +1,5 @@
--- Creates the three roles db/migrations/000008_db_roles.up.sql grants privileges to but does not
+-- Creates the roles db/migrations/000008_db_roles.up.sql and 000009_unscoped_role_grants.up.sql
+-- grant privileges to but do not
 -- create itself, so that migration never needs a migrator role holding BYPASSRLS or CREATEROLE.
 -- Three consumers reuse this exact file:
 --   1. Local dev — mounted into the Postgres container's docker-entrypoint-initdb.d, runs
@@ -19,6 +20,11 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'stratum_webhook') THEN
         CREATE ROLE stratum_webhook LOGIN PASSWORD 'stratum_webhook' BYPASSRLS;
+    END IF;
+    -- cmd/api only: the organization paths with no tenant to scope a
+    -- transaction to (authorization lookups, cross-org invite/join flows).
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'stratum_app_unscoped') THEN
+        CREATE ROLE stratum_app_unscoped LOGIN PASSWORD 'stratum_app_unscoped' BYPASSRLS;
     END IF;
 END
 $$;

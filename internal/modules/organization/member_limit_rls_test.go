@@ -22,7 +22,6 @@ import (
 
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/platform/db"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 func testPoolsMemberLimit(t *testing.T) (testPool, appPool *pgxpool.Pool) {
@@ -165,7 +164,7 @@ func TestCreateInvitation_MemberLimit_NoAmbientTx(t *testing.T) {
 		t.Fatalf("seed subscription/usage: %v", err)
 	}
 
-	billingMod := billing.New(appPool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, nil)
+	billingMod := billing.New(appPool, billing.ProviderConfig{}, nil, nil, nil)
 
 	mod := NewModuleForTest(appPool)
 	mod.SetBillingReader(billingMod)

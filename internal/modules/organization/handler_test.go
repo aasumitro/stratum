@@ -150,6 +150,30 @@ func TestUpdateSettings_MissingLocale(t *testing.T) {
 	}
 }
 
+// A present-but-unresolvable timezone passes the binding layer (it's a
+// non-empty string) but must be rejected by the service before any write —
+// time.LoadLocation is the arbiter.
+func TestUpdateSettings_InvalidTimezone(t *testing.T) {
+	w := httptest.NewRecorder()
+	ownerEngine().ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, "/organizations/ws_01/settings",
+		`{"timezone":"Not/AZone","locale":"en"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422 for an unresolvable timezone, got %d", w.Code)
+	}
+}
+
+// locale is validated against the BCP-47 shape ^[A-Za-z]{2,3}(-[A-Za-z]{2})?$
+// — "en_US!!" (underscore + punctuation) is outside it and must be rejected
+// before any write.
+func TestUpdateSettings_InvalidLocale(t *testing.T) {
+	w := httptest.NewRecorder()
+	ownerEngine().ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, "/organizations/ws_01/settings",
+		`{"timezone":"UTC","locale":"en_US!!"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("want 422 for a malformed locale, got %d", w.Code)
+	}
+}
+
 func TestUpdateSettings_NonOwnerForbidden(t *testing.T) {
 	w := httptest.NewRecorder()
 	organization.NewHandlerEngine("sub_owner").ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, "/organizations/ws_01/settings",

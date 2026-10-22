@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -28,7 +29,7 @@ func TestIntegration_WebhookRepository_KeyVersionDecryption(t *testing.T) {
 	pool := testPool(t)
 	repo := &repository{}
 
-	org, err := repo.insertOrganization(ctx, pool, "test-webhook-org", "Test Org", "owner-1", "ID")
+	org, err := repo.insertOrganization(ctx, pool, uuid.NewV7().String(), "test-webhook-org", "Test Org", "owner-1", "ID")
 	if err != nil {
 		t.Fatalf("failed to create organization: %v", err)
 	}

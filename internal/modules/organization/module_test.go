@@ -14,7 +14,7 @@ type stubBillingReader struct{ contracts.BillingReader }
 type stubBillingWriter struct{ contracts.BillingWriter }
 
 func newUnwiredModule() *organization.Module {
-	return organization.New(nil, nil, "", "", 1)
+	return organization.New(nil, "", "", 1)
 }
 
 func TestMustBeWired_PanicsWhenAnyDependencyUnwired(t *testing.T) {

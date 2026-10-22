@@ -8,7 +8,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // NewHandlerEngine returns a gin.Engine with reference handlers wired and
@@ -43,7 +42,7 @@ func NewModuleForTest(pool *pgxpool.Pool) *Module {
 func NewModuleEngine(pool *pgxpool.Pool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	mod := New(pool)
-	catalogMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, nil)
+	catalogMod := billing.New(pool, billing.ProviderConfig{}, nil, nil, nil)
 	mod.SetCatalogReader(catalogMod)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
@@ -64,7 +63,7 @@ func NewModuleEngine(pool *pgxpool.Pool) *gin.Engine {
 func NewModuleEngineWithCountryResolver(pool *pgxpool.Pool, r *geoip.Resolver) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	mod := New(pool)
-	catalogMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, nil, nil, nil)
+	catalogMod := billing.New(pool, billing.ProviderConfig{}, nil, nil, nil)
 	mod.SetCatalogReader(catalogMod)
 	mod.SetCountryResolver(r)
 	e := gin.New()

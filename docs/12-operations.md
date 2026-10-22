@@ -29,24 +29,52 @@ make run-worker
 
 **Provisioning database roles**: role creation is deliberately not part of the migration
 pipeline (`ADR-0026`) — `db/migrations/000008` only grants privileges to `stratum_app`,
-`stratum_worker`, and `stratum_webhook`; it never creates them. This is what lets
+`stratum_worker`, and `stratum_webhook`, and `000009` to `stratum_app_unscoped`; they never
+create them. This is what lets
 `make migrate-up` run without the migrator role itself needing `BYPASSRLS` or `CREATEROLE` —
 PostgreSQL only permits a role that already holds `BYPASSRLS` to grant `BYPASSRLS` to a role
 it creates, so embedding `CREATE ROLE ... BYPASSRLS` inside a migration would force every
 migrator, including a deliberately unprivileged production one, to hold it too.
 
-Local dev and CI get this for free: `deploy/postgres-init/01-app-role.sql` creates all three
+Local dev and CI get this for free: `deploy/postgres-init/01-app-role.sql` creates all four
 roles, and either runs automatically (local dev, mounted into the Postgres container's
 `docker-entrypoint-initdb.d`) or as an explicit CI step before migrations. Every other
 environment needs a human to run the equivalent once, with a superuser-equivalent connection,
-**before the first `make migrate-up`** — copy `deploy/postgres-init/01-app-role.sql`'s three
+**before the first `make migrate-up`** — copy `deploy/postgres-init/01-app-role.sql`'s four
 `CREATE ROLE` statements, substituting real generated passwords for its hardcoded local-dev
 ones:
 ```sql
 CREATE ROLE stratum_app LOGIN PASSWORD '...';
 CREATE ROLE stratum_worker LOGIN PASSWORD '...' BYPASSRLS;
 CREATE ROLE stratum_webhook LOGIN PASSWORD '...' BYPASSRLS;
+CREATE ROLE stratum_app_unscoped LOGIN PASSWORD '...' BYPASSRLS;
 ```
+`stratum_app_unscoped` is used by `cmd/api` only (`POSTGRES_UNSCOPED_URL`, sized by
+`POSTGRES_UNSCOPED_MAX_OPEN_CONNS`) for the organization paths that have no tenant to scope a
+transaction to: the organization middleware's authorization lookups and the cross-org
+invite/join flows. Both binaries require `POSTGRES_UNSCOPED_URL` set. **An environment that
+already ran an older build needs only that one `CREATE ROLE` and the env var, before deploying
+the build that ships migration `000009`** — `000009`'s `GRANT … TO stratum_app_unscoped` fails
+with `role "stratum_app_unscoped" does not exist` otherwise.
+
+That build ships `000009` and `000010` together, and they must not land at the same moment as the
+code switch. Upgrade an existing environment in this order:
+1. Create `stratum_app_unscoped` (above) and set `POSTGRES_UNSCOPED_URL` on both binaries.
+2. Apply only `000009` (grants — harmless to the running build):
+   `migrate -path db/migrations -database "$POSTGRES_URL" up 1`.
+3. Deploy the new API + worker build. It works with or without `000010`'s policies.
+4. Apply `000010` (`make migrate-up`). Never before step 3: under its policies, an older build
+   sets no scope and sees no `organization`/`notification` rows.
+
+The `organization` and `notification` tables run under `FORCE ROW LEVEL SECURITY` (`000010`),
+like `billing`'s. Two consequences for operators:
+- **Studio's DSN must be the schema owner or a `BYPASSRLS` role.** Studio reads and writes these
+  tables with no tenant scope (support tools, broadcasts); under `stratum_app` it would see
+  nothing.
+- **A data migration on these tables must scope itself.** `FORCE` also binds a non-superuser
+  table owner: set `app.organization_id` (`SELECT set_config('app.organization_id', '<org id>',
+  true)`) per organization inside the migration's transaction, or wrap the change in `ALTER
+  TABLE … NO FORCE ROW LEVEL SECURITY` / `… FORCE ROW LEVEL SECURITY`.
 If this step is skipped, `make migrate-up` fails immediately and clearly on `000008`'s first
 `GRANT ... TO stratum_app` with `role "stratum_app" does not exist` — run the step above, then
 retry.
@@ -103,6 +131,43 @@ A nonzero result here means these events were **not** delivered and never will b
 UPDATE messaging.outbox SET attempts = 0, not_before = now() WHERE id = ANY(:ids);
 ```
 
+*Delayed billing events left on the retired delay topology* — run once per environment that ran a build from before delayed events were consolidated onto the outbox. Those builds enqueued the expiry check, renewal reminder, auto-invoice, and dunning notices onto the `billing.delay` direct exchange, whose parking queues had no TTL and no consumer, so every such row parks undelivered under a short legacy routing key. Rewrite the unpublished ones onto the real exchange and routing keys:
+```sql
+UPDATE messaging.outbox
+   SET exchange = 'billing.events',
+       routing_key = CASE routing_key
+         WHEN 'subscription-check'          THEN 'billing.subscription.check'
+         WHEN 'subscription-remind'         THEN 'billing.subscription.remind'
+         WHEN 'subscription-auto-invoice'   THEN 'billing.subscription.auto-invoice'
+         WHEN 'subscription-payment-remind' THEN 'billing.subscription.payment-remind'
+         WHEN 'subscription-payment-final'  THEN 'billing.subscription.payment-final'
+       END
+ WHERE published_at IS NULL
+   AND routing_key IN ('subscription-check', 'subscription-remind', 'subscription-auto-invoice',
+                       'subscription-payment-remind', 'subscription-payment-final');
+```
+Rows already published into the legacy parking queues are not recoverable this way — the hourly `ReconcileOverdueSubscriptions` sweep covers the subscription-expiry consequence; a missed one-time reminder or dunning notice is accepted loss. Afterward the five legacy `*-delay` parking queues (`billing.subscription-check-delay`, `-remind-delay`, `-auto-invoice-delay`, `-payment-remind-delay`, `-payment-final-delay`) and the `billing.delay` exchange are unused and can be deleted (`rabbitmqctl delete_queue billing.subscription-check-delay` … for the queues; `rabbitmqctl` has no exchange-delete command, so remove the exchange with `rabbitmqadmin --username … --password … delete exchange --name billing.delay` (management plugin) or the management UI); leaving them is harmless, nothing publishes to them. Check first that `SELECT count(*) FROM messaging.outbox WHERE exchange = 'billing.delay' AND published_at IS NULL` is 0 — run the rewrite above otherwise, or those rows will fail to publish once the exchange is gone.
+
+*Retired `notification.subscription-remind` queue* — run once per environment that ran a build from before the renewal reminder was split into a scheduled key and a checked key. Notification now consumes the checked reminder (`billing.subscription.expiring-soon`) from `notification.subscription-expiring-soon`. The old queue has no consumer but is still bound to the scheduled `billing.subscription.remind`, so it keeps collecting an unchecked copy of every scheduled reminder. Delete it — the messages in it are exactly those unchecked copies, so discarding them is correct:
+```sh
+rabbitmqctl delete_queue notification.subscription-remind
+```
+Builds in that window also re-delivered each checked reminder back to billing's own queue, so an owner could receive one "expiring soon" reminder per relay tick until the subscription's status or end date changed. To see whether an environment was affected, count the checked re-publishes, which are immediate rows under the scheduled key:
+```sql
+SELECT payload->>'org_id' AS org_id, count(*) AS republishes, min(created_at), max(created_at)
+  FROM messaging.outbox
+ WHERE routing_key = 'billing.subscription.remind'
+   AND not_before <= created_at + interval '1 second'
+ GROUP BY 1 ORDER BY 2 DESC;
+```
+The retention sweep deletes published rows after `OUTBOX_RETENTION_DAYS`, so run it before they age out.
+
+*Retired `notification.subscription-payment-remind` / `notification.subscription-payment-final` queues* — run once per environment that ran a build from before the day-3/day-7 dunning notices were split into a scheduled key and a checked key. Billing now consumes the scheduled rows (`billing.subscription.payment-remind` / `-final`) and sends a notice on only while its invoice is still pending, backs the subscription's period, and the subscription has not ended. Notification consumes the checked notices (`billing.invoice.payment-reminder` / `billing.invoice.payment-final-notice`) from `notification.invoice-payment-reminder` / `notification.invoice-payment-final-notice`. The two old queues have no consumer but are still bound to the scheduled keys, so they keep collecting an unchecked copy of every scheduled notice. Delete them — the messages in them are exactly those unchecked copies, so discarding them is correct:
+```sh
+rabbitmqctl delete_queue notification.subscription-payment-remind
+rabbitmqctl delete_queue notification.subscription-payment-final
+```
+
 **Rotating the webhook encryption key** — `WEBHOOK_SECRET_ENCRYPTION_KEY` rotation is a
 4-step, operator-driven procedure; do not skip the verification step. Do not roll back the
 application between steps 1 and 3 once the backfill has started — a rollback to the pre-rotation
@@ -141,4 +206,10 @@ WHERE i.status = 'pending' AND pl.status = 'pending' AND i.created_at < now() - 
 Each result needs manual verification against the payment provider's own dashboard (Stripe/Xendit) before marking anything paid by hand via Studio's support tools — a row in this list only means the invoice looks stale, not that it was actually paid.
 
 ## No scheduler
-Stratum has no cron. Anything that looks periodic is either a one-shot RabbitMQ delayed message (dunning, renewal reminders) or lazy/opportunistic work (webhook health computed on delivery). This is a deliberate simplification — adding a scheduler for a single sweep wasn't judged worth the operational surface.
+Stratum has no cron. Anything that looks periodic is one of:
+
+- **A future-dated outbox row.** Dunning notices, renewal reminders, and the end-of-period expiry check are written to `messaging.outbox` with a future `not_before`; the relay claims each only once it comes due and publishes it like any immediate event. The delay is a timestamp in the database, not a broker plugin or a scheduler.
+- **A worker-local ticker.** `cmd/worker` runs a handful of `time.Ticker` goroutines in-process — the outbox relay (2s), the outbox retention sweep (hourly), expired-invitation cleanup (hourly), and `ReconcileOverdueSubscriptions` (hourly), which re-enqueues an expiry check for any active/trialing subscription already past its end date so a lost scheduled check can't leave a lapsed subscription entitled. These are not external jobs; they stop when the worker stops.
+- **Lazy/opportunistic work** — e.g. webhook health computed on delivery.
+
+Adding a general-purpose scheduler still isn't judged worth the operational surface.

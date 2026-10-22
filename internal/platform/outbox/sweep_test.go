@@ -4,8 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/aasumitro/stratum/internal/platform/outbox"
 )
@@ -17,9 +16,9 @@ func TestSweep(t *testing.T) {
 	retentionDays := 30
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
 
-	id1 := uuid.Must(uuid.NewV7()).String()
-	id2 := uuid.Must(uuid.NewV7()).String()
-	id3 := uuid.Must(uuid.NewV7()).String()
+	id1 := uuid.NewV7().String()
+	id2 := uuid.NewV7().String()
+	id3 := uuid.NewV7().String()
 	// Sweep only ever deletes row 1 (published + past retention) by design —
 	// rows 2 and 3 are asserted to survive it, so this test must remove them
 	// itself. Otherwise row 3 (published_at still NULL) looks exactly like a

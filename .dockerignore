@@ -1,0 +1,30 @@
+# Build context for the Dockerfile is the Go backend only. Everything the image
+# does not need is excluded so the context stays small and no secret is ever
+# copied into a layer.
+
+# Frontends — never part of the api/worker image
+ui/
+
+# Local build output and test artefacts
+bin/
+*.test
+*.out
+coverage*
+tests.log
+vuln.log
+
+# VCS and workspace tooling
+.git/
+.github/
+
+# Docs
+docs/
+*.md
+
+# Deploy assets (compose, env, the operator's mmdb) — mounted at run time, not baked
+deploy/
+.env
+.env.*
+
+# GeoIP databases — MaxMind licence forbids redistribution; bind-mounted instead
+*.mmdb

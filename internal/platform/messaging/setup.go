@@ -23,7 +23,7 @@ func Setup(ctx context.Context, url string, logger *slog.Logger) (*Connection, *
 		return nil, nil, nil, fmt.Errorf("connecting to rabbitmq: %w", err)
 	}
 
-	publisher, err := NewPublisher(conn, logger)
+	publisher, err := NewPublisher(ctx, conn, logger)
 	if err != nil {
 		_ = conn.Close()
 		return nil, nil, nil, fmt.Errorf("creating publisher: %w", err)

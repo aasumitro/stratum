@@ -65,6 +65,42 @@ export function useRemoveMember(organizationId: string) {
   })
 }
 
+export function useSuspendMember(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<void, string>({
+    url: (authSub) =>
+      API.organizations(organizationId, "members", authSub, "suspend"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("organization.members.suspended"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.organizations.members(organizationId),
+        })
+      },
+      onError: () => toast.error(t("organization.members.suspendFailed")),
+    },
+  })
+}
+
+export function useReinstateMember(organizationId: string) {
+  const queryClient = useQueryClient()
+  const { t } = useTranslation()
+  return useHTTPActionPost<void, string>({
+    url: (authSub) =>
+      API.organizations(organizationId, "members", authSub, "reinstate"),
+    options: {
+      onSuccess: () => {
+        toast.success(t("organization.members.reinstated"))
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.organizations.members(organizationId),
+        })
+      },
+      onError: () => toast.error(t("organization.members.reinstateFailed")),
+    },
+  })
+}
+
 export function useLeaveOrganization(organizationId: string) {
   const queryClient = useQueryClient()
   const { t } = useTranslation()

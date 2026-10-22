@@ -8,10 +8,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/outbox"
 )
 
@@ -50,10 +51,6 @@ func (p *fakePublisher) has(entry string) bool {
 	return slices.Contains(p.delivered, entry)
 }
 
-func (p *fakePublisher) PublishDelayed(_ context.Context, _, _ string, _ []byte, _ time.Duration) error {
-	return nil
-}
-
 // selectiveFailPublisher fails Publish only for routing keys in failRoutingKeys and
 // records every other publish — used to prove a poison row's repeated failure does not
 // block a healthy row claimed in the same batch.
@@ -79,13 +76,9 @@ func (p *selectiveFailPublisher) has(entry string) bool {
 	return slices.Contains(p.delivered, entry)
 }
 
-func (p *selectiveFailPublisher) PublishDelayed(_ context.Context, _, _ string, _ []byte, _ time.Duration) error {
-	return nil
-}
-
 func seedOutboxRow(t *testing.T, pool *pgxpool.Pool, routingKey string, notBefore time.Time, publishedAt *time.Time) {
 	t.Helper()
-	id := uuid.Must(uuid.NewV7()).String()
+	id := uuid.NewV7().String()
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO messaging.outbox (id, exchange, routing_key, payload, not_before, published_at)
 		VALUES ($1, 'test.exchange', $2, '{}', $3, $4)`,
@@ -104,7 +97,7 @@ func seedOutboxRow(t *testing.T, pool *pgxpool.Pool, routingKey string, notBefor
 // short of maxAttempts without driving real backoff through every prior attempt.
 func seedOutboxRowAtAttempts(t *testing.T, pool *pgxpool.Pool, routingKey string, attempts int) {
 	t.Helper()
-	id := uuid.Must(uuid.NewV7()).String()
+	id := uuid.NewV7().String()
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO messaging.outbox (id, exchange, routing_key, payload, attempts)
 		VALUES ($1, 'test.exchange', $2, '{}', $3)`,
@@ -187,9 +180,6 @@ func TestIntegration_RelayBatch_PublishesOnlyTheOneDueRow(t *testing.T) {
 type alwaysFailPublisher struct{}
 
 func (alwaysFailPublisher) Publish(context.Context, string, string, []byte) error {
-	return context.DeadlineExceeded
-}
-func (alwaysFailPublisher) PublishDelayed(context.Context, string, string, []byte, time.Duration) error {
 	return context.DeadlineExceeded
 }
 
@@ -348,5 +338,52 @@ func TestIntegration_RelayBatch_ExhaustedRowLogsDistinctExhaustionMessage(t *tes
 	}
 	if logged, ok := attrInt64(rec, "attempts"); !ok || logged != maxAttempts {
 		t.Errorf("exhaustion log attempts = %v (found=%v), want %d", logged, ok, maxAttempts)
+	}
+}
+
+// TestIntegration_DelayedEvent_RelayDeliversToRealExchange proves a delayed
+// event enqueued on the real billing exchange with the real routing key is
+// published straight to billing.events once its not_before is due. This is
+// the relay-boundary coverage whose absence let delayed billing events route
+// to a parking exchange and silently sit in a TTL-less, consumer-less queue
+// forever — pointing EnqueueDelayed's call sites back at a delay
+// exchange/key makes this fail.
+func TestIntegration_DelayedEvent_RelayDeliversToRealExchange(t *testing.T) {
+	pool := testPool(t)
+
+	orgID := uuid.NewV7().String()
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	// delay = 0 -> not_before = now(), immediately due.
+	if err := events.EnqueueDelayed(t.Context(), tx, events.ExchangeBilling,
+		events.RoutingKeySubscriptionCheck, "billing", orgID,
+		events.SubscriptionCheck{SubscriptionID: uuid.NewV7().String(), SubjectType: "organization", SubjectID: orgID},
+		0); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("EnqueueDelayed: %v", err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+	})
+
+	pub := &fakePublisher{}
+	relay := outbox.NewRelay(pool, pub)
+
+	want := events.ExchangeBilling + "/" + events.RoutingKeySubscriptionCheck
+	drainUntil(t, relay, func() bool { return pub.has(want) })
+
+	var publishedAt *time.Time
+	if err := pool.QueryRow(t.Context(),
+		`SELECT published_at FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID,
+	).Scan(&publishedAt); err != nil {
+		t.Fatalf("query row: %v", err)
+	}
+	if publishedAt == nil {
+		t.Error("delayed row was handed to the publisher but never marked published")
 	}
 }

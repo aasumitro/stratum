@@ -65,7 +65,11 @@ func (s *service) createInvitation(
 	// member, so the lookup failing is not itself an error here.
 	if s.userReader != nil {
 		if u, lookupErr := s.userReader.GetUserByEmail(ctx, email); lookupErr == nil && u != nil {
-			if _, memErr := s.repo.getMemberRole(ctx, s.pool, organizationID, u.AuthSub); memErr == nil {
+			memErr := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+				_, err := s.repo.getMemberRole(ctx, q, organizationID, u.AuthSub)
+				return err
+			})
+			if memErr == nil {
 				return nil, ErrInviteeAlreadyMember
 			}
 		}
@@ -83,7 +87,7 @@ func (s *service) createInvitation(
 		return nil, fmt.Errorf("organization.createInvitation: %w", err)
 	}
 	expiresAt := time.Now().AddDate(0, 0, 7)
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		var err error
 		inv, err = s.repo.insertInvitation(ctx, tx, organizationID, email, role, token, invitedBy, expiresAt)
 		if err != nil {
@@ -100,7 +104,12 @@ func (s *service) createInvitation(
 }
 
 func (s *service) listInvitations(ctx context.Context, organizationID string) ([]invitationRecord, error) {
-	invitations, err := s.repo.listInvitations(ctx, s.pool, organizationID)
+	var invitations []invitationRecord
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		var err error
+		invitations, err = s.repo.listInvitations(ctx, q, organizationID)
+		return err
+	})
 	if err != nil {
 		return nil, apperr.Internal("INVITATIONS_FETCH_FAILED", "failed to list invitations", err)
 	}
@@ -108,7 +117,12 @@ func (s *service) listInvitations(ctx context.Context, organizationID string) ([
 }
 
 func (s *service) revokeInvitation(ctx context.Context, organizationID, id string) error {
-	deleted, err := s.repo.deleteInvitation(ctx, s.pool, organizationID, id)
+	var deleted bool
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		var err error
+		deleted, err = s.repo.deleteInvitation(ctx, q, organizationID, id)
+		return err
+	})
 	if err != nil {
 		return apperr.Internal("INVITATION_REVOKE_FAILED", "failed to revoke invitation", err)
 	}
@@ -142,7 +156,12 @@ func (s *service) acceptInvitation(
 		}
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	// The invitee is not a member yet, so there is no organization scope to
+	// run under: the token + verified-email checks above are the
+	// authorization, and the writes below go through the unscoped pool.
+	// checkMemberLimitLocked gets the outer ctx, so billing reads through its
+	// own pool rather than this transaction.
+	tx, err := s.unscoped().Begin(ctx)
 	if err != nil {
 		return acceptInvitationResult{}, fmt.Errorf("organization.acceptInvitation: begin tx: %w", err)
 	}
@@ -200,7 +219,7 @@ func (s *service) acceptInvitation(
 func (s *service) validateInvitationForClaim(
 	ctx context.Context, token, email string, emailVerified bool,
 ) (*invitationRecord, error) {
-	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
+	inv, err := s.repo.findInvitationByToken(ctx, s.unscoped(), token)
 	if err != nil {
 		return nil, ErrInvitationNotFound
 	}
@@ -280,7 +299,7 @@ func (s *service) previewInvitation(
 	}
 
 	preview := invitationPreview{OrganizationID: inv.OrganizationID, Role: inv.Role}
-	if ws, err := s.getOrganization(ctx, inv.OrganizationID); err == nil {
+	if ws, err := s.lookupOrganization(ctx, inv.OrganizationID); err == nil {
 		preview.OrganizationName = ws.Name
 	}
 	if s.userReader != nil {
@@ -302,7 +321,7 @@ func (s *service) declineInvitation(ctx context.Context, token, email string, em
 	if err != nil {
 		return err
 	}
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = db.WithTx(ctx, s.unscoped(), func(tx db.Querier) error {
 		if _, err := s.repo.deleteInvitation(ctx, tx, inv.OrganizationID, inv.ID); err != nil {
 			return err
 		}
@@ -319,7 +338,7 @@ func (s *service) declineInvitation(ctx context.Context, token, email string, em
 // every organization, with the inviter's email resolved when a userReader
 // is wired — backs the onboarding auto-surface.
 func (s *service) listMyInvitations(ctx context.Context, email string) ([]myInvitationRecord, error) {
-	invs, err := s.repo.listInvitationsByEmail(ctx, s.pool, email)
+	invs, err := s.repo.listInvitationsByEmail(ctx, s.unscoped(), email)
 	if err != nil {
 		return nil, apperr.Internal("INVITATIONS_FETCH_FAILED", "failed to list invitations", err)
 	}
@@ -347,7 +366,7 @@ func (s *service) listMyInvitations(ctx context.Context, email string) ([]myInvi
 // token so this endpoint can't be used to probe whether a given token is
 // valid but belongs to someone else.
 func (s *service) requestNewInvitation(ctx context.Context, token, email string, emailVerified bool) error {
-	inv, err := s.repo.findInvitationByToken(ctx, s.pool, token)
+	inv, err := s.repo.findInvitationByToken(ctx, s.unscoped(), token)
 	if err != nil {
 		return apperr.Validation("INVITATION_NOT_FOUND", "invitation not found")
 	}

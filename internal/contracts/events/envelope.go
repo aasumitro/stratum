@@ -5,23 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
-	"github.com/aasumitro/stratum/internal/platform/logger"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/outbox"
 )
 
 // Exchange names — the single source of truth for every RabbitMQ exchange
-// a module publishes to. Both the publishing module (via events.Publish/
-// PublishDelayed) and the consumer wiring (internal/app/worker.go) must
+// a module publishes to. Both the publishing module (via events.Enqueue/
+// EnqueueDelayed) and the consumer wiring (internal/app/worker.go) must
 // reference these, never redeclare the string locally.
 const (
 	ExchangeOrganization = "organization.events"
 	ExchangeBilling      = "billing.events"
-	ExchangeBillingDelay = "billing.delay"
 	ExchangeAccount      = "account.events"
 )
 
@@ -42,33 +38,6 @@ type Envelope struct {
 	Time   time.Time `json:"time"`
 	OrgID  string    `json:"org_id,omitempty"` // present on nearly all events; lets consumers filter/route by organization
 	Data   any       `json:"data"`
-}
-
-// Publish wraps data in an Envelope and publishes it. Fire-and-forget:
-// logs on failure instead of returning an error, since event publishing
-// must not block the primary write path.
-func Publish(
-	ctx context.Context, pub messaging.EventPublisher,
-	exchange, routingKey, source, orgID string, data any,
-) {
-	env := Envelope{
-		ID:     uuid.Must(uuid.NewV7()).String(),
-		Type:   routingKey,
-		Source: source,
-		Time:   time.Now(),
-		OrgID:  orgID,
-		Data:   data,
-	}
-	body, err := json.Marshal(env)
-	if err != nil {
-		logger.FromContext(ctx).Error("failed to marshal event",
-			"routing_key", routingKey, "error", err)
-		return
-	}
-	if err := pub.Publish(ctx, exchange, routingKey, body); err != nil {
-		logger.FromContext(ctx).Warn("event publish failed",
-			"exchange", exchange, "routing_key", routingKey, "error", err)
-	}
 }
 
 // EnvelopeID reads just the id field of a wire-format Envelope, without
@@ -103,39 +72,12 @@ func Decode[T any](body []byte) (T, error) {
 	return evt, nil
 }
 
-// PublishDelayed wraps data in an Envelope and publishes with a per-message TTL.
-// Used with a parking queue + DLX for delayed delivery (e.g. subscription expiry checks).
-func PublishDelayed(
-	ctx context.Context, pub messaging.EventPublisher,
-	exchange, routingKey, source, orgID string,
-	data any, delay time.Duration,
-) {
-	env := Envelope{
-		ID:     uuid.Must(uuid.NewV7()).String(),
-		Type:   routingKey,
-		Source: source,
-		Time:   time.Now(),
-		OrgID:  orgID,
-		Data:   data,
-	}
-	body, err := json.Marshal(env)
-	if err != nil {
-		logger.FromContext(ctx).Error("failed to marshal delayed event",
-			"routing_key", routingKey, "error", err)
-		return
-	}
-	if err := pub.PublishDelayed(ctx, exchange, routingKey, body, delay); err != nil {
-		logger.FromContext(ctx).Warn("delayed event publish failed",
-			"exchange", exchange, "routing_key", routingKey, "error", err)
-	}
-}
-
 // Enqueue writes env to the transactional outbox inside q's transaction —
 // the caller is responsible for q being the same transaction as the state
-// change the event describes, so both commit or neither does. Unlike
-// Publish, a failure here must fail the caller's transaction: an outbox row
-// that silently fails to insert reopens the exact fire-and-forget gap this
-// function exists to close. Envelope construction and marshaling live here
+// change the event describes, so both commit or neither does. A failure
+// here must fail the caller's transaction: an outbox row that silently
+// fails to insert reopens a fire-and-forget delivery gap. Envelope
+// construction and marshaling live here
 // (it's shared, cross-module vocabulary); the actual row write is
 // internal/platform/outbox's job, since persistence logic doesn't belong
 // next to a shared type/interface package. A cmd/worker relay (also in
@@ -146,7 +88,7 @@ func Enqueue(
 	exchange, routingKey, source, orgID string, data any,
 ) error {
 	env := Envelope{
-		ID: uuid.Must(uuid.NewV7()).String(), Type: routingKey, Source: source,
+		ID: uuid.NewV7().String(), Type: routingKey, Source: source,
 		Time: time.Now(), OrgID: orgID, Data: data,
 	}
 	body, err := json.Marshal(env)
@@ -159,16 +101,15 @@ func Enqueue(
 	return nil
 }
 
-// EnqueueDelayed is Enqueue with not_before set in the future — the outbox
-// analogue of PublishDelayed, unifying "publish now" and "publish later"
-// into the relay's single not_before <= now() query instead of a separate
-// delayed-outbox mechanism.
+// EnqueueDelayed is Enqueue with not_before set in the future, unifying
+// "publish now" and "publish later" into the relay's single
+// not_before <= now() query instead of a separate delayed-outbox mechanism.
 func EnqueueDelayed(
 	ctx context.Context, q db.Querier,
 	exchange, routingKey, source, orgID string, data any, delay time.Duration,
 ) error {
 	env := Envelope{
-		ID: uuid.Must(uuid.NewV7()).String(), Type: routingKey, Source: source,
+		ID: uuid.NewV7().String(), Type: routingKey, Source: source,
 		Time: time.Now(), OrgID: orgID, Data: data,
 	}
 	body, err := json.Marshal(env)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/platform/config"
@@ -44,6 +45,52 @@ func TestNewPostgresPool_PingsAndQueries(t *testing.T) {
 	if one != 1 {
 		t.Errorf("SELECT 1 = %d", one)
 	}
+}
+
+func TestNewPostgresPool_StatementTimeout(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := t.Context()
+
+	t.Run("aborts a query that runs past the timeout", func(t *testing.T) {
+		pool, err := db.NewPostgresPool(ctx, config.PostgresConfig{
+			URL: dsn, MaxOpenConns: 2, MaxIdleTime: time.Minute, StatementTimeout: "250ms",
+		})
+		if err != nil {
+			t.Fatalf("NewPostgresPool: %v", err)
+		}
+		t.Cleanup(pool.Close)
+
+		// the runtime param is applied per-connection by pgx on connect
+		var shown string
+		if err := pool.QueryRow(ctx, "SHOW statement_timeout").Scan(&shown); err != nil {
+			t.Fatalf("SHOW statement_timeout: %v", err)
+		}
+		if shown != "250ms" {
+			t.Errorf("statement_timeout = %q, want %q", shown, "250ms")
+		}
+
+		_, err = pool.Exec(ctx, "SELECT pg_sleep(1)")
+		if err == nil {
+			t.Fatal("expected pg_sleep(1) to be aborted by statement_timeout")
+		}
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != "57014" {
+			t.Fatalf("expected SQLSTATE 57014 (query_canceled), got %v", err)
+		}
+	})
+
+	t.Run(`"0" disables the timeout`, func(t *testing.T) {
+		pool, err := db.NewPostgresPool(ctx, config.PostgresConfig{
+			URL: dsn, MaxOpenConns: 2, MaxIdleTime: time.Minute, StatementTimeout: "0",
+		})
+		if err != nil {
+			t.Fatalf("NewPostgresPool: %v", err)
+		}
+		t.Cleanup(pool.Close)
+
+		if _, err := pool.Exec(ctx, "SELECT pg_sleep(0.3)"); err != nil {
+			t.Fatalf("pg_sleep(0.3) should succeed with statement_timeout disabled: %v", err)
+		}
+	})
 }
 
 func TestNewPostgresPool_InvalidURL(t *testing.T) {

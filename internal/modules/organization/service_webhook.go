@@ -11,6 +11,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
 	"github.com/aasumitro/stratum/internal/platform/logger"
 )
@@ -88,7 +89,11 @@ func (s *service) createWebhookEndpoint(
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.createWebhookEndpoint: %w", err)
 	}
-	rec, err = s.repo.insertWebhookEndpoint(ctx, s.pool, organizationID, url, secret, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		var err error
+		rec, err = s.repo.insertWebhookEndpoint(ctx, q, organizationID, url, secret, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+		return err
+	})
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.createWebhookEndpoint: %w", err)
 	}
@@ -96,7 +101,12 @@ func (s *service) createWebhookEndpoint(
 }
 
 func (s *service) listWebhookEndpoints(ctx context.Context, organizationID string) ([]webhookEndpointRecord, error) {
-	recs, err := s.repo.listWebhookEndpoints(ctx, s.pool, organizationID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+	var recs []webhookEndpointRecord
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		var err error
+		recs, err = s.repo.listWebhookEndpoints(ctx, q, organizationID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+		return err
+	})
 	if err != nil {
 		return nil, apperr.Internal("WEBHOOK_LIST_FAILED", "failed to list webhooks", err)
 	}
@@ -127,18 +137,23 @@ func (s *service) updateWebhookEndpoint(
 	if err := validateWebhookURL(ctx, url); err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrWebhookURLNotAllowed, err)
 	}
-	if enabled {
-		ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, id, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
-		if err != nil {
-			return nil, fmt.Errorf("organization.updateWebhookEndpoint: %w", err)
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		if enabled {
+			ep, err := s.repo.findWebhookEndpoint(ctx, q, organizationID, id, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+			if err != nil {
+				return fmt.Errorf("organization.updateWebhookEndpoint: %w", err)
+			}
+			// An auto-disabled endpoint can only be re-enabled by a passing
+			// test event (enableWebhookAfterTest), not a plain toggle.
+			if ep.AutoDisabledAt != nil {
+				return ErrWebhookRotationTestRequired
+			}
 		}
-		// An auto-disabled endpoint can only be re-enabled by a passing
-		// test event (enableWebhookAfterTest), not a plain toggle.
-		if ep.AutoDisabledAt != nil {
-			return nil, ErrWebhookRotationTestRequired
-		}
-	}
-	return s.repo.updateWebhookEndpoint(ctx, s.pool, organizationID, id, url, enabled, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+		var err error
+		rec, err = s.repo.updateWebhookEndpoint(ctx, q, organizationID, id, url, enabled, subscribedEvents, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+		return err
+	})
+	return rec, err
 }
 
 // rotateWebhookSecret issues a fresh secret, keeping the old one valid for a
@@ -162,7 +177,11 @@ func (s *service) rotateWebhookSecret(
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.rotateWebhookSecret: %w", err)
 	}
-	rec, err = s.repo.rotateWebhookSecret(ctx, s.pool, organizationID, id, newSecret, time.Now().Add(24*time.Hour), s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		var err error
+		rec, err = s.repo.rotateWebhookSecret(ctx, q, organizationID, id, newSecret, time.Now().Add(24*time.Hour), s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+		return err
+	})
 	if err != nil {
 		return nil, "", fmt.Errorf("organization.rotateWebhookSecret: %w", err)
 	}
@@ -170,7 +189,12 @@ func (s *service) rotateWebhookSecret(
 }
 
 func (s *service) deleteWebhookEndpoint(ctx context.Context, organizationID, id string) error {
-	deleted, err := s.repo.deleteWebhookEndpoint(ctx, s.pool, organizationID, id)
+	var deleted bool
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		var err error
+		deleted, err = s.repo.deleteWebhookEndpoint(ctx, q, organizationID, id)
+		return err
+	})
 	if err != nil {
 		return apperr.Internal("WEBHOOK_DELETE_FAILED", "failed to delete webhook", err)
 	}
@@ -180,15 +204,33 @@ func (s *service) deleteWebhookEndpoint(ctx context.Context, organizationID, id 
 	return nil
 }
 
-func (s *service) getWebhookHealthBatch(ctx context.Context, endpointIDs []string) (map[string]webhookHealth, error) {
-	return s.repo.webhookHealthBatch(ctx, s.pool, endpointIDs)
+func (s *service) getWebhookHealthBatch(ctx context.Context, organizationID string, endpointIDs []string) (out map[string]webhookHealth, err error) {
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		out, err = s.repo.webhookHealthBatch(ctx, q, endpointIDs)
+		return err
+	})
+	return out, err
+}
+
+// findWebhookEndpointForOrganization reports whether webhookID exists in
+// organizationID (pgx.ErrNoRows otherwise) — the ownership check the
+// delivery-list handler runs before listing.
+func (s *service) findWebhookEndpointForOrganization(ctx context.Context, organizationID, webhookID string) error {
+	return db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		_, err := s.repo.findWebhookEndpoint(ctx, q, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+		return err
+	})
 }
 
 func (s *service) listWebhookDeliveries(
-	ctx context.Context, endpointID string,
+	ctx context.Context, organizationID, endpointID string,
 	filter webhookDeliveryFilter, cursor string, limit int,
-) ([]webhookDeliveryRecord, string, error) {
-	return s.repo.listWebhookDeliveries(ctx, s.pool, endpointID, filter, cursor, limit)
+) (recs []webhookDeliveryRecord, next string, err error) {
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		recs, next, err = s.repo.listWebhookDeliveries(ctx, q, endpointID, filter, cursor, limit)
+		return err
+	})
+	return recs, next, err
 }
 
 func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webhookID, deliveryID string) (err error) {
@@ -204,11 +246,16 @@ func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webh
 		}
 	}()
 
-	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+	// deliver makes an outbound HTTP call between single statements, so no
+	// transaction may span it: this path reads and writes through the
+	// unscoped pool, matched by the organization + endpoint + delivery
+	// predicates below (the route already passed the organization middleware).
+	pool := s.unscoped()
+	ep, err := s.repo.findWebhookEndpoint(ctx, pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return fmt.Errorf("organization.retryWebhookDelivery: endpoint: %w", err)
 	}
-	del, err := s.repo.findWebhookDelivery(ctx, s.pool, deliveryID)
+	del, err := s.repo.findWebhookDelivery(ctx, pool, deliveryID)
 	if err != nil {
 		return fmt.Errorf("organization.retryWebhookDelivery: delivery: %w", err)
 	}
@@ -219,7 +266,7 @@ func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webh
 	if err != nil {
 		return fmt.Errorf("organization.retryWebhookDelivery: payload: %w", err)
 	}
-	return deliver(ctx, s.repo, s.pool, ep, del, payload)
+	return deliver(ctx, s.repo, pool, ep, del, payload)
 }
 
 // retryAllFailedWebhookDeliveries backs the bulk "Retry all failed" action.
@@ -245,10 +292,15 @@ func (s *service) retryAllFailedWebhookDeliveries(
 		}
 	}()
 
-	if _, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious); err != nil {
-		return 0, fmt.Errorf("organization.retryAllFailedWebhookDeliveries: endpoint: %w", err)
-	}
-	dels, err := s.repo.listFailedWebhookDeliveries(ctx, s.pool, webhookID)
+	var dels []webhookDeliveryRecord
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		if _, err := s.repo.findWebhookEndpoint(ctx, q, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious); err != nil {
+			return fmt.Errorf("organization.retryAllFailedWebhookDeliveries: endpoint: %w", err)
+		}
+		var err error
+		dels, err = s.repo.listFailedWebhookDeliveries(ctx, q, webhookID)
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("organization.retryAllFailedWebhookDeliveries: %w", err)
 	}
@@ -295,7 +347,10 @@ func (s *service) sendTestEvent(
 		err = apperr.Internal("WEBHOOK_TEST_FAILED", "failed to send test event", err)
 	}()
 
-	ep, err := s.repo.findWebhookEndpoint(ctx, s.pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
+	// Unscoped pool for the same reason as retryWebhookDelivery: deliver's
+	// outbound HTTP call sits between these single statements.
+	pool := s.unscoped()
+	ep, err := s.repo.findWebhookEndpoint(ctx, pool, organizationID, webhookID, s.secretEncryptionKeyVersion, s.secretEncryptionKey, s.secretEncryptionKeyPrevious)
 	if err != nil {
 		return nil, false, fmt.Errorf("organization.sendTestEvent: %w", err)
 	}
@@ -305,17 +360,17 @@ func (s *service) sendTestEvent(
 		"org":               organizationID,
 		"message":           "This is a test event from Stratum.",
 	})
-	del, err = s.repo.insertWebhookDelivery(ctx, s.pool, ep.ID, "test-event", "test.ping")
+	del, err = s.repo.insertWebhookDelivery(ctx, pool, ep.ID, "test-event", "test.ping")
 	if err != nil {
 		return nil, false, fmt.Errorf("organization.sendTestEvent: %w", err)
 	}
-	success = deliver(ctx, s.repo, s.pool, ep, del, payload) == nil
-	updated, err := s.repo.findWebhookDelivery(ctx, s.pool, del.ID)
+	success = deliver(ctx, s.repo, pool, ep, del, payload) == nil
+	updated, err := s.repo.findWebhookDelivery(ctx, pool, del.ID)
 	if err != nil {
 		updated = del
 	}
 	if success && ep.AutoDisabledAt != nil {
-		if err := s.repo.setWebhookEnabled(ctx, s.pool, ep.ID, true, nil); err != nil {
+		if err := s.repo.setWebhookEnabled(ctx, pool, ep.ID, true, nil); err != nil {
 			return updated, success, fmt.Errorf("organization.sendTestEvent: re-enable: %w", err)
 		}
 	}

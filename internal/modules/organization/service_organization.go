@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
 	"strings"
 	"time"
+
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 
@@ -92,10 +95,13 @@ func (s *service) createOrganization(
 		eventAddons[i] = events.AddonSelection{AddonID: a.AddonID, Quantity: a.Quantity}
 	}
 
+	// The id is generated here so the transaction can scope itself to the new
+	// organization before inserting it — see repository.insertOrganization.
+	orgID := uuid.NewV7().String()
 	var t *organizationRecord
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = db.WithOrgTx(ctx, s.pool, orgID, func(ctx context.Context, tx db.Querier) error {
 		var err error
-		t, err = s.insertOrganizationWithOwner(ctx, tx, slug, name, ownerID, countryCode)
+		t, err = s.insertOrganizationWithOwner(ctx, tx, orgID, slug, name, ownerID, countryCode)
 		if err != nil {
 			return err
 		}
@@ -147,9 +153,9 @@ func (s *service) validateCatalogSelections(
 // db.WithTx) so the OrganizationCreated outbox row enqueued alongside these
 // two inserts commits or rolls back with them as one unit.
 func (s *service) insertOrganizationWithOwner(
-	ctx context.Context, tx db.Querier, slug, name, ownerID, countryCode string,
+	ctx context.Context, tx db.Querier, id, slug, name, ownerID, countryCode string,
 ) (*organizationRecord, error) {
-	t, err := s.repo.insertOrganization(ctx, tx, slug, name, ownerID, countryCode)
+	t, err := s.repo.insertOrganization(ctx, tx, id, slug, name, ownerID, countryCode)
 	if err != nil {
 		return nil, fmt.Errorf("organization.insertOrganizationWithOwner: %w", err)
 	}
@@ -159,20 +165,40 @@ func (s *service) insertOrganizationWithOwner(
 	return t, nil
 }
 
-func (s *service) listOrganizations(ctx context.Context, authSub string) ([]organizationView, error) {
-	return s.repo.findOrganizationsByMember(ctx, s.pool, authSub)
+// The four lookups below are keyed by a user across every organization, so
+// they scope their transaction to that user (app.auth_sub) rather than to
+// one organization.
+
+func (s *service) listOrganizations(ctx context.Context, authSub string) (out []organizationView, err error) {
+	err = db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		out, err = s.repo.findOrganizationsByMember(ctx, q, authSub)
+		return err
+	})
+	return out, err
 }
 
-func (s *service) listMembershipsForExport(ctx context.Context, authSub string) ([]organizationView, error) {
-	return s.repo.listMembershipsForExport(ctx, s.pool, authSub)
+func (s *service) listMembershipsForExport(ctx context.Context, authSub string) (out []organizationView, err error) {
+	err = db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		out, err = s.repo.listMembershipsForExport(ctx, q, authSub)
+		return err
+	})
+	return out, err
 }
 
-func (s *service) listOwnedOrganizationIDs(ctx context.Context, authSub string) ([]string, error) {
-	return s.repo.listOwnedOrganizationIDs(ctx, s.pool, authSub)
+func (s *service) listOwnedOrganizationIDs(ctx context.Context, authSub string) (out []string, err error) {
+	err = db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		out, err = s.repo.listOwnedOrganizationIDs(ctx, q, authSub)
+		return err
+	})
+	return out, err
 }
 
-func (s *service) countActiveOwnedOrganizations(ctx context.Context, authSub string) (int, error) {
-	return s.repo.countActiveOwnedOrganizations(ctx, s.pool, authSub)
+func (s *service) countActiveOwnedOrganizations(ctx context.Context, authSub string) (n int, err error) {
+	err = db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		n, err = s.repo.countActiveOwnedOrganizations(ctx, q, authSub)
+		return err
+	})
+	return n, err
 }
 
 // getOrganization is also exposed cross-module as contracts.OrganizationReader's
@@ -180,18 +206,44 @@ func (s *service) countActiveOwnedOrganizations(ctx context.Context, authSub str
 // classifying here is safe (errors.Is against the wrapped cause still works
 // via apperr.Error.Unwrap).
 func (s *service) getOrganization(ctx context.Context, id string) (*organizationRecord, error) {
-	t, err := s.repo.findOrganizationByID(ctx, s.pool, id)
+	var t *organizationRecord
+	err := db.WithOrgTx(ctx, s.pool, id, func(ctx context.Context, q db.Querier) error {
+		var err error
+		t, err = s.repo.findOrganizationByID(ctx, q, id)
+		return err
+	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", err)
-		}
-		return nil, apperr.Internal("ORGANIZATION_FETCH_FAILED", "failed to get organization", err)
+		return nil, classifyOrganizationFetch(err)
 	}
 	return t, nil
 }
 
+// lookupOrganization is getOrganization for the organization middleware's
+// authorization lookup (contracts.OrganizationReader.GetOrganizationByID),
+// which runs before any organization scope exists — so it reads through the
+// unscoped pool, by id.
+func (s *service) lookupOrganization(ctx context.Context, id string) (*organizationRecord, error) {
+	t, err := s.repo.findOrganizationByID(ctx, s.unscoped(), id)
+	if err != nil {
+		return nil, classifyOrganizationFetch(err)
+	}
+	return t, nil
+}
+
+func classifyOrganizationFetch(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", err)
+	}
+	return apperr.Internal("ORGANIZATION_FETCH_FAILED", "failed to get organization", err)
+}
+
 func (s *service) updateOrganization(ctx context.Context, id, name, slug string) (*organizationRecord, error) {
-	t, err := s.repo.updateOrganization(ctx, s.pool, id, name, slug)
+	var t *organizationRecord
+	err := db.WithOrgTx(ctx, s.pool, id, func(ctx context.Context, q db.Querier) error {
+		var err error
+		t, err = s.repo.updateOrganization(ctx, q, id, name, slug)
+		return err
+	})
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, apperr.Conflict("SLUG_TAKEN", "slug already taken")
@@ -218,7 +270,7 @@ func (s *service) deleteOrganization(ctx context.Context, id string) (err error)
 	// point, so the gap between this enqueue and the worker picking it up is
 	// invisible to callers — the organization middleware already rejects
 	// every request against a soft-deleted org.
-	if err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	if err := db.WithOrgTx(ctx, s.pool, id, func(ctx context.Context, tx db.Querier) error {
 		if err := s.repo.softDeleteOrganization(ctx, tx, id); err != nil {
 			return err
 		}
@@ -265,7 +317,32 @@ func (s *service) uploadLogo(ctx context.Context, organizationID string, r io.Re
 		return fmt.Errorf("organization.uploadLogo: %w", err)
 	}
 	logoURL := fmt.Sprintf("%s/storage/v1/object/public/organization/%s", strings.TrimSuffix(s.store.BaseURL(), "/"), path)
-	return s.repo.updateLogoURL(ctx, s.pool, organizationID, logoURL)
+	// The upload above stays outside any transaction — no connection is held
+	// across the storage round trip.
+	return db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		return s.repo.updateLogoURL(ctx, q, organizationID, logoURL)
+	})
+}
+
+// localeFormat is a BCP-47 language(-REGION) shape check: two or three
+// letters, optionally followed by a two-letter region ("en", "en-US",
+// "id"). Deliberately a format check rather than a curated allowlist —
+// there is no locale catalog to draw from, and this rejects injection
+// payloads and typos without a list that goes stale.
+var localeFormat = regexp.MustCompile(`^[A-Za-z]{2,3}(-[A-Za-z]{2})?$`)
+
+// validateSettings rejects a timezone the Go runtime can't resolve and a
+// locale outside the BCP-47 shape, so a bogus value is never persisted.
+// timezone "" resolves to UTC without error, but the request struct already
+// requires a non-empty value, so that case never reaches here.
+func validateSettings(timezone, locale string) error {
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return apperr.Validation("INVALID_TIMEZONE", "invalid timezone")
+	}
+	if !localeFormat.MatchString(locale) {
+		return apperr.Validation("INVALID_LOCALE", "invalid locale")
+	}
+	return nil
 }
 
 func (s *service) updateSettings(
@@ -273,12 +350,17 @@ func (s *service) updateSettings(
 	organizationID, timezone, locale, callerIP string,
 	allowedIPs *[]string,
 ) error {
+	if err := validateSettings(timezone, locale); err != nil {
+		return err
+	}
 	// A nil allowedIPs means the field was omitted from the request — nothing
 	// to lock anyone out of, since the allowlist isn't changing.
 	if allowedIPs != nil && ipLocksOutCaller(callerIP, *allowedIPs) {
 		return apperr.Validation("IP_ALLOWLIST_LOCKS_OUT_CALLER", ErrIPAllowlistLocksOutCaller.Error())
 	}
-	if err := s.repo.updateSettings(ctx, s.pool, organizationID, timezone, locale, allowedIPs); err != nil {
+	if err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		return s.repo.updateSettings(ctx, q, organizationID, timezone, locale, allowedIPs)
+	}); err != nil {
 		return apperr.Internal("SETTINGS_UPDATE_FAILED", "failed to update settings", err)
 	}
 	return nil
@@ -319,7 +401,7 @@ const suspendReasonSelfService = "Suspended by organization owner"
 // (billing's auto-suspend-on-expiry, error discarded there) as well as the
 // owner-facing HTTP route — safe to classify unconditionally.
 func (s *service) suspendOrganization(ctx context.Context, organizationID, reason string) error {
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		if err := s.repo.suspendOrganization(ctx, tx, organizationID, reason); err != nil {
 			return err
 		}
@@ -336,7 +418,7 @@ func (s *service) suspendOrganization(ctx context.Context, organizationID, reaso
 // and internally by selfUnsuspendOrganization, which applies its own
 // classification on top — see there.
 func (s *service) unsuspendOrganization(ctx context.Context, organizationID string) error {
-	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	return db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		if err := s.repo.unsuspendOrganization(ctx, tx, organizationID); err != nil {
 			return err
 		}

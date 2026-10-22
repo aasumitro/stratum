@@ -14,7 +14,6 @@ import { SearchBar } from "@/components/shared/search-bar"
 import { PdfButton } from "@/features/billing/components/pdf-button"
 import { PreviewButton } from "@/features/billing/components/preview-button"
 import { PayButton } from "@/features/billing/components/pay-button"
-import { RegenerateButton } from "@/features/billing/components/regenerate-button"
 import {
   useInvoices,
   usePaymentLinks,
@@ -150,13 +149,6 @@ export function InvoicesTable({ organizationId }: Props) {
           <div className="flex flex-col gap-3">
             {invoices.map((inv) => {
               const isActive = inv.status === "pending" || inv.status === "paid"
-              // Backend only ever creates a payment link for a `pending`
-              // invoice (`createPaymentLink` rejects anything else with
-              // ErrInvoiceNotPayable) — `void` invoices are permanently
-              // superseded (voided when a plan change issues a fresh
-              // invoice, see `voidPendingInvoicesAndLinks`) and can never
-              // regenerate.
-              const canRegenerate = inv.status === "failed"
               const invPayments = paymentsByInvoice.get(inv.id) ?? []
               const isExpanded = expandedId === inv.id
               // Preview/Download only ever apply to an active invoice (a
@@ -217,9 +209,7 @@ export function InvoicesTable({ organizationId }: Props) {
                       <span
                         className={cn(
                           "text-sm font-semibold",
-                          canRegenerate && "line-through opacity-50",
-                          (inv.status === "pending" || canRegenerate) &&
-                            "hidden sm:inline-block"
+                          inv.status === "pending" && "hidden sm:inline-block"
                         )}
                       >
                         {formatMoney(inv.amount_cents, inv.currency)}
@@ -241,7 +231,7 @@ export function InvoicesTable({ organizationId }: Props) {
                   key={inv.id}
                   className={cn(
                     "overflow-hidden rounded-lg border border-border transition-colors",
-                    !isActive && !canRegenerate && "opacity-50",
+                    !isActive && "opacity-50",
                     expandable && "hover:bg-muted/50"
                   )}
                 >
@@ -260,32 +250,19 @@ export function InvoicesTable({ organizationId }: Props) {
                     ) : (
                       <div className="min-w-0 p-3 sm:flex-1">{rowMain}</div>
                     )}
-                    {(inv.status === "pending" || canRegenerate) && (
+                    {inv.status === "pending" && (
                       <div className="flex items-center justify-between gap-3 px-3 pb-3 sm:justify-end sm:gap-1 sm:p-3">
-                        <span
-                          className={cn(
-                            "shrink-0 text-sm font-semibold sm:hidden",
-                            canRegenerate && "line-through opacity-50"
-                          )}
-                        >
+                        <span className="shrink-0 text-sm font-semibold sm:hidden">
                           {formatMoney(inv.amount_cents, inv.currency)}
                         </span>
                         <div className="flex items-center justify-end gap-1">
-                          {inv.status === "pending" && (
-                            <PayButton
-                              invoiceId={inv.id}
-                              organizationId={organizationId}
-                              amountCents={inv.amount_cents}
-                              currency={inv.currency}
-                              awaitingPayment={openLinkByInvoice.has(inv.id)}
-                            />
-                          )}
-                          {canRegenerate && (
-                            <RegenerateButton
-                              invoiceId={inv.id}
-                              organizationId={organizationId}
-                            />
-                          )}
+                          <PayButton
+                            invoiceId={inv.id}
+                            organizationId={organizationId}
+                            amountCents={inv.amount_cents}
+                            currency={inv.currency}
+                            awaitingPayment={openLinkByInvoice.has(inv.id)}
+                          />
                         </div>
                       </div>
                     )}

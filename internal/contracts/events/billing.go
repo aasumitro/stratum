@@ -20,19 +20,27 @@ const (
 	RoutingKeyUsageLimitWarning         = "billing.usage.limit-warning"
 )
 
-// Delay-local routing keys — used only on the ExchangeBillingDelay parking
-// queue before its per-message TTL expires and the dead-letter exchange
-// re-publishes under the matching RoutingKeyXxx above (e.g.
-// DelayRoutingKeySubscriptionRemind -> dead-letters to
-// RoutingKeySubscriptionRemind). Deliberately distinct, shorter strings from
-// the final routing keys. Referenced from both the publish side
-// (billing/service.go) and the queue-declare side (internal/app/worker.go).
+// The renewal reminder deliberately uses two keys. RoutingKeySubscriptionRemind
+// is the scheduled check (a delayed outbox row due shortly before the period
+// or trial ends) and only billing consumes it: the handler drops it when the
+// subscription is no longer active/trialing or its end date moved, and
+// otherwise publishes RoutingKeySubscriptionExpiringSoon, which notification
+// sends. Billing's reminder queue binds RoutingKeySubscriptionRemind, so
+// publishing the checked reminder under that key would feed the handler its
+// own output on every relay tick; any other module binding it would receive
+// unchecked, possibly stale reminders.
+const RoutingKeySubscriptionExpiringSoon = "billing.subscription.expiring-soon"
+
+// The day-3/day-7 dunning notices deliberately use two keys each, like the
+// renewal reminder. RoutingKeySubscriptionPaymentRemind / -Final are the
+// scheduled rows (delayed outbox rows written when a payment fails) and only
+// billing consumes them: the handler drops a notice whose invoice is no
+// longer pending, is not period-backing, or whose subscription has ended,
+// and otherwise publishes RoutingKeyInvoicePaymentReminder /
+// RoutingKeyInvoicePaymentFinalNotice, which notification sends.
 const (
-	DelayRoutingKeySubscriptionCheck         = "subscription-check"
-	DelayRoutingKeySubscriptionRemind        = "subscription-remind"
-	DelayRoutingKeySubscriptionAutoInvoice   = "subscription-auto-invoice"
-	DelayRoutingKeySubscriptionPaymentRemind = "subscription-payment-remind"
-	DelayRoutingKeySubscriptionPaymentFinal  = "subscription-payment-final"
+	RoutingKeyInvoicePaymentReminder    = "billing.invoice.payment-reminder"
+	RoutingKeyInvoicePaymentFinalNotice = "billing.invoice.payment-final-notice"
 )
 
 type SubscriptionActivated struct {

@@ -96,6 +96,24 @@ export function OrganizationLayout() {
     })
   }, [hasPendingInvoice, currentSegment, navigate, organizationId])
 
+  // One billing banner at a time. On the billing page itself,
+  // billing-layout.tsx renders the subscription's state banner with the
+  // action that resolves it, so a billing-caused suspension or pending-invoice
+  // banner here would only repeat that state and link to the page it's on —
+  // they step aside there. A non-billing suspension still shows: billing has
+  // nothing to say about it. Elsewhere a suspended owner's banner already
+  // covers the unpaid invoice, so the pending-invoice banner waits its turn.
+  const onBillingPage = currentSegment === "billing"
+  const showSuspendedBanner =
+    isSuspended && !(onBillingPage && isBillingCausedSuspension)
+  const showPendingInvoiceBanner =
+    hasPendingInvoice && !isSuspended && !onBillingPage
+  // An expired subscription only has an invoice to pay once the owner
+  // resumes it — until then, "pay the unpaid invoice" would point at nothing.
+  const ownerBillingBannerKey = hasPendingInvoice
+    ? "organization.suspendedOwnerBillingBanner"
+    : "organization.suspendedOwnerExpiredBanner"
+
   // Top-level segments below a role's threshold (PERMISSION_MATRIX) hide
   // from the sidebar (sidebar-organization-nav.tsx's ORG_NAV `.filter`),
   // but the route itself is still reachable by typing the URL directly —
@@ -116,7 +134,7 @@ export function OrganizationLayout() {
       {/* Suspended lockout: shell stays, banner names who can help
           (member/admin) or the reason + fix (owner). Every page below
           stays reachable; UI-only mutation gating happens per-page. */}
-      {isSuspended && !isOwner && (
+      {showSuspendedBanner && !isOwner && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
           <span>
             {owner
@@ -143,11 +161,11 @@ export function OrganizationLayout() {
           )}
         </div>
       )}
-      {isSuspended && isOwner && (
+      {showSuspendedBanner && isOwner && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
           <span>
             {isBillingCausedSuspension
-              ? t("organization.suspendedOwnerBillingBanner")
+              ? t(ownerBillingBannerKey)
               : t("organization.suspendedOwnerSelfBanner", {
                   reason: organization?.suspended_reason,
                 })}
@@ -173,7 +191,7 @@ export function OrganizationLayout() {
         </div>
       )}
 
-      {hasPendingInvoice && (
+      {showPendingInvoiceBanner && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {t("organization.pendingInvoiceBanner")}{" "}
           <Link

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -161,6 +162,9 @@ func NewRateLimitMiddleware(
 		result, err := limiter.Allow(c.Request.Context(), key, limit)
 		if err != nil {
 			// Fail open: a Redis blip shouldn't take down the whole API.
+			// Log it so a limiter outage is visible rather than silently
+			// disabling rate limiting for every request until it recovers.
+			slog.Error("ratelimit: allow check failed, letting request through", "key", key, "error", err)
 			c.Next()
 			return
 		}

@@ -25,6 +25,9 @@ import (
 // @Router       /organizations/{organizationID}/invite-code [post]
 func (h *handler) regenerateInviteCode(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
+	// Semantic audit label so this rotation is findable by intent, not just
+	// as a bare POST to the invite-code route.
+	c.Set("audit.action", "invite_code.regenerated")
 
 	code, err := h.svc.regenerateInviteCode(c.Request.Context(), ws.ID)
 	if err != nil {

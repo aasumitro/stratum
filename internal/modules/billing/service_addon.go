@@ -202,8 +202,7 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 		}
 	})
 	if err != nil {
-		var appErr *apperr.Error
-		if errors.As(err, &appErr) {
+		if _, ok := errors.AsType[*apperr.Error](err); ok {
 			return nil, err
 		}
 		return nil, apperr.Internal(addonAttachFailedCode, addonAttachFailedMsg, err)

@@ -1,0 +1,27 @@
+DROP POLICY preference_isolation ON notification.preferences;
+DROP POLICY message_isolation ON notification.messages;
+DROP POLICY webhook_delivery_isolation ON organization.webhook_deliveries;
+DROP POLICY webhook_endpoint_isolation ON organization.webhook_endpoints;
+DROP POLICY invitation_isolation ON organization.invitations;
+DROP POLICY membership_isolation ON organization.memberships;
+DROP POLICY org_delete ON organization.organizations;
+DROP POLICY org_update ON organization.organizations;
+DROP POLICY org_insert ON organization.organizations;
+DROP POLICY org_read ON organization.organizations;
+
+ALTER TABLE notification.processed_events   NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE notification.processed_events   DISABLE ROW LEVEL SECURITY;
+ALTER TABLE notification.preferences        NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE notification.preferences        DISABLE ROW LEVEL SECURITY;
+ALTER TABLE notification.messages           NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE notification.messages           DISABLE ROW LEVEL SECURITY;
+ALTER TABLE organization.webhook_deliveries NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE organization.webhook_deliveries DISABLE ROW LEVEL SECURITY;
+ALTER TABLE organization.webhook_endpoints  NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE organization.webhook_endpoints  DISABLE ROW LEVEL SECURITY;
+ALTER TABLE organization.invitations        NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE organization.invitations        DISABLE ROW LEVEL SECURITY;
+ALTER TABLE organization.memberships        NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE organization.memberships        DISABLE ROW LEVEL SECURITY;
+ALTER TABLE organization.organizations      NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE organization.organizations      DISABLE ROW LEVEL SECURITY;

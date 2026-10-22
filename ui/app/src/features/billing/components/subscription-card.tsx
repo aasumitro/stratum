@@ -6,7 +6,6 @@ import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   useBillingSubscription,
-  useResumeSubscription,
   useUndoScheduledCancellation,
 } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
@@ -59,8 +58,6 @@ export function SubscriptionCard({ organizationId }: Props) {
 
   const sub = subData?.data
 
-  const { mutate: resume, isPending: resuming } =
-    useResumeSubscription(organizationId)
   const { mutate: undoCancellation, isPending: undoingCancellation } =
     useUndoScheduledCancellation(organizationId)
 
@@ -103,8 +100,9 @@ export function SubscriptionCard({ organizationId }: Props) {
     (sub.status === "active" ||
       sub.status === "trialing" ||
       sub.status === "past_due")
-  // cancelled/expired both get a dedicated banner+action above (one
-  // banner, one action per state) instead of a header button.
+  // cancelled/expired both get a dedicated banner+action at the top of the
+  // page (billing-layout.tsx's dunning banner — one banner, one action per
+  // state) instead of a header button.
   // Extension only applies to an already-active, invoiced subscription —
   // trialing/cancelled/expired don't have a real billing period to extend.
   // Also blocked while any invoice on the subscription is still unpaid —
@@ -124,8 +122,6 @@ export function SubscriptionCard({ organizationId }: Props) {
         organizationId={organizationId}
         isOwner={!!isOwner}
         daysLeft={daysLeft}
-        resuming={resuming}
-        onResume={() => resume()}
         undoingCancellation={undoingCancellation}
         onUndoCancellation={() => undoCancellation()}
       />

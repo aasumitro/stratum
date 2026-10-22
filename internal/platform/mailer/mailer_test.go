@@ -21,7 +21,7 @@ import (
 
 func TestSend_Unconfigured_ReturnsNil(t *testing.T) {
 	m := &Mailer{} // host = "" → IsConfigured = false
-	if err := m.Send(t.Context(), Message{To: "to@test.com", Subject: "Hi", HTML: "<p>Hi</p>"}); err != nil {
+	if err := m.Send(t.Context(), Message{To: "to@example.com", Subject: "Hi", HTML: "<p>Hi</p>"}); err != nil {
 		t.Errorf("unconfigured Send: want nil, got %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestSend_ImplicitTLS_UntrustedCertificate_ReturnsWrappedError(t *testing.T)
 
 	// dialTLS is called directly (bypassing Send's port==465 dispatch) since
 	// binding a test listener to the real privileged port 465 isn't portable.
-	m := &Mailer{host: "127.0.0.1", fromAddr: "sender@test.com"}
+	m := &Mailer{host: "127.0.0.1", fromAddr: "sender@example.com"}
 
 	_, err = m.dialTLS(t.Context(), ln.Addr().String())
 	if err == nil {
@@ -190,13 +190,13 @@ func TestSend_SMTP_DeliversMessage(t *testing.T) {
 	m := &Mailer{
 		host:     "127.0.0.1",
 		port:     port,
-		username: "user@test.com",
+		username: "user@example.com",
 		password: "secret",
 		fromName: "Test Sender",
-		fromAddr: "sender@test.com",
+		fromAddr: "sender@example.com",
 	}
 	if err = m.Send(t.Context(), Message{
-		To:      "recipient@test.com",
+		To:      "recipient@example.com",
 		Subject: "Phase4 Subject",
 		HTML:    "<p>Hello from test</p>",
 	}); err != nil {
@@ -239,17 +239,17 @@ func TestSend_SlowServer_TimesOutViaContext(t *testing.T) {
 	m := &Mailer{
 		host:     "127.0.0.1",
 		port:     port,
-		username: "user@test.com",
+		username: "user@example.com",
 		password: "secret",
 		fromName: "Test Sender",
-		fromAddr: "sender@test.com",
+		fromAddr: "sender@example.com",
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
-	err = m.Send(ctx, Message{To: "recipient@test.com", Subject: "Hi", HTML: "<p>Hi</p>"})
+	err = m.Send(ctx, Message{To: "recipient@example.com", Subject: "Hi", HTML: "<p>Hi</p>"})
 	elapsed := time.Since(start)
 
 	if err == nil {

@@ -81,31 +81,6 @@ func (h *handler) listPaymentLinks(c *gin.Context) {
 	response.List(links, int64(len(links))).JSON(c, http.StatusOK)
 }
 
-// regeneratePaymentLink godoc
-// @Summary      Regenerate a payment link
-// @Description  Owner only. Issues a fresh payment link for an invoice, replacing an expired/failed one.
-// @Tags         billing
-// @Produce      json
-// @Security     BearerAuth
-// @Param        organizationID  path      string  true  "Organization ID"
-// @Param        invoiceID       path      string  true  "Invoice ID"
-// @Success      201             {object}  response.Payload{data=paymentLinkRecord}
-// @Failure      403             {object}  response.Payload  "owner role required"
-// @Failure      401             {object}  response.Payload  "missing/invalid auth token"
-// @Router       /organizations/{organizationID}/billing/invoices/{invoiceID}/pay/regenerate [post]
-func (h *handler) regeneratePaymentLink(c *gin.Context) {
-	ws, _ := middleware.OrganizationFromContext(c)
-	invoiceID := c.Param("invoiceID")
-
-	link, err := h.svc.regeneratePaymentLink(
-		c.Request.Context(), subjectTypeOrganization, ws.ID, invoiceID)
-	if err != nil {
-		response.FromError(c, err)
-		return
-	}
-	response.Success(link).JSON(c, http.StatusCreated)
-}
-
 // createPaymentLink godoc
 // @Summary      Create a payment link
 // @Description  Owner only.

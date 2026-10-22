@@ -4,7 +4,9 @@
 // banner: a distinct sub-state of "active" (status never actually left
 // active — only scheduled_cancel_at is set), shown alongside an "Undo
 // cancellation" action that fires the callback prop passed in from
-// SubscriptionCard (which owns the mutation), not a hook here.
+// SubscriptionCard (which owns the mutation), not a hook here. Also pins
+// that past_due/expired/cancelled render nothing: billing-layout.tsx's
+// dunning banner is the one banner for those states.
 import { createElement } from "react"
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -50,8 +52,6 @@ function renderBanner(
       organizationId,
       isOwner: overrides.isOwner ?? true,
       daysLeft: null,
-      resuming: false,
-      onResume: () => {},
       undoingCancellation: overrides.undoingCancellation ?? false,
       onUndoCancellation: overrides.onUndoCancellation ?? (() => {}),
     })
@@ -63,6 +63,14 @@ describe("SubscriptionStatusBanner", () => {
     const { container } = renderBanner(subscription())
     expect(container.firstChild).toBeNull()
   })
+
+  it.each(["past_due", "expired", "cancelled"] as const)(
+    "renders nothing for %s — the page's dunning banner owns that state",
+    (status) => {
+      const { container } = renderBanner(subscription({ status }))
+      expect(container.firstChild).toBeNull()
+    }
+  )
 
   it("shows the scheduled-cancellation banner with the concrete renewal date", () => {
     renderBanner(subscription({ scheduled_cancel_at: "2026-08-01T00:00:00Z" }))

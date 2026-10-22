@@ -28,6 +28,17 @@ func NewPostgresPool(ctx context.Context, cfg config.PostgresConfig) (*pgxpool.P
 		return nil, fmt.Errorf("parsing postgres url: %w", err)
 	}
 
+	// statement_timeout is applied by pgx as a RuntimeParam on every
+	// connection it opens for this pool. The value is handed to Postgres
+	// as-is ("30s", "30000", "0"); an unparseable value surfaces on the
+	// boot Ping below. An empty string leaves the server default in place.
+	if cfg.StatementTimeout != "" {
+		if poolCfg.ConnConfig.RuntimeParams == nil {
+			poolCfg.ConnConfig.RuntimeParams = map[string]string{}
+		}
+		poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = cfg.StatementTimeout
+	}
+
 	poolCfg.MaxConns = cfg.MaxOpenConns
 	poolCfg.MinConns = 2
 	poolCfg.MaxConnIdleTime = cfg.MaxIdleTime

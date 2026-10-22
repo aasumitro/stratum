@@ -7,7 +7,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // NewHandlerEngine wires billing handlers with no service and fixed context.
@@ -73,7 +72,6 @@ func NewHandlerEngineWithCaller(callerSub, ownerSub string) *gin.Engine {
 	e.POST("/billing/extend", ownerOnly, h.extendSubscription)
 	e.POST("/billing/activate", ownerOnly, h.activateTrialNow)
 	e.POST("/billing/invoices/:invoiceID/pay", ownerOnly, h.createPaymentLink)
-	e.POST("/billing/invoices/:invoiceID/pay/regenerate", ownerOnly, h.regeneratePaymentLink)
 	e.POST("/billing/usage", ownerOnly, h.recordUsage)
 	e.POST("/billing/coupons/redeem", ownerOnly, h.redeemCoupon)
 	e.POST("/billing/addons", ownerOnly, h.attachAddon)
@@ -102,25 +100,27 @@ type referenceStub interface {
 	contracts.CountryTaxReader
 }
 
-// NewModuleForTest creates a Module with a real pool and noop publisher. A
-// nil ref leaves the tax rate unwired — tax defaults to 0 (see service.go's
+// NewModuleForTest creates a Module backed by a real pool. A nil ref leaves
+// the tax rate unwired — tax defaults to 0 (see service.go's
 // optional-dependency comments).
 func NewModuleForTest(pool *pgxpool.Pool, ref referenceStub) *Module {
-	return New(pool, messaging.NoopPublisher{}, ProviderConfig{}, ref, nil, nil)
+	return New(pool, ProviderConfig{}, ref, nil, nil)
 }
 
 // NewWebhookModuleEngine creates a gin.Engine with both billing routes (authed)
 // and public webhook routes (/webhooks/stripe, /webhooks/xendit), backed by a
 // real DB. ProviderConfig is empty so webhook secrets are bypassed (dev mode).
+// No organization suspender is wired, so suspend/unsuspend calls are skipped.
 func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) *gin.Engine {
-	return NewWebhookModuleEngineWithPublisher(pool, authSub, organizationID, messaging.NoopPublisher{})
+	return NewWebhookModuleEngineWithSuspender(pool, authSub, organizationID, nil)
 }
 
-// NewWebhookModuleEngineWithPublisher is NewWebhookModuleEngine with an
-// injectable publisher, for tests that need to observe what a webhook
-// delivery publishes (e.g. asserting an event fires exactly once under
-// concurrent deliveries) instead of discarding it via NoopPublisher.
-func NewWebhookModuleEngineWithPublisher(pool *pgxpool.Pool, authSub, organizationID string, pub messaging.EventPublisher) *gin.Engine {
+// NewWebhookModuleEngineWithSuspender is NewWebhookModuleEngine with
+// suspender wired as the module's organization suspender, so a test can
+// assert the suspend/unsuspend calls a webhook triggers.
+func NewWebhookModuleEngineWithSuspender(
+	pool *pgxpool.Pool, authSub, organizationID string, suspender contracts.OrganizationSuspender,
+) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	// pool doubles as the webhook pool here — every caller of this helper
 	// connects via TEST_DATABASE_URL (stratum_test, BYPASSRLS by design —
@@ -128,7 +128,7 @@ func NewWebhookModuleEngineWithPublisher(pool *pgxpool.Pool, authSub, organizati
 	// distinction for this helper to preserve. webhook_rls_test.go
 	// exercises the real stratum_app/stratum_webhook split directly
 	// instead of through here.
-	mod := New(pool, pub, ProviderConfig{}, nil, nil, pool)
+	mod := New(pool, ProviderConfig{}, nil, suspender, pool)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})

@@ -11,9 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -22,7 +22,6 @@ import (
 	"github.com/aasumitro/stratum/internal/modules/organization"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // stubRefReader satisfies contracts.CountryTaxReader — the only outside-schema
@@ -36,10 +35,12 @@ func (stubRefReader) GetCountryTaxRate(_ context.Context, _ string) (int, error)
 // stubOrgSuspender drives the auto-invoice worker's cancellation-reconciliation
 // tests: it records every SuspendOrganization call and can be told to fail
 // its first N calls before succeeding, to simulate a failed attempt
-// followed by a successful redelivery.
+// followed by a successful redelivery. UnsuspendOrganization calls are
+// recorded too (never failed), for the webhook reactivation tests.
 type stubOrgSuspender struct {
-	failCount int
-	calls     []struct{ orgID, reason string }
+	failCount   int
+	calls       []struct{ orgID, reason string }
+	unsuspended []string
 }
 
 func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason string) error {
@@ -51,7 +52,10 @@ func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason 
 	return nil
 }
 
-func (s *stubOrgSuspender) UnsuspendOrganization(_ context.Context, _ string) error { return nil }
+func (s *stubOrgSuspender) UnsuspendOrganization(_ context.Context, orgID string) error {
+	s.unsuspended = append(s.unsuspended, orgID)
+	return nil
+}
 
 // spyOrgCommander counts ResolveDowngradeOverage calls and can be told to
 // fail its first N before succeeding — used both to assert exactly how many
@@ -214,7 +218,7 @@ func TestIntegration_FirstOrganization_GetsTrial(t *testing.T) {
 	setupBillingTest(t, pool, orgID)
 
 	mod := billing.NewModuleForTest(pool, nil)
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -244,7 +248,7 @@ func TestIntegration_SecondOrganization_NoTrial(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, nil)
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -363,7 +367,7 @@ func TestIntegration_SecondOrganization_WithCart_AddonsAndCouponOnFirstInvoice(t
 	seedCoupon(t, pool, couponCode, couponSeedOpts{DiscountType: "fixed", AmountCents: couponAmount(100), Cadence: "once"})
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -973,6 +977,137 @@ func TestIntegration_ExpireIfDue_HistoryFailure_RollsBackStatus(t *testing.T) {
 	}
 }
 
+// TestIntegration_ExpireIfDue_PastDue_ExpiresAndFailsInvoices covers the
+// terminal transition for a delinquent subscription: once its own renewal
+// payment has failed (status past_due) and period_end passes, the
+// subscription-check must expire it exactly as it would an active one —
+// fail the still-pending invoice, expire that invoice's payment link, write
+// an expire history row, and suspend the organization.
+func TestIntegration_ExpireIfDue_PastDue_ExpiresAndFailsInvoices(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_expire_pastdue_user"
+		orgID = "00000000-0000-0000-0000-000000000d19"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	suspender := &stubOrgSuspender{}
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, orgID)
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'past_due', period_end = $1, trial_end = NULL WHERE id = $2`,
+		past, subID); err != nil {
+		t.Fatalf("force past_due with past period_end: %v", err)
+	}
+
+	invID := seedInvoice(pool, subID, "IDR", 150000)
+	linkID := seedPaymentLink(pool, invID, "xendit_inv_d19", "xendit", "IDR", 150000)
+
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, past)); err != nil {
+		t.Fatalf("HandleSubscriptionCheck: %v", err)
+	}
+
+	var subStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus)
+	if subStatus != "expired" {
+		t.Errorf("subscription: want status=expired, got %q", subStatus)
+	}
+
+	var invStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+	if invStatus != "failed" {
+		t.Errorf("invoice: want status=failed, got %q", invStatus)
+	}
+
+	var linkStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE id = $1`, linkID).Scan(&linkStatus)
+	if linkStatus != "expired" {
+		t.Errorf("payment_link: want status=expired, got %q", linkStatus)
+	}
+
+	var expireHistoryCount int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'expire'`,
+		subID).Scan(&expireHistoryCount)
+	if expireHistoryCount != 1 {
+		t.Errorf("want 1 expire history row, got %d", expireHistoryCount)
+	}
+
+	if len(suspender.calls) != 1 {
+		t.Fatalf("want SuspendOrganization called once, got %d", len(suspender.calls))
+	}
+	if suspender.calls[0].orgID != orgID || suspender.calls[0].reason != "subscription expired" {
+		t.Errorf("want SuspendOrganization(%q, %q), got (%q, %q)",
+			orgID, "subscription expired", suspender.calls[0].orgID, suspender.calls[0].reason)
+	}
+}
+
+// TestIntegration_ExpireIfDue_Active_FailsInvoices_NoInvoiceFailedEvent
+// covers the invoice side effect on the ordinary active→expired path: the
+// still-pending invoice is marked failed and its link expired, and the
+// expiry emits only billing.subscription.expired — never a per-invoice
+// billing.invoice.failed, which would start a fresh dunning cycle for a
+// subscription that is already gone.
+func TestIntegration_ExpireIfDue_Active_FailsInvoices_NoInvoiceFailedEvent(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_expire_active_failinv_user"
+		orgID = "00000000-0000-0000-0000-000000000d1a"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	subID := getSubscriptionID(pool, orgID)
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'active', period_end = $1, trial_end = NULL WHERE id = $2`,
+		past, subID); err != nil {
+		t.Fatalf("force active with past period_end: %v", err)
+	}
+
+	invID := seedInvoice(pool, subID, "USD", 900)
+	linkID := seedPaymentLink(pool, invID, "stripe_sess_d1a", "stripe", "USD", 900)
+
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, past)); err != nil {
+		t.Fatalf("HandleSubscriptionCheck: %v", err)
+	}
+
+	var invStatus, linkStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE id = $1`, linkID).Scan(&linkStatus)
+	if invStatus != "failed" {
+		t.Errorf("invoice: want status=failed, got %q", invStatus)
+	}
+	if linkStatus != "expired" {
+		t.Errorf("payment_link: want status=expired, got %q", linkStatus)
+	}
+
+	// messaging.outbox is where events.Enqueue writes its row, in the same
+	// transaction as the state change.
+	countOutbox := func(routingKey string) int {
+		var n int
+		pool.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+			routingKey, orgID).Scan(&n)
+		return n
+	}
+	if got := countOutbox(events.RoutingKeySubscriptionExpired); got != 1 {
+		t.Errorf("want 1 %s outbox row, got %d", events.RoutingKeySubscriptionExpired, got)
+	}
+	if got := countOutbox(events.RoutingKeyInvoiceFailed); got != 0 {
+		t.Errorf("want no %s outbox row from the expiry path, got %d", events.RoutingKeyInvoiceFailed, got)
+	}
+}
+
 // --- Webhook processing ---
 
 func TestIntegration_StripeWebhook_MarksInvoicePaid(t *testing.T) {
@@ -1236,6 +1371,170 @@ func TestIntegration_Webhook_PaidReactivatesExpiredSubscription(t *testing.T) {
 	}
 }
 
+// seedExpiredInvoiceState provisions orgID's subscription and leaves it the
+// way expireIfDue's failPendingInvoicesAndLinks does: subscription set to
+// subStatus, one invoice of the given kind marked 'failed', and its Stripe
+// payment link (externalID) marked 'expired'. Returns the subscription and
+// invoice IDs.
+func seedExpiredInvoiceState(
+	t *testing.T, pool *pgxpool.Pool, orgID, user, externalID, subStatus, kind string,
+) (subID, invID string) {
+	t.Helper()
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID = getSubscriptionID(pool, orgID)
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind, status)
+		VALUES ($1, 900, 'USD', $2, 'failed') RETURNING id`,
+		subID, kind).Scan(&invID); err != nil {
+		t.Fatalf("seed %s invoice: %v", kind, err)
+	}
+	seedPaymentLink(pool, invID, externalID, "stripe", "USD", 900)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.payment_links SET status = 'expired' WHERE invoice_id = $1`, invID); err != nil {
+		t.Fatalf("expire payment link: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = $1 WHERE id = $2`, subStatus, subID); err != nil {
+		t.Fatalf("set subscription status: %v", err)
+	}
+	return subID, invID
+}
+
+// countOrgOutboxRows counts messaging.outbox rows with routingKey for orgID.
+func countOrgOutboxRows(t *testing.T, pool *pgxpool.Pool, routingKey, orgID string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+		routingKey, orgID).Scan(&n); err != nil {
+		t.Fatalf("count outbox %s: %v", routingKey, err)
+	}
+	return n
+}
+
+// postPaidStripeWebhook sends a checkout.session.completed (paid) webhook
+// for externalID through e and fails the test unless it is ACK'd.
+func postPaidStripeWebhook(t *testing.T, e *gin.Engine, externalID string) {
+	t.Helper()
+	payload := `{"type":"checkout.session.completed","data":{"object":{"id":"` + externalID + `","payment_status":"paid"}}}`
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("paid webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// TestIntegration_Webhook_LatePaidWebhook_AfterExpiry_ReactivatesRenewal
+// covers a renewal payment that completed at the gateway while expireIfDue
+// was failing its invoice — paid before the expiry check with the webhook
+// delivered after it, or paid afterwards on a hosted checkout the provider
+// still had open. By the time the webhook arrives the subscription is
+// expired, the invoice failed and its link expired. The payment must be
+// recorded and the subscription reactivated, not swallowed.
+func TestIntegration_Webhook_LatePaidWebhook_AfterExpiry_ReactivatesRenewal(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_late_paid_user"
+		orgID = "00000000-0000-0000-0000-000000000a71"
+		extID = "stripe_sess_a71"
+	)
+	setupBillingTest(t, pool, orgID)
+	subID, invID := seedExpiredInvoiceState(t, pool, orgID, user, extID, "expired", "subscription")
+
+	suspender := &stubOrgSuspender{}
+	postPaidStripeWebhook(t, billing.NewWebhookModuleEngineWithSuspender(pool, user, orgID, suspender), extID)
+
+	var subStatus string
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if subStatus != "active" {
+		t.Errorf("subscription: want status=active after the recovered payment, got %q", subStatus)
+	}
+	var invStatus string
+	var paidAt *time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT status, paid_at FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus, &paidAt); err != nil {
+		t.Fatalf("read invoice: %v", err)
+	}
+	if invStatus != "paid" || paidAt == nil {
+		t.Errorf("invoice: want status=paid with paid_at set, got status=%q paid_at=%v", invStatus, paidAt)
+	}
+	var payments int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments); err != nil {
+		t.Fatalf("count payments: %v", err)
+	}
+	if payments != 1 {
+		t.Errorf("billing.payments: want exactly 1 row for the invoice, got %d", payments)
+	}
+	if !slices.Equal(suspender.unsuspended, []string{orgID}) {
+		t.Errorf("UnsuspendOrganization calls: want [%s], got %v", orgID, suspender.unsuspended)
+	}
+	if n := countOrgOutboxRows(t, pool, events.RoutingKeyInvoicePaid, orgID); n != 1 {
+		t.Errorf("outbox %s: want 1, got %d", events.RoutingKeyInvoicePaid, n)
+	}
+	if n := countOrgOutboxRows(t, pool, events.RoutingKeySubscriptionResumed, orgID); n != 1 {
+		t.Errorf("outbox %s: want 1, got %d", events.RoutingKeySubscriptionResumed, n)
+	}
+}
+
+// TestIntegration_Webhook_LatePaidWebhook_NotRecovered covers the paid
+// webhooks for a failed invoice that must stay unapplied: a failed renewal
+// invoice whose subscription is live again (the owner already reactivated
+// through another invoice), and a failed additive invoice on an expired
+// subscription. Neither flips the invoice, records a payment, changes the
+// subscription, or emits an event.
+func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
+	cases := []struct {
+		name, orgID, extID, subStatus, kind string
+	}{
+		{"failed invoice on non-expired subscription", "00000000-0000-0000-0000-000000000a72", "stripe_sess_a72", "active", "subscription"},
+		{"additive failed invoice on expired subscription", "00000000-0000-0000-0000-000000000a73", "stripe_sess_a73", "expired", "extension"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			user := "integ_billing_wh_late_noop_user_" + tc.orgID[len(tc.orgID)-3:]
+			setupBillingTest(t, pool, tc.orgID)
+			subID, invID := seedExpiredInvoiceState(t, pool, tc.orgID, user, tc.extID, tc.subStatus, tc.kind)
+
+			suspender := &stubOrgSuspender{}
+			postPaidStripeWebhook(t, billing.NewWebhookModuleEngineWithSuspender(pool, user, tc.orgID, suspender), tc.extID)
+
+			var invStatus, subStatus string
+			var payments int
+			if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus); err != nil {
+				t.Fatalf("read invoice: %v", err)
+			}
+			if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus); err != nil {
+				t.Fatalf("read subscription: %v", err)
+			}
+			if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments); err != nil {
+				t.Fatalf("count payments: %v", err)
+			}
+			if invStatus != "failed" {
+				t.Errorf("invoice: want status=failed (not recovered), got %q", invStatus)
+			}
+			if subStatus != tc.subStatus {
+				t.Errorf("subscription: want status=%s (unchanged), got %q", tc.subStatus, subStatus)
+			}
+			if payments != 0 {
+				t.Errorf("billing.payments: want 0 rows, got %d", payments)
+			}
+			if len(suspender.unsuspended) != 0 {
+				t.Errorf("UnsuspendOrganization: want no calls, got %v", suspender.unsuspended)
+			}
+			for _, key := range []string{events.RoutingKeyInvoicePaid, events.RoutingKeySubscriptionResumed} {
+				if n := countOrgOutboxRows(t, pool, key, tc.orgID); n != 0 {
+					t.Errorf("outbox %s: want 0, got %d", key, n)
+				}
+			}
+		})
+	}
+}
+
 // TestIntegration_Webhook_PaidRenewalRollsOverActivePeriod guards against a
 // regression where a routine renewal invoice (HandleSubscriptionAutoInvoice
 // creates one 3 days before period_end) paid on time — i.e. while the
@@ -1388,7 +1687,7 @@ func TestIntegration_Webhook_PaidProvisioningInvoice_MonthlyPeriodUnchanged(t *t
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -1467,7 +1766,7 @@ func TestIntegration_Webhook_PaidProvisioningInvoice_YearlyGetsFullYear(t *testi
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -1544,7 +1843,7 @@ func TestIntegration_ExtendSubscription_BlockedByUnpaidProvisioningInvoice(t *te
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -1668,7 +1967,7 @@ func TestIntegration_Webhook_ExtensionRollsBackOnHistoryFailure(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	// wsID1 absorbs this user's one-per-user trial; wsID2 provisions active.
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
@@ -1751,7 +2050,7 @@ func TestIntegration_Webhook_AddonIncreasePaid_AppliesQuantityAndHistory(t *test
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	// wsID1 absorbs this user's one-per-user trial; wsID2 provisions active —
 	// the addon-increase payment gate only applies to a non-trialing subscription.
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
@@ -1875,7 +2174,7 @@ func TestIntegration_History_ExposesPhaseCycleAndUndoneRow(t *testing.T) {
 	seedBillingOrganization(pool, orgID, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	// trialOrgID absorbs this user's one-per-user trial, so orgID (below)
 	// provisions active/non-trial — the downgrade-scheduling branch this
 	// test exercises only applies to a non-trialing subscription.
@@ -1990,8 +2289,8 @@ func TestIntegration_History_ExposesPhaseCycleAndUndoneRow(t *testing.T) {
 // TestIntegration_Webhook_AddonIncreaseFailed_LeavesPendingRetryable covers
 // the edge case where a failed payment on an addon-increase invoice must
 // not touch pending_quantity/pending_invoice_id — the customer can retry
-// payment via the existing regenerate-link flow without re-requesting the
-// increase. No addon_increase-specific failure code exists (the existing
+// payment by asking for a fresh payment link on the still-pending invoice,
+// without re-requesting the increase. No addon_increase-specific failure code exists (the existing
 // outcome.failed path fires regardless of kind); this proves that
 // fall-through is correct for this kind specifically, then confirms a
 // second, successful delivery still applies the increase normally.
@@ -2012,7 +2311,7 @@ func TestIntegration_Webhook_AddonIncreaseFailed_LeavesPendingRetryable(t *testi
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
 	payProvisioningInvoice(pool, wsID2)
@@ -2154,10 +2453,30 @@ func TestIntegration_HandleSubscriptionRemind_ActiveSub(t *testing.T) {
 		`SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID,
 	).Scan(&subID)
 
+	// The handler's own queue binds RoutingKeySubscriptionRemind, so the
+	// checked reminder must go out under RoutingKeySubscriptionExpiringSoon —
+	// publishing its input key again would feed it back on the next relay tick.
+	countOutbox := func(routingKey string) int {
+		var n int
+		pool.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+			routingKey, orgID).Scan(&n)
+		return n
+	}
+	remindBefore := countOutbox(events.RoutingKeySubscriptionRemind)
+	expiringSoonBefore := countOutbox(events.RoutingKeySubscriptionExpiringSoon)
+
 	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
 	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 	if err := mod.Worker.HandleSubscriptionRemind(t.Context(), body); err != nil {
 		t.Errorf("HandleSubscriptionRemind active sub: want nil, got %v", err)
+	}
+
+	if got := countOutbox(events.RoutingKeySubscriptionExpiringSoon) - expiringSoonBefore; got != 1 {
+		t.Errorf("want 1 new %s outbox row, got %d", events.RoutingKeySubscriptionExpiringSoon, got)
+	}
+	if got := countOutbox(events.RoutingKeySubscriptionRemind) - remindBefore; got != 0 {
+		t.Errorf("want no new %s outbox row (the handler's own input key), got %d", events.RoutingKeySubscriptionRemind, got)
 	}
 }
 
@@ -2390,7 +2709,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_NoScheduledCancellation_Invoi
 	setupBillingTest(t, pool, orgID)
 
 	suspender := &stubOrgSuspender{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -2427,7 +2746,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledCancellation_Suspend
 	setupBillingTest(t, pool, orgID)
 
 	suspender := &stubOrgSuspender{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -2475,8 +2794,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledCancellation_Suspend
 		t.Errorf("want no invoice created for a cancelled subscription, got %d", invoiceCount)
 	}
 
-	// Queried directly from messaging.outbox, not a captured publisher:
-	// events.Enqueue never touches the injected EventPublisher at all.
+	// Read straight from messaging.outbox, where events.Enqueue writes the
+	// row in the same transaction as the change.
 	var cancelledEventCount int
 	pool.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
@@ -2500,7 +2819,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_SuspendFails_RollsBackAndRetr
 	setupBillingTest(t, pool, orgID)
 
 	suspender := &stubOrgSuspender{failCount: 1}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -2535,8 +2854,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_SuspendFails_RollsBackAndRetr
 	// events (trial-started, the delayed subscription-check/-remind/
 	// -auto-invoice scheduling) from setup above — check specifically for
 	// the one this failed attempt must not have enqueued, not the whole
-	// table. Queried directly from messaging.outbox, not a captured
-	// publisher: events.Enqueue never touches the injected EventPublisher.
+	// table. Read straight from messaging.outbox, where events.Enqueue
+	// writes the row in the same transaction as the change.
 	var cancelledEventCount int
 	pool.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
@@ -2572,7 +2891,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_RedeliveryAfterAppliedCancell
 	setupBillingTest(t, pool, orgID)
 
 	suspender := &stubOrgSuspender{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -2610,7 +2929,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_NothingScheduled_OverageUntou
 	setupBillingTest(t, pool, orgID)
 
 	commander := &spyOrgCommander{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
 	mod.SetOrganizationCommander(commander)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -2650,7 +2969,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_Within
 	setupBillingTest(t, pool, orgID)
 
 	commander := &spyOrgCommander{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
 	mod.SetOrganizationCommander(commander)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -2703,7 +3022,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_OverLi
 	setupBillingTest(t, pool, orgID)
 
 	commander := &spyOrgCommander{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
 	mod.SetOrganizationCommander(commander)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -2743,7 +3062,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledAddonDecrease_OverLi
 	setupBillingTest(t, pool, orgID)
 
 	commander := &spyOrgCommander{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
 	mod.SetOrganizationCommander(commander)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -2788,7 +3107,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_CombinedPlanAndAddon_ExactlyO
 	setupBillingTest(t, pool, orgID)
 
 	commander := &spyOrgCommander{}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
 	mod.SetOrganizationCommander(commander)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -2836,7 +3155,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_OverageResolutionFails_RollsB
 	setupBillingTest(t, pool, orgID)
 
 	commander := &spyOrgCommander{failCount: 1}
-	mod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, nil, pool)
 	mod.SetOrganizationCommander(commander)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -2928,6 +3247,58 @@ func TestIntegration_Webhook_Failed_MarksPastDue(t *testing.T) {
 	}
 }
 
+// TestIntegration_Webhook_Failed_AddonKind_DoesNotPastDue verifies that a
+// failed payment for an additive invoice (addon_increase — the same holds
+// for extension) leaves the subscription's status untouched. Only a
+// period-backing invoice ("subscription" renewal or "activation") failing
+// means the subscription's own period is unpaid; an additive failure marks
+// just the payment link.
+func TestIntegration_Webhook_Failed_AddonKind_DoesNotPastDue(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_failed_addon_user"
+		orgID = "00000000-0000-0000-0000-000000000f4a"
+		extID = "xendit_inv_f4a"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	pool.Exec(t.Context(), `UPDATE billing.subscriptions SET status = 'active' WHERE subject_type = 'organization' AND subject_id = $1`, orgID)
+
+	subID := getSubscriptionID(pool, orgID)
+	var invID string
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		VALUES ($1, 5000, 'IDR', 'addon_increase') RETURNING id`,
+		subID).Scan(&invID); err != nil {
+		t.Fatalf("seed addon_increase invoice: %v", err)
+	}
+	seedPaymentLink(pool, invID, extID, "xendit", "IDR", 5000)
+
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/xendit",
+		`{"id":"`+extID+`","status":"FAILED"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("FAILED webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var subStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus)
+	if subStatus != "active" {
+		t.Errorf("subscription: want status=active (additive failure must not past-due), got %q", subStatus)
+	}
+
+	var linkStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE invoice_id = $1`, invID).Scan(&linkStatus)
+	if linkStatus != "failed" {
+		t.Errorf("payment_link: want status=failed, got %q", linkStatus)
+	}
+}
+
 // TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce covers two
 // distinct Stripe events (different event IDs, so not deduplicated by
 // processWebhook's eventID-based idempotency marker) both resolving to
@@ -2944,9 +3315,9 @@ func TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce(t *testing.T
 	// what proves they aren't deduplicated) — a fixed literal would collide
 	// with billing.webhook_events rows a prior local run already committed,
 	// so every ID here is generated fresh per run instead.
-	runSuffix := uuid.NewString()[:8]
+	runSuffix := uuid.New().String()[:8]
 	user := "integ_billing_wh_race_user_" + runSuffix
-	orgID := uuid.NewString()
+	orgID := uuid.New().String()
 	extID := "stripe_sess_race_" + runSuffix
 	setupBillingTest(t, pool, orgID)
 
@@ -2959,7 +3330,7 @@ func TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce(t *testing.T
 	invID := seedInvoice(pool, subID, "USD", 900)
 	seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
 
-	e := billing.NewWebhookModuleEngineWithPublisher(pool, user, orgID, messaging.NoopPublisher{})
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
 
 	payloadFor := func(eventID string) string {
 		return `{"id":"` + eventID + `","type":"checkout.session.expired","data":{"object":{"id":"` + extID + `"}}}`
@@ -2984,8 +3355,8 @@ func TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce(t *testing.T
 		}
 	}
 
-	// Queried directly from messaging.outbox, not a captured publisher:
-	// events.Enqueue/EnqueueDelayed never touch the injected EventPublisher.
+	// Read straight from messaging.outbox, where events.Enqueue and
+	// events.EnqueueDelayed write rows in the same transaction as the change.
 	countOutbox := func(routingKey string) int {
 		var n int
 		pool.QueryRow(t.Context(),
@@ -2994,8 +3365,8 @@ func TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce(t *testing.T
 		return n
 	}
 	failedCount := countOutbox(events.RoutingKeyInvoiceFailed)
-	remindCount := countOutbox(events.DelayRoutingKeySubscriptionPaymentRemind)
-	finalCount := countOutbox(events.DelayRoutingKeySubscriptionPaymentFinal)
+	remindCount := countOutbox(events.RoutingKeySubscriptionPaymentRemind)
+	finalCount := countOutbox(events.RoutingKeySubscriptionPaymentFinal)
 	if failedCount != 1 {
 		t.Errorf("want exactly 1 InvoiceFailed outbox row from 2 concurrent distinct-eventID failed deliveries, got %d", failedCount)
 	}
@@ -3239,41 +3610,6 @@ func TestIntegration_ListFeatures_ReturnsResolvedEntitlements(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("want a members entitlement in the response")
-	}
-}
-
-// --- regeneratePaymentLink ---
-
-func TestIntegration_RegeneratePaymentLink_ExpiresOldLink(t *testing.T) {
-	pool := testPoolBilling(t)
-	const (
-		user  = "integ_billing_regen_user"
-		orgID = "00000000-0000-0000-0000-000000000f10"
-		extID = "stripe_regen_f10"
-	)
-	setupBillingTest(t, pool, orgID)
-
-	mod := billing.NewModuleForTest(pool, nil)
-	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
-		t.Fatalf("provision: %v", err)
-	}
-
-	subID := getSubscriptionID(pool, orgID)
-	invID := seedInvoice(pool, subID, "USD", 900)
-	linkID := seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
-
-	// regenerate: old link must be expired before createPaymentLink is attempted
-	e := billing.NewModuleEngine(pool, user, orgID)
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost,
-		billingURL(orgID)+"/invoices/"+invID+"/pay/regenerate", ""))
-	// createPaymentLink will fail (empty ProviderConfig) → 500 expected; old link must be expired regardless
-	_ = w.Code
-
-	var linkStatus string
-	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE id = $1`, linkID).Scan(&linkStatus)
-	if linkStatus != "expired" {
-		t.Errorf("old payment link: want status=expired after regenerate, got %q", linkStatus)
 	}
 }
 
@@ -3823,7 +4159,7 @@ func TestIntegration_HandleOrganizationCreated_InvoiceNumberDoesNotCollideAcross
 	}
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	// wsA1/wsB1 each absorb their own user's one-per-user trial; wsA2/wsB2
 	// each provision straight to active — both computing seq=1 independently.
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsA1, userA)); err != nil {
@@ -3909,7 +4245,7 @@ func TestIntegration_ExtendSubscription_HappyPath(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	// wsID1 takes the trial; wsID2 (this test's subject) provisions
 	// straight to "active" — extension only applies to active subscriptions.
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
@@ -4013,7 +4349,7 @@ func TestIntegration_ExtendSubscription_PaidWebhookWhenExpired(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
 	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
 	payProvisioningInvoice(pool, wsID2)
@@ -4085,7 +4421,7 @@ func TestIntegration_ExtendSubscription_AtomicOnMidSequenceFailure(t *testing.T)
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4174,7 +4510,7 @@ func TestIntegration_ExtendSubscription_ExceedsMaxDuration_Rejected(t *testing.T
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4242,7 +4578,7 @@ func TestIntegration_ExtendSubscription_SwitchToAnnual_HappyPath(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4332,7 +4668,7 @@ func TestIntegration_ExtendSubscription_SwitchToAnnual_RejectedWhenAlreadyYearly
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4369,7 +4705,7 @@ func TestIntegration_ExtendSubscription_UnpaidSwitchToAnnual_LeavesCycleUntouche
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4420,7 +4756,7 @@ func TestIntegration_ExtendSubscription_TieredPricing_13Months(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4531,7 +4867,7 @@ func TestIntegration_ExtendSubscription_BillsAttachedAddon(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4662,7 +4998,7 @@ func TestIntegration_ExtendSubscription_PlainTwelveMonths_DoesNotChangeCycle(t *
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4726,7 +5062,7 @@ func TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDir
 		seedBillingOrganization(pool, wsID2, user)
 
 		mod := billing.NewModuleForTest(pool, stubRefReader{})
-		mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+		mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 			t.Fatalf("first provision: %v", err)
 		}
@@ -4765,7 +5101,7 @@ func TestIntegration_ExtendSubscription_PendingGuard_BlocksBothVariantsEitherDir
 		seedBillingOrganization(pool, wsID2, user)
 
 		mod := billing.NewModuleForTest(pool, stubRefReader{})
-		mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+		mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 			t.Fatalf("first provision: %v", err)
 		}
@@ -4809,7 +5145,7 @@ func TestIntegration_GetSubscription_MaxExtendableMonths(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -4924,7 +5260,7 @@ func TestIntegration_PreviewInvoice_CurrentState(t *testing.T) {
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	// wsID1 takes the trial; wsID2 provisions straight to "active" — the
 	// preview's proration branch only applies to a non-trialing subscription.
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
@@ -4977,7 +5313,7 @@ func TestIntegration_PreviewInvoice_HypotheticalPlanChange_SetsNewPeriodEnd(t *t
 	seedBillingOrganization(pool, wsID2, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user)); err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
@@ -5080,7 +5416,7 @@ func TestIntegration_PreviewInvoice_Downgrade_IncludesOverage(t *testing.T) {
 	})
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5196,7 +5532,7 @@ func TestIntegration_PreviewInvoice_ScheduledNothingScheduled_OverageNil(t *test
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5244,7 +5580,7 @@ func TestIntegration_PreviewInvoice_ScheduledPlanDowngrade_OverLimit_OveragePopu
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5324,7 +5660,7 @@ func TestIntegration_PreviewInvoice_ScheduledPlanAndAddonCombined_OveragePopulat
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5393,7 +5729,7 @@ func TestIntegration_DowngradeSubscription_ManualSelection(t *testing.T) {
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5495,7 +5831,7 @@ func TestIntegration_DowngradeSubscription_AutoFill(t *testing.T) {
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5558,7 +5894,7 @@ func TestIntegration_DowngradeSubscription_ResumeOnRetry(t *testing.T) {
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5609,7 +5945,7 @@ func TestIntegration_DowngradeSubscription_ResumeOnRetry_AfterResolutionUnavaila
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	// Deliberately not calling SetOrganizationCommander yet — the first
@@ -5772,7 +6108,7 @@ func TestIntegration_Webhook_Extension_Concurrency(t *testing.T) {
 	seedBillingOrganization(pool, wsID1, user)
 
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	mod.SetOrganizationReader(organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1))
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
 	// wsID0 takes this user's one-per-user trial; wsID1 (this test's subject)
 	// provisions straight to "active" — extension only applies to active
 	// subscriptions, same pattern as TestIntegration_ExtendSubscription_HappyPath.
@@ -5834,7 +6170,7 @@ func TestIntegration_DowngradeSubscription_AddonLimit(t *testing.T) {
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -5951,7 +6287,7 @@ func TestIntegration_DowngradeSubscription_RealRLS_ActuallyRemovesMember(t *test
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -6066,7 +6402,7 @@ func TestIntegration_DowngradeSubscription_ConcurrentDoubleSubmit(t *testing.T) 
 	t.Cleanup(func() { cleanupBillingByOrganization(pool, wsID1) })
 	seedBillingOrganization(pool, wsID1, user)
 
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
 	mod := billing.NewModuleForTest(pool, stubRefReader{})
 	mod.SetOrganizationReader(orgMod)
 	mod.SetOrganizationCommander(orgMod)
@@ -6219,49 +6555,61 @@ func TestIntegration_ExpiredReactivation_ClearsTrialEnd_SurvivesSecondExpireChec
 	}
 }
 
-// TestIntegration_RegeneratePaymentLink_CrossTenant_404_NoMutation verifies
-// that regenerating a payment link using another tenant's invoice ID must
-// return 404 WITHOUT expiring the victim's pending payment link.
-func TestIntegration_RegeneratePaymentLink_CrossTenant_404_NoMutation(t *testing.T) {
+// TestIntegration_ReconcileOverdueSubscriptions_EnqueuesForOverdueOnly proves
+// the hourly safety net enqueues exactly one billing.subscription.check on
+// the real exchange for an active subscription already past period_end, and
+// nothing for a healthy one. It fails without ReconcileOverdueSubscriptions
+// (no rows enqueued at all).
+func TestIntegration_ReconcileOverdueSubscriptions_EnqueuesForOverdueOnly(t *testing.T) {
 	pool := testPoolBilling(t)
-	const (
-		attacker    = "integ_billing_str004_attacker"
-		attackerOrg = "00000000-0000-0000-0000-000000000f09"
-		victim      = "integ_billing_str004_victim"
-		victimOrg   = "00000000-0000-0000-0000-000000000f0a"
-	)
-	setupBillingTest(t, pool, attackerOrg)
-	setupBillingTest(t, pool, victimOrg)
+
+	overdueOrg := uuid.New().String()
+	healthyOrg := uuid.New().String()
+	setupBillingTest(t, pool, overdueOrg)
+	setupBillingTest(t, pool, healthyOrg)
 
 	mod := billing.NewModuleForTest(pool, nil)
-	for _, pair := range [][2]string{{attackerOrg, attacker}, {victimOrg, victim}} {
-		if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(pair[0], pair[1])); err != nil {
-			t.Fatalf("provision %s: %v", pair[0], err)
+	provision := func(orgID string) string {
+		if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+			encodeOrganizationCreatedEventFor(orgID, "reconcile_user_"+orgID[:8])); err != nil {
+			t.Fatalf("provision %s: %v", orgID, err)
 		}
+		return getSubscriptionID(pool, orgID)
+	}
+	overdueSub := provision(overdueOrg)
+	provision(healthyOrg)
+
+	// One subscription active but a full period past its end, the other active and healthy.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'active', trial_end = NULL,
+		 period_start = now() - interval '40 days', period_end = now() - interval '1 hour' WHERE id = $1`,
+		overdueSub); err != nil {
+		t.Fatalf("force overdue: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'active', trial_end = NULL,
+		 period_end = now() + interval '20 days' WHERE subject_id = $1`, healthyOrg); err != nil {
+		t.Fatalf("force healthy: %v", err)
 	}
 
-	victimSubID := getSubscriptionID(pool, victimOrg)
-	victimInvID := seedInvoice(pool, victimSubID, "USD", 900)
-	victimLinkID := seedPaymentLink(pool, victimInvID, "stripe_victim_f0a", "stripe", "USD", 900)
+	// Drop provisioning outbox rows so the check-row count below is unambiguous.
+	pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, overdueOrg)
+	pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, healthyOrg)
 
-	// Attacker tries to regenerate a payment link for the victim's invoice.
-	e := billing.NewModuleEngine(pool, attacker, attackerOrg)
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(
-		http.MethodPost,
-		billingURL(attackerOrg)+"/invoices/"+victimInvID+"/pay/regenerate",
-		"",
-	))
-	if w.Code != http.StatusNotFound {
-		t.Errorf("cross-tenant regenerate: want 404, got %d: %s", w.Code, w.Body)
+	mod.ReconcileOverdueSubscriptions(t.Context())
+
+	countChecks := func(orgID string) int {
+		var n int
+		pool.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM messaging.outbox
+			 WHERE exchange = $1 AND routing_key = $2 AND payload->>'org_id' = $3`,
+			events.ExchangeBilling, events.RoutingKeySubscriptionCheck, orgID).Scan(&n)
+		return n
 	}
-
-	// Victim's payment link must still be pending (not expired by the attacker's request).
-	var linkStatus string
-	pool.QueryRow(t.Context(),
-		`SELECT status FROM billing.payment_links WHERE id = $1`, victimLinkID,
-	).Scan(&linkStatus)
-	if linkStatus != "pending" {
-		t.Errorf("victim's payment link: want status=pending, got %q (attacker mutated it)", linkStatus)
+	if got := countChecks(overdueOrg); got != 1 {
+		t.Errorf("overdue subscription: want exactly 1 billing.subscription.check outbox row, got %d", got)
+	}
+	if got := countChecks(healthyOrg); got != 0 {
+		t.Errorf("healthy subscription: want 0 billing.subscription.check outbox rows, got %d", got)
 	}
 }

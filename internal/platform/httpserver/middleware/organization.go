@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
 const organizationContextKey = "organization.organization"
@@ -83,6 +84,10 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 
 		c.Set(organizationContextKey, *ws)
 		c.Set(memberRoleContextKey, role)
+		// Bind the request's database scope to this authorization decision:
+		// db.WithOrgTx refuses to scope a transaction to any other
+		// organization for the rest of the request.
+		c.Request = c.Request.WithContext(db.WithAuthorizedOrg(c.Request.Context(), ws.ID))
 		c.Next()
 	}
 }

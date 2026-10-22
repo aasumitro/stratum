@@ -21,7 +21,7 @@ var _ contracts.AddonInfo
 
 type attachAddonRequest struct {
 	AddonID  string `json:"addon_id" binding:"required"`
-	Quantity int    `json:"quantity" binding:"omitempty,min=1"`
+	Quantity int    `json:"quantity" binding:"omitempty,min=1,max=10000"`
 }
 
 // attachAddon godoc

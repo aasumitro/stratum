@@ -19,7 +19,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/config"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 )
 
 // TestNonMember_RateLimitHeaderNeverLeaksOrgTier guards each module's
@@ -67,8 +66,8 @@ func TestNonMember_RateLimitHeaderNeverLeaksOrgTier(t *testing.T) {
 	// Real modules, built from their exported constructors only — this
 	// package (bootstrap) is the one place both are meant to be wired
 	// together, matching NewAPIModules in production.
-	orgMod := organization.New(pool, messaging.NoopPublisher{}, testWebhookEncryptionKey, "", 1)
-	billingMod := billing.New(pool, messaging.NoopPublisher{}, billing.ProviderConfig{},
+	orgMod := organization.New(pool, testWebhookEncryptionKey, "", 1)
+	billingMod := billing.New(pool, billing.ProviderConfig{},
 		nil, nil, nil)
 
 	gin.SetMode(gin.TestMode)

@@ -12,7 +12,7 @@ Each module declares its own topic exchange — nothing is shared. Messages use 
 
 ## Delayed messages, without a plugin
 
-Renewal reminders and dunning notices need to fire *in the future*. Rather than depend on a broker plugin, Stratum uses a dead-letter-exchange trick: publish to a delay exchange with a TTL, and when the message expires it dead-letters onto the real exchange under its final routing key, where a consumer picks it up. The dunning cadence is a day-3 reminder and a day-7 final notice; trials use a 2-day lead.
+Renewal reminders and dunning notices need to fire *in the future*. Rather than depend on a broker plugin or a scheduler, the delay lives entirely in the transactional outbox: `events.EnqueueDelayed` writes the row with a future `not_before`, and the relay only claims a row once `not_before <= now()`. When it comes due the relay publishes it to the real exchange under its final routing key, exactly like an immediate event, and the bound consumer picks it up. The dunning cadence is a day-3 reminder and a day-7 final notice; trials use a 2-day lead.
 
 ## Retries and the dead-letter queue
 
@@ -23,6 +23,6 @@ A consumer that fails NACKs the message, which dead-letters to a per-queue DLQ. 
 Layered on top of the same event system, the worker also fans out a curated set of nine event types (invoice created/paid/failed; subscription activated/cancelled/expired/resumed; organization created; member invited) to customer-registered webhook endpoints — HMAC-signed, health-tracked, and retryable. The set is deliberately limited to events the worker actually delivers, so a customer can never subscribe to something that would silently never arrive. See the API reference and operations docs for the delivery, health, and secret-rotation details.
 
 ## Adding an event
-1. Add the routing key (and a delay key, if delayed) to `internal/contracts/events`.
-2. Publish it from the owning module's service using the exchange constant.
+1. Add the routing key to `internal/contracts/events`.
+2. Publish it from the owning module's service using the exchange constant — `events.Enqueue`, or `events.EnqueueDelayed` with a delay for a future fire.
 3. Bind a consumer in `internal/app/worker.go`.

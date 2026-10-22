@@ -68,11 +68,12 @@ func (w *Worker) HandleSubscriptionCheck(ctx context.Context, body []byte) error
 // still matches the subscription's current end date. scheduleRenewalSequence
 // is called every time period_end/trial_end changes (extend, reactivate,
 // resume, plan change), but the previously-scheduled delayed message for the
-// old end date is never cancelled — this platform's events.PublishDelayed has
-// no cancellation primitive. A message whose ExpectedEnd no longer matches
-// the subscription's current end date is one of those leftovers: a fresh
-// message for the new end date was already published by whatever changed it,
-// so this one should no-op rather than act on a date that's no longer real.
+// old end date is never cancelled — this platform's delayed-message path
+// (events.EnqueueDelayed) has no cancellation primitive. A message whose
+// ExpectedEnd no longer matches the subscription's current end date is one
+// of those leftovers: a fresh message for the new end date was already
+// enqueued by whatever changed it, so this one should no-op rather than act
+// on a date that's no longer real.
 func staleSubscriptionCheck(sub *subscriptionRecord, check events.SubscriptionCheck) bool {
 	currentEnd := sub.PeriodEnd
 	if check.IsTrial {
@@ -81,7 +82,11 @@ func staleSubscriptionCheck(sub *subscriptionRecord, check events.SubscriptionCh
 	return currentEnd == nil || !currentEnd.Equal(check.ExpectedEnd)
 }
 
-// HandleSubscriptionRemind re-publishes as a normal event so notification can consume it.
+// HandleSubscriptionRemind checks a scheduled reminder against the live
+// subscription and, if it still applies, publishes it under
+// RoutingKeySubscriptionExpiringSoon for notification. It never publishes
+// its own input key: this handler's queue binds that key, so doing so would
+// loop.
 func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
 	if err != nil {
@@ -96,11 +101,62 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 			"subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
 		return nil
 	}
-	return w.svc.enqueueEvent(ctx, events.RoutingKeySubscriptionRemind, sub.SubjectID,
+	return w.svc.enqueueEvent(ctx, events.RoutingKeySubscriptionExpiringSoon, sub.SubjectID,
 		events.SubscriptionCheck{
 			SubscriptionID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID,
 			Plan: sub.Plan, ExpectedEnd: check.ExpectedEnd, IsTrial: sub.TrialEnd != nil,
 		})
+}
+
+// HandleSubscriptionPaymentRemind checks a scheduled day-3 dunning row
+// against the live invoice and, if it still applies, publishes it under
+// RoutingKeyInvoicePaymentReminder for notification.
+func (w *Worker) HandleSubscriptionPaymentRemind(ctx context.Context, body []byte) error {
+	return w.forwardDunningNotice(ctx, body, events.RoutingKeyInvoicePaymentReminder)
+}
+
+// HandleSubscriptionPaymentFinal is HandleSubscriptionPaymentRemind for the
+// day-7 final notice, published under RoutingKeyInvoicePaymentFinalNotice.
+func (w *Worker) HandleSubscriptionPaymentFinal(ctx context.Context, body []byte) error {
+	return w.forwardDunningNotice(ctx, body, events.RoutingKeyInvoicePaymentFinalNotice)
+}
+
+// forwardDunningNotice publishes a scheduled dunning notice (payload
+// events.InvoiceFailed) under publishKey only while it is still true: the
+// invoice is still pending, it backs the subscription's own period (a failed
+// extension or addon-increase payment leaves the current period paid), and
+// the subscription has not ended. A renewal invoice is created three days
+// before period_end, so by day 3 its subscription has usually either been
+// paid or expired — expireIfDue then marks the invoice failed (no longer
+// payable) and SubscriptionExpired has already told the owner. It never
+// publishes its own input keys: its queues bind those, so doing so would loop.
+func (w *Worker) forwardDunningNotice(ctx context.Context, body []byte, publishKey string) error {
+	evt, err := events.Decode[events.InvoiceFailed](body)
+	if err != nil {
+		return fmt.Errorf("billing.forwardDunningNotice: decode: %w", err)
+	}
+	inv, err := w.svc.repo.findInvoiceByID(ctx, w.svc.pool, evt.InvoiceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("billing.forwardDunningNotice: find invoice: %w", err)
+	}
+	sub, err := w.svc.repo.findSubscriptionByID(ctx, w.svc.pool, inv.SubscriptionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("billing.forwardDunningNotice: find subscription: %w", err)
+	}
+	live := sub.Status == statusActive || sub.Status == statusTrialing || sub.Status == statusPastDue
+	if inv.Status != statusPending || !isPeriodBacking(inv.Kind) || !live {
+		slog.Info("skipping dunning notice that no longer applies",
+			"invoice_id", inv.ID, "invoice_status", inv.Status, "invoice_kind", inv.Kind,
+			"subscription_status", sub.Status, "routing_key", publishKey)
+		return nil
+	}
+	return w.svc.enqueueEvent(ctx, publishKey, evt.OrgID, evt)
 }
 
 // reconcileScheduledCancellation takes the row lock covering this renewal

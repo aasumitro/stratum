@@ -26,8 +26,10 @@ Migrations live in `db/migrations/` as numbered up/down pairs, one per schema:
 | 000006 | `audit` | events (append-only) |
 | 000007 | `messaging` | transactional outbox (`outbox` table) |
 | 000008 | `-` | runtime + webhook roles and grant privileges (`stratum_app`, `stratum_worker`, `stratum_webhook`) |
+| 000009 | `-` | grant privileges for the unscoped API role (`stratum_app_unscoped`): the `organization` schema + `messaging.outbox` |
+| 000010 | `organization`, `notification` | row-level security (`FORCE ROW LEVEL SECURITY`) + tenant/caller policies |
 
-During the current development phase, changes are edited **in place** into the existing schema file (which requires fresh infra after a rewrite); genuinely new schemas would start at `000009`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
+During the current development phase, changes are edited **in place** into the existing schema file (which requires fresh infra after a rewrite); genuinely new schemas would start at `000011`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 
 ## The billing catalog
 

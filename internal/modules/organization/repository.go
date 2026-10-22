@@ -42,16 +42,21 @@ type organizationView struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// insertOrganization takes the id from the caller rather than letting the
+// column default generate it: the creating transaction must scope itself to
+// the new organization (app.organization_id) before the insert, or the
+// RETURNING clause fails the organizations read policy — the creator is not
+// a member yet.
 func (r *repository) insertOrganization(
 	ctx context.Context, q db.Querier,
-	slug, name, ownerID, countryCode string,
+	id, slug, name, ownerID, countryCode string,
 ) (*organizationRecord, error) {
 	t := new(organizationRecord)
 	err := q.QueryRow(ctx, `
-		INSERT INTO organization.organizations (slug, name, owner_id, country_code)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO organization.organizations (id, slug, name, owner_id, country_code)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, slug, name, status, owner_id, invite_code, invite_code_enabled, timezone, locale, country_code, suspended_at, suspended_reason, settings, created_at, updated_at`,
-		slug, name, ownerID, countryCode,
+		id, slug, name, ownerID, countryCode,
 	).Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &t.OwnerID, &t.InviteCode, &t.InviteCodeEnabled, &t.Timezone, &t.Locale, &t.CountryCode, &t.SuspendedAt, &t.SuspendedReason, &t.Settings, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("organization.insertOrganization: %w", err)
@@ -77,7 +82,7 @@ func (r *repository) findOrganizationsByMember(ctx context.Context, q db.Querier
 		SELECT t.id, t.slug, t.name, t.status, t.owner_id, m.role, m.joined_at, t.created_at, t.updated_at
 		FROM organization.organizations t
 		JOIN organization.memberships m ON m.organization_id = t.id
-		WHERE m.auth_sub = $1 AND t.status != 'deleted'
+		WHERE m.auth_sub = $1 AND m.status = 'active' AND t.status != 'deleted'
 		ORDER BY m.joined_at`,
 		authSub,
 	)

@@ -51,6 +51,55 @@ cd ui/studio
 task dev             # Wails v3 hot-reload (requires Go 1.25+ and wails3 CLI)
 ```
 
+## Staging (Podman)
+
+Brings the whole backend up as containers — `api`, `worker`, Postgres, RabbitMQ, Redis,
+and a one-shot `migrate` that applies `db/migrations` before the app starts. Images are
+built locally from [`Dockerfile`](Dockerfile) (static binaries on a distroless base); no
+registry is involved yet.
+
+**Prerequisites (on the staging host):**
+
+```bash
+cd code/stratum
+cp deploy/.env.staging.example deploy/.env.staging   # then replace every CHANGE_ME
+mkdir -p deploy/secrets
+# copy a MaxMind-licensed GeoLite2-Country.mmdb to deploy/secrets/
+```
+
+`deploy/.env.staging` and `deploy/secrets/` are gitignored. `APP_ENV=staging` enforces the
+secret/GeoIP boot checks — the stack will not start until `.env.staging` is complete.
+
+**Run:**
+
+```bash
+podman compose -f deploy/compose.staging.yml up --build -d   # --build picks up code changes
+podman compose -f deploy/compose.staging.yml logs -f api
+curl -fsS localhost:8080/health/ready                        # 200 once deps are reachable
+```
+
+If `migrate` exits non-zero (dirty schema), fix it with a one-off run and bring the stack
+back up:
+
+```bash
+podman compose -f deploy/compose.staging.yml run --rm migrate \
+  sh -c 'migrate -path=/migrations -database="$DATABASE_URL" force <version>'
+```
+
+**A shell** — the `api`/`worker` images are distroless (no shell). Debug from a throwaway
+container on the same network:
+
+```bash
+podman run --rm -it --network stratum-staging_default alpine sh
+```
+
+**Teardown:**
+
+```bash
+podman compose -f deploy/compose.staging.yml down       # keep data
+podman compose -f deploy/compose.staging.yml down -v    # also wipe the volumes
+```
+
 ## Documentation
 
 Details live in [`docs/`](docs/README.md):

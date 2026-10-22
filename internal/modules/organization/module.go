@@ -10,10 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/geoip"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -28,13 +28,13 @@ type Module struct {
 	Worker          *WebhookWorker
 }
 
-func New(pool *pgxpool.Pool, pub messaging.EventPublisher, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
+func New(pool *pgxpool.Pool, secretEncryptionKey, secretEncryptionKeyPrevious string, secretEncryptionKeyVersion int) *Module {
 	repo := &repository{}
-	svc := &service{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
+	svc := &service{repo: repo, pool: pool, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion}
 	return &Module{
 		svc:    svc,
 		pool:   pool,
-		Worker: &WebhookWorker{repo: repo, pool: pool, pub: pub, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
+		Worker: &WebhookWorker{repo: repo, pool: pool, secretEncryptionKey: secretEncryptionKey, secretEncryptionKeyPrevious: secretEncryptionKeyPrevious, secretEncryptionKeyVersion: secretEncryptionKeyVersion, log: slog.Default()},
 	}
 }
 
@@ -124,6 +124,24 @@ func (m *Module) MustBeWired() {
 	}
 }
 
+// SetUnscopedPool wires the stratum_app_unscoped (BYPASSRLS) pool cmd/api uses
+// for the paths with no organization to scope a transaction to — see
+// service.unscoped. cmd/worker leaves it unset: its own pool already
+// bypasses RLS.
+func (m *Module) SetUnscopedPool(pool *pgxpool.Pool) {
+	m.svc.unscopedPool = pool
+}
+
+// MustHaveUnscopedPool panics when cmd/api starts without SetUnscopedPool.
+// Unwired, the authorization lookups fall back to the RLS-constrained main
+// pool and every organization-scoped route answers 404 once the
+// organization tables' row-level security is on — call once at API startup.
+func (m *Module) MustHaveUnscopedPool() {
+	if m.svc.unscopedPool == nil {
+		panic("organization.Module: unscoped pool not wired (call SetUnscopedPool)")
+	}
+}
+
 // RemoveAllMemberships implements contracts.OrganizationWriter — deletes
 // every membership for a user across all organizations. Called by the
 // account module's GDPR delete-account flow.
@@ -133,7 +151,7 @@ func (m *Module) RemoveAllMemberships(ctx context.Context, authSub string) error
 
 // GetOrganizationByID implements contracts.OrganizationReader.
 func (m *Module) GetOrganizationByID(ctx context.Context, organizationID string) (*contracts.OrganizationInfo, error) {
-	t, err := m.svc.getOrganization(ctx, organizationID)
+	t, err := m.svc.lookupOrganization(ctx, organizationID)
 	if err != nil {
 		return nil, fmt.Errorf("organization.GetOrganizationByID: %w", err)
 	}
@@ -174,13 +192,22 @@ func (m *Module) GetMemberRole(ctx context.Context, organizationID, authSub stri
 }
 
 // ListMemberAuthSubs implements contracts.OrganizationReader.
-func (m *Module) ListMemberAuthSubs(ctx context.Context, organizationID string) ([]string, error) {
-	return m.svc.repo.listMemberAuthSubs(ctx, m.pool, organizationID)
+func (m *Module) ListMemberAuthSubs(ctx context.Context, organizationID string) (subs []string, err error) {
+	err = db.WithOrgTx(ctx, m.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		subs, err = m.svc.repo.listMemberAuthSubs(ctx, q, organizationID)
+		return err
+	})
+	return subs, err
 }
 
 // GetFirstOrganizationIDForMember implements contracts.OrganizationReader.
 func (m *Module) GetFirstOrganizationIDForMember(ctx context.Context, authSub string) (string, error) {
-	id, err := m.svc.repo.findFirstOrganizationIDByMember(ctx, m.pool, authSub)
+	var id string
+	err := db.WithAuthTx(ctx, m.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		var err error
+		id, err = m.svc.repo.findFirstOrganizationIDByMember(ctx, q, authSub)
+		return err
+	})
 	if err != nil {
 		// belonging to no organization is a valid, common state — not an error for callers
 		return "", nil
@@ -223,7 +250,9 @@ func (m *Module) ResolveDowngradeOverage(
 	return m.svc.resolveDowngradeOverage(ctx, organizationID, preferredMemberAuthSubs, memberLimit, dryRun)
 }
 
-// CleanupExpiredInvitations deletes invitations past their expiry. Called by the worker ticker.
+// CleanupExpiredInvitations deletes invitations past their expiry, across
+// every organization. Called only by the worker's ticker, whose pool bypasses
+// RLS — under the API's RLS-constrained pool it would match nothing.
 func (m *Module) CleanupExpiredInvitations(ctx context.Context) {
 	_ = m.svc.repo.deleteExpiredInvitations(ctx, m.pool)
 }
@@ -240,6 +269,8 @@ func (m *Module) CleanupExpiredInvitations(ctx context.Context) {
 //	POST   /organizations/:organizationID/members
 //	DELETE /organizations/:organizationID/members/:authSub
 //	PATCH  /organizations/:organizationID/members/:authSub/role
+//	POST   /organizations/:organizationID/members/:authSub/suspend
+//	POST   /organizations/:organizationID/members/:authSub/reinstate
 //
 //	GET    /organizations/join/preview — read-only organization + owner details before the caller commits to joining
 //	POST   /organizations/join
@@ -291,6 +322,8 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 			scoped.POST("/members/import", adminUp, h.importMembers)
 			scoped.DELETE("/members/:authSub", adminUp, h.removeMember)
 			scoped.PATCH("/members/:authSub/role", adminUp, h.updateMemberRole)
+			scoped.POST("/members/:authSub/suspend", adminUp, h.suspendMember)
+			scoped.POST("/members/:authSub/reinstate", adminUp, h.reinstateMember)
 
 			scoped.GET("/audit-log", adminUp, h.auditLog)
 			scoped.GET("/audit-log/export", adminUp, h.exportAuditLog)

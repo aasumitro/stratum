@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
@@ -36,8 +36,8 @@ type TwoOrgs struct {
 // stays there rather than making this shared package depend on billing.
 func SeedTwoOrgs(t *testing.T, pool *pgxpool.Pool) TwoOrgs {
 	t.Helper()
-	ownerA := "ct_owner_a_" + uuid.NewString()
-	ownerB := "ct_owner_b_" + uuid.NewString()
+	ownerA := "ct_owner_a_" + uuid.New().String()
+	ownerB := "ct_owner_b_" + uuid.New().String()
 	return TwoOrgs{
 		OrgA:   insertOrg(t, pool, ownerA),
 		OrgB:   insertOrg(t, pool, ownerB),
@@ -48,7 +48,7 @@ func SeedTwoOrgs(t *testing.T, pool *pgxpool.Pool) TwoOrgs {
 
 func insertOrg(t *testing.T, pool *pgxpool.Pool, ownerSub string) string {
 	t.Helper()
-	slug := "ct-org-" + uuid.NewString()
+	slug := "ct-org-" + uuid.New().String()
 	var orgID string
 	err := pool.QueryRow(context.Background(), `
 		INSERT INTO organization.organizations (slug, name, owner_id, invite_code, invite_code_enabled)

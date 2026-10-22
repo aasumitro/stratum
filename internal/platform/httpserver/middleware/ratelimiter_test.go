@@ -8,12 +8,21 @@ package middleware
 // the caching mechanics.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/cache"
 )
 
 type stubRateCatalogReader struct {
@@ -105,5 +114,43 @@ func TestResolvePlanRate_NoConfigValue_ReturnsNotOK(t *testing.T) {
 
 	if _, ok := rc.resolvePlanRate(t.Context(), "solo"); ok {
 		t.Error("want ok=false when plan has no api_rate_limit entitlement")
+	}
+}
+
+// TestRateLimitMiddleware_LimiterError_FailsOpenAndLogs covers the branch
+// where limiter.Allow returns an error (Redis unreachable): the request
+// must still be served (fail open) and the failure must be logged at
+// ERROR so a limiter outage is not silent. The limiter is pointed at a
+// dead address so Allow's dial fails without needing a Redis harness.
+func TestRateLimitMiddleware_LimiterError_FailsOpenAndLogs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	deadClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = deadClient.Close() })
+	limiter := cache.NewRateLimiter(deadClient, "test-rl-failopen")
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	handlerRan := false
+	e := gin.New()
+	e.Use(NewRateLimitMiddleware(limiter, ByClientIP, cache.PerMinute(1)))
+	e.GET("/t", func(c *gin.Context) {
+		handlerRan = true
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/t", nil))
+
+	if !handlerRan || w.Code != http.StatusOK {
+		t.Fatalf("limiter error should fail open: handlerRan=%v, status=%d, want true/200", handlerRan, w.Code)
+	}
+	log := logBuf.String()
+	if !strings.Contains(log, "level=ERROR") ||
+		!strings.Contains(log, "ratelimit: allow check failed, letting request through") {
+		t.Errorf("expected an ERROR log line for the fail-open branch, got: %q", log)
 	}
 }

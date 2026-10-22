@@ -6,6 +6,114 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-23
+
+Row-level security extended from `billing` to the `organization` and `notification` schemas, the
+scheduled billing lifecycle (expiry check, renewal reminder, dunning notices) delivering again,
+per-member suspend, and the verified hardening follow-ups of an external backend audit.
+
+### Added
+
+- Per-member suspend / reinstate: `POST /organizations/:organizationID/members/:authSub/suspend`
+  and `.../reinstate` (admin or owner). A suspended member keeps their role and membership row
+  but loses access to the organization and stops occupying a seat; reinstating is subject to the
+  seat limit at that moment. `GET .../members` returns each member's `status`, the web app's
+  Suspend button is live, and the member gets an in-app notice on both transitions
+- `POSTGRES_UNSCOPED_URL` (required, both binaries): a fourth runtime role,
+  `stratum_app_unscoped` (`BYPASSRLS`, used by `cmd/api` only), for the organization paths that
+  have no tenant to scope a transaction to — the organization middleware's authorization lookups
+  and the cross-org invite/join flows. Sized by `POSTGRES_UNSCOPED_MAX_OPEN_CONNS` (optional,
+  default `5`)
+- `POSTGRES_STATEMENT_TIMEOUT` (optional, default `30s`, `0` disables): a per-statement timeout
+  on every Postgres pool, so a runaway query can't hold a connection indefinitely
+- Semantic audit actions for three privileged mutations, previously logged only as their HTTP
+  method: `webhook.secret_rotated`, `invite_code.regenerated`, `member.removed`
+- Staging stack: a `Dockerfile` for the api + worker image and `deploy/compose.staging.yml` with
+  `deploy/.env.staging.example` for `podman compose`. The GeoLite2 database is bind-mounted, never
+  baked into the image
+- Public event keys for the checked billing notices notification sends:
+  `billing.subscription.expiring-soon`, `billing.invoice.payment-reminder`,
+  `billing.invoice.payment-final-notice`
+
+### Changed
+
+- **Upgrade order for an existing database** (both migrations ship in this release): create
+  `stratum_app_unscoped` and set `POSTGRES_UNSCOPED_URL` on both binaries, apply only `000009`
+  (`migrate ... up 1`), deploy the new build, then apply `000010`. Applying `000010` before the new
+  build runs hides every `organization`/`notification` row from the old one — see "Provisioning
+  database roles" in `docs/12-operations.md`
+- **A database migrated by 0.4.0 needs a rebuild**: `000002_organization` was edited in place to
+  add `organization.memberships.status`, so `make migrate-up` alone never adds it. Rebuild with
+  `make migrate-down-all && make migrate-up`, or add the column by hand:
+  `ALTER TABLE organization.memberships ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended'));`
+- The 8 `organization` and `notification` tables now run under `FORCE ROW LEVEL SECURITY`.
+  The API scopes each operation to one transaction that sets the organization
+  (`app.organization_id`) or the caller (`app.auth_sub`) instead of holding one transaction for
+  the whole request, and an operation can't scope itself to an organization other than the one
+  the organization middleware authorized. `notification.processed_events` is closed to the API
+  role entirely. Studio's DSN must be the schema owner or a `BYPASSRLS` role, or it sees no rows
+  in these schemas
+- Delayed billing events are future-dated outbox rows (`not_before`) delivered by the relay like
+  any other event; the `billing.delay` exchange and its five `billing.*-delay` parking queues are
+  retired. Rewrite unpublished rows still addressed to them before upgrading — see "Delayed
+  billing events left on the retired delay topology" in `docs/12-operations.md`
+- The renewal reminder and the day-3/day-7 dunning notices are each split into a scheduled key
+  that only billing consumes and a checked key that notification sends. Billing drops a reminder
+  whose subscription is no longer active/trialing or whose end date moved, and a dunning notice
+  whose invoice is no longer pending, isn't period-backing, or whose subscription has ended.
+  Delete the retired `notification.subscription-remind`, `notification.subscription-payment-remind`
+  and `notification.subscription-payment-final` queues on an existing broker (still bound to the
+  scheduled keys) — see `docs/12-operations.md`
+- A `past_due` subscription now expires at the end of its period like an active one: its pending
+  invoices become `failed` and their payment links `expired`, and the organization is suspended.
+  A failed payment moves a subscription to `past_due` only for a `subscription`/`activation`
+  invoice; a failed add-on-increase or extension payment leaves the subscription's status alone
+- A `failed` invoice is terminal in the web app: dimmed like a `void` one, with no pay or
+  regenerate action
+- The billing page shows one banner per billing state instead of up to five stacked ones saying
+  the same thing; banners no longer link to the page they're on, and a lapsed period is no longer
+  shown as the "next renewal"
+- The Members and Billing notification-preference toggles now also cover invitations and
+  subscription-expired notices. A registered invitee's invite email and in-app notice honour that
+  preference; an unregistered invitee always gets the email
+- Organization settings reject a timezone the IANA database can't resolve (`INVALID_TIMEZONE`)
+  and a locale outside the BCP-47 `language(-REGION)` shape (`INVALID_LOCALE`). The API and worker
+  binaries embed the time zone database, so this doesn't depend on the base image
+- Input bounds: add-on quantity is capped at `10000`; a cached value over 1 MiB is rejected
+  before it reaches Redis
+- `POSTGRES_BACKGROUND_MAX_OPEN_CONNS` and `POSTGRES_UNSCOPED_MAX_OPEN_CONNS` must each be above
+  `0` and below `POSTGRES_MAX_OPEN_CONNS`, or the API refuses to boot
+- GDPR account deletion: a failed critical cleanup step (notifications, memberships, audit log,
+  billing history) now leaves the task in progress for a retry instead of reporting the account
+  erased while that personal data still exists; avatar and login-event cleanup stay best-effort
+- A rate-limiter backend error is now logged (the request is still let through)
+- Go 1.27 toolchain; the standard library `uuid` package replaces `github.com/google/uuid`.
+  Dependencies updated to fix a reported Go vulnerability (pgx, amqp091-go, go-redis,
+  OpenTelemetry, among others)
+
+### Fixed
+
+- Scheduled billing events — the end-of-period expiry check, renewal reminder, auto-invoice, and
+  day-3/day-7 dunning notices — were never delivered since the outbox landed in 0.4.0: the relay
+  parked them in `billing.delay` queues that had no TTL and no consumer
+- Once the renewal reminder did deliver, an owner got one "expiring soon" email + in-app notice
+  per relay tick until the subscription changed, plus an unchecked duplicate that used the paid
+  wording even for a trial
+- A `past_due` subscription never expired, so its organization was never suspended and the
+  day-7 notice's warning was never carried out
+- A renewal payment that completed at the gateway while the period-end expiry was failing its
+  invoice now restores the subscription instead of being stranded on a `failed` invoice
+- Dunning notices could go out for an invoice that was already paid, voided, or failed, or that
+  doesn't back the subscription's period
+- The AMQP publisher's reconnect goroutines now stop on shutdown instead of retrying a dead broker
+  through it
+- A panic in Studio's monitor poller no longer crashes the whole app
+
+### Removed
+
+- `POST /organizations/:organizationID/billing/invoices/:invoiceID/pay/regenerate` and the web
+  app's Regenerate button
+
 ## [0.4.0] - 2026-08-16
 
 Four rounds of backend security audit remediation since 0.3.0, plus same-day follow-on fixes.

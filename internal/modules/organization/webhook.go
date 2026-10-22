@@ -19,7 +19,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
-	"github.com/aasumitro/stratum/internal/platform/messaging"
 	"github.com/aasumitro/stratum/internal/platform/storage"
 )
 
@@ -48,7 +47,6 @@ const (
 type WebhookWorker struct {
 	repo                        *repository
 	pool                        *pgxpool.Pool
-	pub                         messaging.EventPublisher
 	log                         *slog.Logger
 	store                       *storage.Client
 	secretEncryptionKey         string // pgcrypto symmetric key for webhook secret columns, set once at construction

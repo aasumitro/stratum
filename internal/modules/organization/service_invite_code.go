@@ -30,7 +30,9 @@ func (s *service) regenerateInviteCode(ctx context.Context, organizationID strin
 	if err != nil {
 		return "", fmt.Errorf("organization.regenerateInviteCode: %w", err)
 	}
-	return code, s.repo.updateInviteCode(ctx, s.pool, organizationID, code, true)
+	return code, db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		return s.repo.updateInviteCode(ctx, q, organizationID, code, true)
+	})
 }
 
 func (s *service) toggleInviteCode(ctx context.Context, organizationID string, enabled bool) (err error) {
@@ -40,21 +42,23 @@ func (s *service) toggleInviteCode(ctx context.Context, organizationID string, e
 		}
 	}()
 
-	t, err := s.repo.findOrganizationByID(ctx, s.pool, organizationID)
-	if err != nil {
-		return fmt.Errorf("organization.toggleInviteCode: %w", err)
-	}
-	code := ""
-	if t.InviteCode != nil {
-		code = *t.InviteCode
-	}
-	if enabled && code == "" {
-		code, err = generateToken(8)
+	return db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		t, err := s.repo.findOrganizationByID(ctx, q, organizationID)
 		if err != nil {
 			return fmt.Errorf("organization.toggleInviteCode: %w", err)
 		}
-	}
-	return s.repo.updateInviteCode(ctx, s.pool, organizationID, code, enabled)
+		code := ""
+		if t.InviteCode != nil {
+			code = *t.InviteCode
+		}
+		if enabled && code == "" {
+			code, err = generateToken(8)
+			if err != nil {
+				return fmt.Errorf("organization.toggleInviteCode: %w", err)
+			}
+		}
+		return s.repo.updateInviteCode(ctx, q, organizationID, code, enabled)
+	})
 }
 
 // inviteCodePreview is the read-only projection shown before the caller
@@ -74,14 +78,17 @@ type inviteCodePreview struct {
 // the caller already being a member of the resolved organization is
 // reported distinctly (ErrJoinAlreadyMember) so the join dialog can show
 // that state and hide the confirm button.
+// The caller is not a member yet, so this and joinByCode have no
+// organization scope to run under: they read and write through the unscoped
+// pool, matched by the invite code.
 func (s *service) previewInviteCode(ctx context.Context, code, authSub string) (inviteCodePreview, error) {
-	t, err := s.repo.findOrganizationByInviteCode(ctx, s.pool, code)
+	t, err := s.repo.findOrganizationByInviteCode(ctx, s.unscoped(), code)
 	if err != nil {
 		return inviteCodePreview{}, apperr.Validation("INVITE_CODE_INVALID", "invalid or disabled invite code")
 	}
 
 	preview := inviteCodePreview{OrganizationID: t.ID, OrganizationName: t.Name}
-	if _, err := s.repo.getMemberRole(ctx, s.pool, t.ID, authSub); err == nil {
+	if _, err := s.repo.getMemberRole(ctx, s.unscoped(), t.ID, authSub); err == nil {
 		return preview, ErrJoinAlreadyMember
 	}
 
@@ -101,11 +108,11 @@ func (s *service) previewInviteCode(ctx context.Context, code, authSub string) (
 // ErrPlanLimitReached and ErrJoinAlreadyMember, which the handler needs to
 // distinguish to render the right message.
 func (s *service) joinByCode(ctx context.Context, code, authSub string) (*organizationRecord, error) {
-	t, err := s.repo.findOrganizationByInviteCode(ctx, s.pool, code)
+	t, err := s.repo.findOrganizationByInviteCode(ctx, s.unscoped(), code)
 	if err != nil {
 		return nil, apperr.Validation("INVITE_CODE_INVALID", "invalid or disabled invite code")
 	}
-	if _, err := s.repo.getMemberRole(ctx, s.pool, t.ID, authSub); err == nil {
+	if _, err := s.repo.getMemberRole(ctx, s.unscoped(), t.ID, authSub); err == nil {
 		return nil, ErrJoinAlreadyMember
 	}
 
@@ -113,7 +120,9 @@ func (s *service) joinByCode(ctx context.Context, code, authSub string) (*organi
 	// insert below, so two near-simultaneous joins for the same organization
 	// can't both pass the check against a stale/equal count and both
 	// succeed past the plan's seat limit.
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	// checkMemberLimitLocked gets the outer ctx, so billing reads through its
+	// own pool rather than this unscoped transaction.
+	err = db.WithTx(ctx, s.unscoped(), func(tx db.Querier) error {
 		if err := s.repo.lockOrganizationForUpdate(ctx, tx, t.ID); err != nil {
 			return err
 		}

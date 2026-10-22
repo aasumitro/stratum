@@ -120,7 +120,7 @@ func (h *handler) listWebhooks(c *gin.Context) {
 		for i, r := range recs {
 			ids[i] = r.ID
 		}
-		healthByEndpoint, healthErr = h.svc.getWebhookHealthBatch(c.Request.Context(), ids)
+		healthByEndpoint, healthErr = h.svc.getWebhookHealthBatch(c.Request.Context(), ws.ID, ids)
 	}
 
 	out := make([]safeEndpoint, len(recs))
@@ -193,6 +193,9 @@ func (h *handler) updateWebhook(c *gin.Context) {
 func (h *handler) rotateWebhookSecret(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 	webhookID := c.Param("webhookID")
+	// Semantic audit label so a secret rotation is findable by intent, not
+	// just as a bare POST to the rotate-secret route.
+	c.Set("audit.action", "webhook.secret_rotated")
 
 	rec, secret, err := h.svc.rotateWebhookSecret(c.Request.Context(), ws.ID, webhookID)
 	if err != nil {
@@ -276,8 +279,7 @@ func (h *handler) listWebhookDeliveries(c *gin.Context) {
 	webhookID := c.Param("webhookID")
 
 	// Verify endpoint belongs to organization.
-	_, err := h.svc.repo.findWebhookEndpoint(c.Request.Context(), h.pool, ws.ID, webhookID, h.svc.secretEncryptionKeyVersion, h.svc.secretEncryptionKey, h.svc.secretEncryptionKeyPrevious)
-	if err != nil {
+	if err := h.svc.findWebhookEndpointForOrganization(c.Request.Context(), ws.ID, webhookID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			response.Error("WEBHOOK_NOT_FOUND", "webhook not found").JSON(c, http.StatusNotFound)
 			return
@@ -299,7 +301,7 @@ func (h *handler) listWebhookDeliveries(c *gin.Context) {
 		}
 	}
 
-	recs, nextCursor, err := h.svc.listWebhookDeliveries(c.Request.Context(), webhookID, filter, cursor, limit)
+	recs, nextCursor, err := h.svc.listWebhookDeliveries(c.Request.Context(), ws.ID, webhookID, filter, cursor, limit)
 	if err != nil {
 		response.Error("DELIVERY_LIST_FAILED", "failed to list deliveries").JSON(c, http.StatusInternalServerError)
 		return

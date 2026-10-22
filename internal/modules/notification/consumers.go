@@ -55,17 +55,19 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleInvoicePaid), log),
 
-		// notification: subscription expiring reminder
+		// notification: subscription expiring reminder — the checked event
+		// billing publishes, never the scheduled billing.subscription.remind
+		// row itself (see RoutingKeySubscriptionExpiringSoon)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{
-				Name:                 "notification.subscription-remind",
-				BindingKeys:          []string{events.RoutingKeySubscriptionRemind},
+				Name:                 "notification.subscription-expiring-soon",
+				BindingKeys:          []string{events.RoutingKeySubscriptionExpiringSoon},
 				MaxDeliveries:        5,
 				RetryMinDelay:        2 * time.Second,
 				RetryMaxDelay:        60 * time.Second,
 				DeadLetterExchange:   exchangeNotificationDLX,
-				DeadLetterRoutingKey: "notification.subscription-remind",
+				DeadLetterRoutingKey: "notification.subscription-expiring-soon",
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
@@ -198,6 +200,38 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleMemberRoleChanged), log),
+
+		// notification: member suspended alert (in-app, to the affected member)
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},
+			Queue: messaging.QueueSpec{
+				Name:                 "notification.member-suspended",
+				BindingKeys:          []string{events.RoutingKeyMemberSuspended},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeNotificationDLX,
+				DeadLetterRoutingKey: "notification.member-suspended",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.Idempotent(m.Worker.HandleMemberSuspended), log),
+
+		// notification: member reinstated alert (in-app, to the affected member)
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},
+			Queue: messaging.QueueSpec{
+				Name:                 "notification.member-reinstated",
+				BindingKeys:          []string{events.RoutingKeyMemberReinstated},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeNotificationDLX,
+				DeadLetterRoutingKey: "notification.member-reinstated",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.Idempotent(m.Worker.HandleMemberReinstated), log),
 
 		// notification: ownership transferred alert to new owner
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
@@ -359,33 +393,39 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleSubscriptionResumed), log),
 
-		// notification: dunning day-3 payment reminder (via billing.delay DLX)
+		// notification: dunning day-3 payment reminder — the checked notice
+		// billing publishes, never the scheduled
+		// billing.subscription.payment-remind row itself (see
+		// RoutingKeyInvoicePaymentReminder)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{
-				Name:                 "notification.subscription-payment-remind",
-				BindingKeys:          []string{events.RoutingKeySubscriptionPaymentRemind},
+				Name:                 "notification.invoice-payment-reminder",
+				BindingKeys:          []string{events.RoutingKeyInvoicePaymentReminder},
 				MaxDeliveries:        5,
 				RetryMinDelay:        2 * time.Second,
 				RetryMaxDelay:        60 * time.Second,
 				DeadLetterExchange:   exchangeNotificationDLX,
-				DeadLetterRoutingKey: "notification.subscription-payment-remind",
+				DeadLetterRoutingKey: "notification.invoice-payment-reminder",
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleSubscriptionPaymentRemind), log),
 
-		// notification: dunning day-7 final warning (via billing.delay DLX)
+		// notification: dunning day-7 final warning — the checked notice
+		// billing publishes, never the scheduled
+		// billing.subscription.payment-final row itself (see
+		// RoutingKeyInvoicePaymentFinalNotice)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{
-				Name:                 "notification.subscription-payment-final",
-				BindingKeys:          []string{events.RoutingKeySubscriptionPaymentFinal},
+				Name:                 "notification.invoice-payment-final-notice",
+				BindingKeys:          []string{events.RoutingKeyInvoicePaymentFinalNotice},
 				MaxDeliveries:        5,
 				RetryMinDelay:        2 * time.Second,
 				RetryMaxDelay:        60 * time.Second,
 				DeadLetterExchange:   exchangeNotificationDLX,
-				DeadLetterRoutingKey: "notification.subscription-payment-final",
+				DeadLetterRoutingKey: "notification.invoice-payment-final-notice",
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,

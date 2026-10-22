@@ -24,7 +24,7 @@ func (s *service) resolveDowngradeOverage(
 		AutoSelectedMemberSubs: []string{},
 	}
 
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '15s'"); err != nil {
 			return fmt.Errorf("organization.ResolveDowngradeOverage: failed to set statement timeout: %w", err)
 		}

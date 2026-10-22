@@ -41,16 +41,12 @@ func RunAPI() error {
 		return err
 	}
 
-	if cfg.StatsToken == "" && cfg.Env != bootstrap.EnvDevelopment {
-		infra.Log.Warn("STATS_TOKEN not set — /health/stats (goroutine/heap/pool internals) is unauthenticated")
+	if err := bootstrap.OpenUnscopedPool(ctx, infra); err != nil {
+		return err
 	}
 
-	// Declare the billing delay exchange so the API can publish delayed messages.
-	// The parking queue is declared by the worker binary.
-	if setupCh, chErr := infra.MQConn.Channel(); chErr == nil {
-		_ = setupCh.ExchangeDeclare("billing.delay", "direct",
-			true, false, false, false, nil)
-		_ = setupCh.Close()
+	if cfg.StatsToken == "" && cfg.Env != bootstrap.EnvDevelopment {
+		infra.Log.Warn("STATS_TOKEN not set — /health/stats (goroutine/heap/pool internals) is unauthenticated")
 	}
 
 	var storageClient *storage.Client

@@ -3,11 +3,11 @@
 This gets a full Stratum stack running locally: the API, the worker, the web app, and (optionally) the desktop console.
 
 ## Prerequisites
-- Go 1.26+
+- Go 1.27+ (backend)
 - Node 20+ and npm
 - Podman (or Docker) for Postgres 18, RabbitMQ 4, Redis 8
 - `migrate` CLI (or use the `make migrate-*` targets)
-- For Studio: Go 1.25+ and the `wails3` CLI, plus Task (`task`)
+- For Studio: Go 1.26+ (stays on 1.26 until Wails v3 supports 1.27) and the `wails3` CLI, plus Task (`task`)
 - A Supabase project (for auth)
 
 ## Backend
@@ -52,6 +52,8 @@ Everything is read once at startup from the environment (see `.env.example`). Th
 |---|---|
 | `POSTGRES_APP_URL` | Postgres connection for API (`stratum_app` role) (required) |
 | `POSTGRES_WORKER_URL` | Postgres connection for Worker (`stratum_worker` role) (required) |
+| `POSTGRES_WEBHOOK_URL` | Postgres connection for payment webhooks (`stratum_webhook` role) (required, both binaries) |
+| `POSTGRES_UNSCOPED_URL` | Postgres connection for the API's organization paths with no tenant scope — authorization lookups, cross-org invite/join (`stratum_app_unscoped` role) (required, both binaries) |
 | `REDIS_URL` | Redis connection (required) |
 | `RABBITMQ_URL` | RabbitMQ connection (required) |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER` | JWKS endpoint + issuer for token validation (required) |
