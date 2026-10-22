@@ -52,6 +52,8 @@ Everything is read once at startup from the environment (see `.env.example`). Th
 |---|---|
 | `POSTGRES_APP_URL` | Postgres connection for API (`stratum_app` role) (required) |
 | `POSTGRES_WORKER_URL` | Postgres connection for Worker (`stratum_worker` role) (required) |
+| `POSTGRES_WEBHOOK_URL` | Postgres connection for payment webhooks (`stratum_webhook` role) (required, both binaries) |
+| `POSTGRES_UNSCOPED_URL` | Postgres connection for the API's organization paths with no tenant scope — authorization lookups, cross-org invite/join (`stratum_app_unscoped` role) (required, both binaries) |
 | `REDIS_URL` | Redis connection (required) |
 | `RABBITMQ_URL` | RabbitMQ connection (required) |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER` | JWKS endpoint + issuer for token validation (required) |

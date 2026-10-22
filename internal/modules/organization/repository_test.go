@@ -492,7 +492,7 @@ func (stubMembersUserReader) GetUsersByAuthSubs(_ context.Context, authSubs []st
 	for _, sub := range authSubs {
 		if sub == testAuthSub {
 			out[sub] = contracts.UserInfo{
-				AuthSub: sub, Email: "owner@test.com", Name: "Owner Name", AvatarURL: "https://example.com/a.png",
+				AuthSub: sub, Email: "owner@example.com", Name: "Owner Name", AvatarURL: "https://example.com/a.png",
 			}
 		}
 	}
@@ -535,8 +535,8 @@ func TestIntegration_ListMembers_EnrichesProfileFromUserReader(t *testing.T) {
 		t.Fatalf("want 1 member (owner), got %d", len(members))
 	}
 	owner := members[0].(map[string]any)
-	if owner["email"] != "owner@test.com" {
-		t.Errorf("want email=owner@test.com, got %v", owner["email"])
+	if owner["email"] != "owner@example.com" {
+		t.Errorf("want email=owner@example.com, got %v", owner["email"])
 	}
 	if owner["full_name"] != "Owner Name" {
 		t.Errorf("want full_name=Owner Name, got %v", owner["full_name"])
@@ -757,7 +757,7 @@ func TestIntegration_AcceptInvitation_Valid(t *testing.T) {
 
 	// create invitation via API
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"invitee@test.com","role":"member"}`))
+		`{"email":"invitee@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
@@ -765,7 +765,7 @@ func TestIntegration_AcceptInvitation_Valid(t *testing.T) {
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "invitee@test.com",
+		orgID, "invitee@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
@@ -773,7 +773,7 @@ func TestIntegration_AcceptInvitation_Valid(t *testing.T) {
 	// accept with a different caller (the invitee), whose token carries the
 	// invited, verified email — required since acceptInvitation fails
 	// closed on a missing/unverified/mismatched email.
-	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_invitee", "invitee@test.com")
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_invitee", "invitee@example.com")
 	w3 := httptest.NewRecorder()
 	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept",
 		`{"token":"`+token+`"}`))
@@ -823,14 +823,14 @@ func TestIntegration_AcceptInvitation_SuspendedOrganization_Rejected(t *testing.
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"suspended-invitee@test.com","role":"member"}`))
+		`{"email":"suspended-invitee@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "suspended-invitee@test.com",
+		orgID, "suspended-invitee@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
@@ -839,7 +839,7 @@ func TestIntegration_AcceptInvitation_SuspendedOrganization_Rejected(t *testing.
 		t.Fatalf("suspend org directly: %v", err)
 	}
 
-	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_suspended_invitee", "suspended-invitee@test.com")
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_suspended_invitee", "suspended-invitee@example.com")
 	w3 := httptest.NewRecorder()
 	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept",
 		`{"token":"`+token+`"}`))
@@ -1336,7 +1336,7 @@ func TestIntegration_RevokeInvitation(t *testing.T) {
 
 	// create invitation
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"revoke@test.com","role":"member"}`))
+		`{"email":"revoke@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
@@ -1422,7 +1422,7 @@ func TestIntegration_AcceptInvitation_Expired(t *testing.T) {
 	const expiredToken = "expired-test-token-0000000000000000"
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO organization.invitations (organization_id, email, role, token, invited_by, expires_at)
-		VALUES ($1, 'old@test.com', 'member', $2, $3, NOW() - INTERVAL '1 day')`,
+		VALUES ($1, 'old@example.com', 'member', $2, $3, NOW() - INTERVAL '1 day')`,
 		orgID, expiredToken, testAuthSub)
 	if err != nil {
 		t.Fatalf("seed expired invitation: %v", err)
@@ -1454,19 +1454,19 @@ func TestIntegration_AcceptInvitation_AlreadyMember(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"already-member@test.com","role":"member"}`))
+		`{"email":"already-member@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "already-member@test.com",
+		orgID, "already-member@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
-	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_already_member", "already-member@test.com")
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_already_member", "already-member@example.com")
 	w3 := httptest.NewRecorder()
 	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusNoContent {
@@ -1511,19 +1511,19 @@ func TestIntegration_RequestNewInvitation_WrongEmail_Rejected(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"target@test.com","role":"member"}`))
+		`{"email":"target@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "target@test.com",
+		orgID, "target@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
-	attackerEngine := organization.NewModuleEngineWithEmail(pool, "sub_attacker", "attacker@test.com")
+	attackerEngine := organization.NewModuleEngineWithEmail(pool, "sub_attacker", "attacker@example.com")
 	w3 := httptest.NewRecorder()
 	attackerEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/request-new", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -1561,12 +1561,12 @@ func TestIntegration_RequestNewInvitation_MatchingEmail_Succeeds(t *testing.T) {
 	const expiredToken = "expired-request-new-token-0000000000"
 	if _, err := pool.Exec(t.Context(), `
 		INSERT INTO organization.invitations (organization_id, email, role, token, invited_by, expires_at)
-		VALUES ($1, 'expired-target@test.com', 'member', $2, $3, NOW() - INTERVAL '1 day')`,
+		VALUES ($1, 'expired-target@example.com', 'member', $2, $3, NOW() - INTERVAL '1 day')`,
 		orgID, expiredToken, testAuthSub); err != nil {
 		t.Fatalf("seed expired invitation: %v", err)
 	}
 
-	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_expired_invitee", "expired-target@test.com")
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_expired_invitee", "expired-target@example.com")
 	w2 := httptest.NewRecorder()
 	inviteeEngine.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/request-new", `{"token":"`+expiredToken+`"}`))
 	if w2.Code != http.StatusNoContent {
@@ -1629,7 +1629,7 @@ func TestIntegration_PreviewInvitation_ReturnsOrgAndInviterDetails(t *testing.T)
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	const token = "preview-test-token-0000000000000000"
-	const inviteeEmail = "invitee-preview@test.com"
+	const inviteeEmail = "invitee-preview@example.com"
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO organization.invitations (organization_id, email, role, token, invited_by, expires_at)
 		VALUES ($1, $2, 'admin', $3, $4, NOW() + INTERVAL '7 days')`,
@@ -1638,7 +1638,7 @@ func TestIntegration_PreviewInvitation_ReturnsOrgAndInviterDetails(t *testing.T)
 		t.Fatalf("seed invitation: %v", err)
 	}
 
-	ur := stubInviterUserReader{authSub: testAuthSub, name: "Ada Lovelace", email: "ada@test.com"}
+	ur := stubInviterUserReader{authSub: testAuthSub, name: "Ada Lovelace", email: "ada@example.com"}
 	engine := organization.NewModuleEngineWithUserReaderAndEmail(pool, "sub_invitee_preview", inviteeEmail, ur)
 	w2 := httptest.NewRecorder()
 	engine.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodGet, "/api/invitations/preview?token="+token, ""))
@@ -1663,8 +1663,8 @@ func TestIntegration_PreviewInvitation_ReturnsOrgAndInviterDetails(t *testing.T)
 	if body.Data.Role != "admin" {
 		t.Errorf("want role %q, got %q", "admin", body.Data.Role)
 	}
-	if body.Data.InvitedByEmail != "ada@test.com" {
-		t.Errorf("want invited_by_email %q, got %q", "ada@test.com", body.Data.InvitedByEmail)
+	if body.Data.InvitedByEmail != "ada@example.com" {
+		t.Errorf("want invited_by_email %q, got %q", "ada@example.com", body.Data.InvitedByEmail)
 	}
 	if body.Data.InvitedByName != "Ada Lovelace" {
 		t.Errorf("want invited_by_name %q, got %q", "Ada Lovelace", body.Data.InvitedByName)
@@ -1712,7 +1712,7 @@ func TestIntegration_CreateInvitation_InviteeAlreadyMember(t *testing.T) {
 		}
 	})
 
-	const memberEmail = "existing-member@test.com"
+	const memberEmail = "existing-member@example.com"
 	ur := stubInviteAlreadyMemberUserReader{email: memberEmail, authSub: "sub_existing_member"}
 	ownerEngine := organization.NewModuleEngineWithUserReader(pool, testAuthSub, ur)
 
@@ -1781,20 +1781,20 @@ func TestIntegration_AcceptInvitation_EmailMismatch(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"intended@test.com","role":"member"}`))
+		`{"email":"intended@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "intended@test.com",
+		orgID, "intended@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
 	// a different authenticated user, with a different email, tries to accept
-	wrongEngine := organization.NewModuleEngineWithEmail(pool, "sub_wrong_account", "someone-else@test.com")
+	wrongEngine := organization.NewModuleEngineWithEmail(pool, "sub_wrong_account", "someone-else@example.com")
 	w3 := httptest.NewRecorder()
 	wrongEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -1807,8 +1807,8 @@ func TestIntegration_AcceptInvitation_EmailMismatch(t *testing.T) {
 		t.Errorf("want code INVITATION_EMAIL_MISMATCH, got %v", status["code"])
 	}
 	details, _ := status["details"].(map[string]any)
-	if details["invited_email"] != "intended@test.com" {
-		t.Errorf("want details.invited_email intended@test.com, got %v", details["invited_email"])
+	if details["invited_email"] != "intended@example.com" {
+		t.Errorf("want details.invited_email intended@example.com, got %v", details["invited_email"])
 	}
 }
 
@@ -1831,19 +1831,19 @@ func TestIntegration_DeclineInvitation_Valid(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"declines@test.com","role":"member"}`))
+		`{"email":"declines@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var invID, token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT id, token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "declines@test.com",
+		orgID, "declines@example.com",
 	).Scan(&invID, &token); err != nil {
 		t.Fatalf("fetch invitation: %v", err)
 	}
 
-	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_decliner", "declines@test.com")
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_decliner", "declines@example.com")
 	w3 := httptest.NewRecorder()
 	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/decline", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusNoContent {
@@ -1883,19 +1883,19 @@ func TestIntegration_DeclineInvitation_EmailMismatch(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"intended2@test.com","role":"member"}`))
+		`{"email":"intended2@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var invID, token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT id, token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "intended2@test.com",
+		orgID, "intended2@example.com",
 	).Scan(&invID, &token); err != nil {
 		t.Fatalf("fetch invitation: %v", err)
 	}
 
-	wrongEngine := organization.NewModuleEngineWithEmail(pool, "sub_wrong_decliner", "someone-else2@test.com")
+	wrongEngine := organization.NewModuleEngineWithEmail(pool, "sub_wrong_decliner", "someone-else2@example.com")
 	w3 := httptest.NewRecorder()
 	wrongEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/decline", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -1934,14 +1934,14 @@ func TestIntegration_AcceptInvitation_MissingEmailClaim_Rejected(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"intended-noemail@test.com","role":"member"}`))
+		`{"email":"intended-noemail@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "intended-noemail@test.com",
+		orgID, "intended-noemail@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
@@ -1982,20 +1982,20 @@ func TestIntegration_AcceptInvitation_UnverifiedEmail_Rejected(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"unverified@test.com","role":"member"}`))
+		`{"email":"unverified@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "unverified@test.com",
+		orgID, "unverified@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
 	// email matches the invitation exactly, but email_verified is false.
-	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_email", "unverified@test.com")
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_email", "unverified@example.com")
 	w3 := httptest.NewRecorder()
 	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -2027,12 +2027,12 @@ func TestIntegration_ListMyInvitations(t *testing.T) {
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"onboarding-invitee@test.com","role":"member"}`))
+		`{"email":"onboarding-invitee@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 
-	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_onboarding_invitee", "onboarding-invitee@test.com")
+	inviteeEngine := organization.NewModuleEngineWithEmail(pool, "sub_onboarding_invitee", "onboarding-invitee@example.com")
 	w3 := httptest.NewRecorder()
 	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodGet, "/api/me/invitations", ""))
 	if w3.Code != http.StatusOK {
@@ -2078,12 +2078,12 @@ func TestIntegration_ListMyInvitations_UnverifiedEmail_ReturnsEmpty(t *testing.T
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"unverified-invitee@test.com","role":"member"}`))
+		`{"email":"unverified-invitee@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 
-	inviteeEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_invitee", "unverified-invitee@test.com")
+	inviteeEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_invitee", "unverified-invitee@example.com")
 	w3 := httptest.NewRecorder()
 	inviteeEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodGet, "/api/me/invitations", ""))
 	if w3.Code != http.StatusOK {
@@ -2119,19 +2119,19 @@ func TestIntegration_PreviewInvitation_UnverifiedEmail_ReturnsEmailMismatch(t *t
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"unverified-preview@test.com","role":"member"}`))
+		`{"email":"unverified-preview@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "unverified-preview@test.com",
+		orgID, "unverified-preview@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
-	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_preview", "unverified-preview@test.com")
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_preview", "unverified-preview@example.com")
 	w3 := httptest.NewRecorder()
 	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodGet, "/api/invitations/preview?token="+token, ""))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -2163,19 +2163,19 @@ func TestIntegration_DeclineInvitation_UnverifiedEmail_ReturnsEmailMismatch(t *t
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"unverified-decline@test.com","role":"member"}`))
+		`{"email":"unverified-decline@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "unverified-decline@test.com",
+		orgID, "unverified-decline@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
-	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_decline", "unverified-decline@test.com")
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_decline", "unverified-decline@example.com")
 	w3 := httptest.NewRecorder()
 	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/decline", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -2207,19 +2207,19 @@ func TestIntegration_AcceptInvitation_UnverifiedEmail_ReturnsEmailMismatch(t *te
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"unverified-accept@test.com","role":"member"}`))
+		`{"email":"unverified-accept@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "unverified-accept@test.com",
+		orgID, "unverified-accept@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
-	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_accept", "unverified-accept@test.com")
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_accept", "unverified-accept@example.com")
 	w3 := httptest.NewRecorder()
 	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -2258,19 +2258,19 @@ func TestIntegration_RequestNewInvitation_UnverifiedEmail_ReturnsNotFound(t *tes
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
-		`{"email":"unverified-requestnew@test.com","role":"member"}`))
+		`{"email":"unverified-requestnew@example.com","role":"member"}`))
 	if w2.Code != http.StatusCreated {
 		t.Fatalf("create invitation: want 201, got %d: %s", w2.Code, w2.Body)
 	}
 	var token string
 	if err := pool.QueryRow(t.Context(),
 		`SELECT token FROM organization.invitations WHERE organization_id = $1 AND email = $2 ORDER BY created_at DESC LIMIT 1`,
-		orgID, "unverified-requestnew@test.com",
+		orgID, "unverified-requestnew@example.com",
 	).Scan(&token); err != nil {
 		t.Fatalf("fetch invitation token: %v", err)
 	}
 
-	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_requestnew", "unverified-requestnew@test.com")
+	unverifiedEngine := organization.NewModuleEngineWithUnverifiedEmail(pool, "sub_unverified_requestnew", "unverified-requestnew@example.com")
 	w3 := httptest.NewRecorder()
 	unverifiedEngine.ServeHTTP(w3, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/request-new", `{"token":"`+token+`"}`))
 	if w3.Code != http.StatusUnprocessableEntity {
@@ -2468,7 +2468,7 @@ func TestIntegration_AcceptInvitation_ChecksLimitAndRecordsUsage(t *testing.T) {
 	const token = "accept-usage-token-00000000000000000"
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO organization.invitations (organization_id, email, role, token, invited_by, expires_at)
-		VALUES ($1, 'accept@test.com', 'member', $2, $3, NOW() + INTERVAL '7 days')`,
+		VALUES ($1, 'accept@example.com', 'member', $2, $3, NOW() + INTERVAL '7 days')`,
 		orgID, token, testAuthSub)
 	if err != nil {
 		t.Fatalf("seed invitation: %v", err)
@@ -2476,7 +2476,7 @@ func TestIntegration_AcceptInvitation_ChecksLimitAndRecordsUsage(t *testing.T) {
 
 	// Accept as a different user so that a new membership is inserted and the
 	// member count increases to ≥2, which is what the usage assertion checks.
-	acceptEngine := organization.NewModuleEngineWithWriterAndEmail(pool, "sub_invitee_usage", "accept@test.com", bw)
+	acceptEngine := organization.NewModuleEngineWithWriterAndEmail(pool, "sub_invitee_usage", "accept@example.com", bw)
 	w2 := httptest.NewRecorder()
 	acceptEngine.ServeHTTP(w2, httpserver.JSONTestRequest(http.MethodPost, "/api/invitations/accept",
 		`{"token":"`+token+`"}`))
@@ -2515,9 +2515,9 @@ func TestIntegration_ImportMembers_CommitCreatesInvitations(t *testing.T) {
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/members/import", `{
 		"dry_run": false,
 		"rows": [
-			{"email": "import-a@test.com", "role": "member"},
+			{"email": "import-a@example.com", "role": "member"},
 			{"email": "not-an-email", "role": "member"},
-			{"email": "import-b@test.com", "role": "admin"}
+			{"email": "import-b@example.com", "role": "admin"}
 		]
 	}`))
 	if w2.Code != http.StatusOK {

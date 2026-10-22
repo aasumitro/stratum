@@ -486,7 +486,7 @@ func TestIntegration_HandleInvitationRequested(t *testing.T) {
 	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
 
 	body := encodeEnvNotif("invreq-01", events.RoutingKeyInvitationRequested, orgID,
-		events.InvitationRequested{OrganizationID: orgID, InvitedBy: "integ_sub_inviter", InviteeEmail: "who@test.com"})
+		events.InvitationRequested{OrganizationID: orgID, InvitedBy: "integ_sub_inviter", InviteeEmail: "who@example.com"})
 
 	// with a userReader resolving the inviter's email, the handler proceeds to
 	// sendEmail (nil mailer → no-op) and returns nil
@@ -509,7 +509,7 @@ func TestIntegration_HandleInvitationDeclined_NotifiesInviterInApp(t *testing.T)
 
 	mod := notification.New(pool, nil, notifMembersReader{name: "Acme"}, stubNotifUserReader{}, "", nil)
 	body := encodeEnvNotif("invdecl-01", events.RoutingKeyInvitationDeclined, orgID,
-		events.InvitationDeclined{OrganizationID: orgID, InvitedBy: "integ_sub_inviter", InviteeEmail: "who@test.com"})
+		events.InvitationDeclined{OrganizationID: orgID, InvitedBy: "integ_sub_inviter", InviteeEmail: "who@example.com"})
 
 	if err := mod.Worker.HandleInvitationDeclined(t.Context(), body); err != nil {
 		t.Fatalf("HandleInvitationDeclined: %v", err)
@@ -583,7 +583,7 @@ func TestIntegration_HandleMemberInvited_EmailSkippedWhenPreferenceDisabled(t *t
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0000-000000000f22"
 	const authSub = "integ_sub_notif_invite_optout"
-	const email = "optout-invitee@test.com"
+	const email = "optout-invitee@example.com"
 	t.Cleanup(func() {
 		cleanupNotifByOrganization(pool, orgID)
 		pool.Exec(context.Background(), `DELETE FROM notification.preferences WHERE auth_sub = $1`, authSub)

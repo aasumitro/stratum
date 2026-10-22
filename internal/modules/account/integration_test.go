@@ -49,7 +49,7 @@ func TestIntegration_DeleteAccount_Worker_CompletesTask(t *testing.T) {
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker@example.com"}`))
 
 	wDel := httptest.NewRecorder()
 	e.ServeHTTP(wDel, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))
@@ -123,7 +123,7 @@ func TestIntegration_DeleteAccount_Worker_CriticalCleanupFailure_RetriesTask(t *
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker-critical@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker-critical@example.com"}`))
 
 	wDel := httptest.NewRecorder()
 	e.ServeHTTP(wDel, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))
@@ -171,7 +171,7 @@ func TestIntegration_DeleteAccount_Worker_AvatarDeleteFailure_RecordsFailedStep(
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker-avatar@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-worker-avatar@example.com"}`))
 
 	wDel := httptest.NewRecorder()
 	e.ServeHTTP(wDel, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))
@@ -239,7 +239,7 @@ func TestIntegration_SyncMFAStatus_VerifiedFactor_SetsEnabled(t *testing.T) {
 	defer admin.Close()
 
 	e := account.NewModuleEngineWithAdmin(pool, authSub, admin.URL, "test-service-role-key")
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"mfa-on@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"mfa-on@example.com"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/me/mfa/sync", ""))
@@ -269,7 +269,7 @@ func TestIntegration_SyncMFAStatus_NoVerifiedFactor_SetsDisabled(t *testing.T) {
 	defer admin.Close()
 
 	e := account.NewModuleEngineWithAdmin(pool, authSub, admin.URL, "test-service-role-key")
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"mfa-off@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"mfa-off@example.com"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/me/mfa/sync", ""))
@@ -323,7 +323,7 @@ func TestIntegration_RecordLoginEvent_SyncsStaleMFAStatus(t *testing.T) {
 	// seed a profile with the stale mfa_enabled=false the sync must correct
 	if _, err := pool.Exec(t.Context(),
 		`INSERT INTO account.users (auth_sub, email, mfa_enabled) VALUES ($1, $2, false)`,
-		authSub, "mfa-login-sync@test.com"); err != nil {
+		authSub, "mfa-login-sync@example.com"); err != nil {
 		t.Fatalf("seed profile: %v", err)
 	}
 
@@ -429,7 +429,7 @@ func TestIntegration_ExportData_Worker_CompletesTask(t *testing.T) {
 		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->'data'->>'auth_sub' = $1`, authSub)
 	})
 
-	e := account.NewModuleEngineWithEmail(pool, authSub, "export-worker@test.com")
+	e := account.NewModuleEngineWithEmail(pool, authSub, "export-worker@example.com")
 	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{}`))
 
 	wExp := httptest.NewRecorder()
@@ -465,8 +465,8 @@ func TestIntegration_ExportData_Worker_CompletesTask(t *testing.T) {
 	if err := json.Unmarshal(result, &parsed); err != nil {
 		t.Fatalf("unmarshal task result: %v", err)
 	}
-	if parsed.Profile["email"] != "export-worker@test.com" {
-		t.Errorf("profile.email: want export-worker@test.com, got %v", parsed.Profile["email"])
+	if parsed.Profile["email"] != "export-worker@example.com" {
+		t.Errorf("profile.email: want export-worker@example.com, got %v", parsed.Profile["email"])
 	}
 	if len(parsed.Organizations) != 1 || parsed.Organizations[0]["slug"] != "acme" {
 		t.Errorf("organizations: want [{slug: acme}], got %v", parsed.Organizations)
@@ -489,7 +489,7 @@ func TestIntegration_ExportData_Worker_SectionFailure_FailsWholeExport(t *testin
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"export-worker-fail@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"export-worker-fail@example.com"}`))
 
 	wExp := httptest.NewRecorder()
 	e.ServeHTTP(wExp, httpserver.JSONTestRequest(http.MethodPost, "/api/me/export", ""))
@@ -694,7 +694,7 @@ func TestIntegration_ListSessions_CursorPagination(t *testing.T) {
 	})
 
 	e := account.NewModuleEngine(pool, authSub)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"sessions-cursor@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"sessions-cursor@example.com"}`))
 
 	base := time.Now().Add(-time.Hour)
 	for i := range 5 {

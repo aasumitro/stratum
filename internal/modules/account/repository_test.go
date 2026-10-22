@@ -66,9 +66,9 @@ func TestIntegration_UpsertProfile_CreatesAndReturnsUser(t *testing.T) {
 
 	// email now comes from the caller's verified JWT claim, not the request
 	// body — the body's "email" field is accepted but ignored.
-	e := account.NewModuleEngineWithEmail(pool, testAuthSub, "integ@test.com")
+	e := account.NewModuleEngineWithEmail(pool, testAuthSub, "integ@example.com")
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"ignored@test.com","full_name":"Integ User"}`))
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"ignored@example.com","full_name":"Integ User"}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -78,8 +78,8 @@ func TestIntegration_UpsertProfile_CreatesAndReturnsUser(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	data := resp["data"].(map[string]any)
-	if data["email"] != "integ@test.com" {
-		t.Errorf("want integ@test.com (from the JWT claim, not the ignored body field), got %v", data["email"])
+	if data["email"] != "integ@example.com" {
+		t.Errorf("want integ@example.com (from the JWT claim, not the ignored body field), got %v", data["email"])
 	}
 }
 
@@ -96,7 +96,7 @@ func TestIntegration_UpdateProfile_PreservesEmptyAvatarURL(t *testing.T) {
 	})
 
 	// seed with avatar
-	serve(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"i@t.com","full_name":"I","avatar_url":"https://example.com/orig-avatar.png"}`))
+	serve(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"i@example.com","full_name":"I","avatar_url":"https://example.com/orig-avatar.png"}`))
 
 	// PATCH with empty avatar_url — COALESCE(NULLIF(...)) preserves original
 	w := serve(t, pool, httpserver.JSONTestRequest(http.MethodPatch, "/api/me", `{"full_name":"I Updated"}`))
@@ -121,7 +121,7 @@ func TestIntegration_GetProfile_ReturnsUser(t *testing.T) {
 		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, sub)
 	})
 
-	e := account.NewModuleEngineWithEmail(pool, sub, "get@test.com")
+	e := account.NewModuleEngineWithEmail(pool, sub, "get@example.com")
 	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"full_name":"Get User"}`))
 
 	w := httptest.NewRecorder()
@@ -133,8 +133,8 @@ func TestIntegration_GetProfile_ReturnsUser(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	data := resp["data"].(map[string]any)
-	if data["email"] != "get@test.com" {
-		t.Errorf("want email=get@test.com, got %v", data["email"])
+	if data["email"] != "get@example.com" {
+		t.Errorf("want email=get@example.com, got %v", data["email"])
 	}
 }
 
@@ -150,7 +150,7 @@ func TestIntegration_ListAndGetTask(t *testing.T) {
 	})
 
 	e := account.NewModuleEngine(pool, sub)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"tasks@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"tasks@example.com"}`))
 
 	// trigger delete-account (creates task)
 	wDel := httptest.NewRecorder()
@@ -213,7 +213,7 @@ func TestIntegration_GetTask_ScopedToOwnAuthSub(t *testing.T) {
 	})
 
 	eOwner := account.NewModuleEngine(pool, testAuthSub)
-	eOwner.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"tasks-scoped@test.com"}`))
+	eOwner.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"tasks-scoped@example.com"}`))
 
 	wDel := httptest.NewRecorder()
 	eOwner.ServeHTTP(wDel, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))
@@ -243,7 +243,7 @@ func TestIntegration_DeleteAccount_WithOwnedOrganization_Fails(t *testing.T) {
 	})
 
 	// create a profile
-	serve(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"del@test.com"}`))
+	serve(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"del@example.com"}`))
 
 	// create an organization that testAuthSub owns (insert directly to avoid cross-module HTTP call)
 	_, err := pool.Exec(t.Context(), `
@@ -271,7 +271,7 @@ func TestIntegration_DeleteAccount_NoOwnedOrganization_CreatesTask(t *testing.T)
 
 	e := account.NewModuleEngine(pool, noWsSub)
 	// create profile first
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"nodws@test.com"}`))
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"nodws@example.com"}`))
 
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodDelete, "/api/me", ""))

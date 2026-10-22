@@ -252,7 +252,7 @@ func TestIntegration_PayloadKeys_Invite(t *testing.T) {
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0001-000000000016"
 	const authSub = "integ_sub_i18n_invite"
-	const email = "i18n-invitee@test.com"
+	const email = "i18n-invitee@example.com"
 	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
 
 	mod := notification.New(pool, nil, nil, stubMemberInvitedUserReader{authSub: authSub, email: email}, "", nil)
@@ -271,7 +271,7 @@ func TestIntegration_PayloadKeys_InvitationRequested(t *testing.T) {
 
 	mod := notification.New(pool, nil, notifMembersReader{name: "Acme"}, stubNotifUserReader{}, "", nil)
 	body := encodeEnvNotif("i18n-invreq-01", events.RoutingKeyInvitationRequested, orgID,
-		events.InvitationRequested{OrganizationID: orgID, InvitedBy: "integ_sub_i18n_inviter", InviteeEmail: "who@test.com"})
+		events.InvitationRequested{OrganizationID: orgID, InvitedBy: "integ_sub_i18n_inviter", InviteeEmail: "who@example.com"})
 	if err := mod.Worker.HandleInvitationRequested(t.Context(), body); err != nil {
 		t.Fatalf("HandleInvitationRequested: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestIntegration_PayloadKeys_InvitationDeclined(t *testing.T) {
 
 	mod := notification.New(pool, nil, notifMembersReader{name: "Acme"}, stubNotifUserReader{}, "", nil)
 	body := encodeEnvNotif("i18n-invdecl-01", events.RoutingKeyInvitationDeclined, orgID,
-		events.InvitationDeclined{OrganizationID: orgID, InvitedBy: "integ_sub_i18n_inviter", InviteeEmail: "who@test.com"})
+		events.InvitationDeclined{OrganizationID: orgID, InvitedBy: "integ_sub_i18n_inviter", InviteeEmail: "who@example.com"})
 	if err := mod.Worker.HandleInvitationDeclined(t.Context(), body); err != nil {
 		t.Fatalf("HandleInvitationDeclined: %v", err)
 	}

@@ -234,7 +234,7 @@ func TestIntegration_HandleMemberInvited_NilWsReader_NoOp(t *testing.T) {
 		Source: "organization", Time: time.Now(),
 		Data: events.MemberInvited{
 			OrganizationID: "00000000-0000-0000-0000-000000000e06",
-			Email:          "invite@test.com",
+			Email:          "invite@example.com",
 			Role:           "member",
 			InvitedBy:      testAuthSubNotif,
 		},
@@ -276,7 +276,7 @@ func TestIntegration_HandleMemberInvited_ExistingAccount_SendsInAppNotification(
 	pool := testPoolNotif(t)
 	const orgID = "00000000-0000-0000-0000-000000000e0b"
 	const authSub = "integ_sub_notif_invite_existing"
-	const email = "existing-invitee@test.com"
+	const email = "existing-invitee@example.com"
 	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
 
 	mod := notification.New(pool, nil, nil,
@@ -311,13 +311,13 @@ func TestIntegration_HandleMemberInvited_UnknownEmail_NoInAppNotification(t *tes
 	t.Cleanup(func() { cleanupNotifByOrganization(pool, orgID) })
 
 	mod := notification.New(pool, nil, nil,
-		stubMemberInvitedUserReader{authSub: "unused", email: "someone-else@test.com"}, "", nil)
+		stubMemberInvitedUserReader{authSub: "unused", email: "someone-else@example.com"}, "", nil)
 
 	env := events.Envelope{
 		ID: "notif-invite-unknown-01", Type: events.RoutingKeyMemberInvited,
 		Source: "organization", Time: time.Now(),
 		Data: events.MemberInvited{
-			OrganizationID: orgID, Email: "brand-new@test.com", Role: "member", InvitedBy: testAuthSubNotif,
+			OrganizationID: orgID, Email: "brand-new@example.com", Role: "member", InvitedBy: testAuthSubNotif,
 		},
 	}
 	b, _ := json.Marshal(env)
@@ -634,7 +634,7 @@ func (stubNotifWsReader) CountActiveOwnedOrganizations(_ context.Context, _ stri
 type stubNotifUserReader struct{}
 
 func (stubNotifUserReader) GetUserByAuthSub(_ context.Context, _ string) (*contracts.UserInfo, error) {
-	return &contracts.UserInfo{Email: "owner@test.com"}, nil
+	return &contracts.UserInfo{Email: "owner@example.com"}, nil
 }
 
 func (stubNotifUserReader) GetUserByEmail(_ context.Context, _ string) (*contracts.UserInfo, error) {
