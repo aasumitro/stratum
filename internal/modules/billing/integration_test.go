@@ -35,10 +35,12 @@ func (stubRefReader) GetCountryTaxRate(_ context.Context, _ string) (int, error)
 // stubOrgSuspender drives the auto-invoice worker's cancellation-reconciliation
 // tests: it records every SuspendOrganization call and can be told to fail
 // its first N calls before succeeding, to simulate a failed attempt
-// followed by a successful redelivery.
+// followed by a successful redelivery. UnsuspendOrganization calls are
+// recorded too (never failed), for the webhook reactivation tests.
 type stubOrgSuspender struct {
-	failCount int
-	calls     []struct{ orgID, reason string }
+	failCount   int
+	calls       []struct{ orgID, reason string }
+	unsuspended []string
 }
 
 func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason string) error {
@@ -50,7 +52,10 @@ func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason 
 	return nil
 }
 
-func (s *stubOrgSuspender) UnsuspendOrganization(_ context.Context, _ string) error { return nil }
+func (s *stubOrgSuspender) UnsuspendOrganization(_ context.Context, orgID string) error {
+	s.unsuspended = append(s.unsuspended, orgID)
+	return nil
+}
 
 // spyOrgCommander counts ResolveDowngradeOverage calls and can be told to
 // fail its first N before succeeding — used both to assert exactly how many
@@ -1363,6 +1368,170 @@ func TestIntegration_Webhook_PaidReactivatesExpiredSubscription(t *testing.T) {
 	data := getSubscriptionData(t, billing.NewModuleEngine(pool, user, orgID), orgID)
 	if data["status"] != "active" {
 		t.Errorf("after paid webhook: want status=active, got %v", data["status"])
+	}
+}
+
+// seedExpiredInvoiceState provisions orgID's subscription and leaves it the
+// way expireIfDue's failPendingInvoicesAndLinks does: subscription set to
+// subStatus, one invoice of the given kind marked 'failed', and its Stripe
+// payment link (externalID) marked 'expired'. Returns the subscription and
+// invoice IDs.
+func seedExpiredInvoiceState(
+	t *testing.T, pool *pgxpool.Pool, orgID, user, externalID, subStatus, kind string,
+) (subID, invID string) {
+	t.Helper()
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID = getSubscriptionID(pool, orgID)
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind, status)
+		VALUES ($1, 900, 'USD', $2, 'failed') RETURNING id`,
+		subID, kind).Scan(&invID); err != nil {
+		t.Fatalf("seed %s invoice: %v", kind, err)
+	}
+	seedPaymentLink(pool, invID, externalID, "stripe", "USD", 900)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.payment_links SET status = 'expired' WHERE invoice_id = $1`, invID); err != nil {
+		t.Fatalf("expire payment link: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = $1 WHERE id = $2`, subStatus, subID); err != nil {
+		t.Fatalf("set subscription status: %v", err)
+	}
+	return subID, invID
+}
+
+// countOrgOutboxRows counts messaging.outbox rows with routingKey for orgID.
+func countOrgOutboxRows(t *testing.T, pool *pgxpool.Pool, routingKey, orgID string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+		routingKey, orgID).Scan(&n); err != nil {
+		t.Fatalf("count outbox %s: %v", routingKey, err)
+	}
+	return n
+}
+
+// postPaidStripeWebhook sends a checkout.session.completed (paid) webhook
+// for externalID through e and fails the test unless it is ACK'd.
+func postPaidStripeWebhook(t *testing.T, e *gin.Engine, externalID string) {
+	t.Helper()
+	payload := `{"type":"checkout.session.completed","data":{"object":{"id":"` + externalID + `","payment_status":"paid"}}}`
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe", payload))
+	if w.Code != http.StatusOK {
+		t.Fatalf("paid webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// TestIntegration_Webhook_LatePaidWebhook_AfterExpiry_ReactivatesRenewal
+// covers a renewal payment that completed at the gateway while expireIfDue
+// was failing its invoice — paid before the expiry check with the webhook
+// delivered after it, or paid afterwards on a hosted checkout the provider
+// still had open. By the time the webhook arrives the subscription is
+// expired, the invoice failed and its link expired. The payment must be
+// recorded and the subscription reactivated, not swallowed.
+func TestIntegration_Webhook_LatePaidWebhook_AfterExpiry_ReactivatesRenewal(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_late_paid_user"
+		orgID = "00000000-0000-0000-0000-000000000a71"
+		extID = "stripe_sess_a71"
+	)
+	setupBillingTest(t, pool, orgID)
+	subID, invID := seedExpiredInvoiceState(t, pool, orgID, user, extID, "expired", "subscription")
+
+	suspender := &stubOrgSuspender{}
+	postPaidStripeWebhook(t, billing.NewWebhookModuleEngineWithSuspender(pool, user, orgID, suspender), extID)
+
+	var subStatus string
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if subStatus != "active" {
+		t.Errorf("subscription: want status=active after the recovered payment, got %q", subStatus)
+	}
+	var invStatus string
+	var paidAt *time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT status, paid_at FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus, &paidAt); err != nil {
+		t.Fatalf("read invoice: %v", err)
+	}
+	if invStatus != "paid" || paidAt == nil {
+		t.Errorf("invoice: want status=paid with paid_at set, got status=%q paid_at=%v", invStatus, paidAt)
+	}
+	var payments int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments); err != nil {
+		t.Fatalf("count payments: %v", err)
+	}
+	if payments != 1 {
+		t.Errorf("billing.payments: want exactly 1 row for the invoice, got %d", payments)
+	}
+	if !slices.Equal(suspender.unsuspended, []string{orgID}) {
+		t.Errorf("UnsuspendOrganization calls: want [%s], got %v", orgID, suspender.unsuspended)
+	}
+	if n := countOrgOutboxRows(t, pool, events.RoutingKeyInvoicePaid, orgID); n != 1 {
+		t.Errorf("outbox %s: want 1, got %d", events.RoutingKeyInvoicePaid, n)
+	}
+	if n := countOrgOutboxRows(t, pool, events.RoutingKeySubscriptionResumed, orgID); n != 1 {
+		t.Errorf("outbox %s: want 1, got %d", events.RoutingKeySubscriptionResumed, n)
+	}
+}
+
+// TestIntegration_Webhook_LatePaidWebhook_NotRecovered covers the paid
+// webhooks for a failed invoice that must stay unapplied: a failed renewal
+// invoice whose subscription is live again (the owner already reactivated
+// through another invoice), and a failed additive invoice on an expired
+// subscription. Neither flips the invoice, records a payment, changes the
+// subscription, or emits an event.
+func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
+	cases := []struct {
+		name, orgID, extID, subStatus, kind string
+	}{
+		{"failed invoice on non-expired subscription", "00000000-0000-0000-0000-000000000a72", "stripe_sess_a72", "active", "subscription"},
+		{"additive failed invoice on expired subscription", "00000000-0000-0000-0000-000000000a73", "stripe_sess_a73", "expired", "extension"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			user := "integ_billing_wh_late_noop_user_" + tc.orgID[len(tc.orgID)-3:]
+			setupBillingTest(t, pool, tc.orgID)
+			subID, invID := seedExpiredInvoiceState(t, pool, tc.orgID, user, tc.extID, tc.subStatus, tc.kind)
+
+			suspender := &stubOrgSuspender{}
+			postPaidStripeWebhook(t, billing.NewWebhookModuleEngineWithSuspender(pool, user, tc.orgID, suspender), tc.extID)
+
+			var invStatus, subStatus string
+			var payments int
+			if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus); err != nil {
+				t.Fatalf("read invoice: %v", err)
+			}
+			if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus); err != nil {
+				t.Fatalf("read subscription: %v", err)
+			}
+			if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments); err != nil {
+				t.Fatalf("count payments: %v", err)
+			}
+			if invStatus != "failed" {
+				t.Errorf("invoice: want status=failed (not recovered), got %q", invStatus)
+			}
+			if subStatus != tc.subStatus {
+				t.Errorf("subscription: want status=%s (unchanged), got %q", tc.subStatus, subStatus)
+			}
+			if payments != 0 {
+				t.Errorf("billing.payments: want 0 rows, got %d", payments)
+			}
+			if len(suspender.unsuspended) != 0 {
+				t.Errorf("UnsuspendOrganization: want no calls, got %v", suspender.unsuspended)
+			}
+			for _, key := range []string{events.RoutingKeyInvoicePaid, events.RoutingKeySubscriptionResumed} {
+				if n := countOrgOutboxRows(t, pool, key, tc.orgID); n != 0 {
+					t.Errorf("outbox %s: want 0, got %d", key, n)
+				}
+			}
+		})
 	}
 }
 

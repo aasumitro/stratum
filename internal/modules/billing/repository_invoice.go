@@ -31,6 +31,22 @@ type invoiceRecord struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
+// Invoice kinds that billing decisions branch on. The full set is the
+// billing.invoices.kind CHECK constraint (migration 000004).
+const (
+	invoiceKindSubscription = "subscription"
+	invoiceKindActivation   = "activation"
+)
+
+// isPeriodBacking reports whether an invoice of kind pays for the
+// subscription's own period — a renewal or an activation invoice — as
+// opposed to an additive purchase (extension, addon increase) that leaves the
+// current period paid whether or not it succeeds. Only a period-backing
+// failure past-dues a subscription or keeps its dunning notices alive.
+func isPeriodBacking(kind string) bool {
+	return kind == invoiceKindSubscription || kind == invoiceKindActivation
+}
+
 type lineItemRecord struct {
 	ID             string `json:"id"`
 	InvoiceID      string `json:"invoice_id"`
@@ -135,6 +151,23 @@ func (r *repository) markInvoicePaid(ctx context.Context, q db.Querier, id strin
 	tag, err := q.Exec(ctx, `
 		UPDATE billing.invoices SET status = 'paid', paid_at = $2, updated_at = now()
 		WHERE id = $1 AND status = 'pending'`,
+		id, paidAt,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// markFailedInvoicePaid recovers an invoice that expireIfDue failed when
+// its payment had in fact completed at the gateway (see
+// recoverLateRenewalPayment). This is the one sanctioned failed -> paid
+// transition; every other path treats 'failed' as terminal. The WHERE
+// clause makes it a no-op on any other status.
+func (r *repository) markFailedInvoicePaid(ctx context.Context, q db.Querier, id string, paidAt time.Time) (bool, error) {
+	tag, err := q.Exec(ctx, `
+		UPDATE billing.invoices SET status = 'paid', paid_at = $2, updated_at = now()
+		WHERE id = $1 AND status = 'failed'`,
 		id, paidAt,
 	)
 	if err != nil {

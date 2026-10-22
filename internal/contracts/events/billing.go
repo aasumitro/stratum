@@ -31,6 +31,18 @@ const (
 // unchecked, possibly stale reminders.
 const RoutingKeySubscriptionExpiringSoon = "billing.subscription.expiring-soon"
 
+// The day-3/day-7 dunning notices deliberately use two keys each, like the
+// renewal reminder. RoutingKeySubscriptionPaymentRemind / -Final are the
+// scheduled rows (delayed outbox rows written when a payment fails) and only
+// billing consumes them: the handler drops a notice whose invoice is no
+// longer pending, is not period-backing, or whose subscription has ended,
+// and otherwise publishes RoutingKeyInvoicePaymentReminder /
+// RoutingKeyInvoicePaymentFinalNotice, which notification sends.
+const (
+	RoutingKeyInvoicePaymentReminder    = "billing.invoice.payment-reminder"
+	RoutingKeyInvoicePaymentFinalNotice = "billing.invoice.payment-final-notice"
+)
+
 type SubscriptionActivated struct {
 	OrgID          string    `json:"org_id"`
 	SubscriptionID string    `json:"subscription_id"`

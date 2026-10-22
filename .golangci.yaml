@@ -25,7 +25,7 @@ linters:
     - whitespace
   settings:
     dupl:
-      threshold: 800
+      threshold: 750
     gosec:
       excludes:
         # G404 (weak RNG): audited 2026-07-16 — no math/rand usage anywhere in

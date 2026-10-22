@@ -134,6 +134,12 @@ SELECT payload->>'org_id' AS org_id, count(*) AS republishes, min(created_at), m
 ```
 The retention sweep deletes published rows after `OUTBOX_RETENTION_DAYS`, so run it before they age out.
 
+*Retired `notification.subscription-payment-remind` / `notification.subscription-payment-final` queues* — run once per environment that ran a build from before the day-3/day-7 dunning notices were split into a scheduled key and a checked key. Billing now consumes the scheduled rows (`billing.subscription.payment-remind` / `-final`) and sends a notice on only while its invoice is still pending, backs the subscription's period, and the subscription has not ended. Notification consumes the checked notices (`billing.invoice.payment-reminder` / `billing.invoice.payment-final-notice`) from `notification.invoice-payment-reminder` / `notification.invoice-payment-final-notice`. The two old queues have no consumer but are still bound to the scheduled keys, so they keep collecting an unchecked copy of every scheduled notice. Delete them — the messages in them are exactly those unchecked copies, so discarding them is correct:
+```sh
+rabbitmqctl delete_queue notification.subscription-payment-remind
+rabbitmqctl delete_queue notification.subscription-payment-final
+```
+
 **Rotating the webhook encryption key** — `WEBHOOK_SECRET_ENCRYPTION_KEY` rotation is a
 4-step, operator-driven procedure; do not skip the verification step. Do not roll back the
 application between steps 1 and 3 once the backfill has started — a rollback to the pre-rotation

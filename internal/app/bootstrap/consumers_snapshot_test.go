@@ -28,6 +28,8 @@ organization.events|billing.organization-created|[organization.created]|5|2s|1m0
 organization.events|billing.organization-deleted|[organization.deleted]|5|2s|1m0s|billing.events.dlx|billing.organization-deleted|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-auto-invoice|[billing.subscription.auto-invoice]|5|2s|1m0s|billing.events.dlx|billing.subscription-auto-invoice|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-check|[billing.subscription.check]|5|2s|1m0s|billing.events.dlx|billing.subscription-check|billing.events.dlx|billing.events.dlq|10
+billing.events|billing.subscription-payment-final|[billing.subscription.payment-final]|5|2s|1m0s|billing.events.dlx|billing.subscription-payment-final|billing.events.dlx|billing.events.dlq|10
+billing.events|billing.subscription-payment-remind|[billing.subscription.payment-remind]|5|2s|1m0s|billing.events.dlx|billing.subscription-payment-remind|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-remind|[billing.subscription.remind]|5|2s|1m0s|billing.events.dlx|billing.subscription-remind|billing.events.dlx|billing.events.dlq|10
 account.events|notification.email-changed|[user.email_changed]|5|2s|1m0s|notification.events.dlx|notification.email-changed|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.invitation-declined|[organization.invitation.declined]|5|2s|1m0s|notification.events.dlx|notification.invitation-declined|notification.events.dlx|notification.events.dlq|10
@@ -35,6 +37,8 @@ organization.events|notification.invitation-requested|[organization.invitation.r
 billing.events|notification.invoice-created|[billing.invoice.created]|5|2s|1m0s|notification.events.dlx|notification.invoice-created|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.invoice-failed|[billing.invoice.failed]|5|2s|1m0s|notification.events.dlx|notification.invoice-failed|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.invoice-paid|[billing.invoice.paid]|5|2s|1m0s|notification.events.dlx|notification.invoice-paid|notification.events.dlx|notification.events.dlq|10
+billing.events|notification.invoice-payment-final-notice|[billing.invoice.payment-final-notice]|5|2s|1m0s|notification.events.dlx|notification.invoice-payment-final-notice|notification.events.dlx|notification.events.dlq|10
+billing.events|notification.invoice-payment-reminder|[billing.invoice.payment-reminder]|5|2s|1m0s|notification.events.dlx|notification.invoice-payment-reminder|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.member-invited|[organization.member.invited]|5|2s|1m0s|notification.events.dlx|notification.member-invited|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.member-reinstated|[organization.member.reinstated]|5|2s|1m0s|notification.events.dlx|notification.member-reinstated|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.member-removed|[organization.member.removed]|5|2s|1m0s|notification.events.dlx|notification.member-removed|notification.events.dlx|notification.events.dlq|10
@@ -49,8 +53,6 @@ billing.events|notification.subscription-activated|[billing.subscription.activat
 billing.events|notification.subscription-cancelled|[billing.subscription.cancelled]|5|2s|1m0s|notification.events.dlx|notification.subscription-cancelled|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-expired|[billing.subscription.expired]|5|2s|1m0s|notification.events.dlx|notification.subscription-expired|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-expiring-soon|[billing.subscription.expiring-soon]|5|2s|1m0s|notification.events.dlx|notification.subscription-expiring-soon|notification.events.dlx|notification.events.dlq|10
-billing.events|notification.subscription-payment-final|[billing.subscription.payment-final]|5|2s|1m0s|notification.events.dlx|notification.subscription-payment-final|notification.events.dlx|notification.events.dlq|10
-billing.events|notification.subscription-payment-remind|[billing.subscription.payment-remind]|5|2s|1m0s|notification.events.dlx|notification.subscription-payment-remind|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-resumed|[billing.subscription.resumed]|5|2s|1m0s|notification.events.dlx|notification.subscription-resumed|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.trial-started|[billing.subscription.trial-started]|5|2s|1m0s|notification.events.dlx|notification.trial-started|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.usage-limit-warning|[billing.usage.limit-warning]|5|2s|1m0s|notification.events.dlx|notification.usage-limit-warning|notification.events.dlx|notification.events.dlq|10
@@ -61,7 +63,7 @@ billing.events|organization.webhook-billing|[billing.invoice.created billing.inv
 organization.events|organization.webhook-organization|[organization.created organization.member.invited]|3|5s|1m0s|organization.events.dlx|organization.webhook-organization|organization.events.dlx|organization.events.dlq|10
 organization.events|organization.webhook-retry|[organization.webhook.retry-requested]|3|5s|1m0s|organization.events.dlx|organization.webhook-retry|organization.events.dlx|organization.events.dlq|1`
 
-const goldenConsumerCount = 38
+const goldenConsumerCount = 40
 
 // consumerTopologyLines renders consumers to the same pipe-delimited format
 // goldenConsumerTopology was captured in, sorted by queue name (the golden
@@ -91,7 +93,7 @@ func consumerTopologyLines(consumers []*messaging.Consumer) []string {
 
 // TestNewConsumers_MatchesGoldenTopology guards bootstrap.NewConsumers'
 // full output against drift — queue name, binding keys, exchange, DLX, and
-// prefetch count for all 38 entries, each contributed by one module's own
+// prefetch count for all 40 entries, each contributed by one module's own
 // Consumers() method. A dropped or altered entry fails this test with a
 // line-level diff instead of surfacing as a silently misrouted message.
 func TestNewConsumers_MatchesGoldenTopology(t *testing.T) {

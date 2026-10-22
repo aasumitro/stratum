@@ -71,6 +71,42 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.HandleSubscriptionRemind, log),
 
+		// billing: dunning day-3 check (outbox row with not_before 3 days after
+		// a failed payment). Only this queue binds the scheduled key; a notice
+		// that still applies is published as RoutingKeyInvoicePaymentReminder.
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.subscription-payment-remind",
+				BindingKeys:          []string{events.RoutingKeySubscriptionPaymentRemind},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.subscription-payment-remind",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandleSubscriptionPaymentRemind, log),
+
+		// billing: dunning day-7 check (outbox row with not_before 7 days after
+		// a failed payment). Only this queue binds the scheduled key; a notice
+		// that still applies is published as RoutingKeyInvoicePaymentFinalNotice.
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.subscription-payment-final",
+				BindingKeys:          []string{events.RoutingKeySubscriptionPaymentFinal},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.subscription-payment-final",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandleSubscriptionPaymentFinal, log),
+
 		// billing: auto-generate renewal invoice (outbox row with not_before ~3
 		// days before expiry; the relay publishes it here once it comes due)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{

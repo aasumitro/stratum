@@ -393,35 +393,39 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleSubscriptionResumed), log),
 
-		// notification: dunning day-3 payment reminder (outbox row with
-		// not_before 3 days out; the relay publishes it here once it comes due)
+		// notification: dunning day-3 payment reminder — the checked notice
+		// billing publishes, never the scheduled
+		// billing.subscription.payment-remind row itself (see
+		// RoutingKeyInvoicePaymentReminder)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{
-				Name:                 "notification.subscription-payment-remind",
-				BindingKeys:          []string{events.RoutingKeySubscriptionPaymentRemind},
+				Name:                 "notification.invoice-payment-reminder",
+				BindingKeys:          []string{events.RoutingKeyInvoicePaymentReminder},
 				MaxDeliveries:        5,
 				RetryMinDelay:        2 * time.Second,
 				RetryMaxDelay:        60 * time.Second,
 				DeadLetterExchange:   exchangeNotificationDLX,
-				DeadLetterRoutingKey: "notification.subscription-payment-remind",
+				DeadLetterRoutingKey: "notification.invoice-payment-reminder",
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleSubscriptionPaymentRemind), log),
 
-		// notification: dunning day-7 final warning (outbox row with not_before
-		// 7 days out; the relay publishes it here once it comes due)
+		// notification: dunning day-7 final warning — the checked notice
+		// billing publishes, never the scheduled
+		// billing.subscription.payment-final row itself (see
+		// RoutingKeyInvoicePaymentFinalNotice)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{
-				Name:                 "notification.subscription-payment-final",
-				BindingKeys:          []string{events.RoutingKeySubscriptionPaymentFinal},
+				Name:                 "notification.invoice-payment-final-notice",
+				BindingKeys:          []string{events.RoutingKeyInvoicePaymentFinalNotice},
 				MaxDeliveries:        5,
 				RetryMinDelay:        2 * time.Second,
 				RetryMaxDelay:        60 * time.Second,
 				DeadLetterExchange:   exchangeNotificationDLX,
-				DeadLetterRoutingKey: "notification.subscription-payment-final",
+				DeadLetterRoutingKey: "notification.invoice-payment-final-notice",
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,

@@ -110,7 +110,17 @@ func NewModuleForTest(pool *pgxpool.Pool, ref referenceStub) *Module {
 // NewWebhookModuleEngine creates a gin.Engine with both billing routes (authed)
 // and public webhook routes (/webhooks/stripe, /webhooks/xendit), backed by a
 // real DB. ProviderConfig is empty so webhook secrets are bypassed (dev mode).
+// No organization suspender is wired, so suspend/unsuspend calls are skipped.
 func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) *gin.Engine {
+	return NewWebhookModuleEngineWithSuspender(pool, authSub, organizationID, nil)
+}
+
+// NewWebhookModuleEngineWithSuspender is NewWebhookModuleEngine with
+// suspender wired as the module's organization suspender, so a test can
+// assert the suspend/unsuspend calls a webhook triggers.
+func NewWebhookModuleEngineWithSuspender(
+	pool *pgxpool.Pool, authSub, organizationID string, suspender contracts.OrganizationSuspender,
+) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	// pool doubles as the webhook pool here — every caller of this helper
 	// connects via TEST_DATABASE_URL (stratum_test, BYPASSRLS by design —
@@ -118,7 +128,7 @@ func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) 
 	// distinction for this helper to preserve. webhook_rls_test.go
 	// exercises the real stratum_app/stratum_webhook split directly
 	// instead of through here.
-	mod := New(pool, ProviderConfig{}, nil, nil, pool)
+	mod := New(pool, ProviderConfig{}, nil, suspender, pool)
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})
