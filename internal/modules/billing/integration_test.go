@@ -2284,10 +2284,30 @@ func TestIntegration_HandleSubscriptionRemind_ActiveSub(t *testing.T) {
 		`SELECT id FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID,
 	).Scan(&subID)
 
+	// The handler's own queue binds RoutingKeySubscriptionRemind, so the
+	// checked reminder must go out under RoutingKeySubscriptionExpiringSoon —
+	// publishing its input key again would feed it back on the next relay tick.
+	countOutbox := func(routingKey string) int {
+		var n int
+		pool.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+			routingKey, orgID).Scan(&n)
+		return n
+	}
+	remindBefore := countOutbox(events.RoutingKeySubscriptionRemind)
+	expiringSoonBefore := countOutbox(events.RoutingKeySubscriptionExpiringSoon)
+
 	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
 	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
 	if err := mod.Worker.HandleSubscriptionRemind(t.Context(), body); err != nil {
 		t.Errorf("HandleSubscriptionRemind active sub: want nil, got %v", err)
+	}
+
+	if got := countOutbox(events.RoutingKeySubscriptionExpiringSoon) - expiringSoonBefore; got != 1 {
+		t.Errorf("want 1 new %s outbox row, got %d", events.RoutingKeySubscriptionExpiringSoon, got)
+	}
+	if got := countOutbox(events.RoutingKeySubscriptionRemind) - remindBefore; got != 0 {
+		t.Errorf("want no new %s outbox row (the handler's own input key), got %d", events.RoutingKeySubscriptionRemind, got)
 	}
 }
 

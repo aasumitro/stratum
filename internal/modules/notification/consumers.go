@@ -55,17 +55,19 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.Idempotent(m.Worker.HandleInvoicePaid), log),
 
-		// notification: subscription expiring reminder
+		// notification: subscription expiring reminder — the checked event
+		// billing publishes, never the scheduled billing.subscription.remind
+		// row itself (see RoutingKeySubscriptionExpiringSoon)
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
 			Queue: messaging.QueueSpec{
-				Name:                 "notification.subscription-remind",
-				BindingKeys:          []string{events.RoutingKeySubscriptionRemind},
+				Name:                 "notification.subscription-expiring-soon",
+				BindingKeys:          []string{events.RoutingKeySubscriptionExpiringSoon},
 				MaxDeliveries:        5,
 				RetryMinDelay:        2 * time.Second,
 				RetryMaxDelay:        60 * time.Second,
 				DeadLetterExchange:   exchangeNotificationDLX,
-				DeadLetterRoutingKey: "notification.subscription-remind",
+				DeadLetterRoutingKey: "notification.subscription-expiring-soon",
 			},
 			DLX:           messaging.DLXSpec{ExchangeName: exchangeNotificationDLX, QueueName: exchangeNotificationDLQ},
 			PrefetchCount: 10,

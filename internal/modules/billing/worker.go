@@ -82,7 +82,11 @@ func staleSubscriptionCheck(sub *subscriptionRecord, check events.SubscriptionCh
 	return currentEnd == nil || !currentEnd.Equal(check.ExpectedEnd)
 }
 
-// HandleSubscriptionRemind re-publishes as a normal event so notification can consume it.
+// HandleSubscriptionRemind checks a scheduled reminder against the live
+// subscription and, if it still applies, publishes it under
+// RoutingKeySubscriptionExpiringSoon for notification. It never publishes
+// its own input key: this handler's queue binds that key, so doing so would
+// loop.
 func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
 	if err != nil {
@@ -97,7 +101,7 @@ func (w *Worker) HandleSubscriptionRemind(ctx context.Context, body []byte) erro
 			"subscription_id", sub.ID, "expected_end", check.ExpectedEnd)
 		return nil
 	}
-	return w.svc.enqueueEvent(ctx, events.RoutingKeySubscriptionRemind, sub.SubjectID,
+	return w.svc.enqueueEvent(ctx, events.RoutingKeySubscriptionExpiringSoon, sub.SubjectID,
 		events.SubscriptionCheck{
 			SubscriptionID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID,
 			Plan: sub.Plan, ExpectedEnd: check.ExpectedEnd, IsTrial: sub.TrialEnd != nil,

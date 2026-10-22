@@ -20,6 +20,17 @@ const (
 	RoutingKeyUsageLimitWarning         = "billing.usage.limit-warning"
 )
 
+// The renewal reminder deliberately uses two keys. RoutingKeySubscriptionRemind
+// is the scheduled check (a delayed outbox row due shortly before the period
+// or trial ends) and only billing consumes it: the handler drops it when the
+// subscription is no longer active/trialing or its end date moved, and
+// otherwise publishes RoutingKeySubscriptionExpiringSoon, which notification
+// sends. Billing's reminder queue binds RoutingKeySubscriptionRemind, so
+// publishing the checked reminder under that key would feed the handler its
+// own output on every relay tick; any other module binding it would receive
+// unchecked, possibly stale reminders.
+const RoutingKeySubscriptionExpiringSoon = "billing.subscription.expiring-soon"
+
 type SubscriptionActivated struct {
 	OrgID          string    `json:"org_id"`
 	SubscriptionID string    `json:"subscription_id"`

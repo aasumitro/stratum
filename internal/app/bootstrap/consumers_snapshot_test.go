@@ -48,9 +48,9 @@ organization.events|notification.ownership-transferred|[organization.ownership.t
 billing.events|notification.subscription-activated|[billing.subscription.activated]|5|2s|1m0s|notification.events.dlx|notification.subscription-activated|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-cancelled|[billing.subscription.cancelled]|5|2s|1m0s|notification.events.dlx|notification.subscription-cancelled|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-expired|[billing.subscription.expired]|5|2s|1m0s|notification.events.dlx|notification.subscription-expired|notification.events.dlx|notification.events.dlq|10
+billing.events|notification.subscription-expiring-soon|[billing.subscription.expiring-soon]|5|2s|1m0s|notification.events.dlx|notification.subscription-expiring-soon|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-payment-final|[billing.subscription.payment-final]|5|2s|1m0s|notification.events.dlx|notification.subscription-payment-final|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-payment-remind|[billing.subscription.payment-remind]|5|2s|1m0s|notification.events.dlx|notification.subscription-payment-remind|notification.events.dlx|notification.events.dlq|10
-billing.events|notification.subscription-remind|[billing.subscription.remind]|5|2s|1m0s|notification.events.dlx|notification.subscription-remind|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.subscription-resumed|[billing.subscription.resumed]|5|2s|1m0s|notification.events.dlx|notification.subscription-resumed|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.trial-started|[billing.subscription.trial-started]|5|2s|1m0s|notification.events.dlx|notification.trial-started|notification.events.dlx|notification.events.dlq|10
 billing.events|notification.usage-limit-warning|[billing.usage.limit-warning]|5|2s|1m0s|notification.events.dlx|notification.usage-limit-warning|notification.events.dlx|notification.events.dlq|10

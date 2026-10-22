@@ -1063,6 +1063,7 @@
     "copyOwnerEmailSuccess": "Owner email copied",
     "suspendedMemberBanner": "This organization is suspended. Contact {{ownerName}} (owner) to resolve.",
     "suspendedOwnerBillingBanner": "Unpaid invoice — pay to reactivate instantly.",
+    "suspendedOwnerExpiredBanner": "Subscription expired — resume it to reactivate.",
     "suspendedOwnerSelfBanner": "Suspended: {{reason}}"
   },
   "settings": {
@@ -1492,11 +1493,6 @@
       }
     },
     "states": {
-      "pastDueTitle": "Payment window missed",
-      "pastDueDescription": "Dunning reminders are scheduled at day 3 and day 7, then the subscription expires.",
-      "payInvoice": "Pay invoice →",
-      "expiredTitle": "Access paused",
-      "expiredDescription": "Pay the open invoice to reactivate instantly once the webhook confirms.",
       "resumeGetLink": "Resume — get payment link",
       "scheduledCancelTitle": "Cancellation scheduled",
       "scheduledCancelDescription": "Your subscription remains active until {{date}} and won't renew.",
@@ -1511,6 +1507,7 @@
     },
     "dunning": {
       "expired": "Access paused. Pay the open invoice to reactivate instantly.",
+      "expiredResume": "Access paused. Resume the subscription to get a payment link.",
       "pastDue": "Payment due — service continues.",
       "overdue": "Payment {{days}} days overdue.",
       "finalNotice": "Final notice — expires soon, access will pause.",

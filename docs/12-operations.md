@@ -120,6 +120,20 @@ UPDATE messaging.outbox
 ```
 Rows already published into the legacy parking queues are not recoverable this way — the hourly `ReconcileOverdueSubscriptions` sweep covers the subscription-expiry consequence; a missed one-time reminder or dunning notice is accepted loss. Afterward the five legacy `*-delay` parking queues (`billing.subscription-check-delay`, `-remind-delay`, `-auto-invoice-delay`, `-payment-remind-delay`, `-payment-final-delay`) and the `billing.delay` exchange are unused and can be deleted (`rabbitmqctl delete_queue billing.subscription-check-delay` … and `rabbitmqctl delete_exchange billing.delay`); leaving them is harmless, nothing publishes to them.
 
+*Retired `notification.subscription-remind` queue* — run once per environment that ran a build from before the renewal reminder was split into a scheduled key and a checked key. Notification now consumes the checked reminder (`billing.subscription.expiring-soon`) from `notification.subscription-expiring-soon`. The old queue has no consumer but is still bound to the scheduled `billing.subscription.remind`, so it keeps collecting an unchecked copy of every scheduled reminder. Delete it — the messages in it are exactly those unchecked copies, so discarding them is correct:
+```sh
+rabbitmqctl delete_queue notification.subscription-remind
+```
+Builds in that window also re-delivered each checked reminder back to billing's own queue, so an owner could receive one "expiring soon" reminder per relay tick until the subscription's status or end date changed. To see whether an environment was affected, count the checked re-publishes, which are immediate rows under the scheduled key:
+```sql
+SELECT payload->>'org_id' AS org_id, count(*) AS republishes, min(created_at), max(created_at)
+  FROM messaging.outbox
+ WHERE routing_key = 'billing.subscription.remind'
+   AND not_before <= created_at + interval '1 second'
+ GROUP BY 1 ORDER BY 2 DESC;
+```
+The retention sweep deletes published rows after `OUTBOX_RETENTION_DAYS`, so run it before they age out.
+
 **Rotating the webhook encryption key** — `WEBHOOK_SECRET_ENCRYPTION_KEY` rotation is a
 4-step, operator-driven procedure; do not skip the verification step. Do not roll back the
 application between steps 1 and 3 once the backfill has started — a rollback to the pre-rotation

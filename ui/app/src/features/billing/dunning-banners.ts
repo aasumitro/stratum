@@ -3,7 +3,7 @@ import type { Invoice, Subscription } from "@/types/billing"
 
 // In-app twin of the backend's day-3/day-7 dunning email schedule.
 // The exact T-7d/T-3d/T+3d/T+7d cadence is only observable server-side (it's
-// driven by RabbitMQ delayed messages, not a queryable field), so this is a
+// driven by delayed outbox events, not a queryable field), so this is a
 // best-effort derivation from what the frontend CAN see: subscription
 // status, trial_end, and the oldest pending invoice's due_at — close enough
 // to give the right banner at the right severity, not a literal mirror of
@@ -11,6 +11,7 @@ import type { Invoice, Subscription } from "@/types/billing"
 export function computeDunningBanners(
   sub: Subscription | undefined,
   invoices: Invoice[],
+  hasPendingInvoice: boolean,
   t: (key: string, opts?: Record<string, unknown>) => string
 ): BannerItem[] {
   if (!sub) return []
@@ -18,11 +19,23 @@ export function computeDunningBanners(
   const now = Date.now()
 
   if (sub.status === "expired") {
-    banners.push({
-      id: "dunning-expired",
-      severity: "critical",
-      message: t("billing.dunning.expired"),
-    })
+    // Paying the open subscription/activation invoice is what reactivates
+    // an expired subscription. Without one there's nothing to pay yet — the
+    // owner has to resume first, which issues it — so the copy (and the
+    // action billing-layout.tsx attaches by id) says that instead.
+    banners.push(
+      hasPendingInvoice
+        ? {
+            id: "dunning-expired",
+            severity: "critical",
+            message: t("billing.dunning.expired"),
+          }
+        : {
+            id: "dunning-expired-resume",
+            severity: "critical",
+            message: t("billing.dunning.expiredResume"),
+          }
+    )
   } else if (sub.status === "past_due") {
     const pending = invoices
       .filter((i) => i.status === "pending" && i.due_at)

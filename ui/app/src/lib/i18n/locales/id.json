@@ -1063,6 +1063,7 @@
     "copyOwnerEmailSuccess": "Email pemilik disalin",
     "suspendedMemberBanner": "Organisasi ini ditangguhkan. Hubungi {{ownerName}} (pemilik) untuk menyelesaikannya.",
     "suspendedOwnerBillingBanner": "Faktur belum dibayar — bayar untuk mengaktifkan kembali secara instan.",
+    "suspendedOwnerExpiredBanner": "Langganan berakhir — lanjutkan untuk mengaktifkan kembali.",
     "suspendedOwnerSelfBanner": "Ditangguhkan: {{reason}}"
   },
   "settings": {
@@ -1492,11 +1493,6 @@
       }
     },
     "states": {
-      "pastDueTitle": "Jendela pembayaran terlewat",
-      "pastDueDescription": "Pengingat dijadwalkan pada hari ke-3 dan ke-7, lalu langganan berakhir.",
-      "payInvoice": "Bayar faktur →",
-      "expiredTitle": "Akses dijeda",
-      "expiredDescription": "Bayar faktur terbuka untuk mengaktifkan kembali secara instan setelah webhook mengonfirmasi.",
       "resumeGetLink": "Lanjutkan — dapatkan tautan pembayaran",
       "scheduledCancelTitle": "Pembatalan dijadwalkan",
       "scheduledCancelDescription": "Langganan Anda tetap aktif hingga {{date}} dan tidak akan diperpanjang.",
@@ -1511,6 +1507,7 @@
     },
     "dunning": {
       "expired": "Akses dijeda. Bayar faktur terbuka untuk mengaktifkan kembali secara instan.",
+      "expiredResume": "Akses dijeda. Lanjutkan langganan untuk mendapatkan tautan pembayaran.",
       "pastDue": "Pembayaran jatuh tempo — layanan tetap berjalan.",
       "overdue": "Pembayaran terlambat {{days}} hari.",
       "finalNotice": "Pemberitahuan terakhir — akan segera berakhir, akses akan dijeda.",

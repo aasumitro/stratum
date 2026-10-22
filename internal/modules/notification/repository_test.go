@@ -64,7 +64,7 @@ func encodeInvoiceCreatedForNotif(orgID, invoiceID string) []byte {
 
 func encodeSubscriptionRemindForNotif(subID, subjectID string) []byte {
 	env := events.Envelope{
-		ID: "notif-remind-" + subID, Type: events.RoutingKeySubscriptionRemind,
+		ID: "notif-remind-" + subID, Type: events.RoutingKeySubscriptionExpiringSoon,
 		Source: "billing", Time: time.Now(), OrgID: subjectID,
 		Data: events.SubscriptionCheck{
 			SubscriptionID: subID, SubjectType: "organization",

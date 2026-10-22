@@ -55,7 +55,10 @@ export function PendingChangesBar({
   const preview = data?.data
 
   if (!isOwner || !preview) return null
-  const isNearRenewal = daysUntil(nextInvoiceDate) <= NEAR_RENEWAL_DAYS
+  const daysToRenewal = daysUntil(nextInvoiceDate)
+  // A date already behind us isn't an upcoming renewal — the period lapsed,
+  // and labelling it "at your next renewal" would name a date that's gone.
+  const isNearRenewal = daysToRenewal >= 0 && daysToRenewal <= NEAR_RENEWAL_DAYS
   if (!hasPendingInvoice && !isNearRenewal) return null
   const hasCoupon = !!preview.coupon_code
 
