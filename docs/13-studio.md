@@ -3,7 +3,7 @@
 Stratum Studio is a standalone **Wails v3 desktop app** operators use to manage many deployed Stratum projects at once — support, monitoring, and operational tasks that should never be exposed through the tenant-facing API. It lives in `ui/studio/` and has its own Go module.
 
 ## How it connects
-Studio talks **directly** to each managed project's PostgreSQL, RabbitMQ, and Redis using operator-supplied DSNs — no API, no JWT, no tenant scoping. The only HTTP call it ever makes is `GET <project_url>/health` for uptime monitoring. This is a deliberate choice: it avoids building and securing a second API surface for internal operators. Studio is never exposed to a tenant.
+Studio talks **directly** to each managed project's PostgreSQL, RabbitMQ, and Redis using operator-supplied DSNs — no API, no JWT, no tenant scoping. Because it works across tenants, the PostgreSQL DSN must be the schema owner or a `BYPASSRLS` role: `billing`, `organization` and `notification` run under `FORCE ROW LEVEL SECURITY`, and the RLS-constrained `stratum_app` role would see none of their rows. The only HTTP call it ever makes is `GET <project_url>/health` for uptime monitoring. This is a deliberate choice: it avoids building and securing a second API surface for internal operators. Studio is never exposed to a tenant.
 
 ## Stack
 Wails v3 with a Go 1.25+ backend and a React 19 / TypeScript / Vite frontend (Tailwind v4 + shadcn/ui, TanStack Router). Its own project registry is stored locally in SQLite (`modernc.org/sqlite`, pure Go). Frontend types come from Wails-generated bindings, **not** from `ui/app`.

@@ -107,8 +107,8 @@ jobs:
       - name: Install migrate
         run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 
-      # Migration 000008 no longer creates the stratum_app/stratum_worker/stratum_webhook
-      # roles — it only grants privileges to them, assuming they already exist, so the
+      # Migrations 000008/000009 do not create the stratum_app/stratum_worker/stratum_webhook/
+      # stratum_app_unscoped roles — they only grant privileges to them, assuming they already exist, so the
       # migrator role never needs BYPASSRLS or CREATEROLE itself. Local dev gets this for
       # free via a Postgres init script mounted into its container;
       # CI's Postgres service has no equivalent mount, so this step reuses that same script
@@ -133,6 +133,7 @@ jobs:
           POSTGRES_APP_URL: postgres://stratum_app:stratum_app@localhost:5432/stratum?sslmode=disable
           POSTGRES_WORKER_URL: postgres://stratum_worker:stratum_worker@localhost:5432/stratum?sslmode=disable
           POSTGRES_WEBHOOK_URL: postgres://stratum_webhook:stratum_webhook@localhost:5432/stratum?sslmode=disable
+          POSTGRES_UNSCOPED_URL: postgres://stratum_app_unscoped:stratum_app_unscoped@localhost:5432/stratum?sslmode=disable
           TEST_REDIS_URL: redis://localhost:6379
         run: go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/mailer"
 )
 
@@ -43,6 +44,10 @@ type listResult struct {
 // open (sends if no preference row), skipped entirely when disabled. No
 // check is possible when authSub is nil (e.g. the owner couldn't be
 // resolved), so the message is sent as before in that case.
+//
+// send, sendToMany, sendEmail and claimEvent run only in the worker, whose
+// pool bypasses row-level security, so they query s.pool directly. Every
+// API-facing read or write below goes through db.WithAuthTx instead.
 func (s *service) send(
 	ctx context.Context,
 	organizationID string, authSub *string,
@@ -291,33 +296,49 @@ func (s *service) listForUser(
 	limit, offset int,
 	pageRequested bool,
 ) (*listResult, error) {
-	messages, err := s.repo.listMessages(ctx, s.pool, authSub, organizationID, channel, cursor, limit, offset)
+	// Both reads below are the caller's own rows, so they run in one
+	// transaction scoped to the caller (app.auth_sub).
+	var messages []messageRecord
+	var total int64
+	var cursorMode bool
+	nextCursor := ""
+	err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		var err error
+		messages, err = s.repo.listMessages(ctx, q, authSub, organizationID, channel, cursor, limit, offset)
+		if err != nil {
+			return err
+		}
+		if len(messages) == limit && len(messages) > 0 {
+			lastMsg := messages[len(messages)-1]
+			raw := lastMsg.CreatedAt.Format(time.RFC3339Nano) + "|" + lastMsg.ID
+			nextCursor = base64.StdEncoding.EncodeToString([]byte(raw))
+		}
+		if cursor != "" || (!pageRequested && nextCursor != "") {
+			cursorMode = true
+			return nil
+		}
+		total, err = s.repo.countTotal(ctx, q, authSub, organizationID, channel)
+		return err
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid cursor") {
 			return nil, apperr.Validation("INVALID_CURSOR", "the provided cursor is malformed")
 		}
 		return nil, apperr.Internal("NOTIFICATIONS_FETCH_FAILED", "failed to list notifications", err)
 	}
-
-	nextCursor := ""
-	if len(messages) == limit && len(messages) > 0 {
-		lastMsg := messages[len(messages)-1]
-		raw := lastMsg.CreatedAt.Format(time.RFC3339Nano) + "|" + lastMsg.ID
-		nextCursor = base64.StdEncoding.EncodeToString([]byte(raw))
-	}
-
-	if cursor != "" || (!pageRequested && nextCursor != "") {
+	if cursorMode {
 		return &listResult{Messages: messages, NextCursor: nextCursor, CursorMode: true}, nil
-	}
-	total, err := s.repo.countTotal(ctx, s.pool, authSub, organizationID, channel)
-	if err != nil {
-		return nil, apperr.Internal("NOTIFICATIONS_FETCH_FAILED", "failed to list notifications", err)
 	}
 	return &listResult{Messages: messages, Total: total}, nil
 }
 
 func (s *service) unreadCount(ctx context.Context, authSub, organizationID string) (int64, error) {
-	n, err := s.repo.countUnread(ctx, s.pool, authSub, organizationID)
+	var n int64
+	err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		var err error
+		n, err = s.repo.countUnread(ctx, q, authSub, organizationID)
+		return err
+	})
 	if err != nil {
 		return 0, apperr.Internal("UNREAD_COUNT_FAILED", "failed to count unread", err)
 	}
@@ -325,29 +346,44 @@ func (s *service) unreadCount(ctx context.Context, authSub, organizationID strin
 }
 
 func (s *service) markRead(ctx context.Context, authSub, id string) error {
-	if err := s.repo.markRead(ctx, s.pool, authSub, id); err != nil {
+	if err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		return s.repo.markRead(ctx, q, authSub, id)
+	}); err != nil {
 		return apperr.Internal("MARK_READ_FAILED", "failed to mark as read", err)
 	}
 	return nil
 }
 
 func (s *service) markAllRead(ctx context.Context, authSub, organizationID string) error {
-	if err := s.repo.markAllRead(ctx, s.pool, authSub, organizationID); err != nil {
+	if err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		return s.repo.markAllRead(ctx, q, authSub, organizationID)
+	}); err != nil {
 		return apperr.Internal("MARK_ALL_READ_FAILED", "failed to mark all as read", err)
 	}
 	return nil
 }
 
 func (s *service) deleteAllForUser(ctx context.Context, authSub string) error {
-	return s.repo.deleteAllForUser(ctx, s.pool, authSub)
+	return db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		return s.repo.deleteAllForUser(ctx, q, authSub)
+	})
 }
 
-func (s *service) listForExport(ctx context.Context, authSub string, limit int) ([]messageRecord, error) {
-	return s.repo.listForExport(ctx, s.pool, authSub, limit)
+func (s *service) listForExport(ctx context.Context, authSub string, limit int) (out []messageRecord, err error) {
+	err = db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		out, err = s.repo.listForExport(ctx, q, authSub, limit)
+		return err
+	})
+	return out, err
 }
 
 func (s *service) listPreferences(ctx context.Context, authSub string) ([]preferenceRecord, error) {
-	prefs, err := s.repo.listPreferences(ctx, s.pool, authSub)
+	var prefs []preferenceRecord
+	err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		var err error
+		prefs, err = s.repo.listPreferences(ctx, q, authSub)
+		return err
+	})
 	if err != nil {
 		return nil, apperr.Internal("PREFS_FETCH_FAILED", "failed to list preferences", err)
 	}
@@ -357,7 +393,12 @@ func (s *service) listPreferences(ctx context.Context, authSub string) ([]prefer
 func (s *service) upsertPreference(
 	ctx context.Context, authSub, channel, eventType string, enabled bool,
 ) (*preferenceRecord, error) {
-	pref, err := s.repo.upsertPreference(ctx, s.pool, authSub, channel, eventType, enabled)
+	var pref *preferenceRecord
+	err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		var err error
+		pref, err = s.repo.upsertPreference(ctx, q, authSub, channel, eventType, enabled)
+		return err
+	})
 	if err != nil {
 		return nil, apperr.Internal("PREF_UPDATE_FAILED", "failed to update preference", err)
 	}

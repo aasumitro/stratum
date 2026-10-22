@@ -29,24 +29,52 @@ make run-worker
 
 **Provisioning database roles**: role creation is deliberately not part of the migration
 pipeline (`ADR-0026`) — `db/migrations/000008` only grants privileges to `stratum_app`,
-`stratum_worker`, and `stratum_webhook`; it never creates them. This is what lets
+`stratum_worker`, and `stratum_webhook`, and `000009` to `stratum_app_unscoped`; they never
+create them. This is what lets
 `make migrate-up` run without the migrator role itself needing `BYPASSRLS` or `CREATEROLE` —
 PostgreSQL only permits a role that already holds `BYPASSRLS` to grant `BYPASSRLS` to a role
 it creates, so embedding `CREATE ROLE ... BYPASSRLS` inside a migration would force every
 migrator, including a deliberately unprivileged production one, to hold it too.
 
-Local dev and CI get this for free: `deploy/postgres-init/01-app-role.sql` creates all three
+Local dev and CI get this for free: `deploy/postgres-init/01-app-role.sql` creates all four
 roles, and either runs automatically (local dev, mounted into the Postgres container's
 `docker-entrypoint-initdb.d`) or as an explicit CI step before migrations. Every other
 environment needs a human to run the equivalent once, with a superuser-equivalent connection,
-**before the first `make migrate-up`** — copy `deploy/postgres-init/01-app-role.sql`'s three
+**before the first `make migrate-up`** — copy `deploy/postgres-init/01-app-role.sql`'s four
 `CREATE ROLE` statements, substituting real generated passwords for its hardcoded local-dev
 ones:
 ```sql
 CREATE ROLE stratum_app LOGIN PASSWORD '...';
 CREATE ROLE stratum_worker LOGIN PASSWORD '...' BYPASSRLS;
 CREATE ROLE stratum_webhook LOGIN PASSWORD '...' BYPASSRLS;
+CREATE ROLE stratum_app_unscoped LOGIN PASSWORD '...' BYPASSRLS;
 ```
+`stratum_app_unscoped` is used by `cmd/api` only (`POSTGRES_UNSCOPED_URL`, sized by
+`POSTGRES_UNSCOPED_MAX_OPEN_CONNS`) for the organization paths that have no tenant to scope a
+transaction to: the organization middleware's authorization lookups and the cross-org
+invite/join flows. Both binaries require `POSTGRES_UNSCOPED_URL` set. **An environment that
+already ran an older build needs only that one `CREATE ROLE` and the env var, before deploying
+the build that ships migration `000009`** — `000009`'s `GRANT … TO stratum_app_unscoped` fails
+with `role "stratum_app_unscoped" does not exist` otherwise.
+
+That build ships `000009` and `000010` together, and they must not land at the same moment as the
+code switch. Upgrade an existing environment in this order:
+1. Create `stratum_app_unscoped` (above) and set `POSTGRES_UNSCOPED_URL` on both binaries.
+2. Apply only `000009` (grants — harmless to the running build):
+   `migrate -path db/migrations -database "$POSTGRES_URL" up 1`.
+3. Deploy the new API + worker build. It works with or without `000010`'s policies.
+4. Apply `000010` (`make migrate-up`). Never before step 3: under its policies, an older build
+   sets no scope and sees no `organization`/`notification` rows.
+
+The `organization` and `notification` tables run under `FORCE ROW LEVEL SECURITY` (`000010`),
+like `billing`'s. Two consequences for operators:
+- **Studio's DSN must be the schema owner or a `BYPASSRLS` role.** Studio reads and writes these
+  tables with no tenant scope (support tools, broadcasts); under `stratum_app` it would see
+  nothing.
+- **A data migration on these tables must scope itself.** `FORCE` also binds a non-superuser
+  table owner: set `app.organization_id` (`SELECT set_config('app.organization_id', '<org id>',
+  true)`) per organization inside the migration's transaction, or wrap the change in `ALTER
+  TABLE … NO FORCE ROW LEVEL SECURITY` / `… FORCE ROW LEVEL SECURITY`.
 If this step is skipped, `make migrate-up` fails immediately and clearly on `000008`'s first
 `GRANT ... TO stratum_app` with `role "stratum_app" does not exist` — run the step above, then
 retry.

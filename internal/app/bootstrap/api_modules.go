@@ -89,6 +89,8 @@ func NewAPIModules(
 	organizationMod.SetBillingReader(billingMod)
 	organizationMod.SetBillingWriter(billingMod)
 	organizationMod.MustBeWired()
+	organizationMod.SetUnscopedPool(infra.UnscopedPool)
+	organizationMod.MustHaveUnscopedPool()
 	organizationMod.SetStorageClient(storageClient)
 	organizationMod.SetUserReader(accountMod)
 	billingMod.SetUserReader(accountMod)

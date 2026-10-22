@@ -2,8 +2,8 @@ package organization
 
 // Regression test for createWebhookEndpoint's billingReader.CheckFeatureAccess
 // call with no ambient RLS transaction — the exact shape a real HTTP request
-// hits it with, since organization's own routes carry no querier in context
-// at all (organization schema has no RLS, so nothing ever installs one).
+// hits it with: organization's routes carry no request-long transaction, and
+// the feature check runs before the operation opens its own scoped one.
 // Connects as the RLS-constrained app role (POSTGRES_APP_URL), not a
 // superuser pool — checkFeatureAccess reads billing.subscriptions, which is
 // FORCE ROW LEVEL SECURITY, so only a real RLS-constrained connection can
@@ -37,20 +37,21 @@ func testAppPoolWebhookGate(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// cleanupWebhookGateFixtures deletes this test's rows. billing.subscriptions
-// is FORCE RLS, so its delete must run with org context set in the same
-// transaction — a plain pool.Exec as the app role would silently affect 0
-// rows and leave the fixture behind for the next run.
+// cleanupWebhookGateFixtures deletes this test's rows. The organization and
+// billing.subscriptions tables are FORCE RLS, so their deletes run with org
+// context set in the same transaction — a plain pool.Exec as the app role
+// would silently affect 0 rows and leave the fixture behind for the next run.
 func cleanupWebhookGateFixtures(pool *pgxpool.Pool, orgID string) {
 	ctx := context.Background()
-	pool.Exec(ctx, `DELETE FROM organization.webhook_endpoints WHERE organization_id = $1`, orgID)
 	// provisionSubscription seeds a "members" billing.usage row on creation
 	// (see service_subscription.go) — not FK'd to organizations, so it
 	// outlives the subscription delete below unless removed explicitly.
 	pool.Exec(ctx, `DELETE FROM billing.usage WHERE organization_id = $1`, orgID)
-	pool.Exec(ctx, `DELETE FROM organization.organizations WHERE id = $1`, orgID)
-	_ = db.WithTx(ctx, pool, func(tx db.Querier) error {
-		if err := db.SetOrgContext(ctx, tx, orgID); err != nil {
+	_ = db.WithOrgTx(ctx, pool, orgID, func(ctx context.Context, tx db.Querier) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM organization.webhook_endpoints WHERE organization_id = $1`, orgID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM organization.organizations WHERE id = $1`, orgID); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `DELETE FROM billing.subscriptions WHERE subject_type = 'organization' AND subject_id = $1`, orgID)
@@ -71,10 +72,12 @@ func TestCreateWebhookEndpoint_FeatureGate_NoAmbientTx(t *testing.T) {
 	t.Cleanup(func() { cleanupWebhookGateFixtures(pool, orgID) })
 
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO organization.organizations (id, name, slug, owner_id) VALUES ($1, $2, $3, $4)`,
-		orgID, "Webhook Gate Org", "webhook-gate-org", "webhook_gate_owner",
-	); err != nil {
+	if err := db.WithOrgTx(ctx, pool, orgID, func(ctx context.Context, tx db.Querier) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO organization.organizations (id, name, slug, owner_id) VALUES ($1, $2, $3, $4)`,
+			orgID, "Webhook Gate Org", "webhook-gate-org", "webhook_gate_owner")
+		return err
+	}); err != nil {
 		t.Fatalf("seed organization: %v", err)
 	}
 
@@ -103,9 +106,9 @@ func TestCreateWebhookEndpoint_FeatureGate_NoAmbientTx(t *testing.T) {
 	mod.SetBillingReader(billingMod)
 
 	// No querier in context at all — matches the real HTTP-handler shape:
-	// organization's own routes are never wrapped in an RLS transaction
-	// (organization schema has no RLS), so this is exactly what a live
-	// request's context looks like when it reaches createWebhookEndpoint.
+	// organization's routes are never wrapped in a request-long transaction,
+	// so this is exactly what a live request's context looks like when it
+	// reaches createWebhookEndpoint.
 	_, _, err := mod.svc.createWebhookEndpoint(ctx, orgID, "http://127.0.0.1:1/hook", nil)
 	if err != nil {
 		if errors.Is(err, ErrWebhookFeatureNotAvailable) {

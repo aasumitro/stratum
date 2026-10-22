@@ -96,15 +96,24 @@ type PostgresConfig struct {
 	// WebhookURL is required on both binaries because both load this same
 	// struct, but only cmd/api ever opens a pool with it (see
 	// bootstrap.SetupInfra/RunAPI) — cmd/worker never serves webhooks.
-	WebhookURL   string `env:"POSTGRES_WEBHOOK_URL,required"`
+	WebhookURL string `env:"POSTGRES_WEBHOOK_URL,required"`
+	// UnscopedURL is the stratum_app_unscoped role (BYPASSRLS) for the few
+	// organization paths that have no tenant to scope a transaction to yet:
+	// the organization middleware's authorization lookups and the cross-org
+	// invite/join flows. Required on both binaries for the same reason as
+	// WebhookURL; only cmd/api opens a pool with it.
+	UnscopedURL  string `env:"POSTGRES_UNSCOPED_URL,required"`
 	MaxOpenConns int32  `env:"POSTGRES_MAX_OPEN_CONNS" envDefault:"20"`
 	// BackgroundMaxOpenConns sizes Infra.BackgroundPool (cmd/api only) — a
 	// small pool isolating background writes (the audit writer, the OnAuth
 	// last_seen_at update) from request-path connection contention on
 	// Infra.Pool. Same stratum_app role/URL as Infra.Pool; only pool size
 	// differs.
-	BackgroundMaxOpenConns int32         `env:"POSTGRES_BACKGROUND_MAX_OPEN_CONNS" envDefault:"5"`
-	MaxIdleTime            time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
+	BackgroundMaxOpenConns int32 `env:"POSTGRES_BACKGROUND_MAX_OPEN_CONNS" envDefault:"5"`
+	// UnscopedMaxOpenConns sizes Infra.UnscopedPool (cmd/api only). Must stay
+	// smaller than MaxOpenConns, like the background pool.
+	UnscopedMaxOpenConns int32         `env:"POSTGRES_UNSCOPED_MAX_OPEN_CONNS" envDefault:"5"`
+	MaxIdleTime          time.Duration `env:"POSTGRES_MAX_IDLE_TIME" envDefault:"5m"`
 	// StatementTimeout is passed to Postgres verbatim as the
 	// statement_timeout runtime parameter on every pooled connection, so a
 	// runaway query is aborted instead of holding a connection open

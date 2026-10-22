@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -124,4 +125,67 @@ func RequireTx(q Querier) {
 func SetOrgContext(ctx context.Context, q Querier, orgID string) error {
 	_, err := q.Exec(ctx, "SELECT set_config('app.organization_id', $1, true)", orgID)
 	return err
+}
+
+// SetAuthContext configures the Postgres app.auth_sub setting for the current
+// transaction so user-keyed RLS policies (a caller's own notifications,
+// preferences and memberships) can evaluate it.
+func SetAuthContext(ctx context.Context, q Querier, authSub string) error {
+	_, err := q.Exec(ctx, "SELECT set_config('app.auth_sub', $1, true)", authSub)
+	return err
+}
+
+type authorizedOrgKey struct{}
+
+// ErrOrgScopeMismatch is returned by WithOrgTx when the request was
+// authorized for one organization and the operation asked to run scoped to
+// another — the database scope must never be wider than what the request
+// was actually authorized for.
+var ErrOrgScopeMismatch = errors.New("db: organization outside the request's authorized scope")
+
+// WithAuthorizedOrg records the organization the current request was
+// authorized for (by the organization middleware's membership check), so
+// WithOrgTx can refuse to scope a transaction to any other one.
+func WithAuthorizedOrg(ctx context.Context, orgID string) context.Context {
+	return context.WithValue(ctx, authorizedOrgKey{}, orgID)
+}
+
+// AuthorizedOrg returns the organization recorded by WithAuthorizedOrg, if
+// any. Requests that never passed the organization middleware (unscoped
+// routes, webhooks, the worker) have none.
+func AuthorizedOrg(ctx context.Context) (string, bool) {
+	orgID, ok := ctx.Value(authorizedOrgKey{}).(string)
+	return orgID, ok && orgID != ""
+}
+
+// WithOrgTx runs fn in a new transaction on pool with app.organization_id
+// set to orgID, so organization-keyed RLS policies see that organization's
+// rows and only those. It always begins its own transaction — it never joins
+// one already in ctx — and hands fn a context bound to it, so anything fn
+// passes ctx to (a billing reader, say) reuses this transaction instead of
+// taking a second connection. When ctx carries an authorized organization
+// (WithAuthorizedOrg), any other orgID is refused with ErrOrgScopeMismatch
+// before a connection is taken.
+func WithOrgTx(ctx context.Context, pool *pgxpool.Pool, orgID string, fn func(ctx context.Context, q Querier) error) error {
+	if authorized, ok := AuthorizedOrg(ctx); ok && authorized != orgID {
+		return ErrOrgScopeMismatch
+	}
+	return WithTx(ctx, pool, func(tx Querier) error {
+		if err := SetOrgContext(ctx, tx, orgID); err != nil {
+			return err
+		}
+		return fn(WithQuerier(ctx, tx), tx)
+	})
+}
+
+// WithAuthTx is WithOrgTx for user-keyed data: it sets app.auth_sub to
+// authSub instead of an organization, for a caller's own notifications,
+// preferences and memberships across every organization.
+func WithAuthTx(ctx context.Context, pool *pgxpool.Pool, authSub string, fn func(ctx context.Context, q Querier) error) error {
+	return WithTx(ctx, pool, func(tx Querier) error {
+		if err := SetAuthContext(ctx, tx, authSub); err != nil {
+			return err
+		}
+		return fn(WithQuerier(ctx, tx), tx)
+	})
 }

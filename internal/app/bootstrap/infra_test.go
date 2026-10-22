@@ -22,12 +22,12 @@ func TestValidateBackgroundPoolSize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateBackgroundPoolSize(tt.background, tt.main)
+			err := validateSecondaryPoolSize("POSTGRES_BACKGROUND_MAX_OPEN_CONNS", tt.background, tt.main)
 			if tt.wantErr && err == nil {
-				t.Errorf("validateBackgroundPoolSize(%d, %d) = nil, want error", tt.background, tt.main)
+				t.Errorf("validateSecondaryPoolSize(%d, %d) = nil, want error", tt.background, tt.main)
 			}
 			if !tt.wantErr && err != nil {
-				t.Errorf("validateBackgroundPoolSize(%d, %d) = %v, want nil", tt.background, tt.main, err)
+				t.Errorf("validateSecondaryPoolSize(%d, %d) = %v, want nil", tt.background, tt.main, err)
 			}
 		})
 	}

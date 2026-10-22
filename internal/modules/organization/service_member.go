@@ -19,7 +19,12 @@ import (
 // rather than the whole list erroring out, same nil-safe convention as
 // every other optional cross-module dependency in this codebase.
 func (s *service) listMembers(ctx context.Context, organizationID string) ([]memberView, error) {
-	rows, err := s.repo.listMembers(ctx, s.pool, organizationID)
+	var rows []membershipRecord
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		var err error
+		rows, err = s.repo.listMembers(ctx, q, organizationID)
+		return err
+	})
 	if err != nil {
 		return nil, apperr.Internal("MEMBERS_FETCH_FAILED", "failed to list members", err)
 	}
@@ -30,6 +35,9 @@ func (s *service) listMembers(ctx context.Context, organizationID string) ([]mem
 		for i, r := range rows {
 			authSubs[i] = r.AuthSub
 		}
+		// Outside the transaction above: the account reader takes its own
+		// connection, and a transaction must never wait on a second one from
+		// its own pool.
 		profiles, _ = s.userReader.GetUsersByAuthSubs(ctx, authSubs)
 	}
 
@@ -52,8 +60,22 @@ func (s *service) listMembers(ctx context.Context, organizationID string) ([]mem
 	return out, nil
 }
 
+// removeAllMemberships spans every organization the user belongs to, so it
+// is scoped to the user (app.auth_sub), not to one organization.
 func (s *service) removeAllMemberships(ctx context.Context, authSub string) error {
-	return s.repo.removeAllMemberships(ctx, s.pool, authSub)
+	return db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		return s.repo.removeAllMemberships(ctx, q, authSub)
+	})
+}
+
+// organizationOwner reads organizationID's owner in its own scoped
+// transaction — the guard every member mutation runs before its own write.
+func (s *service) organizationOwner(ctx context.Context, organizationID string) (owner string, err error) {
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		owner, err = s.repo.getOrganizationOwner(ctx, q, organizationID)
+		return err
+	})
+	return owner, err
 }
 
 func (s *service) addMember(
@@ -62,7 +84,7 @@ func (s *service) addMember(
 	if role != contracts.RoleAdmin && role != contracts.RoleMember {
 		return nil, apperr.Validation("INVALID_ROLE", "role must be admin or member")
 	}
-	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+	if ownerSub, err := s.organizationOwner(ctx, organizationID); err == nil && ownerSub == authSub {
 		return nil, apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
 	}
 
@@ -81,7 +103,7 @@ func (s *service) addMember(
 		}
 	}()
 
-	err = db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		if lockErr := s.repo.lockOrganizationForUpdate(ctx, tx, organizationID); lockErr != nil {
 			return lockErr
 		}
@@ -100,11 +122,11 @@ func (s *service) addMember(
 }
 
 func (s *service) removeMember(ctx context.Context, organizationID, authSub string) error {
-	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+	if ownerSub, err := s.organizationOwner(ctx, organizationID); err == nil && ownerSub == authSub {
 		return apperr.Forbidden("CANNOT_REMOVE_OWNER", "cannot remove the organization owner")
 	}
 	var removed bool
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		var err error
 		removed, err = s.repo.deleteMembership(ctx, tx, organizationID, authSub)
 		if err != nil || !removed {
@@ -127,12 +149,12 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 	if role != contracts.RoleAdmin && role != contracts.RoleMember {
 		return apperr.Validation("INVALID_ROLE", "role must be admin or member")
 	}
-	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+	if ownerSub, err := s.organizationOwner(ctx, organizationID); err == nil && ownerSub == authSub {
 		return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
 	}
 
 	var updated bool
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		var err error
 		updated, err = s.repo.updateMemberRole(ctx, tx, organizationID, authSub, role)
 		if err != nil || !updated {
@@ -150,8 +172,12 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 	return nil
 }
 
+// getMemberRole backs the organization middleware's authorization lookup
+// (via contracts.OrganizationReader), which runs before any organization
+// scope exists — so it reads through the unscoped pool, by its explicit
+// (organization, member) predicate.
 func (s *service) getMemberRole(ctx context.Context, organizationID, authSub string) (string, error) {
-	return s.repo.getMemberRole(ctx, s.pool, organizationID, authSub)
+	return s.repo.getMemberRole(ctx, s.unscoped(), organizationID, authSub)
 }
 
 // suspendMember revokes a member's access to one organization without
@@ -160,11 +186,11 @@ func (s *service) getMemberRole(ctx context.Context, organizationID, authSub str
 // syncMemberUsage reports the lower count to billing. The owner can never be
 // the target.
 func (s *service) suspendMember(ctx context.Context, organizationID, authSub string) error {
-	if ownerSub, err := s.repo.getOrganizationOwner(ctx, s.pool, organizationID); err == nil && ownerSub == authSub {
+	if ownerSub, err := s.organizationOwner(ctx, organizationID); err == nil && ownerSub == authSub {
 		return apperr.Forbidden("CANNOT_SUSPEND_OWNER", "cannot suspend the organization owner")
 	}
 
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		updated, err := s.repo.setMemberStatus(ctx, tx, organizationID, authSub, "suspended", "active")
 		if err != nil {
 			return err
@@ -199,7 +225,7 @@ func (s *service) suspendMember(ctx context.Context, organizationID, authSub str
 // suspended may now be at its cap) — over the limit, the member stays
 // suspended and the caller gets PLAN_LIMIT_REACHED, never a partial state.
 func (s *service) reinstateMember(ctx context.Context, organizationID, authSub string) error {
-	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
 		if lockErr := s.repo.lockOrganizationForUpdate(ctx, tx, organizationID); lockErr != nil {
 			return lockErr
 		}
@@ -286,7 +312,12 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 		// indefinitely — context.WithoutCancel alone has no deadline.
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		count, err := s.repo.countActiveMembers(ctx, s.pool, organizationID)
+		var count int64
+		err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+			var err error
+			count, err = s.repo.countActiveMembers(ctx, q, organizationID)
+			return err
+		})
 		if err != nil {
 			slog.Error("syncMemberUsage: count active members failed",
 				"organization_id", organizationID, "error", err)
@@ -312,14 +343,18 @@ func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub
 		}
 	}()
 
-	role, err := s.repo.getMemberRole(ctx, s.pool, organizationID, authSub)
-	if err != nil {
+	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
+		role, err := s.repo.getMemberRole(ctx, q, organizationID, authSub)
+		if err != nil {
+			return err
+		}
+		if role == contracts.RoleOwner {
+			return errors.New("owner cannot leave — transfer ownership first")
+		}
+		_, err = s.repo.deleteMembership(ctx, q, organizationID, authSub)
 		return err
-	}
-	if role == contracts.RoleOwner {
-		return errors.New("owner cannot leave — transfer ownership first")
-	}
-	if _, err := s.repo.deleteMembership(ctx, s.pool, organizationID, authSub); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 	s.syncMemberUsage(ctx, organizationID)
@@ -333,15 +368,14 @@ func (s *service) transferOwnership(ctx context.Context, organizationID, current
 		}
 	}()
 
-	role, err := s.repo.getMemberRole(ctx, s.pool, organizationID, newOwnerAuthSub)
-	if err != nil {
-		return errors.New("target user is not a member")
-	}
-	if role == contracts.RoleOwner {
-		return errors.New("target is already the owner")
-	}
-
-	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+	return db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
+		role, err := s.repo.getMemberRole(ctx, tx, organizationID, newOwnerAuthSub)
+		if err != nil {
+			return errors.New("target user is not a member")
+		}
+		if role == contracts.RoleOwner {
+			return errors.New("target is already the owner")
+		}
 		if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
 			return err
 		}

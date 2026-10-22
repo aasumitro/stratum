@@ -25,6 +25,7 @@ const detailKeyOrganizationID = "organization_id"
 type service struct {
 	repo                        *repository
 	pool                        *pgxpool.Pool
+	unscopedPool                *pgxpool.Pool                          // stratum_app_unscoped (BYPASSRLS), cmd/api only — see unscoped
 	billingReader               contracts.BillingReader                // optional; nil = no plan enforcement
 	billingWriter               contracts.BillingWriter                // optional; nil = usage not recorded
 	store                       *storage.Client                        // optional; nil = storage disabled
@@ -34,6 +35,19 @@ type service struct {
 	secretEncryptionKey         string                                 // pgcrypto symmetric key for webhook secret columns, set once at construction
 	secretEncryptionKeyPrevious string                                 // prior pgcrypto passphrase during a key rotation; empty = no rotation in progress
 	secretEncryptionKeyVersion  int                                    // version stamped on organization.webhook_endpoints.key_version for newly written/rotated rows
+}
+
+// unscoped returns the pool for the call sites that have no organization to
+// scope a transaction to: the organization middleware's authorization
+// lookups and the cross-org invite/join flows, which match rows by explicit
+// predicates (token, invite code, email, organization+member) instead. Falls
+// back to s.pool when none is wired — the worker, whose pool already
+// bypasses RLS.
+func (s *service) unscoped() *pgxpool.Pool {
+	if s.unscopedPool != nil {
+		return s.unscopedPool
+	}
+	return s.pool
 }
 
 // isUniqueViolation reports whether err is (or wraps) a PostgreSQL

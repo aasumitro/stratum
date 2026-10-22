@@ -52,6 +52,13 @@ type Infra struct {
 	// second pool to protect — so it stays nil on a worker-built Infra.
 	BackgroundPool *pgxpool.Pool
 
+	// UnscopedPool is a small BYPASSRLS pool (stratum_app_unscoped) used only
+	// by the organization paths that have no tenant to scope a transaction
+	// to: the organization middleware's authorization lookups and the
+	// cross-org invite/join flows. Only RunAPI opens it — cmd/worker's own
+	// pool already bypasses RLS — so it stays nil on a worker-built Infra.
+	UnscopedPool *pgxpool.Pool
+
 	MQConn      *messaging.Connection
 	MQPublisher *messaging.Publisher
 
@@ -127,20 +134,17 @@ func OpenWebhookPool(ctx context.Context, infra *Infra) error {
 	return nil
 }
 
-// validateBackgroundPoolSize rejects a background-pool size that would
-// either starve background writes (<= 0) or let the background pool claim
-// as many or more server connections than the main request pool
-// (background >= main), defeating the connection-slot split the two pools
-// exist to provide.
-func validateBackgroundPoolSize(background, main int32) error {
-	if background <= 0 {
-		return fmt.Errorf("POSTGRES_BACKGROUND_MAX_OPEN_CONNS must be > 0")
+// validateSecondaryPoolSize rejects a secondary pool size (the background
+// or unscoped pool, named by envName) that would either starve that pool
+// (<= 0) or let it claim as many or more server connections than the main
+// request pool (size >= main), defeating the connection-slot split the
+// pools exist to provide.
+func validateSecondaryPoolSize(envName string, size, main int32) error {
+	if size <= 0 {
+		return fmt.Errorf("%s must be > 0", envName)
 	}
-	if background >= main {
-		return fmt.Errorf(
-			"POSTGRES_BACKGROUND_MAX_OPEN_CONNS (%d) must be smaller than POSTGRES_MAX_OPEN_CONNS (%d)",
-			background, main,
-		)
+	if size >= main {
+		return fmt.Errorf("%s (%d) must be smaller than POSTGRES_MAX_OPEN_CONNS (%d)", envName, size, main)
 	}
 	return nil
 }
@@ -155,7 +159,7 @@ func validateBackgroundPoolSize(background, main int32) error {
 // already-deferred Infra.Close cleans it up on any later failure, with no
 // separate unwind path needed.
 func OpenBackgroundPool(ctx context.Context, infra *Infra) error {
-	if err := validateBackgroundPoolSize(
+	if err := validateSecondaryPoolSize("POSTGRES_BACKGROUND_MAX_OPEN_CONNS",
 		infra.Cfg.Postgres.BackgroundMaxOpenConns, infra.Cfg.Postgres.MaxOpenConns,
 	); err != nil {
 		return fmt.Errorf("bootstrap.OpenBackgroundPool: %w", err)
@@ -171,13 +175,41 @@ func OpenBackgroundPool(ctx context.Context, infra *Infra) error {
 	return nil
 }
 
+// OpenUnscopedPool opens Infra.UnscopedPool, credentialed for
+// stratum_app_unscoped (cfg.Postgres.UnscopedURL) and sized by
+// UnscopedMaxOpenConns, which must stay below the main pool's size. Called
+// only by RunAPI, after SetupInfra succeeds; assigning the pool to
+// infra.UnscopedPool before returning lets RunAPI's deferred Infra.Close
+// release it on any later failure.
+func OpenUnscopedPool(ctx context.Context, infra *Infra) error {
+	if err := validateSecondaryPoolSize("POSTGRES_UNSCOPED_MAX_OPEN_CONNS",
+		infra.Cfg.Postgres.UnscopedMaxOpenConns, infra.Cfg.Postgres.MaxOpenConns,
+	); err != nil {
+		return fmt.Errorf("bootstrap.OpenUnscopedPool: %w", err)
+	}
+
+	pgCfg := infra.Cfg.Postgres
+	pgCfg.URL = pgCfg.UnscopedURL
+	pgCfg.MaxOpenConns = infra.Cfg.Postgres.UnscopedMaxOpenConns
+	pool, err := db.NewPostgresPool(ctx, pgCfg)
+	if err != nil {
+		return fmt.Errorf("setting up unscoped postgres pool: %w", err)
+	}
+	infra.UnscopedPool = pool
+	return nil
+}
+
 // Close releases every connection SetupInfra (and, on the API binary,
-// OpenWebhookPool/OpenBackgroundPool) opened, in reverse order (background
-// pool, webhook pool, mq, redis, postgres, otel). BackgroundPool and
-// WebhookPool are nil-checked since RunWorker's Infra never opens either.
+// OpenWebhookPool/OpenBackgroundPool/OpenUnscopedPool) opened, in reverse
+// order (unscoped pool, background pool, webhook pool, mq, redis, postgres,
+// otel). The three API-only pools are nil-checked since RunWorker's Infra
+// never opens them.
 // Errors are discarded: shutdown
 // is best-effort by convention throughout this codebase.
 func (i *Infra) Close(ctx context.Context) {
+	if i.UnscopedPool != nil {
+		i.UnscopedPool.Close()
+	}
 	if i.BackgroundPool != nil {
 		i.BackgroundPool.Close()
 	}
