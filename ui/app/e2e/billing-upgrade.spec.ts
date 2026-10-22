@@ -66,36 +66,40 @@ async function mockBillingAPIs(page: Page) {
     })
   })
 
-  await page.route("**/v1/references/plans*", async (route) => {
-    if (route.request().method() !== "GET") return route.continue()
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: [
-          {
-            id: "solo",
-            name: "Solo",
-            sort_order: 10,
-            active: true,
-            features: [],
-            limits: { members: 5 },
-            prices: { USD: { monthly: 900, yearly: 9000 } },
-          },
-          {
-            id: "growth",
-            name: "Growth",
-            sort_order: 20,
-            active: true,
-            features: ["priority_support", "advanced_analytics"],
-            limits: { members: 15, workspaces: 25 },
-            prices: { USD: { monthly: 2900, yearly: 29000 } },
-          },
-        ],
-        status: { error: false },
-      }),
-    })
-  })
+  // The billing page reads the org-scoped catalog; onboarding reads /references.
+  await page.route(
+    /\/v1\/(references\/plans|organizations\/org-1\/billing\/plans\/catalog)/,
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: [
+            {
+              id: "solo",
+              name: "Solo",
+              sort_order: 10,
+              active: true,
+              features: [],
+              limits: { members: 5 },
+              prices: { USD: { monthly: 900, yearly: 9000 } },
+            },
+            {
+              id: "growth",
+              name: "Growth",
+              sort_order: 20,
+              active: true,
+              features: ["priority_support", "advanced_analytics"],
+              limits: { members: 15, workspaces: 25 },
+              prices: { USD: { monthly: 2900, yearly: 29000 } },
+            },
+          ],
+          status: { error: false },
+        }),
+      })
+    }
+  )
 
   await page.route("**/v1/references/features*", async (route) => {
     if (route.request().method() !== "GET") return route.continue()
