@@ -1,7 +1,10 @@
 import { test, expect, type Page } from "@playwright/test"
 import { loginAsTestAccount } from "./helpers/login"
 
-async function mockBillingAPIs(page: Page) {
+async function mockBillingAPIs(
+  page: Page,
+  subscription: Record<string, unknown> = {}
+) {
   // Wildcard fallback to prevent "Unable to connect"
   await page.route("**/v1/**", async (route) => {
     if (route.request().method() !== "GET") return route.continue()
@@ -60,6 +63,7 @@ async function mockBillingAPIs(page: Page) {
           currency: "USD",
           period_end: "2027-01-01T00:00:00Z",
           max_extendable_months: 24,
+          ...subscription,
         },
         status: { error: false },
       }),
@@ -141,15 +145,53 @@ test("cancel with a named reason shows review then success", async ({
   expect(captured.payload?.reason).toBe("too_expensive")
   expect(captured.payload?.details).toBeUndefined()
 
-  // Active subscriptions defer cancellation to renewal — access stays valid
-  // until then, so success offers "undo the schedule", not "resume" (that's
-  // the trialing-only immediate-cancel path).
+  // A cancel is scheduled for the end of the paid period — access stays
+  // valid until then, so success offers "undo the schedule", never "resume".
   await expect(
     page.getByRole("heading", { name: /cancellation scheduled/i })
   ).toBeVisible()
   await expect(
     page.getByRole("button", { name: /undo cancellation/i })
   ).toBeVisible()
+})
+
+test("cancelling a trial schedules it for the trial end", async ({ page }) => {
+  test.skip(
+    !process.env.TEST_ACCOUNT_OWNER_EMAIL,
+    "TEST_ACCOUNT_OWNER_EMAIL not set"
+  )
+  await mockBillingAPIs(page, {
+    status: "trialing",
+    period_end: "2027-01-01T00:00:00Z",
+    trial_end: "2027-01-01T00:00:00Z",
+  })
+  await loginAsTestAccount(page)
+
+  await page.route("**/v1/organizations/org-1/billing/cancel", async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ status: { error: false } }),
+    })
+  )
+
+  await page.goto("/organization/org-1/billing")
+  await page.getByRole("button", { name: /^cancel subscription$/i }).click()
+  await page.getByRole("radio", { name: /no longer need it/i }).click()
+  await page.getByRole("button", { name: /continue/i }).click()
+  await page.getByRole("button", { name: /confirm cancellation/i }).click()
+
+  // A trial keeps its access until trial_end too: the same scheduled
+  // success step with Undo, no immediate-cancel copy and no Resume.
+  await expect(
+    page.getByRole("heading", { name: /cancellation scheduled/i })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: /undo cancellation/i })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: /resume subscription/i })
+  ).not.toBeVisible()
 })
 
 test("other reason sends the free-text details field", async ({ page }) => {
@@ -248,6 +290,6 @@ test("a failed cancel request stays on the review step", async ({ page }) => {
     page.getByRole("heading", { name: /review cancellation/i })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: /subscription cancelled/i })
+    page.getByRole("heading", { name: /cancellation scheduled/i })
   ).not.toBeVisible()
 })

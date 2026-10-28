@@ -108,7 +108,7 @@
       "INVALID_TIMEZONE": "Zona waktu tidak valid.",
       "INVALID_LOCALE": "Lokal tidak valid.",
       "ORGANIZATION_SUSPEND_FAILED": "Gagal menangguhkan organisasi.",
-      "BILLING_HOLD": "Organisasi ini ditangguhkan karena tagihan belum dibayar — bayar untuk mengaktifkan kembali.",
+      "BILLING_HOLD": "Hanya jeda yang dimulai pemilik yang bisa dicabut di sini. Penangguhan karena tagihan dicabut setelah langganan dibayar; untuk hal lain, hubungi dukungan.",
       "ORGANIZATION_UNSUSPEND_FAILED": "Gagal mengaktifkan kembali organisasi.",
       "FEATURE_NOT_AVAILABLE": "Webhook tidak tersedia pada paket Anda saat ini.",
       "WEBHOOK_URL_NOT_ALLOWED": "URL webhook harus HTTPS dan mengarah ke alamat publik.",
@@ -347,11 +347,11 @@
       },
       "subscription_cancelled": {
         "title": "Langganan dibatalkan",
-        "body": "Langganan Anda telah dibatalkan. Akses tetap berlaku hingga akhir periode saat ini."
+        "body": "Langganan Anda telah berakhir sesuai permintaan dan organisasi Anda ditangguhkan. Lanjutkan langganan dari Billing untuk memulihkan akses."
       },
       "subscription_expired": {
         "title": "Langganan berakhir",
-        "body": "Langganan Anda telah berakhir dan organisasi Anda telah ditangguhkan. Bayar tagihan tertunda untuk memulihkan akses."
+        "body": "Langganan Anda telah berakhir dan organisasi Anda telah ditangguhkan. Lanjutkan langganan dari Billing untuk memulihkan akses."
       },
       "subscription_resumed": {
         "title": "Langganan diaktifkan kembali",
@@ -906,6 +906,11 @@
       "suspendOrganization": "Tangguhkan organisasi",
       "unsuspendAction": "Aktifkan kembali",
       "unsuspendOrganization": "Aktifkan kembali organisasi",
+      "suspended": "Organisasi ditangguhkan",
+      "suspendFailed": "Gagal menangguhkan organisasi",
+      "unsuspended": "Organisasi diaktifkan kembali",
+      "unsuspendFailed": "Gagal mengaktifkan kembali organisasi",
+      "unsuspendBySupport": "Ditangguhkan oleh tim dukungan — hubungi dukungan untuk mencabutnya.",
       "transferAck": "Saya memahami ini bersifat langsung — saya menjadi Admin",
       "transferAction": "Transfer kepemilikan",
       "transferConfirm": "Transfer sekarang",
@@ -1064,7 +1069,8 @@
     "suspendedMemberBanner": "Organisasi ini ditangguhkan. Hubungi {{ownerName}} (pemilik) untuk menyelesaikannya.",
     "suspendedOwnerBillingBanner": "Faktur belum dibayar — bayar untuk mengaktifkan kembali secara instan.",
     "suspendedOwnerExpiredBanner": "Langganan berakhir — lanjutkan untuk mengaktifkan kembali.",
-    "suspendedOwnerSelfBanner": "Ditangguhkan: {{reason}}"
+    "suspendedOwnerSelfBanner": "Anda menjeda organisasi ini — aktifkan kembali untuk memulihkan akses.",
+    "suspendedOwnerSupportBanner": "Ditangguhkan oleh tim dukungan: {{reason}}. Hubungi dukungan untuk mencabutnya."
   },
   "settings": {
     "title": "Pengaturan",
@@ -1163,10 +1169,9 @@
       "trialDaysLeft": "{{days}} hari lagi",
       "changePlan": "Ganti paket",
       "cancel": "Batalkan langganan",
-      "resume": "Lanjutkan langganan",
-      "cancelled": "Langganan dibatalkan",
+      "cancelled": "Pembatalan dijadwalkan",
       "cancelFailed": "Gagal membatalkan langganan",
-      "resumed": "Langganan dilanjutkan",
+      "resumed": "Faktur diterbitkan — bayar untuk mengaktifkan kembali langganan.",
       "resumeFailed": "Gagal melanjutkan langganan",
       "planChanged": "Paket diubah",
       "planChangeFailed": "Gagal mengubah paket",
@@ -1290,8 +1295,6 @@
       "exportPersonalData": "Ekspor data pribadi saya (Akun)",
       "exportOrganizationData": "Ekspor data organisasi (Log audit)",
       "confirmCancel": "Konfirmasi pembatalan",
-      "successTitle": "Langganan dibatalkan",
-      "successDescription": "Akses Anda berlanjut hingga {{date}}. Anda dapat melanjutkan kapan saja sebelum itu.",
       "scheduledSuccessTitle": "Pembatalan dijadwalkan",
       "scheduledSuccessDescription": "Langganan Anda tetap aktif hingga {{date}} dan tidak akan diperpanjang. Anda dapat membatalkan penjadwalan ini kapan saja sebelum itu."
     },
@@ -1333,6 +1336,7 @@
       "selectionRequired": "Pilih paket untuk melanjutkan",
       "changePlanTitle": "Ubah paket",
       "changePlanDescription": "Prorata mengonversi sisa nilai menjadi waktu — tidak ada biaya atau pengembalian dana hari ini.",
+      "changePlanDescriptionUnpaid": "Periode saat ini belum dibayar, jadi paket baru memulai periode baru hari ini dengan harganya sendiri.",
       "noChargeToday": "Tidak ada biaya hari ini.",
       "prorationExplainer": "Sisa nilai Anda dikonversi menjadi waktu: akhir periode baru {{newDate}} (sebelumnya {{oldDate}}).",
       "nextInvoiceTotalNote": "Ditagihkan pada faktur berikutnya.",
@@ -1512,7 +1516,6 @@
       "overdue": "Pembayaran terlambat {{days}} hari.",
       "finalNotice": "Pemberitahuan terakhir — akan segera berakhir, akses akan dijeda.",
       "trialEndingSoon": "Uji coba berakhir dalam {{days}} hari.",
-      "cancelledAccessUntil": "Langganan dibatalkan — akses hingga {{date}}.",
       "payAction": "Bayar →"
     },
     "pay": {

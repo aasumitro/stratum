@@ -406,6 +406,8 @@ func (s *service) activateTrialNow(
 			err = apperr.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found", err)
 		case errors.Is(err, ErrSubscriptionNotTrialing):
 			err = apperr.Validation("SUBSCRIPTION_NOT_TRIALING", "subscription is not currently trialing")
+		case errors.Is(err, ErrCancellationScheduled):
+			err = apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
 		case errors.Is(err, ErrUnknownPlan):
 			err = apperr.Validation("UNKNOWN_PLAN", "unknown plan")
 		default:
@@ -428,7 +430,7 @@ func (s *service) activateTrialNow(
 		if findErr != nil {
 			return findErr
 		}
-		if sub.Status != statusTrialing {
+		if sub.Status != statusTrialing || sub.ScheduledCancelAt != nil {
 			return nil
 		}
 		planInfo, findErr = s.planCatalog(txCtx, sub.Plan)
@@ -444,6 +446,12 @@ func (s *service) activateTrialNow(
 	}
 	if sub.Status != statusTrialing {
 		return nil, ErrSubscriptionNotTrialing
+	}
+	// Paying for a full cycle would not undo the scheduled cancellation, so
+	// the owner undoes it first instead of buying a period that ends in a
+	// cancellation anyway.
+	if sub.ScheduledCancelAt != nil {
+		return nil, ErrCancellationScheduled
 	}
 	if planInfo == nil {
 		return nil, ErrUnknownPlan
@@ -550,95 +558,26 @@ func (s *service) resumeSubscription(
 		return nil, err
 	}
 
-	switch sub.Status {
-	case statusCancelled:
-		return s.resumeFromCancelled(ctx, subjectID, sub)
-	case statusExpired:
-		return s.resumeFromExpired(ctx, sub, resumedBy)
-	default:
+	if sub.Status != statusCancelled && sub.Status != statusExpired {
 		return nil, ErrSubscriptionNotResumable
 	}
+	return s.resumeWithInvoice(ctx, sub, resumedBy)
 }
 
-// resumeFromCancelled reactivates a cancelled subscription with a fresh
-// billing period starting now — except a subscription cancelled while still
-// within its original trial window, which resumes back into "trialing", not
-// "active": the trial hasn't actually expired, and marking it "active"
-// would imply a paying customer even though no invoice was ever created.
-// cancelSubscription only ever touches status, never trial_end, so
-// sub.TrialEnd is a reliable check here.
-func (s *service) resumeFromCancelled(
-	ctx context.Context,
-	subjectID string,
-	sub *subscriptionRecord,
-) (*subscriptionRecord, error) {
-	now := time.Now()
-	isStillTrialing := sub.TrialEnd != nil && sub.TrialEnd.After(now)
-
-	newStatus := statusActive
-	periodEnd := now.AddDate(0, 1, 0)
-	if sub.Cycle == cycleYearly {
-		periodEnd = now.AddDate(1, 0, 0)
-	}
-	if isStillTrialing {
-		newStatus = statusTrialing
-		periodEnd = *sub.TrialEnd
-	}
-
-	var updated *subscriptionRecord
-	err := s.withOrgTx(ctx, subjectTypeOrganization, subjectID, func(tx db.Querier) error {
-		ctx := db.WithQuerier(ctx, tx)
-		var err error
-		updated, err = s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, newStatus)
-		if err != nil {
-			return err
-		}
-		if isStillTrialing {
-			if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
-				return err
-			}
-		} else {
-			if err := s.repo.clearTrialEndAndUpdatePeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
-				return err
-			}
-		}
-		if _, err := s.repo.insertHistory(
-			ctx, s.querier(ctx), sub.ID, "resume",
-			&sub.Plan, &sub.Plan, 0, sub.Currency,
-			changedBySystem, nil,
-		); err != nil {
-			return err
-		}
-		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeySubscriptionResumed, "billing", subjectID,
-			events.SubscriptionResumed{OrgID: subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now})
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	renewalSub := &subscriptionRecord{
-		ID: sub.ID, SubjectType: sub.SubjectType,
-		SubjectID: sub.SubjectID, PeriodEnd: &periodEnd,
-	}
-	if isStillTrialing {
-		renewalSub.TrialEnd = sub.TrialEnd
-	}
-	s.scheduleRenewalSequence(ctx, renewalSub)
-
-	return updated, nil
-}
-
-// resumeFromExpired invoices an expired subscription's next period at its
-// current plan (addons/coupons included via composeInvoiceAmount, same as
-// any other invoice) without changing its status yet — the subscription
-// stays "expired" until handleWebhook (service_webhook.go) confirms this
-// invoice paid, at which point it reactivates. Only creating the invoice
-// here (rather than reactivating immediately) means an owner who starts but
-// never completes this payment never silently regains access.
-func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord, resumedBy string) (*subscriptionRecord, error) {
+// resumeWithInvoice invoices a cancelled or expired subscription's next
+// period at its current plan (addons/coupons included via
+// composeInvoiceAmount, same as any other invoice) without changing its
+// status yet — the subscription stays as it is until handleWebhook
+// (service_webhook.go) confirms this invoice paid, at which point it
+// reactivates. Only creating the invoice here (rather than reactivating
+// immediately) means an owner who starts but never completes this payment
+// never silently regains access. A renewal invoice still pending from an
+// earlier Resume is reused rather than joined by a second one, so a repeat
+// or concurrent request can't leave the owner two invoices for one period.
+func (s *service) resumeWithInvoice(ctx context.Context, sub *subscriptionRecord, resumedBy string) (*subscriptionRecord, error) {
 	planInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, fmt.Errorf("billing.resumeFromExpired: %w: current plan", ErrUnknownPlan)
+		return nil, fmt.Errorf("billing.resumeWithInvoice: %w: current plan", ErrUnknownPlan)
 	}
 	var composed int64
 	var addonLines []lineItemSpec
@@ -663,12 +602,29 @@ func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord
 	var inv *invoiceRecord
 	err = s.withOrgTx(ctx, subjectTypeOrganization, sub.SubjectID, func(tx db.Querier) error {
 		ctx := db.WithQuerier(ctx, tx)
-		var err error
-		// Stays "subscription", not "activation": the webhook dispatches
-		// this invoice's payment by subscription status
-		// (sub.Status == statusExpired, checked before the kind-based
-		// cases), so its kind never reaches the generic renewal case
-		// either way — safe regardless of which value it carries.
+		// The lock serializes concurrent Resume requests: the second one
+		// re-reads under it and finds the invoice the first one inserted.
+		if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
+			return err
+		}
+		current, err := s.repo.findSubscriptionByID(ctx, s.querier(ctx), sub.ID)
+		if err != nil {
+			return err
+		}
+		if current.Status != statusCancelled && current.Status != statusExpired {
+			return ErrSubscriptionNotResumable
+		}
+		kinds, err := s.repo.pendingInvoiceKinds(ctx, s.querier(ctx), sub.ID)
+		if err != nil {
+			return err
+		}
+		if kinds[invoiceKindSubscription] {
+			return nil
+		}
+		// Kind "subscription", not "activation": the webhook dispatches
+		// this invoice's payment by subscription status (cancelled or
+		// expired, both checked before the generic renewal case) to
+		// applyExpiredReactivation, which starts a fresh period.
 		inv, err = s.repo.insertInvoice(ctx, s.querier(ctx), sub.SubjectID,
 			sub.ID, composed, taxRate, tax, sub.Currency, "subscription", false, nil)
 		if err != nil {
@@ -695,44 +651,72 @@ func (s *service) resumeFromExpired(ctx context.Context, sub *subscriptionRecord
 		return nil, err
 	}
 
-	// Payment link is a convenience, not load-bearing — see extendSubscription.
-	_, _ = s.createPaymentLink(ctx, subjectTypeOrganization, sub.SubjectID, inv.ID)
+	if inv != nil {
+		// Payment link is a convenience, not load-bearing — see extendSubscription.
+		_, _ = s.createPaymentLink(ctx, subjectTypeOrganization, sub.SubjectID, inv.ID)
+	}
 
 	return sub, nil
+}
+
+// renewalCheck builds the SubscriptionCheck every renewal message for sub
+// carries. Its end is trial_end while trialing, period_end otherwise; ok is
+// false when sub has neither.
+func renewalCheck(sub *subscriptionRecord) (check events.SubscriptionCheck, ok bool) {
+	end := sub.PeriodEnd
+	if sub.TrialEnd != nil {
+		end = sub.TrialEnd
+	}
+	if end == nil {
+		return events.SubscriptionCheck{}, false
+	}
+	return events.SubscriptionCheck{
+		SubscriptionID: sub.ID,
+		SubjectType:    sub.SubjectType,
+		SubjectID:      sub.SubjectID,
+		ExpectedEnd:    *end,
+	}, true
+}
+
+// enqueueAutoInvoice queues the renewal-invoice message for sub's current
+// end, due 3 days before it — or in one second once that moment has passed,
+// so a caller that moves the end to within 3 days, or restores renewal after
+// the original message was skipped, still gets its invoice. A no-op when the
+// end isn't in the future. Duplicates are harmless: the auto-invoice
+// consumer reuses a pending invoice instead of issuing a second one. Returns
+// the enqueue error so a caller inside a transaction can roll back.
+func (s *service) enqueueAutoInvoice(ctx context.Context, sub *subscriptionRecord) error {
+	check, ok := renewalCheck(sub)
+	if !ok || !time.Now().Before(check.ExpectedEnd) {
+		return nil
+	}
+	delay := max(time.Until(check.ExpectedEnd.AddDate(0, 0, -3)), time.Second)
+	return events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBilling,
+		events.RoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, check, delay)
 }
 
 // scheduleRenewalSequence enqueues delayed messages for the renewal flow:
 // remind (7 days before a normal period end, 2 days before a trial end —
 // trials run exactly 7 days, so a 7-day lead would resolve to ~now and
-// never actually fire), 3 days before → auto-invoice, at end → expire check.
-// Runs after its caller's own state-changing transaction has already
-// committed (every call site calls this post-commit), so there's no
-// transaction left here for an enqueue failure to roll back — errors are
-// logged, not propagated, matching this function's existing "duplicate
-// delayed messages are harmless" tolerance for the class of loss this can
-// still leave (a rare DB-level failure on the outbox insert itself, not a
-// broker outage — the outbox+relay already covers that case durably).
+// never actually fire), the auto-invoice (enqueueAutoInvoice), and at end →
+// expire check. Most callers run it after their own state-changing
+// transaction has committed, so there's no transaction left for an enqueue
+// failure to roll back — errors are logged, not propagated, matching this
+// function's existing "duplicate delayed messages are harmless" tolerance
+// for the class of loss this can still leave (a rare DB-level failure on the
+// outbox insert itself, not a broker outage — the outbox+relay already
+// covers that case durably). changePlanWithMetadata runs it inside the
+// request transaction instead, where a failed insert aborts that
+// transaction and the plan change fails as a whole.
 func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscriptionRecord) {
-	var endTime time.Time
-	isTrial := sub.TrialEnd != nil
-	switch {
-	case isTrial:
-		endTime = *sub.TrialEnd
-	case sub.PeriodEnd != nil:
-		endTime = *sub.PeriodEnd
-	default:
+	checkPayload, ok := renewalCheck(sub)
+	if !ok {
 		return
 	}
-
-	checkPayload := events.SubscriptionCheck{
-		SubscriptionID: sub.ID,
-		SubjectType:    sub.SubjectType,
-		SubjectID:      sub.SubjectID,
-		ExpectedEnd:    endTime,
-	}
+	endTime := checkPayload.ExpectedEnd
 
 	remindLeadDays := 7
-	if isTrial {
+	if sub.TrialEnd != nil {
 		remindLeadDays = 2
 	}
 	if d := time.Until(endTime.AddDate(0, 0, -remindLeadDays)); d > 0 {
@@ -742,11 +726,8 @@ func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscription
 		}
 	}
 
-	if d := time.Until(endTime.AddDate(0, 0, -3)); d > 0 {
-		if err := events.EnqueueDelayed(ctx, s.querier(ctx), events.ExchangeBilling,
-			events.RoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, checkPayload, d); err != nil {
-			slog.Error("billing.scheduleRenewalSequence: enqueue auto-invoice failed", "subscription_id", sub.ID, "error", err)
-		}
+	if err := s.enqueueAutoInvoice(ctx, sub); err != nil {
+		slog.Error("billing.scheduleRenewalSequence: enqueue auto-invoice failed", "subscription_id", sub.ID, "error", err)
 	}
 
 	d := time.Until(endTime)

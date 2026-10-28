@@ -177,16 +177,53 @@ func (r *repository) findActivePaymentLinkByInvoice(
 	return &pl, nil
 }
 
-func (r *repository) expirePendingPaymentLinks(ctx context.Context, q db.Querier, invoiceID string) error {
-	_, err := q.Exec(ctx, `
+// closedLink is a payment link that was still open — pending, or failed
+// and so still retryable on its hosted page — when it was expired locally.
+// Its checkout may still be open at the provider until closed there too
+// (enqueueCheckoutExpiry).
+type closedLink struct {
+	Provider   string
+	ExternalID string
+}
+
+// queryClosedLinks runs an UPDATE … RETURNING provider, external_id that
+// expires payment links, collecting the links that had a provider-side
+// checkout to close (external_id set).
+func queryClosedLinks(ctx context.Context, q db.Querier, sql string, args ...any) ([]closedLink, error) {
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var links []closedLink
+	for rows.Next() {
+		var provider string
+		var externalID *string
+		if err := rows.Scan(&provider, &externalID); err != nil {
+			return nil, err
+		}
+		if externalID != nil && *externalID != "" {
+			links = append(links, closedLink{Provider: provider, ExternalID: *externalID})
+		}
+	}
+	return links, rows.Err()
+}
+
+// expireOpenPaymentLinks expires every open link of the invoice — before a
+// new one is created, or once the invoice is paid — returning the links
+// whose checkout must close at the provider too, so no second checkout can
+// take the same payment.
+func (r *repository) expireOpenPaymentLinks(ctx context.Context, q db.Querier, invoiceID string) ([]closedLink, error) {
+	links, err := queryClosedLinks(ctx, q, `
 		UPDATE billing.payment_links SET status = 'expired'
-		WHERE invoice_id = $1 AND status = 'pending'`,
+		WHERE invoice_id = $1 AND status IN ('pending', 'failed')
+		RETURNING provider, external_id`,
 		invoiceID,
 	)
 	if err != nil {
-		return fmt.Errorf("billing.expirePendingPaymentLinks: %w", err)
+		return nil, fmt.Errorf("billing.expireOpenPaymentLinks: %w", err)
 	}
-	return nil
+	return links, nil
 }
 
 func (r *repository) updatePaymentLinkStatus(ctx context.Context, q db.Querier, id, status string) error {

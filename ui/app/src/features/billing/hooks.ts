@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { useHTTPQuery } from "@/lib/api/query"
 import {
+  PROVIDER_REQUEST_TIMEOUT_MS,
   useHTTPActionPost,
   useHTTPActionPatch,
   useHTTPActionDelete,
@@ -187,6 +188,10 @@ export function useCancelSubscription(organizationId: string) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.billing.preview(organizationId),
         })
+        // Scheduling a cancellation voids a pending renewal invoice.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.invoices(organizationId),
+        })
       },
       onError: (error) =>
         toast.error(
@@ -201,11 +206,17 @@ export function useResumeSubscription(organizationId: string) {
   const { t } = useTranslation()
   return useHTTPActionPost<void>({
     url: API.billing(organizationId, "resume"),
+    timeout: PROVIDER_REQUEST_TIMEOUT_MS,
     options: {
       onSuccess: () => {
         toast.success(t("billing.subscription.resumed"))
         void queryClient.invalidateQueries({
           queryKey: queryKeys.billing.subscription(organizationId),
+        })
+        // Resume issues the invoice that reactivates the subscription once
+        // paid; refetch invoices so the banner switches to paying it.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.billing.invoices(organizationId),
         })
       },
       onError: (error) =>
@@ -224,6 +235,7 @@ export function useExtendSubscription(organizationId: string) {
     { months?: number; switch_to_annual?: boolean }
   >({
     url: API.billing(organizationId, "extend"),
+    timeout: PROVIDER_REQUEST_TIMEOUT_MS,
     options: {
       onSuccess: () => {
         toast.success(t("billing.extend.toastSuccess"))
@@ -248,6 +260,7 @@ export function useActivateTrialNow(organizationId: string) {
   const { t } = useTranslation()
   return useHTTPActionPost<Invoice>({
     url: API.billing(organizationId, "activate"),
+    timeout: PROVIDER_REQUEST_TIMEOUT_MS,
     options: {
       onSuccess: () => {
         toast.success(t("billing.trial.activated"))
@@ -424,6 +437,7 @@ export function useAttachAddon(organizationId: string) {
     { addon_id: string; quantity: number }
   >({
     url: API.billing(organizationId, "addons"),
+    timeout: PROVIDER_REQUEST_TIMEOUT_MS,
     options: {
       onSuccess: () => {
         toast.success(t("billing.addons.attached"))

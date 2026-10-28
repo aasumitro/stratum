@@ -279,17 +279,19 @@ func (r *repository) suspendOrganization(ctx context.Context, q db.Querier, id, 
 	return nil
 }
 
-func (r *repository) unsuspendOrganization(ctx context.Context, q db.Querier, id string) error {
-	_, err := q.Exec(ctx, `
+// unsuspendOrganization lifts the suspension only when its reason is one of
+// reasons, and reports whether it did.
+func (r *repository) unsuspendOrganization(ctx context.Context, q db.Querier, id string, reasons []string) (bool, error) {
+	tag, err := q.Exec(ctx, `
 		UPDATE organization.organizations
 		SET status = 'active', suspended_at = NULL, suspended_reason = '', updated_at = now()
-		WHERE id = $1 AND status = 'suspended'`,
-		id,
+		WHERE id = $1 AND status = 'suspended' AND suspended_reason = ANY($2)`,
+		id, reasons,
 	)
 	if err != nil {
-		return fmt.Errorf("organization.unsuspendOrganization: %w", err)
+		return false, fmt.Errorf("organization.unsuspendOrganization: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *repository) updateLogoURL(ctx context.Context, q db.Querier, organizationID, logoURL string) error {

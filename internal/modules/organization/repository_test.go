@@ -1055,12 +1055,76 @@ func TestIntegration_SuspendAndUnsuspend(t *testing.T) {
 		t.Errorf("after suspend: want status=suspended, got %q", status)
 	}
 
-	if err := mod.UnsuspendOrganization(t.Context(), orgID); err != nil {
+	if err := mod.UnsuspendOrganization(t.Context(), orgID, []string{"billing_expired"}); err != nil {
 		t.Fatalf("UnsuspendOrganization: %v", err)
 	}
 	pool.QueryRow(t.Context(), `SELECT status FROM organization.organizations WHERE id = $1`, orgID).Scan(&status)
 	if status != "active" {
 		t.Errorf("after unsuspend: want status=active, got %q", status)
+	}
+}
+
+// TestIntegration_UnsuspendOrganization_OnlyListedReasons: the port lifts a
+// suspension only when its reason is one of the caller's — billing's
+// payment never lifts a Studio operator's suspension — and announces the
+// reactivation only when the organization actually came back.
+func TestIntegration_UnsuspendOrganization_OnlyListedReasons(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-reasons","name":"Reasons WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	mod := organization.NewModuleForTest(pool)
+	if err := mod.SuspendOrganization(t.Context(), orgID, "Abuse review"); err != nil {
+		t.Fatalf("SuspendOrganization: %v", err)
+	}
+	billingReasons := []string{"subscription expired", "subscription cancelled"}
+	reactivated := func() int {
+		var n int
+		pool.QueryRow(t.Context(),
+			`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+			events.RoutingKeyOrganizationReactivated, orgID).Scan(&n)
+		return n
+	}
+
+	if err := mod.UnsuspendOrganization(t.Context(), orgID, billingReasons); err != nil {
+		t.Fatalf("UnsuspendOrganization (operator reason): %v", err)
+	}
+	var status, reason string
+	pool.QueryRow(t.Context(), `SELECT status, suspended_reason FROM organization.organizations WHERE id = $1`, orgID).Scan(&status, &reason)
+	if status != "suspended" || reason != "Abuse review" {
+		t.Errorf("operator suspension: want it kept (suspended, \"Abuse review\"), got %q, %q", status, reason)
+	}
+	if n := reactivated(); n != 0 {
+		t.Errorf("operator suspension kept: want no reactivation event, got %d", n)
+	}
+
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE organization.organizations SET suspended_reason = 'subscription cancelled' WHERE id = $1`, orgID); err != nil {
+		t.Fatalf("switch to a billing reason: %v", err)
+	}
+	if err := mod.UnsuspendOrganization(t.Context(), orgID, billingReasons); err != nil {
+		t.Fatalf("UnsuspendOrganization (billing reason): %v", err)
+	}
+	pool.QueryRow(t.Context(), `SELECT status FROM organization.organizations WHERE id = $1`, orgID).Scan(&status)
+	if status != "active" {
+		t.Errorf("billing suspension: want it lifted, got status %q", status)
+	}
+	if n := reactivated(); n != 1 {
+		t.Errorf("billing suspension lifted: want 1 reactivation event, got %d", n)
 	}
 }
 
@@ -1087,7 +1151,9 @@ func TestIntegration_SelfSuspendAndSelfUnsuspend_HappyPath(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	orgID = resp["data"].(map[string]any)["id"].(string)
 
-	wSuspend := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/suspend", "{}"))
+	// A caller-supplied reason is ignored: only the self-service reason lets
+	// the owner lift the pause again.
+	wSuspend := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/suspend", `{"reason":"Custom reason"}`))
 	if wSuspend.Code != http.StatusNoContent {
 		t.Fatalf("suspend: want 204, got %d: %s", wSuspend.Code, wSuspend.Body)
 	}
@@ -2056,6 +2122,83 @@ func TestIntegration_ListMyInvitations(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("pending invitation for the caller's email not found in GET /me/invitations response: %v", data)
+	}
+}
+
+// TestIntegration_CreateInvitation_MixedCaseEmail_OneCanonicalInvite: an
+// invite typed in mixed case is stored lowercase, listed for the invitee's
+// lowercase login email, and a repeat in another casing refreshes the same
+// invitation instead of adding a second one. A row stored in mixed case
+// before this rule existed is still listed.
+func TestIntegration_CreateInvitation_MixedCaseEmail_OneCanonicalInvite(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations",
+		`{"slug":"invite-case-canonical","name":"Invite Case Canonical","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d: %s", w.Code, w.Body)
+	}
+	var created map[string]any
+	json.NewDecoder(w.Body).Decode(&created)
+	orgID = created["data"].(map[string]any)["id"].(string)
+
+	w = serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"Review.Invitee@Example.com","role":"member"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("invite: want 201, got %d: %s", w.Code, w.Body)
+	}
+	var stored string
+	pool.QueryRow(t.Context(), `SELECT email FROM organization.invitations WHERE organization_id = $1`, orgID).Scan(&stored)
+	if stored != "review.invitee@example.com" {
+		t.Errorf("want the email stored lowercase, got %q", stored)
+	}
+
+	listedFor := func(email string) bool {
+		t.Helper()
+		invitee := organization.NewModuleEngineWithEmail(pool, "sub_invite_case_invitee", email)
+		w := httptest.NewRecorder()
+		invitee.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodGet, "/api/me/invitations", ""))
+		var list map[string]any
+		json.NewDecoder(w.Body).Decode(&list)
+		items, _ := list["data"].([]any)
+		for _, item := range items {
+			if item.(map[string]any)["organization_id"] == orgID {
+				return true
+			}
+		}
+		return false
+	}
+	if !listedFor("review.invitee@example.com") {
+		t.Error("want the invitation listed for the invitee's lowercase email")
+	}
+
+	w = serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/invitations",
+		`{"email":"REVIEW.INVITEE@example.com","role":"member"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("repeat invite: want 201 (refresh), got %d: %s", w.Code, w.Body)
+	}
+	var pending int
+	pool.QueryRow(t.Context(), `
+		SELECT COUNT(*) FROM organization.invitations
+		WHERE organization_id = $1 AND lower(email) = 'review.invitee@example.com' AND status = 'pending'`,
+		orgID).Scan(&pending)
+	if pending != 1 {
+		t.Errorf("want one pending invitation for the address in any casing, got %d", pending)
+	}
+
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE organization.invitations SET email = 'Review.Invitee@Example.com' WHERE organization_id = $1`, orgID); err != nil {
+		t.Fatalf("simulate a legacy mixed-case row: %v", err)
+	}
+	if !listedFor("review.invitee@example.com") {
+		t.Error("want a legacy mixed-case invitation still listed for the lowercase email")
 	}
 }
 

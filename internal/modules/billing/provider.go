@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -164,4 +165,54 @@ func createXenditInvoice(
 		return nil, fmt.Errorf("billing.createXenditInvoice: decode: %w", err)
 	}
 	return &paymentLinkResult{ExternalID: out.ID, URL: out.InvoiceURL, ExpiresAt: out.ExpiryDate}, nil
+}
+
+// errCheckoutNotOpen marks an expire call the provider refused with a
+// client error other than rate limiting: the checkout is no longer open
+// (completed or already expired) or unknown to it, so there is nothing left
+// to close and retrying would get the same answer.
+var errCheckoutNotOpen = errors.New("checkout not open at the provider")
+
+// expireStripeCheckoutSession closes an open Checkout Session so it can no
+// longer take a payment.
+func expireStripeCheckoutSession(ctx context.Context, cfg ProviderConfig, sessionID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api.stripe.com/v1/checkout/sessions/"+url.PathEscape(sessionID)+"/expire", nil)
+	if err != nil {
+		return fmt.Errorf("billing.expireStripeCheckoutSession: build request: %w", err)
+	}
+	req.SetBasicAuth(cfg.StripeAPIKey, "")
+	return sendCheckoutExpiry(req, "billing.expireStripeCheckoutSession")
+}
+
+// expireXenditInvoice closes an open Xendit invoice so it can no longer take
+// a payment.
+func expireXenditInvoice(ctx context.Context, cfg ProviderConfig, invoiceID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api.xendit.co/invoices/"+url.PathEscape(invoiceID)+"/expire!", nil)
+	if err != nil {
+		return fmt.Errorf("billing.expireXenditInvoice: build request: %w", err)
+	}
+	req.SetBasicAuth(cfg.XenditAPIKey, "")
+	return sendCheckoutExpiry(req, "billing.expireXenditInvoice")
+}
+
+// sendCheckoutExpiry sends a provider expire call. A rate limit, server
+// error or transport failure is returned as is, so the message is
+// redelivered; any other non-200 answer wraps errCheckoutNotOpen.
+func sendCheckoutExpiry(req *http.Request, op string) error {
+	resp, err := httpclient.TrustedClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return nil
+	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError:
+		return fmt.Errorf("%s: status %d", op, resp.StatusCode)
+	default:
+		return fmt.Errorf("%s: status %d: %w", op, resp.StatusCode, errCheckoutNotOpen)
+	}
 }

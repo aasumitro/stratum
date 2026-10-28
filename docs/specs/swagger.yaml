@@ -1070,12 +1070,6 @@ definitions:
       table:
         type: string
     type: object
-  suspendOrganizationRequest:
-    properties:
-      reason:
-        maxLength: 500
-        type: string
-    type: object
   taskRecord:
     properties:
       auth_sub:
@@ -2501,6 +2495,10 @@ paths:
           description: owner role or MFA step-up required
           schema:
             $ref: '#/definitions/Payload'
+        "422":
+          description: not trialing, or a cancellation is scheduled (CANCELLATION_SCHEDULED)
+          schema:
+            $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Activate a trial immediately
@@ -2549,7 +2547,9 @@ paths:
         subscription status, an increase (including a brand-new attach) instead creates a
         day-prorated invoice and returns the addon record with pending_quantity/
         pending_invoice_id set — the live quantity only rises once that invoice is
-        confirmed paid. A decrease still schedules for the next renewal.
+        confirmed paid. A decrease still schedules for the next renewal. While a
+        cancellation is scheduled, a decrease is refused with 422
+        CANCELLATION_SCHEDULED on every status, trialing included.
       parameters:
       - description: Organization ID
         in: path
@@ -2614,6 +2614,10 @@ paths:
             $ref: '#/definitions/Payload'
         "403":
           description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: a cancellation is scheduled (CANCELLATION_SCHEDULED)
           schema:
             $ref: '#/definitions/Payload'
       security:
@@ -3339,7 +3343,10 @@ paths:
       - billing
   /organizations/{organizationID}/billing/resume:
     post:
-      description: Owner only.
+      description: |-
+        Owner only. Issues an invoice for the next period and returns the subscription
+        unchanged; it reactivates once that invoice is paid. A repeat request while the
+        invoice is still unpaid reuses it instead of issuing another.
       parameters:
       - description: Organization ID
         in: path
@@ -3366,9 +3373,13 @@ paths:
           description: owner role required
           schema:
             $ref: '#/definitions/Payload'
+        "422":
+          description: not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE)
+          schema:
+            $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
-      summary: Resume a cancelled subscription
+      summary: Resume a cancelled or expired subscription
       tags:
       - billing
   /organizations/{organizationID}/billing/usage:
@@ -4017,8 +4028,6 @@ paths:
       - organization
   /organizations/{organizationID}/suspend:
     post:
-      consumes:
-      - application/json
       description: Owner-facing self-service pause — reversible, read-only for everyone
         including the owner while active. Requires step-up MFA (aal2) if the caller
         has MFA enabled.
@@ -4028,11 +4037,6 @@ paths:
         name: organizationID
         required: true
         type: string
-      - description: Optional reason
-        in: body
-        name: body
-        schema:
-          $ref: '#/definitions/suspendOrganizationRequest'
       responses:
         "204":
           description: no content
@@ -4105,6 +4109,10 @@ paths:
             $ref: '#/definitions/Payload'
         "403":
           description: owner role or MFA step-up required
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: not paused by the owner (BILLING_HOLD)
           schema:
             $ref: '#/definitions/Payload'
       security:

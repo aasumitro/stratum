@@ -46,11 +46,11 @@ var ErrIPAllowlistLocksOutCaller = errors.New("this allowlist would lock out you
 
 // ErrCannotSelfUnsuspendBillingHold — the owner-facing self-service
 // unsuspend (the Danger zone card) must not double as a free escape
-// hatch from a billing-driven suspension (unpaid invoice). Only a
-// self-triggered suspend (suspendReasonSelfService) is self-reversible;
-// anything else — currently only billing's "subscription expired" —
-// requires paying the open invoice instead, same as before this route existed.
-var ErrCannotSelfUnsuspendBillingHold = errors.New("this organization was suspended for an unpaid invoice — pay it to reactivate")
+// hatch from a suspension the owner didn't start. Only a self-triggered
+// suspend (suspendReasonSelfService) is self-reversible; billing's
+// "subscription expired"/"subscription cancelled" lifts once the
+// subscription is paid, and a Studio operator's reason is lifted in Studio.
+var ErrCannotSelfUnsuspendBillingHold = errors.New("only a pause the owner started can be lifted here — a billing suspension lifts once the subscription is paid")
 
 // createOrganization creates an organization + owner membership atomically,
 // then publishes OrganizationCreated so billing can provision a
@@ -414,12 +414,17 @@ func (s *service) suspendOrganization(ctx context.Context, organizationID, reaso
 	return nil
 }
 
-// unsuspendOrganization is exposed cross-module (billing, error discarded)
-// and internally by selfUnsuspendOrganization, which applies its own
-// classification on top — see there.
-func (s *service) unsuspendOrganization(ctx context.Context, organizationID string) error {
+// unsuspendOrganization lifts the suspension when its reason is one of
+// reasons — billing passes its own (cross-module, error discarded there),
+// selfUnsuspendOrganization the self-service one, which applies its own
+// classification on top. The reason check sits in the same UPDATE, so a
+// suspension re-reasoned by someone else in between is never lifted, and
+// OrganizationReactivated is enqueued only when the organization actually
+// came back.
+func (s *service) unsuspendOrganization(ctx context.Context, organizationID string, reasons []string) error {
 	return db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
-		if err := s.repo.unsuspendOrganization(ctx, tx, organizationID); err != nil {
+		lifted, err := s.repo.unsuspendOrganization(ctx, tx, organizationID, reasons)
+		if err != nil || !lifted {
 			return err
 		}
 		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOrganizationReactivated, "organization", organizationID,
@@ -453,5 +458,5 @@ func (s *service) selfUnsuspendOrganization(ctx context.Context, organizationID 
 	if ws.SuspendedReason != suspendReasonSelfService {
 		return ErrCannotSelfUnsuspendBillingHold
 	}
-	return s.unsuspendOrganization(ctx, organizationID)
+	return s.unsuspendOrganization(ctx, organizationID, []string{suspendReasonSelfService})
 }

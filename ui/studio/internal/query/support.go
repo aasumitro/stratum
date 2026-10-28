@@ -2,10 +2,21 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// The app's billing outbox vocabulary (contracts/events in the API repo):
+// rows Studio writes are relayed to the billing exchange and consumed by the
+// billing worker like any event the app enqueues itself.
+const (
+	outboxExchangeBilling   = "billing.events"
+	routingKeyMarkPaid      = "billing.invoice.mark-paid"
+	routingKeyCheckoutClose = "billing.payment-link.expire"
 )
 
 type SupportUser struct {
@@ -174,11 +185,15 @@ func SupportExtendTrial(ctx context.Context, pool *pgxpool.Pool, organizationID 
 	return nil
 }
 
+// SupportActivateSubscription marks a trialing or past_due subscription
+// active for its current period. A cancelled one is left out: it only exists
+// once its period has ended and the organization is suspended, so it comes
+// back through the customer's own Resume and payment.
 func SupportActivateSubscription(ctx context.Context, pool *pgxpool.Pool, organizationID string) error {
 	tag, err := pool.Exec(ctx, `
 		UPDATE billing.subscriptions
 		SET status = 'active', trial_end = NULL
-		WHERE subject_id = $1 AND status IN ('trialing', 'cancelled', 'past_due')
+		WHERE subject_id = $1 AND status IN ('trialing', 'past_due')
 	`, organizationID)
 	if err != nil {
 		return fmt.Errorf("query.SupportActivateSubscription: %w", err)
@@ -262,12 +277,26 @@ func GetAtRiskInvoices(ctx context.Context, pool *pgxpool.Pool) ([]AtRiskInvoice
 	return out, nil
 }
 
+// SupportMarkInvoicePaid hands an operator's "mark paid" to the app's
+// billing worker, which applies it exactly like a confirmed payment: the
+// invoice turns paid, the subscription renews or reactivates, a billing
+// suspension lifts and the next renewal is scheduled. Studio only writes the
+// outbox row for a still-pending invoice; the invoice changes once the
+// worker has run.
 func SupportMarkInvoicePaid(ctx context.Context, pool *pgxpool.Pool, invoiceID string) error {
 	tag, err := pool.Exec(ctx, `
-		UPDATE billing.invoices
-		SET status = 'paid', paid_at = now()
-		WHERE id = $1 AND status = 'pending'
-	`, invoiceID)
+		WITH target AS (
+			SELECT gen_random_uuid() AS id, i.id AS invoice_id, s.subject_id
+			FROM billing.invoices i
+			JOIN billing.subscriptions s ON s.id = i.subscription_id
+			WHERE i.id = $1 AND i.status = 'pending'
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT t.id, $2::text, $3::text,
+		       jsonb_build_object('id', t.id, 'type', $3::text, 'source', 'studio', 'time', now(),
+		                          'org_id', t.subject_id, 'data', jsonb_build_object('invoice_id', t.invoice_id))
+		FROM target t
+	`, invoiceID, outboxExchangeBilling, routingKeyMarkPaid)
 	if err != nil {
 		return fmt.Errorf("query.SupportMarkInvoicePaid: %w", err)
 	}
@@ -277,17 +306,52 @@ func SupportMarkInvoicePaid(ctx context.Context, pool *pgxpool.Pool, invoiceID s
 	return nil
 }
 
+// SupportVoidInvoice voids a pending invoice, expires its open payment links
+// and queues closing each link's checkout at its provider (the app's billing
+// worker calls Stripe/Xendit), all in one transaction — a voided invoice must
+// not stay payable on a checkout the provider still has open.
 func SupportVoidInvoice(ctx context.Context, pool *pgxpool.Pool, invoiceID string) error {
-	tag, err := pool.Exec(ctx, `
-		UPDATE billing.invoices
-		SET status = 'void'
-		WHERE id = $1 AND status = 'pending'
-	`, invoiceID)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID string
+	err = tx.QueryRow(ctx, `
+		UPDATE billing.invoices i
+		SET status = 'void', updated_at = now()
+		FROM billing.subscriptions s
+		WHERE i.id = $1 AND i.status = 'pending' AND s.id = i.subscription_id
+		RETURNING s.subject_id
+	`, invoiceID).Scan(&orgID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("invoice %s not found or not in pending status", invoiceID)
+	}
+	if err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		WITH closed AS (
+			UPDATE billing.payment_links SET status = 'expired'
+			WHERE invoice_id = $1 AND status IN ('pending', 'failed')
+			RETURNING provider, external_id
+		), rows AS (
+			SELECT gen_random_uuid() AS id, provider, external_id
+			FROM closed
+			WHERE external_id IS NOT NULL AND external_id <> ''
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT r.id, $3::text, $4::text,
+		       jsonb_build_object('id', r.id, 'type', $4::text, 'source', 'studio', 'time', now(),
+		                          'org_id', $2::text,
+		                          'data', jsonb_build_object('provider', r.provider, 'external_id', r.external_id))
+		FROM rows r
+	`, invoiceID, orgID, outboxExchangeBilling, routingKeyCheckoutClose); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: close payment links: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
 	}
 	return nil
 }

@@ -499,3 +499,34 @@ func TestIntegration_FutureAddonLimitDeltas_OverrideAppliesInPlaceOfLiveQuantity
 		t.Errorf("want non-overridden addon to still contribute its live quantity (2), got workspaces delta %d", future["workspaces"])
 	}
 }
+
+// TestIntegration_ListOverdueSubscriptions_IncludesPastDue: a past_due
+// subscription past its period end relies on the same single check as an
+// active one, so the reconciler must pick it up when that check is lost. It
+// calls listOverdueSubscriptions directly rather than
+// ReconcileOverdueSubscriptions, which would sweep the whole shared database.
+func TestIntegration_ListOverdueSubscriptions_IncludesPastDue(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-000000000b34"
+	sub := seedAmendmentSubscription(t, pool, r, orgID)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET status = 'past_due', period_end = now() - interval '1 hour'
+		WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("force past_due past its end: %v", err)
+	}
+
+	overdue, err := r.listOverdueSubscriptions(t.Context(), pool)
+	if err != nil {
+		t.Fatalf("listOverdueSubscriptions: %v", err)
+	}
+	for _, o := range overdue {
+		if o.ID == sub.ID {
+			if o.IsTrial {
+				t.Errorf("a past_due subscription must not be reported as a trial")
+			}
+			return
+		}
+	}
+	t.Errorf("want past_due subscription %s among the overdue ones, got %d others", sub.ID, len(overdue))
+}

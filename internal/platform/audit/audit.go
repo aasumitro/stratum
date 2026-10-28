@@ -193,8 +193,12 @@ func (w *Writer) flush(batch []event) {
 		fmt.Fprintf(&b, "($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
 			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8)
 
+		// One value Postgres rejects as JSON fails the whole multi-row
+		// INSERT and loses every event in the batch, so anything that is not
+		// a valid JSON object or array — a truncated or malformed request
+		// body included — is stored as {} instead.
 		meta := e.metadata
-		if len(meta) == 0 || (meta[0] != '{' && meta[0] != '[') {
+		if !json.Valid(meta) || (meta[0] != '{' && meta[0] != '[') {
 			meta = []byte("{}")
 		}
 		args = append(args, e.organizationID, e.actor, e.action, e.resource, e.statusCode, meta, e.ip, e.userAgent)
@@ -235,8 +239,15 @@ func (w *Writer) Middleware() gin.HandlerFunc {
 		var reqBody []byte
 		isMultipart := strings.HasPrefix(c.Request.Header.Get("Content-Type"), "multipart/")
 		if !isGet && !isMultipart && c.Request.Body != nil {
-			reqBody, _ = io.ReadAll(io.LimitReader(c.Request.Body, maxBodyBytes))
-			c.Request.Body = io.NopCloser(bytes.NewReader(reqBody))
+			// Only the first maxBodyBytes are kept for the audit record. The
+			// handler still reads the whole body: the copied head first, then
+			// the rest straight from the original stream.
+			orig := c.Request.Body
+			reqBody, _ = io.ReadAll(io.LimitReader(orig, maxBodyBytes))
+			c.Request.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(reqBody), orig), orig}
 		}
 
 		rbw := &responseBodyWriter{ResponseWriter: c.Writer, body: &bytes.Buffer{}}

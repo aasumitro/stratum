@@ -15,8 +15,8 @@ import (
 // shortfall, so they pass through unchanged. Only once a user has a
 // verified factor does aal1 become insufficient for the gated route.
 //
-// Unlike BillingGate (a plan-limit check, where fail-open just risks a
-// missed upsell), a lookup error here fails closed: this gate protects the
+// Unlike a plan-limit check (where fail-open just risks a missed upsell), a
+// lookup error here fails closed: this gate protects the
 // highest-impact actions (delete account, transfer ownership, plan/addon
 // changes), so an IsMFAEnabled error must not silently grant access to a
 // caller who may have MFA enabled but whose status we can't currently

@@ -60,6 +60,13 @@ func (s *service) createInvitation(
 		}
 	}()
 
+	// One address, one invitation: email casing carries no identity, so the
+	// address is stored in one canonical form. UNIQUE(organization_id,
+	// email) then catches a repeat in any casing, and the invitee's own
+	// lookup (listInvitationsByEmail) finds it whatever casing their login
+	// carries.
+	email = strings.ToLower(strings.TrimSpace(email))
+
 	// A membership lookup needs an auth_sub, not an email — resolve one via
 	// the account module. No account yet for that email = definitely not a
 	// member, so the lookup failing is not itself an error here.

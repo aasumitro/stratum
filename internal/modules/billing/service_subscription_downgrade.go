@@ -57,16 +57,19 @@ func (s *service) downgradeSubscription(
 		}
 	}
 
+	// A scheduled cancellation is the largest reduction already queued, on
+	// every status, trialing included: the owner undoes it before asking for
+	// a smaller one.
+	if sub.ScheduledCancelAt != nil {
+		return nil, contracts.OverageResolution{}, apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
+	}
+
 	// Trialing has no paid period to protect, so a downgrade applies
 	// immediately. Every other status defers to renewal instead:
 	// scheduled_plan/cycle are written here, but the live plan/cycle (and
 	// any overage they'd force) stay untouched until the renewal worker
 	// applies the schedule — never reduce entitlement mid-period.
 	if sub.Status != statusTrialing {
-		if sub.ScheduledCancelAt != nil {
-			return nil, contracts.OverageResolution{}, apperr.Validation(
-				"CANCELLATION_SCHEDULED", "subscription is scheduled to cancel; undo that first")
-		}
 		if err := s.repo.schedulePlanDowngrade(ctx, s.querier(ctx), sub.ID, plan, cycle); err != nil {
 			return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: %w", err)
 		}

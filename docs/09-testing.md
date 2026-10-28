@@ -38,6 +38,8 @@ npm run test:e2e   # Playwright — auth + onboarding, needs infra + API running
 
 It logs in with the owner-role test account (`TEST_ACCOUNT_OWNER_EMAIL`/`PASSWORD`, repo-root `.env.local`) against real Supabase and the real backend, then intercepts the profile/organization lookups so the onboarding wizard's steps render deterministically without touching that account's actual state. `TEST_ACCOUNT_ADMIN_EMAIL`/`PASSWORD` and `TEST_ACCOUNT_MEMBER_EMAIL`/`PASSWORD` (same org, different roles) also live in `.env.local` for manual cross-role checks — the automated e2e suite only uses the owner account.
 
+Every test signs in for real, so back-to-back full runs can trip Supabase's sign-in rate limit: tests then time out on the login page, which shows "Request rate limit reached". Wait a few minutes before rerunning. Billing specs mock the org-scoped catalogs (`/billing/plans/catalog`, `/billing/addons/catalog`) the billing page actually reads, and every attached add-on carries its catalog `prices`, as the API returns them.
+
 The full pre-merge sequence (what CI runs): `go vet ./...` → `gofmt -w .` → `golangci-lint run ./...` → `govulncheck ./...` → `go test ./... -race -count=1 -timeout 120s`.
 
 ## Coverage

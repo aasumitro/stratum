@@ -171,3 +171,20 @@ func TestServer_RunThenGracefulShutdown(t *testing.T) {
 		t.Error("Run did not return after Shutdown")
 	}
 }
+
+// TestServer_OnShutdown_RunsHook: a hook registered with OnShutdown runs as
+// soon as Shutdown starts, so long-lived handlers (SSE) can be told to end
+// instead of holding the process for the full graceful timeout.
+func TestServer_OnShutdown_RunsHook(t *testing.T) {
+	s := httpserver.NewServer(gin.New(), "0")
+	called := make(chan struct{})
+	s.OnShutdown(func() { close(called) })
+	if err := s.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("OnShutdown hook did not run")
+	}
+}

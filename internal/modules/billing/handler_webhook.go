@@ -73,12 +73,18 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 
 	// Route by event type — only checkout.session.* and payment_intent.payment_failed are handled.
 	// All other event types are ACK'd immediately to prevent Stripe retries.
+	// A delayed-notification payment method (bank debit, transfer) completes
+	// the session unpaid ("checkout.session.completed" normalizes to pending)
+	// and reports the outcome later through the async_payment_* events, which
+	// carry the same Checkout Session and resolve the same way.
 	var status string
 	var invoiceID string
 	switch payload.Type {
 	case "checkout.session.completed":
 		status = normalizeStripeStatus(payload.Data.Object.PaymentStatus)
-	case "checkout.session.expired", "payment_intent.payment_failed":
+	case "checkout.session.async_payment_succeeded":
+		status = statusPaid
+	case "checkout.session.expired", "checkout.session.async_payment_failed", "payment_intent.payment_failed":
 		status = statusFailed
 		if payload.Type == "payment_intent.payment_failed" {
 			// The data object here is a PaymentIntent (pi_...), not the
