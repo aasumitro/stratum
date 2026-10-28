@@ -18,7 +18,7 @@ Wails v3 with a Go 1.25+ backend and a React 19 / TypeScript / Vite frontend (Ta
 - **Reference data** — full CRUD for countries and currencies, with delete guards (you can't delete a currency an active subscription uses).
 - **Catalog management** — CRUD for plans, features, coupons, and add-ons, plus entitlement and coupon-target management, with delete guards.
 - **Monitoring** — polls each project's readiness and runtime-stats endpoints on a configurable interval, with history and a sidebar status dot.
-- **Support** — user search and detail (including login history), subscription overrides (extend trial, activate, change plan), invoice actions (mark paid, void), and an at-risk invoices tab.
+- **Support** — user search and detail (including login history), subscription overrides (extend trial, activate a trialing or past_due subscription, change plan), invoice actions (mark paid — applied by the app's billing worker like a real payment, so the subscription renews or reactivates; void — also closes the invoice's open checkouts at the provider), and an at-risk invoices tab.
 - **Broadcast** — send in-app notifications to all users, one organization, or one user, with a recipient-count preview and send history.
 - **Organization ops** — a filterable table with suspend/unsuspend (reason required).
 - **Audit log** — cross-organization, filterable, paginated, CSV export.

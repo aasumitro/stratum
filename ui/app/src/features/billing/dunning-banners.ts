@@ -18,11 +18,12 @@ export function computeDunningBanners(
   const banners: BannerItem[] = []
   const now = Date.now()
 
-  if (sub.status === "expired") {
-    // Paying the open subscription/activation invoice is what reactivates
-    // an expired subscription. Without one there's nothing to pay yet — the
-    // owner has to resume first, which issues it — so the copy (and the
-    // action billing-layout.tsx attaches by id) says that instead.
+  if (sub.status === "expired" || sub.status === "cancelled") {
+    // An ended subscription — expired unpaid, or cancelled once its
+    // cancellation took effect — comes back the same way: paying the open
+    // invoice Resume issued reactivates it. Without one there's nothing to
+    // pay yet — the owner has to resume first, which issues it — so the copy
+    // (and the action billing-layout.tsx attaches by id) says that instead.
     banners.push(
       hasPendingInvoice
         ? {
@@ -36,7 +37,10 @@ export function computeDunningBanners(
             message: t("billing.dunning.expiredResume"),
           }
     )
-  } else if (sub.status === "past_due") {
+  } else if (sub.status === "past_due" && hasPendingInvoice) {
+    // A past_due subscription whose renewal invoice was voided by a
+    // scheduled cancellation has nothing left to pay; the scheduled-cancel
+    // banner covers its state instead.
     const pending = invoices
       .filter((i) => i.status === "pending" && i.due_at)
       .sort(
@@ -69,18 +73,6 @@ export function computeDunningBanners(
         message: t("billing.dunning.trialEndingSoon", { days: daysLeft }),
       })
     }
-  } else if (sub.status === "cancelled" && sub.period_end) {
-    banners.push({
-      id: "dunning-cancelled",
-      severity: "info",
-      message: t("billing.dunning.cancelledAccessUntil", {
-        date: new Date(sub.period_end).toLocaleDateString(undefined, {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-        }),
-      }),
-    })
   }
 
   return banners

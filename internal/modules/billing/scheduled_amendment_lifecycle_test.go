@@ -54,7 +54,9 @@ func (f *fakeOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason 
 	return nil
 }
 
-func (f *fakeOrgSuspender) UnsuspendOrganization(_ context.Context, _ string) error { return nil }
+func (f *fakeOrgSuspender) UnsuspendOrganization(_ context.Context, _ string, _ []string) error {
+	return nil
+}
 
 // encodeSubscriptionCheckBody builds the event body HandleSubscriptionAutoInvoice
 // decodes — only Data matters to events.Decode, so the envelope's other
@@ -211,8 +213,10 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 
 // TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes covers:
 // scheduling a cancellation while a plan downgrade and an addon decrease are
-// already scheduled clears both immediately, and advancing to renewal
-// suspends the organization, transitions status, and generates no invoice.
+// already scheduled clears both immediately; the renewal auto-invoice then
+// changes nothing (no invoice, no suspension, nothing applied), and the
+// end-of-period check suspends the organization, transitions status, and
+// consumes the schedule.
 func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testing.T) {
 	pool := testPoolAmendment(t)
 	r := &repository{}
@@ -276,7 +280,31 @@ func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testi
 
 	body := encodeSubscriptionCheckBody(sub.ID, orgID, *superseded.PeriodEnd)
 	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err != nil {
-		t.Fatalf("HandleSubscriptionAutoInvoice: want nil error applying a scheduled cancellation, got %v", err)
+		t.Fatalf("HandleSubscriptionAutoInvoice: want nil error with a cancellation scheduled, got %v", err)
+	}
+	if len(suspender.calls) != 0 {
+		t.Fatalf("renewal auto-invoice: want no suspension inside the paid period, got %d calls", len(suspender.calls))
+	}
+	afterAutoInvoice, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	if err != nil {
+		t.Fatalf("findSubscriptionByID after auto-invoice: %v", err)
+	}
+	if afterAutoInvoice.Status != statusActive || afterAutoInvoice.ScheduledCancelAt == nil {
+		t.Fatalf("renewal auto-invoice: want status active with the schedule kept, got status=%q scheduled_cancel_at=%v",
+			afterAutoInvoice.Status, afterAutoInvoice.ScheduledCancelAt)
+	}
+
+	// The paid period ends; the end-of-period check applies the cancellation.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET period_end = now() - interval '1 minute' WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("move period_end into the past: %v", err)
+	}
+	ended, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	if err != nil {
+		t.Fatalf("findSubscriptionByID after period end: %v", err)
+	}
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckBody(sub.ID, orgID, *ended.PeriodEnd)); err != nil {
+		t.Fatalf("HandleSubscriptionCheck: %v", err)
 	}
 
 	if len(suspender.calls) != 1 {
@@ -285,10 +313,18 @@ func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testi
 	if suspender.calls[0].orgID != orgID {
 		t.Errorf("want SuspendOrganization called with %q, got %q", orgID, suspender.calls[0].orgID)
 	}
-	var status string
-	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, sub.ID).Scan(&status)
-	if status != statusCancelled {
-		t.Errorf("want status=cancelled, got %q", status)
+	final, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	if err != nil {
+		t.Fatalf("findSubscriptionByID after check: %v", err)
+	}
+	if final.Status != statusCancelled {
+		t.Errorf("want status=cancelled, got %q", final.Status)
+	}
+	if final.ScheduledCancelAt != nil {
+		t.Errorf("want scheduled_cancel_at consumed once applied, got %v", final.ScheduledCancelAt)
+	}
+	if final.Plan != "growth" {
+		t.Errorf("want the superseded downgrade never applied, got plan=%q", final.Plan)
 	}
 	var invoiceCount int
 	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, sub.ID).Scan(&invoiceCount)

@@ -3,9 +3,12 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -114,6 +117,56 @@ func (s *service) processWebhook(ctx context.Context, provider, eventID, externa
 	return nil
 }
 
+// applyMarkedPaid applies an operator's "mark paid" from Studio as a
+// confirmed payment: the same effects a provider webhook has for the
+// invoice (applyInvoicePayment), minus the billing.payments row, since no
+// provider took the money. Only a pending invoice moves; one already
+// settled (paid, void, failed) or gone is logged and acknowledged, since
+// redelivering it would change nothing.
+func (s *service) applyMarkedPaid(ctx context.Context, invoiceID string) error {
+	var outcome *webhookOutcome
+	err := db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		txCtx := db.WithQuerier(ctx, tx)
+		inv, err := s.repo.findInvoiceByID(txCtx, tx, invoiceID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("billing.applyMarkedPaid: invoice not found", "invoice_id", invoiceID)
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("billing.applyMarkedPaid: find invoice: %w", err)
+		}
+		if err := s.repo.lockSubscriptionForUpdate(txCtx, tx, inv.SubscriptionID); err != nil {
+			return fmt.Errorf("billing.applyMarkedPaid: lock subscription: %w", err)
+		}
+		now := time.Now()
+		applied, err := s.repo.markInvoicePaid(txCtx, tx, invoiceID, now)
+		if err != nil {
+			return fmt.Errorf("billing.applyMarkedPaid: mark invoice paid: %w", err)
+		}
+		if !applied {
+			slog.Info("billing.applyMarkedPaid: invoice no longer pending, nothing to apply", "invoice_id", invoiceID)
+			return nil
+		}
+		sub, err := s.repo.findSubscriptionByID(txCtx, tx, inv.SubscriptionID)
+		if err != nil {
+			return fmt.Errorf("billing.applyMarkedPaid: find subscription: %w", err)
+		}
+		outcome = &webhookOutcome{}
+		link := &paymentLinkSubject{invoiceID: invoiceID, subscriptionID: sub.ID, subjectType: sub.SubjectType, subjectID: sub.SubjectID}
+		if err := s.applyInvoicePayment(txCtx, outcome, link, nil, changedByOperator, now); err != nil {
+			return err
+		}
+		return enqueueWebhookOutcome(txCtx, tx, outcome)
+	})
+	if err != nil {
+		return err
+	}
+	if outcome != nil && outcome.scheduleRenewal != nil {
+		s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
+	}
+	return nil
+}
+
 // findPaymentLinkWithSubject resolves a payment link by invoice (when
 // invoiceID is set) or external ID otherwise — see processWebhook's comment
 // on why invoiceID takes priority. Called twice by handleWebhook: once
@@ -178,99 +231,31 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 			// markInvoicePaid only moves a 'pending' invoice, and the post-lock
 			// link-status check above already absorbed a redelivery for this
 			// link — so a payment arrived for an invoice that is no longer
-			// pending. The one recoverable case: a renewal payment that
-			// completed after expireIfDue failed its invoice (see
-			// recoverLateRenewalPayment, which logs every other case).
-			recovered, err := s.recoverLateRenewalPayment(ctx, link.invoiceID, link.subscriptionID, now)
+			// pending. The recoverable case: a period-backing invoice of a
+			// subscription that has ended (see recoverLatePayment, which logs
+			// every other case).
+			recovered, err := s.recoverLatePayment(ctx, link.invoiceID, link.subscriptionID, now)
 			if err != nil {
-				return nil, fmt.Errorf("billing.handleWebhook: recover late renewal payment: %w", err)
+				return nil, fmt.Errorf("billing.handleWebhook: recover late payment: %w", err)
 			}
 			if !recovered {
 				return outcome, nil
 			}
-			// The invoice is now 'paid' again: fall through so the shared paid
-			// path below records the payment, emits InvoicePaid, and the
-			// sub.Status switch routes the 'expired' subscription to
-			// applyExpiredReactivation.
+			// The invoice is now 'paid': fall through so the shared paid path
+			// below records the payment, emits InvoicePaid, and reactivates the
+			// ended subscription.
 		}
 
-		// Both calls run under s.querier(ctx) — the same DB transaction as
-		// every other write in this branch. Postgres aborts an entire
-		// transaction on the first failed statement, so a swallowed error here
-		// wouldn't actually let the transaction proceed. Propagate instead.
+		// Runs under s.querier(ctx) — the same DB transaction as every other
+		// write in this branch. Postgres aborts an entire transaction on the
+		// first failed statement, so a swallowed error here wouldn't actually
+		// let the transaction proceed. Propagate instead.
 		pl, err := s.repo.findPaymentLinkByExternalID(ctx, s.querier(ctx), externalID)
 		if err != nil {
 			return nil, fmt.Errorf("billing.handleWebhook: find payment link: %w", err)
 		}
-		if pl != nil {
-			if err := s.repo.insertPayment(
-				ctx, s.querier(ctx), link.invoiceID, pl.AmountCents,
-				pl.Currency, pl.Provider, pl.ExternalID, now,
-			); err != nil {
-				return nil, fmt.Errorf("billing.handleWebhook: insert payment: %w", err)
-			}
-		}
-
-		paidEvt := events.InvoicePaid{OrgID: link.subjectID, InvoiceID: link.invoiceID, PaidAt: now}
-		if pl != nil {
-			paidEvt.AmountCents = int(pl.AmountCents)
-			paidEvt.Currency = pl.Currency
-		}
-		outcome.paid = &paidEvt
-
-		inv, err := s.repo.findInvoiceByID(ctx, s.querier(ctx), link.invoiceID)
-		if err != nil {
-			return nil, fmt.Errorf("billing.handleWebhook: find invoice: %w", err)
-		}
-
-		// Reactivate expired subscriptions on successful payment. Below this
-		// point every write applies what the customer just paid for — a
-		// failure must fail (and roll back) the whole transaction rather
-		// than be swallowed, or the invoice ends up marked paid with the
-		// subscription silently never actually reactivated/extended.
-		sub, err := s.repo.findSubscriptionByID(ctx, s.querier(ctx), link.subscriptionID)
-		if err != nil {
-			return nil, fmt.Errorf("billing.handleWebhook: find subscription: %w", err)
-		}
-		switch {
-		case sub.Status == statusExpired:
-			if err := s.applyExpiredReactivation(ctx, outcome, link, sub, now); err != nil {
-				return nil, err
-			}
-		case sub.Status == statusActive && inv.Kind == "extension":
-			if err := s.applyExtensionPayment(ctx, outcome, link, inv, sub); err != nil {
-				return nil, err
-			}
-		// Three invoice kinds reach this switch: "activation" (a
-		// subscription's very first invoice, or a skip-trial activation —
-		// its period was already fully set at creation/activation time, so
-		// paying it is correctly a no-op here — falls through to no case),
-		// "extension" (handled by its own case above), and "subscription"
-		// (the routine renewal invoice HandleSubscriptionAutoInvoice creates
-		// 3 days before period_end — the only kind this case should roll
-		// forward). Without this case matching a genuine renewal,
-		// period_end never advances: expireIfDue only checks whether "now"
-		// is past the *existing* period_end, with no awareness that a
-		// renewal was paid, so an on-time payer got suspended on schedule
-		// anyway.
-		case (sub.Status == statusActive || sub.Status == statusTrialing || sub.Status == statusPastDue) &&
-			inv.Kind == invoiceKindSubscription:
-			if err := s.applyRenewalPayment(ctx, outcome, inv, sub); err != nil {
-				return nil, err
-			}
-		// An addon-increase invoice paid: fold the addon row's pending
-		// quantity into its live quantity and clear both pending columns —
-		// the mirror-image of applyScheduledAddonQuantityChange for the
-		// increase (pay-first) direction instead of the decrease
-		// (schedule-first) one. Nothing about the subscription's own
-		// period/status changes here; this only ever affects one addon row.
-		// No new event beyond InvoicePaid (outcome.paid, set above) — the
-		// frontend already invalidates the addons query off other addon
-		// mutations and wires the same invalidation to InvoicePaid.
-		case inv.Kind == "addon_increase":
-			if err := s.applyAddonIncreasePayment(ctx, inv, sub); err != nil {
-				return nil, err
-			}
+		if err := s.applyInvoicePayment(ctx, outcome, link, pl, changedByWebhook, now); err != nil {
+			return nil, err
 		}
 	}
 
@@ -295,7 +280,7 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 			return nil, fmt.Errorf("billing.handleWebhook: find invoice for past-due check: %w", err)
 		}
 		if sub.Status == statusActive && isPeriodBacking(inv.Kind) {
-			if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusPastDue); err != nil {
+			if err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusPastDue); err != nil {
 				return nil, fmt.Errorf("billing.handleWebhook: mark subscription past due: %w", err)
 			}
 		}
@@ -304,72 +289,209 @@ func (s *service) handleWebhook(ctx context.Context, externalID, invoiceID, norm
 	return outcome, nil
 }
 
-// recoverLateRenewalPayment handles the one recoverable case of a 'paid'
-// webhook for an invoice that is no longer 'pending': a renewal payment
-// that completed at the gateway while expireIfDue was failing its invoice at
-// period_end — either paid before the expiry check with the webhook
-// delivered after it, or paid afterwards on a hosted checkout still open at
-// the provider (expiry only marks our payment-link rows expired; it never
-// tells the provider). expireIfDue's failPendingInvoicesAndLinks flipped the
-// invoice to 'failed' and the subscription to 'expired'. When exactly that
-// shape is present — a 'subscription'-kind invoice, 'failed', on an
-// 'expired' subscription — it flips the invoice to 'paid' and reports true,
-// so handleWebhook's normal paid path (insertPayment, InvoicePaid, the
-// sub.Status switch -> applyExpiredReactivation) runs unchanged. An
-// 'activation' invoice is excluded on purpose: it backs the period that just
-// elapsed, so reactivating would grant a fresh period for a payment that
-// covered the consumed one. Every other shape reports false after a Warn
-// log, since money arrived that nothing applies automatically.
-func (s *service) recoverLateRenewalPayment(ctx context.Context, invoiceID, subscriptionID string, now time.Time) (bool, error) {
+// applyInvoicePayment applies what a confirmed payment of link.invoiceID
+// buys, once that invoice is 'paid': the payment row when the money came
+// through a provider link (pl), InvoicePaid, and the subscription effect for
+// the invoice's kind and the subscription's status. Shared by the provider
+// webhook and an operator's mark-paid (applyMarkedPaid, pl nil); paidBy is
+// the history actor for what the payment applies. Every
+// write here applies what the customer paid for — a failure must fail (and
+// roll back) the whole transaction rather than be swallowed, or the invoice
+// ends up marked paid with the subscription silently never actually
+// reactivated/extended. Mutates outcome in place.
+func (s *service) applyInvoicePayment(
+	ctx context.Context, outcome *webhookOutcome, link *paymentLinkSubject, pl *paymentLinkRecord,
+	paidBy string, now time.Time,
+) error {
+	inv, err := s.repo.findInvoiceByID(ctx, s.querier(ctx), link.invoiceID)
+	if err != nil {
+		return fmt.Errorf("billing.applyInvoicePayment: find invoice: %w", err)
+	}
+	paidEvt := events.InvoicePaid{
+		OrgID: link.subjectID, InvoiceID: link.invoiceID,
+		AmountCents: int(inv.AmountCents), Currency: inv.Currency, PaidAt: now,
+	}
+	if pl != nil {
+		if err := s.repo.insertPayment(
+			ctx, s.querier(ctx), link.invoiceID, pl.AmountCents,
+			pl.Currency, pl.Provider, pl.ExternalID, now,
+		); err != nil {
+			return fmt.Errorf("billing.applyInvoicePayment: insert payment: %w", err)
+		}
+		paidEvt.AmountCents = int(pl.AmountCents)
+		paidEvt.Currency = pl.Currency
+	}
+	outcome.paid = &paidEvt
+	// The invoice is settled: any other checkout still open for it (an
+	// operator's mark-paid leaves the customer's link open) must stop taking
+	// money, here and at the provider. The link that just paid is already
+	// 'paid', so it isn't touched.
+	closed, err := s.repo.expireOpenPaymentLinks(ctx, s.querier(ctx), link.invoiceID)
+	if err != nil {
+		return fmt.Errorf("billing.applyInvoicePayment: %w", err)
+	}
+	if err := enqueueCheckoutExpiry(ctx, s.querier(ctx), link.subjectID, closed); err != nil {
+		return fmt.Errorf("billing.applyInvoicePayment: %w", err)
+	}
+
+	sub, err := s.repo.findSubscriptionByID(ctx, s.querier(ctx), link.subscriptionID)
+	if err != nil {
+		return fmt.Errorf("billing.applyInvoicePayment: find subscription: %w", err)
+	}
+	switch {
+	case sub.Status == statusExpired:
+		return s.applyExpiredReactivation(ctx, outcome, link, sub, paidBy, now)
+	// A paid Resume invoice — or a late payment recoverLatePayment let
+	// through — on a subscription whose cancellation already took effect:
+	// same fresh-period reactivation as an expired one.
+	case sub.Status == statusCancelled && isPeriodBacking(inv.Kind):
+		return s.applyExpiredReactivation(ctx, outcome, link, sub, paidBy, now)
+	// An extension can only be requested while active, but a renewal
+	// that fails before it is paid leaves the subscription past_due —
+	// the months were still paid for.
+	case (sub.Status == statusActive || sub.Status == statusPastDue) && inv.Kind == "extension":
+		return s.applyExtensionPayment(ctx, outcome, link, inv, sub, paidBy)
+	// Three invoice kinds reach this switch: "activation" (a
+	// subscription's very first invoice, or a skip-trial activation —
+	// its period was already fully set at creation/activation time, so
+	// paying it on an active subscription is correctly a no-op here;
+	// a past_due one has its own case below), "extension" (handled by
+	// its own case above), and "subscription"
+	// (the routine renewal invoice HandleSubscriptionAutoInvoice creates
+	// 3 days before period_end — the only kind this case should roll
+	// forward). Without this case matching a genuine renewal,
+	// period_end never advances: expireIfDue only checks whether "now"
+	// is past the *existing* period_end, with no awareness that a
+	// renewal was paid, so an on-time payer got suspended on schedule
+	// anyway.
+	case (sub.Status == statusActive || sub.Status == statusTrialing || sub.Status == statusPastDue) &&
+		inv.Kind == invoiceKindSubscription:
+		return s.applyRenewalPayment(ctx, outcome, inv, sub, paidBy)
+	// The activation payment failed earlier (past_due) and has now
+	// arrived: the period it backs was set at activation, so only the
+	// status moves. The renewal auto-invoice skipped this subscription
+	// while it was past_due, so queue it again — a payment landing
+	// after end−3d would otherwise never get a renewal invoice.
+	case sub.Status == statusPastDue && inv.Kind == invoiceKindActivation:
+		if err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
+			return fmt.Errorf("billing.applyInvoicePayment: reactivate past-due activation: %w", err)
+		}
+		if err := s.enqueueAutoInvoice(ctx, sub); err != nil {
+			return fmt.Errorf("billing.applyInvoicePayment: enqueue renewal auto-invoice: %w", err)
+		}
+	// An addon-increase invoice paid: fold the addon row's pending
+	// quantity into its live quantity and clear both pending columns —
+	// the mirror-image of applyScheduledAddonQuantityChange for the
+	// increase (pay-first) direction instead of the decrease
+	// (schedule-first) one. Nothing about the subscription's own
+	// period/status changes here; this only ever affects one addon row.
+	// No new event beyond InvoicePaid (outcome.paid, set above) — the
+	// frontend already invalidates the addons query off other addon
+	// mutations and wires the same invalidation to InvoicePaid.
+	case inv.Kind == "addon_increase":
+		return s.applyAddonIncreasePayment(ctx, inv, sub, paidBy)
+	}
+	return nil
+}
+
+// recoverLatePayment handles the recoverable case of a 'paid' webhook for
+// an invoice that is no longer 'pending': a period-backing invoice
+// ('subscription' or 'activation') closed without payment — 'failed' by
+// expireIfDue when the subscription ended, or 'void' when a cancel request
+// or a plan change superseded it — whose payment completed at the gateway
+// anyway: paid before the close with the webhook delivered after it, or
+// paid on a hosted checkout the provider still had open. When the
+// subscription has ended ('expired', or 'cancelled' once its cancellation
+// took effect) it flips the invoice to 'paid' and reports true, so
+// handleWebhook's normal paid path treats the money like a Resume payment:
+// a fresh period from now (applyExpiredReactivation). Every other shape
+// reports false after a Warn log, since money arrived that nothing applies
+// automatically: on a live subscription the closed invoice's replacement is
+// already pending, an additive invoice (extension, addon increase) bought
+// nothing an ended subscription can still use, and a deleted
+// organization's subscription stays ended.
+func (s *service) recoverLatePayment(ctx context.Context, invoiceID, subscriptionID string, now time.Time) (bool, error) {
 	inv, err := s.repo.findInvoiceByID(ctx, s.querier(ctx), invoiceID)
 	if err != nil {
-		return false, fmt.Errorf("billing.recoverLateRenewalPayment: find invoice: %w", err)
+		return false, fmt.Errorf("billing.recoverLatePayment: find invoice: %w", err)
 	}
 	sub, err := s.repo.findSubscriptionByID(ctx, s.querier(ctx), subscriptionID)
 	if err != nil {
-		return false, fmt.Errorf("billing.recoverLateRenewalPayment: find subscription: %w", err)
+		return false, fmt.Errorf("billing.recoverLatePayment: find subscription: %w", err)
 	}
-	if inv.Status != statusFailed || sub.Status != statusExpired || inv.Kind != invoiceKindSubscription {
-		// Void, already paid through another link, failed on a subscription
-		// that is live again, or a non-renewal kind: nothing can be rolled
-		// forward automatically, so surface it for manual reconciliation
-		// instead of dropping it silently.
-		slog.Warn("billing.recoverLateRenewalPayment: paid webhook for a non-pending invoice not applied",
+	closed := inv.Status == statusFailed || inv.Status == statusVoid
+	ended := sub.Status == statusExpired || sub.Status == statusCancelled
+	recoverable := closed && ended && isPeriodBacking(inv.Kind)
+	if recoverable {
+		deleted, err := s.subjectDeleted(ctx, sub)
+		if err != nil {
+			return false, fmt.Errorf("billing.recoverLatePayment: %w", err)
+		}
+		recoverable = !deleted
+	}
+	if !recoverable {
+		slog.Warn("billing.recoverLatePayment: paid webhook for a non-pending invoice not applied",
 			"invoice_id", inv.ID, "invoice_status", inv.Status, "invoice_kind", inv.Kind,
 			"subscription_id", sub.ID, "subscription_status", sub.Status)
 		return false, nil
 	}
-	return s.repo.markFailedInvoicePaid(ctx, s.querier(ctx), invoiceID, now)
+	return s.repo.markClosedInvoicePaid(ctx, s.querier(ctx), invoiceID, now)
 }
 
-// applyExpiredReactivation reactivates a subscription that lapsed (expired)
-// and has now been paid: flips status back to active, starts a fresh period
-// from now, and records the resume. Mutates outcome in place — see
-// handleWebhook's own comment on why a failure here must fail (and roll
+// subjectDeleted reports whether sub's organization was deleted — soft
+// deleted, or already purged — so a late payment never brings its
+// subscription back. Without an organization reader wired it reports false.
+func (s *service) subjectDeleted(ctx context.Context, sub *subscriptionRecord) (bool, error) {
+	if s.orgReader == nil || sub.SubjectType != subjectTypeOrganization {
+		return false, nil
+	}
+	info, err := s.orgReader.GetOrganizationByID(ctx, sub.SubjectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("billing.subjectDeleted: %w", err)
+	}
+	return info.Status == organizationStatusDeleted, nil
+}
+
+// applyExpiredReactivation reactivates a subscription that ended (expired,
+// or cancelled once its cancellation took effect) and has now been paid:
+// flips status back to active, starts a fresh period from now, clears any
+// cancellation schedule, and records the resume. Mutates outcome in place —
+// see handleWebhook's own comment on why a failure here must fail (and roll
 // back) the whole transaction rather than be swallowed.
 func (s *service) applyExpiredReactivation(
-	ctx context.Context, outcome *webhookOutcome, link *paymentLinkSubject, sub *subscriptionRecord, now time.Time,
+	ctx context.Context, outcome *webhookOutcome, link *paymentLinkSubject, sub *subscriptionRecord,
+	changedBy string, now time.Time,
 ) error {
 	periodEnd := now.AddDate(0, 1, 0)
 	if sub.Cycle == cycleYearly {
 		periodEnd = now.AddDate(1, 0, 0)
 	}
-	if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
+	if err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: reactivate subscription: %w", err)
 	}
 	if err := s.repo.clearTrialEndAndUpdatePeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: update period on reactivation: %w", err)
 	}
+	// A reactivated subscription renews normally: a cancellation schedule
+	// left on it, whatever path cancelled it, would skip its next renewal
+	// and cancel it again.
+	if err := s.repo.clearScheduledCancellation(ctx, s.querier(ctx), sub.ID); err != nil {
+		return fmt.Errorf("billing.applyExpiredReactivation: clear cancellation schedule: %w", err)
+	}
 	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "resume",
-		&sub.Plan, &sub.Plan, 0, sub.Currency, changedBySystem, nil); err != nil {
+		&sub.Plan, &sub.Plan, 0, sub.Currency, changedBy, nil); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: insert resume history: %w", err)
 	}
 	// Suspension state lives in the organization module (a separate
 	// schema/service, not this transaction) — a failure here is logged, not
 	// rolled back; the paid reactivation itself already committed correctly
-	// and shouldn't be undone over this.
+	// and shouldn't be undone over this. Only billing's own suspension
+	// lifts: an owner's pause or a Studio operator's suspension stays.
 	if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
-		if err := s.orgSuspender.UnsuspendOrganization(ctx, sub.SubjectID); err != nil {
+		if err := s.orgSuspender.UnsuspendOrganization(ctx, sub.SubjectID, billingSuspensionReasons); err != nil {
 			slog.Error("UnsuspendOrganization failed", "organization_id", sub.SubjectID, "error", err)
 		}
 	}
@@ -382,10 +504,14 @@ func (s *service) applyExpiredReactivation(
 
 // applyExtensionPayment applies a paid extension invoice: rolls the
 // subscription's period forward by the invoice's total months (and converts
-// its cycle to yearly, if requested) and records the extension. Mutates
-// outcome in place.
+// its cycle to yearly, if requested) and records the extension. A past_due
+// subscription returns to active: the failed renewal backed the period that
+// started at the old period_end, which the extension now covers, so nothing
+// is overdue — the renewal invoice stays pending and the auto-invoice for
+// the new end offers it again. Mutates outcome in place.
 func (s *service) applyExtensionPayment(
 	ctx context.Context, outcome *webhookOutcome, link *paymentLinkSubject, inv *invoiceRecord, sub *subscriptionRecord,
+	changedBy string,
 ) error {
 	// inv.ExtensionMonths is the source of truth, set once by
 	// extendSubscription at invoice creation — not re-derived by summing
@@ -418,8 +544,13 @@ func (s *service) applyExtensionPayment(
 	} else if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, newPeriodEnd); err != nil {
 		return fmt.Errorf("billing.applyExtensionPayment: apply extension period: %w", err)
 	}
+	if sub.Status == statusPastDue {
+		if err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
+			return fmt.Errorf("billing.applyExtensionPayment: reactivate past-due subscription: %w", err)
+		}
+	}
 	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "extend",
-		&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedByWebhook, nil); err != nil {
+		&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedBy, nil); err != nil {
 		return fmt.Errorf("billing.applyExtensionPayment: insert extend history: %w", err)
 	}
 
@@ -442,7 +573,7 @@ func (s *service) applyExtensionPayment(
 // in the same move. Mutates outcome in place.
 func (s *service) applyRenewalPayment(
 	ctx context.Context, outcome *webhookOutcome,
-	inv *invoiceRecord, sub *subscriptionRecord,
+	inv *invoiceRecord, sub *subscriptionRecord, changedBy string,
 ) error {
 	periodEnd := sub.PeriodEnd.AddDate(0, 1, 0)
 	if sub.Cycle == cycleYearly {
@@ -461,7 +592,7 @@ func (s *service) applyRenewalPayment(
 		if err := s.repo.updateSubscriptionPeriod(ctx, s.querier(ctx), sub.ID, *sub.PeriodStart, periodEnd); err != nil {
 			return fmt.Errorf("billing.applyRenewalPayment: roll over past-due subscription period: %w", err)
 		}
-		if _, err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
+		if err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
 			return fmt.Errorf("billing.applyRenewalPayment: reactivate past-due subscription: %w", err)
 		}
 	default:
@@ -470,7 +601,7 @@ func (s *service) applyRenewalPayment(
 		}
 	}
 	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "renew",
-		&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedByWebhook, nil); err != nil {
+		&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedBy, nil); err != nil {
 		return fmt.Errorf("billing.applyRenewalPayment: insert renew history: %w", err)
 	}
 	outcome.scheduleRenewal = &subscriptionRecord{
@@ -485,7 +616,7 @@ func (s *service) applyRenewalPayment(
 // assembled by the caller) — the frontend already invalidates the addons
 // query off other addon mutations and wires the same invalidation to
 // InvoicePaid.
-func (s *service) applyAddonIncreasePayment(ctx context.Context, inv *invoiceRecord, sub *subscriptionRecord) error {
+func (s *service) applyAddonIncreasePayment(ctx context.Context, inv *invoiceRecord, sub *subscriptionRecord, changedBy string) error {
 	addon, err := s.repo.findAddonByPendingInvoice(ctx, s.querier(ctx), inv.ID)
 	if err != nil {
 		return fmt.Errorf("billing.applyAddonIncreasePayment: find addon by pending invoice: %w", err)
@@ -497,7 +628,7 @@ func (s *service) applyAddonIncreasePayment(ctx context.Context, inv *invoiceRec
 		AddonID: addon.AddonID, FromQuantity: addon.Quantity, ToQuantity: addon.PendingQuantity,
 	})
 	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "addon_change",
-		nil, nil, inv.AmountCents, inv.Currency, changedByWebhook, metadata); err != nil {
+		nil, nil, inv.AmountCents, inv.Currency, changedBy, metadata); err != nil {
 		return fmt.Errorf("billing.applyAddonIncreasePayment: insert addon_change history: %w", err)
 	}
 	return nil

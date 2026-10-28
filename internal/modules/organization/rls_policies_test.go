@@ -288,7 +288,7 @@ func TestRLS_CrossModulePorts_StillApply(t *testing.T) {
 	if _, err := p.admin.Exec(ctx, `UPDATE organization.organizations SET status = 'suspended', suspended_reason = 'subscription expired' WHERE id = $1`, rlsOrgA); err != nil {
 		t.Fatalf("suspend A: %v", err)
 	}
-	if err := mod.UnsuspendOrganization(ctx, rlsOrgA); err != nil {
+	if err := mod.UnsuspendOrganization(ctx, rlsOrgA, []string{"subscription expired"}); err != nil {
 		t.Fatalf("UnsuspendOrganization: %v", err)
 	}
 	var status string

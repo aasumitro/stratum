@@ -291,6 +291,22 @@ func (r *repository) applyPendingAddonIncrease(
 	return nil
 }
 
+// clearPendingAddonIncreases is clearPendingAddonIncrease for every addon row
+// of subscriptionID — used when a plan change voids every pending invoice,
+// so no row keeps waiting on an addon-increase invoice that can no longer be
+// paid.
+func (r *repository) clearPendingAddonIncreases(ctx context.Context, q db.Querier, subscriptionID string) error {
+	_, err := q.Exec(ctx, `
+		UPDATE billing.subscription_addons
+		SET pending_quantity = NULL, pending_invoice_id = NULL
+		WHERE subscription_id = $1 AND pending_invoice_id IS NOT NULL`,
+		subscriptionID)
+	if err != nil {
+		return fmt.Errorf("billing.clearPendingAddonIncreases: %w", err)
+	}
+	return nil
+}
+
 // clearPendingAddonIncrease drops a pending increase without folding it into
 // the live quantity — used when a newer request supersedes and voids the
 // invoice this row was waiting on.

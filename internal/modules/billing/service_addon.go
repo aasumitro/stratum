@@ -161,7 +161,11 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 			} else if existing.PendingInvoiceID != nil {
 				// Void-and-reissue: a newer request supersedes whatever
 				// invoice an earlier increase request left pending.
-				if err := s.repo.voidInvoiceAndLinks(txCtx, tx, *existing.PendingInvoiceID); err != nil {
+				links, err := s.repo.voidInvoiceAndLinks(txCtx, tx, *existing.PendingInvoiceID)
+				if err != nil {
+					return err
+				}
+				if err := enqueueCheckoutExpiry(txCtx, tx, sub.SubjectID, links); err != nil {
 					return err
 				}
 				if err := s.repo.clearPendingAddonIncrease(txCtx, tx, sub.ID, addonID); err != nil {
@@ -185,15 +189,17 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 					Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: sub.Currency,
 					DueAt: *inv.DueAt,
 				})
+		case sub.ScheduledCancelAt != nil:
+			// A decrease while a cancellation is scheduled — on every
+			// status, trialing included — is refused: the cancellation
+			// already removes everything at the end of the period.
+			return apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
 		case sub.Status == statusTrialing:
 			if err := s.repo.upsertSubscriptionAddon(txCtx, tx, sub.ID, addonID, quantity); err != nil {
 				return err
 			}
 			return s.insertAddonChangeHistory(txCtx, tx, sub, addonID, existingQuantity, quantity, changedBy, nil, nil, false)
 		default:
-			if sub.ScheduledCancelAt != nil {
-				return apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
-			}
 			if err := s.repo.scheduleAddonQuantityChange(txCtx, tx, sub.ID, addonID, quantity); err != nil {
 				return err
 			}
@@ -341,6 +347,9 @@ func (s *service) detachAddon(ctx context.Context, organizationID, addonID, chan
 		return apperr.NotFound("ADDON_NOT_FOUND", "addon not found", ErrAddonNotFound)
 	}
 
+	if sub.ScheduledCancelAt != nil {
+		return apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
+	}
 	if sub.Status == statusTrialing {
 		if err := s.repo.deleteSubscriptionAddon(ctx, s.querier(ctx), sub.ID, addonID); err != nil {
 			return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
@@ -349,9 +358,6 @@ func (s *service) detachAddon(ctx context.Context, organizationID, addonID, chan
 			return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
 		}
 		return nil
-	}
-	if sub.ScheduledCancelAt != nil {
-		return apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
 	}
 	if err := s.repo.scheduleAddonQuantityChange(ctx, s.querier(ctx), sub.ID, addonID, 0); err != nil {
 		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)

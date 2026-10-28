@@ -31,7 +31,9 @@ type attachAddonRequest struct {
 // @Description  subscription status, an increase (including a brand-new attach) instead creates a
 // @Description  day-prorated invoice and returns the addon record with pending_quantity/
 // @Description  pending_invoice_id set — the live quantity only rises once that invoice is
-// @Description  confirmed paid. A decrease still schedules for the next renewal.
+// @Description  confirmed paid. A decrease still schedules for the next renewal. While a
+// @Description  cancellation is scheduled, a decrease is refused with 422
+// @Description  CANCELLATION_SCHEDULED on every status, trialing included.
 // @Tags         billing
 // @Accept       json
 // @Produce      json
@@ -71,6 +73,7 @@ func (h *handler) attachAddon(c *gin.Context) {
 // @Param        organizationID  path  string  true  "Organization ID"
 // @Param        addonID         path  string  true  "Addon ID"
 // @Success      204             "no content"
+// @Failure      422             {object}  response.Payload  "a cancellation is scheduled (CANCELLATION_SCHEDULED)"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/billing/addons/{addonID} [delete]

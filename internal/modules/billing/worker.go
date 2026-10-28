@@ -51,8 +51,9 @@ func (w *Worker) HandleOrganizationCreated(ctx context.Context, body []byte) err
 	return nil
 }
 
-// HandleSubscriptionCheck processes a delayed expiry check. If the
-// subscription is still active/trialing past its end date, mark it expired.
+// HandleSubscriptionCheck processes a delayed end-of-period check: a
+// subscription past its end date is ended by expireIfDue — cancelled when a
+// cancellation is scheduled, expired otherwise.
 func (w *Worker) HandleSubscriptionCheck(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
 	if err != nil {
@@ -73,13 +74,18 @@ func (w *Worker) HandleSubscriptionCheck(ctx context.Context, body []byte) error
 // ExpectedEnd no longer matches the subscription's current end date is one
 // of those leftovers: a fresh message for the new end date was already
 // enqueued by whatever changed it, so this one should no-op rather than act
-// on a date that's no longer real.
+// on a date that's no longer real. The comparison runs at microsecond
+// precision: Postgres stores timestamptz in microseconds, while an end
+// computed from time.Now() keeps nanoseconds on clocks that have them, so
+// the stored and the scheduled value of the same instant can differ below
+// one microsecond.
 func staleSubscriptionCheck(sub *subscriptionRecord, check events.SubscriptionCheck) bool {
 	currentEnd := sub.PeriodEnd
 	if check.IsTrial {
 		currentEnd = sub.TrialEnd
 	}
-	return currentEnd == nil || !currentEnd.Equal(check.ExpectedEnd)
+	return currentEnd == nil ||
+		!currentEnd.Truncate(time.Microsecond).Equal(check.ExpectedEnd.Truncate(time.Microsecond))
 }
 
 // HandleSubscriptionRemind checks a scheduled reminder against the live
@@ -160,22 +166,23 @@ func (w *Worker) forwardDunningNotice(ctx context.Context, body []byte, publishK
 }
 
 // reconcileScheduledCancellation takes the row lock covering this renewal
-// decision and either applies a scheduled cancellation or hands the
-// unlocked subscription back to the caller to compose a renewal invoice.
-// The lock is only held for this decision, not for the invoice/payment-link
-// work that follows in the caller — that work makes a blocking call to
-// Stripe/Xendit, and holding a transaction (and its pooled connection) open
-// across an external HTTP round-trip is the same pool-exhaustion risk this
-// module's billingPay route group already avoids for the interactive
-// pay-invoice endpoint (module.go).
+// decision and hands the unlocked subscription back to the caller to
+// compose a renewal invoice — unless a cancellation is scheduled: no
+// renewal is invoiced for a period the owner has cancelled, and expireIfDue
+// applies the cancellation when the current period ends. The lock is only
+// held for this decision, not for the invoice/payment-link work that follows
+// in the caller — that work makes a blocking call to Stripe/Xendit, and
+// holding a transaction (and its pooled connection) open across an external
+// HTTP round-trip is the same pool-exhaustion risk this module's billingPay
+// route group already avoids for the interactive pay-invoice endpoint
+// (module.go).
 //
-// Returns (nil, nil) when there is nothing left for the caller to do: the
-// subscription wasn't found, isn't active/trialing, the check is stale, or a
-// scheduled cancellation was just applied. Returns (sub, nil) when nothing
-// is scheduled to cancel and the caller should proceed to compose an
-// invoice for sub. Returns (nil, err) on failure, in which case the
-// transaction rolled back and nothing changed — a later redelivery of the
-// same event retries from the same state.
+// Returns (nil, nil) when there is nothing for the caller to do: the
+// subscription wasn't found, isn't active/trialing, the check is stale, or
+// a cancellation is scheduled. Returns (sub, nil) when the caller should
+// proceed to compose an invoice for sub. Returns (nil, err) on failure, in
+// which case the transaction rolled back and nothing changed — a later
+// redelivery of the same event retries from the same state.
 func (w *Worker) reconcileScheduledCancellation(
 	ctx context.Context, check events.SubscriptionCheck,
 ) (*subscriptionRecord, error) {
@@ -189,36 +196,18 @@ func (w *Worker) reconcileScheduledCancellation(
 		}
 		found, err := w.svc.repo.findSubscriptionByID(txCtx, q, check.SubscriptionID)
 		if err != nil || (found.Status != statusActive && found.Status != statusTrialing) {
-			return nil // existing early-return, unchanged
+			return nil
 		}
 		if staleSubscriptionCheck(found, check) {
 			slog.Info("skipping stale auto-invoice", "subscription_id", found.ID, "expected_end", check.ExpectedEnd)
-			return nil // existing early-return, unchanged
-		}
-		if found.ScheduledCancelAt == nil {
-			sub = found // nothing scheduled — caller falls through to invoice composition
 			return nil
 		}
-
-		if w.svc.orgSuspender != nil && found.SubjectType == subjectTypeOrganization {
-			if err := w.svc.orgSuspender.SuspendOrganization(txCtx, found.SubjectID, "subscription cancelled"); err != nil {
-				return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: suspend organization: %w", err)
-			}
+		if found.ScheduledCancelAt != nil {
+			slog.Info("skipping renewal invoice: cancellation scheduled", "subscription_id", found.ID)
+			return nil
 		}
-		if _, err := w.svc.repo.updateSubscriptionStatus(txCtx, q, found.ID, statusCancelled); err != nil {
-			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
-		}
-		phase := historyPhaseApplied
-		appliedAt := time.Now()
-		if _, err := w.svc.repo.insertHistoryWithPhase(txCtx, q, found.ID, "cancel",
-			&found.Plan, nil, 0, found.Currency, changedBySystem, nil, &phase, &appliedAt); err != nil {
-			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
-		}
-		if err := w.svc.enqueueEvent(txCtx, events.RoutingKeySubscriptionCancelled, found.SubjectID,
-			events.SubscriptionCancelled{OrgID: found.SubjectID, SubscriptionID: found.ID, CancelledAt: time.Now()}); err != nil {
-			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: enqueue cancellation: %w", err)
-		}
-		return nil // no invoice — this is the cancellation short-circuit
+		sub = found
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -316,6 +305,26 @@ func (w *Worker) reconcileScheduledOverage(ctx context.Context, subscriptionID s
 	return result, nil
 }
 
+// HandlePaymentLinkExpire closes a locally expired payment link's hosted
+// checkout at its provider (events.RoutingKeyPaymentLinkExpire).
+func (w *Worker) HandlePaymentLinkExpire(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.PaymentLinkExpire](body)
+	if err != nil {
+		return fmt.Errorf("billing.HandlePaymentLinkExpire: decode: %w", err)
+	}
+	return w.svc.expireCheckout(ctx, evt.Provider, evt.ExternalID)
+}
+
+// HandleInvoiceMarkPaid applies an operator's "mark paid" from Studio
+// (events.RoutingKeyInvoiceMarkPaid) as a confirmed payment.
+func (w *Worker) HandleInvoiceMarkPaid(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.InvoiceMarkPaid](body)
+	if err != nil {
+		return fmt.Errorf("billing.HandleInvoiceMarkPaid: decode: %w", err)
+	}
+	return w.svc.applyMarkedPaid(ctx, evt.InvoiceID)
+}
+
 // HandleSubscriptionAutoInvoice generates a renewal invoice 3 days before expiry.
 func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
@@ -325,9 +334,9 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 
 	sub, err := w.reconcileScheduledCancellation(ctx, check)
 	if err != nil || sub == nil {
-		// err nil + sub nil covers every existing early-return case (not
-		// found, wrong status, stale check) as well as a cancellation that
-		// was just applied — either way there's no invoice to compose.
+		// err nil + sub nil covers every early-return case (not found, wrong
+		// status, stale check, cancellation scheduled) — either way there's
+		// no invoice to compose.
 		return err
 	}
 

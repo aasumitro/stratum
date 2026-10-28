@@ -6,6 +6,89 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Cancelling is scheduled on every status, trials included: access continues until the end of the
+  paid period (or the trial) and the cancel can be undone until then. A pending renewal invoice is
+  voided when the cancel is requested; Undo issues it again.
+- The `billing.subscription.cancelled` event — and the outbound customer webhook of the same name —
+  now fires when a cancellation takes effect at the end of the period, at the same moment the
+  organization is suspended, instead of when it is requested.
+- Resume (from `cancelled` or `expired`) always issues an invoice first and reactivates only once it
+  is paid; a repeat request reuses the pending invoice. Resuming inside a trial no longer returns the
+  subscription to `trialing`.
+- While a cancellation is scheduled, a downgrade, an add-on decrease or removal, and activate-now
+  are refused with `422 CANCELLATION_SCHEDULED`.
+- A plan change with the first (activation) invoice still unpaid restarts the period on the new plan
+  and reissues the activation at the new price; pending extension and add-on-increase invoices are
+  voided rather than turned into a renewal.
+- A pending renewal invoice no longer blocks the organization's navigation in the web app — only an
+  unpaid activation invoice does.
+
+### Fixed
+
+- A plan change that moved `period_end` never rescheduled renewal, so no renewal invoice was
+  created and the subscription expired at the new end.
+- Paying an activation invoice after a failed or expired checkout left the subscription `past_due`.
+- A scheduled cancellation suspended the organization three days before the paid period ended.
+- A cancelled trial kept access forever, and resuming a cancelled subscription granted a new period
+  without payment while leaving the organization suspended.
+- A plan change reactivated an `expired` subscription (and cleared `past_due`) without payment, and
+  turned an unpaid activation invoice into a renewal that added a free cycle once paid.
+- An expiry check racing a committed renewal could overwrite it with `expired`.
+- A resumed subscription kept its old cancellation schedule and was cancelled again at its next
+  renewal.
+- Renewal reminders and auto-invoices built from a nanosecond clock were discarded as stale on Linux.
+- Stripe `checkout.session.async_payment_succeeded` / `async_payment_failed` are now applied instead
+  of dropped.
+- The hourly overdue-subscription reconciler now also ends `past_due` subscriptions.
+- Audit: request bodies over 4 KB reach the handler whole, and one malformed body no longer drops the
+  whole batch of audit events.
+- Invitations are stored with a lowercase email, so a mixed-case invite is visible to the invitee and
+  a second casing cannot create a duplicate.
+- The notification stream sends its headers at connect, so the browser sees it open immediately, and
+  a successful reconnect resets the client's failure count.
+- Payment-provider calls (resume, extend, activate, add-on attach, pay) and the members import no
+  longer time out client-side after 5 seconds.
+- A cancelled organization's owner sees the billing banner with a link to Billing instead of an
+  Unsuspend button that always failed.
+- Studio's "Cancellations taking effect" watchlist lists scheduled cancellations again, and
+  "Renewals due" no longer includes subscriptions that will not renew.
+- An extension paid after a failed renewal had made the subscription `past_due` was dropped; it now
+  adds its months and returns the subscription to `active`.
+- The expiry notification and email told the owner to pay an invoice that expiry had already
+  closed; they now point to Resume.
+- Notifications whose copy has no variables (subscription cancelled/expired, organization
+  reactivated) were always shown in English; they now follow the viewer's language.
+- The suspend/unsuspend toasts showed raw translation keys.
+- Unsuspend (Settings danger zone and the owner's suspension banner) is offered only for the owner's
+  own pause: a billing suspension links to Billing and a support suspension says to contact support,
+  instead of a button the API always refused.
+- Studio no longer offers Activate on a cancelled subscription: that state now means the period has
+  ended and the organization is suspended, so it returns through Resume and payment.
+- A payment that arrives for a closed invoice of an ended subscription — an activation failed at
+  expiry or when a cancellation took effect, or a renewal voided by a cancel request or a plan
+  change — now reactivates it like a Resume payment instead of only being logged. A deleted
+  organization's subscription stays ended.
+- Checkouts left open at Stripe/Xendit when an invoice was voided, failed or superseded by a new
+  link could still take money; every local link expiry now closes the checkout at the provider
+  too, through the outbox and the billing worker. Once an invoice is paid — by webhook or by a
+  Studio mark-paid — its other open checkouts are closed the same way, so it can't be paid twice.
+- A paid reactivation lifted any suspension, including one set by a Studio operator; it now lifts
+  only billing's own, and "organization reactivated" is only announced when it actually was.
+- Studio "Mark paid" only flipped the invoice; it is now applied by the billing worker like a real
+  payment (period, reactivation, billing suspension, next renewal) and shows as "Support" in the
+  subscription history. Studio "Void" also closes the invoice's open checkouts.
+- `POST /organizations/:id/suspend` accepted a custom reason the owner could then never lift; it
+  now ignores any body and always records the owner's pause.
+- An open notification stream held API shutdown for the full 15 s graceful timeout, which then
+  logged "startup failed"; streams now end as shutdown starts, and the exit log says the process
+  stopped with an error.
+
+### Removed
+
+- The unused `BillingGate` middleware and `OrganizationReader.IsMember`.
+
 ## [0.5.0] - 2026-10-23
 
 Row-level security extended from `billing` to the `organization` and `notification` schemas, the

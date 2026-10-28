@@ -62,6 +62,13 @@ func NewModuleEngine(pool *pgxpool.Pool, authSub string) *gin.Engine {
 // mounts it when svc.redis is non-nil) and to test its per-subject
 // concurrent-stream cap, which is enforced via Redis INCR/DECR.
 func NewModuleEngineWithRedis(pool *pgxpool.Pool, authSub string, redis *goredis.Client) *gin.Engine {
+	e, _ := NewStreamEngine(pool, authSub, redis)
+	return e
+}
+
+// NewStreamEngine is NewModuleEngineWithRedis that also returns the Module,
+// so a test can end its open streams (CloseStreams).
+func NewStreamEngine(pool *pgxpool.Pool, authSub string, redis *goredis.Client) (*gin.Engine, *Module) {
 	gin.SetMode(gin.TestMode)
 	mod := New(pool, nil, nil, nil, "", redis)
 	e := gin.New()
@@ -72,5 +79,5 @@ func NewModuleEngineWithRedis(pool *pgxpool.Pool, authSub string, redis *goredis
 	noopMW := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
 	mod.Register(api, httpserver.RouteDeps{Auth: authMW, AuthSSE: authMW, RateLimit: noopMW})
-	return e
+	return e, mod
 }

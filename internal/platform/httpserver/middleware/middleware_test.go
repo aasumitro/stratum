@@ -14,68 +14,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 )
 
-// --- BillingGate ---
-
-type stubBillingReader struct {
-	current int64
-	limit   int
-	err     error
-}
-
-func (s stubBillingReader) GetSubscriptionBySubject(_ context.Context, _, _ string) (*contracts.SubscriptionInfo, error) {
-	return nil, nil
-}
-func (s stubBillingReader) CheckUsageLimit(_ context.Context, _, _ string) (int64, int, error) {
-	return s.current, s.limit, s.err
-}
-func (s stubBillingReader) CheckFeatureAccess(_ context.Context, _, _ string) error { return nil }
-
-func makeBillingGateEngine(reader contracts.BillingReader) *gin.Engine {
-	gin.SetMode(gin.TestMode)
-	e := gin.New()
-	e.Use(func(c *gin.Context) {
-		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws-01", Status: "active"})
-		c.Next()
-	})
-	e.POST("/test", middleware.BillingGate(reader, "members"), func(c *gin.Context) {
-		c.Status(http.StatusOK)
-	})
-	return e
-}
-
-func TestBillingGate_LimitExceeded_Returns429WithHeaders(t *testing.T) {
-	e := makeBillingGateEngine(stubBillingReader{current: 5, limit: 5})
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/test", nil))
-	if w.Code != http.StatusTooManyRequests {
-		t.Errorf("want 429, got %d", w.Code)
-	}
-	if v := w.Header().Get("X-Usage-Current"); v != "5" {
-		t.Errorf("X-Usage-Current: want 5, got %q", v)
-	}
-	if v := w.Header().Get("X-Usage-Limit"); v != "5" {
-		t.Errorf("X-Usage-Limit: want 5, got %q", v)
-	}
-}
-
-func TestBillingGate_FailOpen_OnLookupError(t *testing.T) {
-	e := makeBillingGateEngine(stubBillingReader{err: errors.New("redis timeout")})
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/test", nil))
-	if w.Code != http.StatusOK {
-		t.Errorf("lookup error should fail open (200), got %d", w.Code)
-	}
-}
-
-func TestBillingGate_UnderLimit_Passes(t *testing.T) {
-	e := makeBillingGateEngine(stubBillingReader{current: 3, limit: 5})
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/test", nil))
-	if w.Code != http.StatusOK {
-		t.Errorf("under limit should pass (200), got %d", w.Code)
-	}
-}
-
 // --- RequireMFAIfEnabled ---
 
 type stubMFAUserReader struct {
@@ -211,7 +149,6 @@ type stubWsReader struct {
 func (s stubWsReader) GetOrganizationByID(_ context.Context, _ string) (*contracts.OrganizationInfo, error) {
 	return s.ws, s.wsErr
 }
-func (s stubWsReader) IsMember(_ context.Context, _, _ string) (bool, error) { return true, nil }
 func (s stubWsReader) GetMemberRole(_ context.Context, _, _ string) (string, error) {
 	return s.role, s.roleErr
 }

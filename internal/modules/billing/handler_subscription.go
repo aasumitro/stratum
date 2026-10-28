@@ -341,6 +341,7 @@ func (h *handler) extendSubscription(c *gin.Context) {
 // @Security     BearerAuth
 // @Param        organizationID  path      string  true  "Organization ID"
 // @Success      200             {object}  response.Payload{data=invoiceRecord}
+// @Failure      422             {object}  response.Payload  "not trialing, or a cancellation is scheduled (CANCELLATION_SCHEDULED)"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/billing/activate [post]
@@ -358,13 +359,16 @@ func (h *handler) activateTrialNow(c *gin.Context) {
 }
 
 // resumeSubscription godoc
-// @Summary      Resume a cancelled subscription
-// @Description  Owner only.
+// @Summary      Resume a cancelled or expired subscription
+// @Description  Owner only. Issues an invoice for the next period and returns the subscription
+// @Description  unchanged; it reactivates once that invoice is paid. A repeat request while the
+// @Description  invoice is still unpaid reuses it instead of issuing another.
 // @Tags         billing
 // @Produce      json
 // @Security     BearerAuth
 // @Param        organizationID  path      string  true  "Organization ID"
 // @Success      200             {object}  response.Payload{data=subscriptionRecord}
+// @Failure      422             {object}  response.Payload  "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE)"
 // @Failure      403             {object}  response.Payload  "owner role required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/billing/resume [post]

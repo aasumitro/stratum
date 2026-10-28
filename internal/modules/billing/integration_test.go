@@ -14,6 +14,7 @@ import (
 	"uuid"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -36,11 +37,13 @@ func (stubRefReader) GetCountryTaxRate(_ context.Context, _ string) (int, error)
 // tests: it records every SuspendOrganization call and can be told to fail
 // its first N calls before succeeding, to simulate a failed attempt
 // followed by a successful redelivery. UnsuspendOrganization calls are
-// recorded too (never failed), for the webhook reactivation tests.
+// recorded too (never failed), with the reasons they were allowed to lift,
+// for the webhook reactivation tests.
 type stubOrgSuspender struct {
-	failCount   int
-	calls       []struct{ orgID, reason string }
-	unsuspended []string
+	failCount        int
+	calls            []struct{ orgID, reason string }
+	unsuspended      []string
+	unsuspendReasons [][]string
 }
 
 func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason string) error {
@@ -52,8 +55,9 @@ func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason 
 	return nil
 }
 
-func (s *stubOrgSuspender) UnsuspendOrganization(_ context.Context, orgID string) error {
+func (s *stubOrgSuspender) UnsuspendOrganization(_ context.Context, orgID string, reasons []string) error {
 	s.unsuspended = append(s.unsuspended, orgID)
+	s.unsuspendReasons = append(s.unsuspendReasons, reasons)
 	return nil
 }
 
@@ -406,7 +410,10 @@ func TestIntegration_SecondOrganization_WithCart_AddonsAndCouponOnFirstInvoice(t
 
 // --- Cancel ---
 
-func TestIntegration_CancelSubscription_Active(t *testing.T) {
+// TestIntegration_CancelSubscription_Trialing_Schedules: a trial cancel is
+// scheduled like every other — the subscription stays trialing, with full
+// access, until trial_end, and the 'scheduled' history row takes effect then.
+func TestIntegration_CancelSubscription_Trialing_Schedules(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_billing_cancel_user"
@@ -418,6 +425,7 @@ func TestIntegration_CancelSubscription_Active(t *testing.T) {
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
+	subID := getSubscriptionID(pool, orgID)
 
 	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
 	w := httptest.NewRecorder()
@@ -427,11 +435,203 @@ func TestIntegration_CancelSubscription_Active(t *testing.T) {
 	}
 
 	data := getSubscriptionData(t, e, orgID)
-	if data["status"] != "cancelled" {
-		t.Errorf("after cancel: want status=cancelled, got %v", data["status"])
+	if data["status"] != "trialing" {
+		t.Errorf("after cancel: want status=trialing until trial_end, got %v", data["status"])
+	}
+	if data["scheduled_cancel_at"] == nil {
+		t.Error("after cancel: want scheduled_cancel_at set")
+	}
+
+	var trialEnd, effectiveAt time.Time
+	var phase string
+	if err := pool.QueryRow(t.Context(), `
+		SELECT s.trial_end, h.effective_at, h.phase
+		FROM billing.subscriptions s
+		JOIN billing.subscription_history h ON h.subscription_id = s.id AND h.action = 'cancel'
+		WHERE s.id = $1`, subID).Scan(&trialEnd, &effectiveAt, &phase); err != nil {
+		t.Fatalf("read cancel history: %v", err)
+	}
+	if phase != "scheduled" || !effectiveAt.Equal(trialEnd) {
+		t.Errorf("want one 'scheduled' cancel row effective at trial_end %s, got phase=%q effective_at=%s",
+			trialEnd, phase, effectiveAt)
 	}
 }
 
+// TestIntegration_CancelSubscription_Trialing_AppliesAtTrialEnd: once the
+// trial ends unpaid, the trial-end check cancels the subscription, consumes
+// the schedule, and suspends the organization.
+func TestIntegration_CancelSubscription_Trialing_AppliesAtTrialEnd(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancel_trialend_user"
+		orgID = "00000000-0000-0000-0000-000000000b28"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	suspender := &stubOrgSuspender{}
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET trial_end = now() - interval '1 minute', period_end = now() - interval '1 minute'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("end the trial: %v", err)
+	}
+	var status string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	if status != "trialing" {
+		t.Fatalf("before the trial-end check: want status=trialing, got %q", status)
+	}
+
+	trialEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, trialEnd, isTrial)); err != nil {
+		t.Fatalf("trial-end check: %v", err)
+	}
+
+	var scheduledCancelAt *time.Time
+	pool.QueryRow(t.Context(), `SELECT status, scheduled_cancel_at FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &scheduledCancelAt)
+	if status != "cancelled" || scheduledCancelAt != nil {
+		t.Errorf("after the trial-end check: want cancelled with the schedule consumed, got status=%q scheduled_cancel_at=%v",
+			status, scheduledCancelAt)
+	}
+	if len(suspender.calls) != 1 || suspender.calls[0].reason != "subscription cancelled" {
+		t.Errorf("want one SuspendOrganization(%q), got %+v", "subscription cancelled", suspender.calls)
+	}
+}
+
+// TestIntegration_CancelSubscription_Repeat_RewritesSchedule: a second
+// cancel request while one is already scheduled succeeds and writes a new
+// 'scheduled' history row (latest wins) instead of failing.
+func TestIntegration_CancelSubscription_Repeat_RewritesSchedule(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_cancel_repeat_user"
+		orgID = "00000000-0000-0000-0000-000000000b29"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
+	for i := range 2 {
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
+		if w.Code != http.StatusOK {
+			t.Fatalf("cancel #%d: want 200, got %d: %s", i+1, w.Code, w.Body)
+		}
+	}
+
+	var scheduledRows int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'cancel' AND phase = 'scheduled'`,
+		subID).Scan(&scheduledRows)
+	if scheduledRows != 2 {
+		t.Errorf("want 2 'scheduled' cancel rows after two requests, got %d", scheduledRows)
+	}
+}
+
+// responseErrorCode returns the apperr code carried by an error response.
+func responseErrorCode(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Status struct {
+			Code string `json:"code"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response %q: %v", w.Body.String(), err)
+	}
+	return body.Status.Code
+}
+
+// TestIntegration_TrialWithScheduledCancel_GuardsReductionsAndActivate:
+// while a trial has a cancellation scheduled, a downgrade, an addon
+// decrease, a detach and activate-now are each refused with 422
+// CANCELLATION_SCHEDULED and change nothing; an addon increase still
+// applies immediately, as it does on any trial.
+func TestIntegration_TrialWithScheduledCancel_GuardsReductionsAndActivate(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_trial_cancel_guard_user"
+		orgID = "00000000-0000-0000-0000-000000000b2b"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+		encodeOrganizationCreatedEventWithPlan(orgID, user, "growth", "monthly")); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	if _, err := pool.Exec(t.Context(),
+		`INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity) VALUES ($1, 'extra-seat', 3)`, subID); err != nil {
+		t.Fatalf("seed addon: %v", err)
+	}
+
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	refused := []struct {
+		name, method, path, body string
+	}{
+		{"downgrade", http.MethodPost, "/downgrade", `{"plan":"solo","cycle":"monthly"}`},
+		{"addon decrease", http.MethodPost, "/addons", `{"addon_id":"extra-seat","quantity":1}`},
+		{"addon detach", http.MethodDelete, "/addons/extra-seat", ""},
+		{"activate now", http.MethodPost, "/activate", ""},
+	}
+	for _, c := range refused {
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, httpserver.JSONTestRequest(c.method, billingURL(orgID)+c.path, c.body))
+		if w.Code != http.StatusUnprocessableEntity || responseErrorCode(t, w) != "CANCELLATION_SCHEDULED" {
+			t.Errorf("%s: want 422 CANCELLATION_SCHEDULED, got %d: %s", c.name, w.Code, w.Body)
+		}
+	}
+
+	var plan, status string
+	var quantity, invoiceCount int
+	pool.QueryRow(t.Context(), `SELECT plan, status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&plan, &status)
+	pool.QueryRow(t.Context(),
+		`SELECT quantity FROM billing.subscription_addons WHERE subscription_id = $1 AND addon_id = 'extra-seat'`, subID).Scan(&quantity)
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, subID).Scan(&invoiceCount)
+	if plan != "growth" || status != "trialing" || quantity != 3 || invoiceCount != 0 {
+		t.Errorf("refused requests must change nothing: got plan=%q status=%q addon quantity=%d invoices=%d",
+			plan, status, quantity, invoiceCount)
+	}
+
+	w = httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/addons", `{"addon_id":"extra-seat","quantity":5}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("addon increase: want 200, got %d: %s", w.Code, w.Body)
+	}
+	pool.QueryRow(t.Context(),
+		`SELECT quantity FROM billing.subscription_addons WHERE subscription_id = $1 AND addon_id = 'extra-seat'`, subID).Scan(&quantity)
+	if quantity != 5 {
+		t.Errorf("addon increase on a trial: want quantity 5 applied immediately, got %d", quantity)
+	}
+}
+
+// TestIntegration_CancelSubscription_AlreadyCancelled: a subscription whose
+// cancellation already took effect cannot be cancelled again.
 func TestIntegration_CancelSubscription_AlreadyCancelled(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -444,14 +644,16 @@ func TestIntegration_CancelSubscription_AlreadyCancelled(t *testing.T) {
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'cancelled' WHERE id = $1`, getSubscriptionID(pool, orgID)); err != nil {
+		t.Fatalf("force cancelled: %v", err)
+	}
 
 	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
-
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
-	if w.Code == http.StatusOK {
-		t.Errorf("double cancel should fail, got 200")
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("cancel on a cancelled subscription: want 422, got %d: %s", w.Code, w.Body)
 	}
 }
 
@@ -580,6 +782,68 @@ func TestIntegration_CancelSubscription_InvalidReasonRejected(t *testing.T) {
 // *trialing* subscription (provisionSubscription always trials a user's
 // first-ever organization) — must resume back into "trialing", not "active",
 // since the trial window is still open and no invoice was ever created.
+// forceActive turns a freshly provisioned trial into an active subscription
+// whose current period ends at periodEnd (an SQL interval relative to now).
+func forceActive(t *testing.T, pool *pgxpool.Pool, subID, periodEnd string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'active', trial_end = NULL,
+		    period_start = now() - interval '1 day', period_end = now() + $2::interval
+		WHERE id = $1`, subID, periodEnd); err != nil {
+		t.Fatalf("force active: %v", err)
+	}
+}
+
+// pendingInvoiceIDs returns subID's pending invoices of kind.
+func pendingInvoiceIDs(t *testing.T, pool *pgxpool.Pool, subID, kind string) []string {
+	t.Helper()
+	rows, err := pool.Query(t.Context(),
+		`SELECT id FROM billing.invoices WHERE subscription_id = $1 AND kind = $2 AND status = 'pending'`, subID, kind)
+	if err != nil {
+		t.Fatalf("list pending invoices: %v", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan invoice id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// queuedPayloads returns the outbox payloads queued for orgID under
+// routingKey, oldest first.
+func queuedPayloads(t *testing.T, pool *pgxpool.Pool, routingKey, orgID string) [][]byte {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), `
+		SELECT payload FROM messaging.outbox
+		WHERE routing_key = $1 AND payload->>'org_id' = $2
+		ORDER BY created_at, id`, routingKey, orgID)
+	if err != nil {
+		t.Fatalf("read outbox: %v", err)
+	}
+	defer rows.Close()
+	var out [][]byte
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("scan outbox payload: %v", err)
+		}
+		out = append(out, payload)
+	}
+	return out
+}
+
+// TestIntegration_ResumeSubscription_Cancelled covers a cancellation that
+// took effect, then Resume: Resume issues one renewal invoice and leaves the
+// subscription cancelled (a repeat request reuses that invoice); paying it
+// reactivates with a fresh period, clears the consumed schedule, unsuspends
+// the organization, and the next renewal is invoiced normally instead of
+// cancelling again.
 func TestIntegration_ResumeSubscription_Cancelled(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -588,33 +852,86 @@ func TestIntegration_ResumeSubscription_Cancelled(t *testing.T) {
 	)
 	setupBillingTest(t, pool, orgID)
 
-	mod := billing.NewModuleForTest(pool, nil)
+	suspender := &stubOrgSuspender{}
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
+	subID := getSubscriptionID(pool, orgID)
+	forceActive(t, pool, subID, "20 days")
 
-	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
-
+	rls := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
+	rls.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 	if w.Code != http.StatusOK {
-		t.Fatalf("resume cancelled: want 200, got %d: %s", w.Code, w.Body)
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET period_end = now() - interval '1 minute' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("end the period: %v", err)
+	}
+	end, _ := getSubscriptionExpectedEnd(pool, subID)
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, end)); err != nil {
+		t.Fatalf("end-of-period check: %v", err)
 	}
 
-	data := getSubscriptionData(t, e, orgID)
-	if data["status"] != "trialing" {
-		t.Errorf("after resume within trial window: want status=trialing, got %v", data["status"])
+	pay := billing.NewWebhookModuleEngineWithSuspender(pool, user, orgID, suspender)
+	for i := range 2 {
+		w := httptest.NewRecorder()
+		pay.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("resume #%d: want 200, got %d: %s", i+1, w.Code, w.Body)
+		}
 	}
-	if data["trial_end"] == nil || data["trial_end"] == "" {
-		t.Error("after resume within trial window: want trial_end still set")
+	var status string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	if status != "cancelled" {
+		t.Errorf("before payment: want status to stay cancelled, got %q", status)
+	}
+	pending := pendingInvoiceIDs(t, pool, subID, "subscription")
+	if len(pending) != 1 {
+		t.Fatalf("after two Resume requests: want exactly one pending renewal invoice, got %d", len(pending))
+	}
+
+	var amount int64
+	pool.QueryRow(t.Context(), `SELECT amount_cents FROM billing.invoices WHERE id = $1`, pending[0]).Scan(&amount)
+	seedPaymentLink(pool, pending[0], "cs_resume_d06", "stripe", "USD", amount)
+	postPaidStripeWebhook(t, pay, "cs_resume_d06")
+
+	var scheduledCancelAt *time.Time
+	var periodEnd time.Time
+	pool.QueryRow(t.Context(), `SELECT status, scheduled_cancel_at, period_end FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &scheduledCancelAt, &periodEnd)
+	if status != "active" || scheduledCancelAt != nil {
+		t.Errorf("after payment: want active with no cancellation schedule, got status=%q scheduled_cancel_at=%v", status, scheduledCancelAt)
+	}
+	if want := time.Now().AddDate(0, 1, 0); periodEnd.Sub(want).Abs() > time.Minute {
+		t.Errorf("after payment: want a fresh period ending ~%s, got %s", want, periodEnd)
+	}
+	if !slices.Contains(suspender.unsuspended, orgID) {
+		t.Errorf("after payment: want the organization unsuspended, got %v", suspender.unsuspended)
+	}
+
+	// The reactivation queued the next renewal; delivering its auto-invoice
+	// must issue a renewal invoice, not cancel the subscription again.
+	queued := queuedPayloads(t, pool, events.RoutingKeySubscriptionAutoInvoice, orgID)
+	if len(queued) == 0 {
+		t.Fatal("after payment: want an auto-invoice queued for the new period")
+	}
+	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), queued[len(queued)-1])
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	if status != "active" {
+		t.Errorf("next renewal: want status active, got %q", status)
+	}
+	if n := len(pendingInvoiceIDs(t, pool, subID, "subscription")); n != 1 {
+		t.Errorf("next renewal: want one pending renewal invoice, got %d", n)
 	}
 }
 
-// TestIntegration_ResumeSubscription_CancelledAfterTrialExpired covers the
-// other branch: a subscription cancelled once its trial window has already
-// passed resumes into "active" (the pre-existing behavior, unchanged).
-func TestIntegration_ResumeSubscription_CancelledAfterTrialExpired(t *testing.T) {
+// TestIntegration_ResumeSubscription_CancelledTrial_InvoicesFirst: a trial
+// cancelled and ended unpaid resumes only through a paid invoice — no free
+// period — and the reactivated subscription survives a later expiry check.
+func TestIntegration_ResumeSubscription_CancelledTrial_InvoicesFirst(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_billing_resume_expiredtrial_user"
@@ -622,42 +939,177 @@ func TestIntegration_ResumeSubscription_CancelledAfterTrialExpired(t *testing.T)
 	)
 	setupBillingTest(t, pool, orgID)
 
-	mod := billing.NewModuleForTest(pool, nil)
+	suspender := &stubOrgSuspender{}
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, suspender, pool)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
 	subID := getSubscriptionID(pool, orgID)
 
-	// Force the trial window into the past, as if it had genuinely expired
-	// before the subscription was cancelled.
-	pool.Exec(t.Context(), `UPDATE billing.subscriptions SET trial_end = now() - interval '1 day' WHERE id = $1`, subID)
-
-	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
-
+	rls := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
 	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
+	rls.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
 	if w.Code != http.StatusOK {
-		t.Fatalf("resume cancelled: want 200, got %d: %s", w.Code, w.Body)
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET trial_end = now() - interval '1 minute', period_end = now() - interval '1 minute'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("end the trial: %v", err)
+	}
+	trialEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, trialEnd, isTrial)); err != nil {
+		t.Fatalf("trial-end check: %v", err)
 	}
 
-	data := getSubscriptionData(t, e, orgID)
-	if data["status"] != "active" {
-		t.Errorf("after resume with expired trial: want status=active, got %v", data["status"])
+	pay := billing.NewWebhookModuleEngineWithSuspender(pool, user, orgID, suspender)
+	w = httptest.NewRecorder()
+	pay.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume: want 200, got %d: %s", w.Code, w.Body)
 	}
-	if data["trial_end"] != nil {
-		t.Errorf("trial_end must be cleared on resume, got %v", data["trial_end"])
+	var status string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	if status == "active" {
+		t.Fatal("resume after an unpaid trial: want no access before the invoice is paid, got active")
+	}
+	pending := pendingInvoiceIDs(t, pool, subID, "subscription")
+	if len(pending) != 1 {
+		t.Fatalf("resume after an unpaid trial: want one pending invoice, got %d", len(pending))
 	}
 
-	var periodEnd time.Time
-	pool.QueryRow(t.Context(), `SELECT period_end FROM billing.subscriptions WHERE id = $1`, subID).Scan(&periodEnd)
+	var amount int64
+	pool.QueryRow(t.Context(), `SELECT amount_cents FROM billing.invoices WHERE id = $1`, pending[0]).Scan(&amount)
+	seedPaymentLink(pool, pending[0], "cs_resume_d12", "stripe", "USD", amount)
+	postPaidStripeWebhook(t, pay, "cs_resume_d12")
+
+	var trialEndAfter *time.Time
+	pool.QueryRow(t.Context(), `SELECT status, trial_end FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status, &trialEndAfter)
+	if status != "active" || trialEndAfter != nil {
+		t.Fatalf("after payment: want active with trial_end cleared, got status=%q trial_end=%v", status, trialEndAfter)
+	}
+
+	periodEnd, _ := getSubscriptionExpectedEnd(pool, subID)
 	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, periodEnd)); err != nil {
-		t.Fatalf("HandleSubscriptionCheck (second): %v", err)
+		t.Fatalf("second check: %v", err)
 	}
-	var statusAfterSecondCheck string
-	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&statusAfterSecondCheck)
-	if statusAfterSecondCheck != "active" {
-		t.Errorf("after second expireIfDue check: want status=active (must not re-expire), got %q", statusAfterSecondCheck)
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	if status != "active" {
+		t.Errorf("after a second expiry check inside the paid period: want active, got %q", status)
+	}
+}
+
+// TestIntegration_ResumeSubscription_ConcurrentRequests_OneInvoice: two
+// Resume requests racing on an expired subscription serialize on the row
+// lock, and the second reuses the first one's invoice.
+func TestIntegration_ResumeSubscription_ConcurrentRequests_OneInvoice(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_resume_race_user"
+		orgID = "00000000-0000-0000-0000-000000000b2c"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'expired', trial_end = NULL, period_end = now() - interval '1 day'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("force expired: %v", err)
+	}
+
+	e := billing.NewModuleEngine(pool, user, orgID, stubRefReader{})
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i := range codes {
+		wg.Go(func() {
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
+			codes[i] = w.Code
+		})
+	}
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Errorf("resume #%d: want 200, got %d", i+1, code)
+		}
+	}
+	if n := len(pendingInvoiceIDs(t, pool, subID, "subscription")); n != 1 {
+		t.Errorf("two concurrent Resume requests: want exactly one pending invoice, got %d", n)
+	}
+}
+
+// TestIntegration_Webhook_PastDueActivationPaid_Reactivates: an expired
+// checkout past-dues a subscription on its activation invoice; paying that
+// invoice on a second link returns it to active with the period untouched.
+// With the end now within 3 days — after the renewal auto-invoice already
+// skipped the past_due subscription — the payment also queues an
+// auto-invoice, which issues the renewal invoice when delivered.
+func TestIntegration_Webhook_PastDueActivationPaid_Reactivates(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_webhook_pastdue_activation_user"
+		orgID = "00000000-0000-0000-0000-000000000b2d"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	forceActive(t, pool, subID, "2 days")
+	var invID string
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		VALUES ($1, 900, 'USD', 'activation') RETURNING id`, subID).Scan(&invID); err != nil {
+		t.Fatalf("seed activation invoice: %v", err)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	seedPaymentLink(pool, invID, "cs_b2d_a", "stripe", "USD", 900)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
+		`{"type":"checkout.session.expired","data":{"object":{"id":"cs_b2d_a"}}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expired-checkout webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var status string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	if status != "past_due" {
+		t.Fatalf("after the expired checkout: want past_due, got %q", status)
+	}
+
+	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+	periodEndBefore, _ := getSubscriptionExpectedEnd(pool, subID)
+	seedPaymentLink(pool, invID, "cs_b2d_b", "stripe", "USD", 900)
+	postPaidStripeWebhook(t, e, "cs_b2d_b")
+
+	var invStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	if invStatus != "paid" || status != "active" {
+		t.Errorf("after paying the activation: want invoice paid and subscription active, got invoice=%q subscription=%q", invStatus, status)
+	}
+	if periodEndAfter, _ := getSubscriptionExpectedEnd(pool, subID); !periodEndAfter.Equal(periodEndBefore) {
+		t.Errorf("paying an activation must not move the period: %s -> %s", periodEndBefore, periodEndAfter)
+	}
+
+	queued := queuedPayloads(t, pool, events.RoutingKeySubscriptionAutoInvoice, orgID)
+	if len(queued) != 1 {
+		t.Fatalf("after paying the activation: want one auto-invoice queued, got %d", len(queued))
+	}
+	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), queued[0])
+	if n := len(pendingInvoiceIDs(t, pool, subID, "subscription")); n != 1 {
+		t.Errorf("after delivering the auto-invoice: want one pending renewal invoice, got %d", n)
 	}
 }
 
@@ -859,13 +1311,367 @@ func TestIntegration_ChangePlan_CancelledRejected(t *testing.T) {
 		t.Fatalf("provision: %v", err)
 	}
 
-	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
+	// A cancel request only schedules; the subscription reaches
+	// "cancelled" when the schedule applies at period end.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'cancelled' WHERE id = $1`, getSubscriptionID(pool, orgID)); err != nil {
+		t.Fatalf("force cancelled: %v", err)
+	}
 
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan", `{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Errorf("change plan while cancelled: want 422, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// upgradeToGrowth sends PATCH /plan (growth, monthly) through a real-RLS
+// engine and fails the test unless it returns 200.
+func upgradeToGrowth(t *testing.T, pool *pgxpool.Pool, user, orgID string) {
+	t.Helper()
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan",
+		`{"plan":"growth","cycle":"monthly","terms_agreed":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("change plan: want 200, got %d: %s", w.Code, w.Body)
+	}
+}
+
+// queuedCheckEnd decodes the ExpectedEnd carried by an outbox payload.
+func queuedCheckEnd(t *testing.T, payload []byte) time.Time {
+	t.Helper()
+	var env struct {
+		Data events.SubscriptionCheck `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("decode queued check: %v", err)
+	}
+	return env.Data.ExpectedEnd
+}
+
+// TestIntegration_ChangePlan_Upgrade_ReschedulesRenewal: an upgrade pulls
+// period_end in; the messages queued for the old end are stale, and the plan
+// change queues the whole renewal sequence for the new end, whose
+// auto-invoice issues the renewal invoice when delivered.
+func TestIntegration_ChangePlan_Upgrade_ReschedulesRenewal(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_reschedule_user"
+		orgID = "00000000-0000-0000-0000-000000000b2e"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	forceActive(t, pool, subID, "27 days")
+	oldEnd, _ := getSubscriptionExpectedEnd(pool, subID)
+	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+
+	upgradeToGrowth(t, pool, user, orgID)
+	newEnd, _ := getSubscriptionExpectedEnd(pool, subID)
+	if !newEnd.Before(oldEnd) {
+		t.Fatalf("precondition: an upgrade must pull period_end in, got %s -> %s", oldEnd, newEnd)
+	}
+
+	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, oldEnd)); err != nil {
+		t.Fatalf("stale auto-invoice: %v", err)
+	}
+	if n := len(pendingInvoiceIDs(t, pool, subID, "subscription")); n != 0 {
+		t.Fatalf("the auto-invoice for the old end must be stale, got %d renewal invoices", n)
+	}
+
+	for _, key := range []string{events.RoutingKeySubscriptionRemind, events.RoutingKeySubscriptionAutoInvoice, events.RoutingKeySubscriptionCheck} {
+		queued := queuedPayloads(t, pool, key, orgID)
+		if len(queued) != 1 || !queuedCheckEnd(t, queued[0]).Equal(newEnd) {
+			t.Fatalf("%s: want one message for the new end %s, got %d", key, newEnd, len(queued))
+		}
+	}
+	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), queuedPayloads(t, pool, events.RoutingKeySubscriptionAutoInvoice, orgID)[0])
+	if n := len(pendingInvoiceIDs(t, pool, subID, "subscription")); n != 1 {
+		t.Errorf("delivering the requeued auto-invoice: want one renewal invoice, got %d", n)
+	}
+}
+
+// TestIntegration_ChangePlan_NewEndWithinThreeDays_InvoicesNow: when the
+// prorated end lands inside the 3-day renewal window, the auto-invoice is
+// queued to run at once instead of being dropped.
+func TestIntegration_ChangePlan_NewEndWithinThreeDays_InvoicesNow(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_nearend_user"
+		orgID = "00000000-0000-0000-0000-000000000b2f"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	forceActive(t, pool, subID, "4 days")
+	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+
+	upgradeToGrowth(t, pool, user, orgID)
+	newEnd, _ := getSubscriptionExpectedEnd(pool, subID)
+	if !newEnd.Before(time.Now().AddDate(0, 0, 3)) {
+		t.Fatalf("precondition: want the prorated end within 3 days, got %s", newEnd)
+	}
+
+	var notBefore time.Time
+	if err := pool.QueryRow(t.Context(),
+		`SELECT not_before FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+		events.RoutingKeySubscriptionAutoInvoice, orgID).Scan(&notBefore); err != nil {
+		t.Fatalf("want an auto-invoice queued for the near end: %v", err)
+	}
+	if time.Until(notBefore) > time.Minute {
+		t.Errorf("want the auto-invoice due now, got not_before %s", notBefore)
+	}
+	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), queuedPayloads(t, pool, events.RoutingKeySubscriptionAutoInvoice, orgID)[0])
+	if n := len(pendingInvoiceIDs(t, pool, subID, "subscription")); n != 1 {
+		t.Errorf("want the renewal invoice issued now, got %d", n)
+	}
+}
+
+// TestIntegration_ChangePlan_Expired_StaysExpired: a plan change on an
+// expired subscription changes plan/cycle only — no reactivation, no
+// invoice; Resume bills the new plan.
+func TestIntegration_ChangePlan_Expired_StaysExpired(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_expired_user"
+		orgID = "00000000-0000-0000-0000-000000000b30"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'expired', trial_end = NULL, period_end = now() - interval '1 hour'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("force expired: %v", err)
+	}
+	endBefore, _ := getSubscriptionExpectedEnd(pool, subID)
+
+	upgradeToGrowth(t, pool, user, orgID)
+
+	var status, plan string
+	pool.QueryRow(t.Context(), `SELECT status, plan FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status, &plan)
+	if status != "expired" || plan != "growth" {
+		t.Errorf("want plan=growth with status still expired, got plan=%q status=%q", plan, status)
+	}
+	if endAfter, _ := getSubscriptionExpectedEnd(pool, subID); !endAfter.Equal(endBefore) {
+		t.Errorf("want period_end untouched, got %s -> %s", endBefore, endAfter)
+	}
+	var pendingCount int
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1 AND status = 'pending'`, subID).Scan(&pendingCount)
+	if pendingCount != 0 {
+		t.Errorf("want no invoice from a plan change on an expired subscription, got %d", pendingCount)
+	}
+}
+
+// TestIntegration_ChangePlan_UnpaidActivation_RestartsPeriod: with the
+// first period still unpaid there is no paid value to prorate — the period
+// restarts now on the new plan, the activation is reissued at the new price
+// (still an activation), and paying it leaves the period alone.
+func TestIntegration_ChangePlan_UnpaidActivation_RestartsPeriod(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_unpaid_activation_user"
+		orgID = "00000000-0000-0000-0000-000000000b31"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	forceActive(t, pool, subID, "20 days")
+	var oldActivation string
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		VALUES ($1, 900, 'USD', 'activation') RETURNING id`, subID).Scan(&oldActivation); err != nil {
+		t.Fatalf("seed unpaid activation: %v", err)
+	}
+
+	upgradeToGrowth(t, pool, user, orgID)
+
+	var status string
+	var periodStart, periodEnd time.Time
+	pool.QueryRow(t.Context(), `SELECT status, period_start, period_end FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &periodStart, &periodEnd)
+	if status != "active" {
+		t.Errorf("want status untouched (active), got %q", status)
+	}
+	if time.Since(periodStart).Abs() > time.Minute || periodEnd.Sub(periodStart.AddDate(0, 1, 0)).Abs() > time.Second {
+		t.Errorf("want the period restarted now for one month, got %s -> %s", periodStart, periodEnd)
+	}
+	var oldStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, oldActivation).Scan(&oldStatus)
+	if oldStatus != "void" {
+		t.Errorf("want the old activation voided, got %q", oldStatus)
+	}
+	reissued := pendingInvoiceIDs(t, pool, subID, "activation")
+	if len(reissued) != 1 || len(pendingInvoiceIDs(t, pool, subID, "subscription")) != 0 {
+		t.Fatalf("want exactly one pending activation reissued and no renewal, got activations=%v", reissued)
+	}
+	var amount int64
+	pool.QueryRow(t.Context(), `SELECT amount_cents FROM billing.invoices WHERE id = $1`, reissued[0]).Scan(&amount)
+	if amount != 2900 {
+		t.Errorf("want the reissued activation at the growth price (2900), got %d", amount)
+	}
+
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	seedPaymentLink(pool, reissued[0], "cs_b31", "stripe", "USD", amount)
+	postPaidStripeWebhook(t, e, "cs_b31")
+	if after, _ := getSubscriptionExpectedEnd(pool, subID); !after.Equal(periodEnd) {
+		t.Errorf("paying the reissued activation must not move the period: %s -> %s", periodEnd, after)
+	}
+}
+
+// TestIntegration_ChangePlan_DropsPendingExtensionAndAddonIncrease: both
+// additive invoices were priced against the old period, so a plan change
+// voids them without reissuing anything, and the addon row stops waiting on
+// its voided invoice.
+func TestIntegration_ChangePlan_DropsPendingExtensionAndAddonIncrease(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_drop_additive_user"
+		orgID = "00000000-0000-0000-0000-000000000b32"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	forceActive(t, pool, subID, "20 days")
+	var extensionID, addonInvoiceID string
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind, extension_months)
+		VALUES ($1, 900, 'USD', 'extension', 1) RETURNING id`, subID).Scan(&extensionID); err != nil {
+		t.Fatalf("seed extension invoice: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		VALUES ($1, 300, 'USD', 'addon_increase') RETURNING id`, subID).Scan(&addonInvoiceID); err != nil {
+		t.Fatalf("seed addon-increase invoice: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity, pending_quantity, pending_invoice_id)
+		VALUES ($1, 'extra-seat', 1, 3, $2)`, subID, addonInvoiceID); err != nil {
+		t.Fatalf("seed pending addon increase: %v", err)
+	}
+
+	upgradeToGrowth(t, pool, user, orgID)
+
+	for _, id := range []string{extensionID, addonInvoiceID} {
+		var status string
+		pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, id).Scan(&status)
+		if status != "void" {
+			t.Errorf("invoice %s: want void, got %q", id, status)
+		}
+	}
+	var pendingQuantity *int
+	var pendingInvoiceID *string
+	pool.QueryRow(t.Context(), `
+		SELECT pending_quantity, pending_invoice_id::text FROM billing.subscription_addons
+		WHERE subscription_id = $1 AND addon_id = 'extra-seat'`, subID).Scan(&pendingQuantity, &pendingInvoiceID)
+	if pendingQuantity != nil || pendingInvoiceID != nil {
+		t.Errorf("want the addon's pending increase cleared, got quantity=%v invoice=%v", pendingQuantity, pendingInvoiceID)
+	}
+	var pendingCount int
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1 AND status = 'pending'`, subID).Scan(&pendingCount)
+	if pendingCount != 0 {
+		t.Errorf("want nothing reissued for additive invoices, got %d pending", pendingCount)
+	}
+}
+
+// previewNewPeriodEnd returns new_period_end from GET /preview for a plan
+// change, or nil when the preview omits it.
+func previewNewPeriodEnd(t *testing.T, pool *pgxpool.Pool, user, orgID, plan, cycle string) *time.Time {
+	t.Helper()
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, billingURL(orgID)+"/preview?plan="+plan+"&cycle="+cycle, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			NewPeriodEnd *time.Time `json:"new_period_end"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	return resp.Data.NewPeriodEnd
+}
+
+// TestIntegration_PreviewInvoice_PlanChangePeriodMatchesChange: the preview
+// shows the period the real change writes — none for an expired
+// subscription, a restart for an unpaid activation, the prorated end
+// otherwise.
+func TestIntegration_PreviewInvoice_PlanChangePeriodMatchesChange(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_preview_period_user"
+		orgID = "00000000-0000-0000-0000-000000000b33"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'expired', trial_end = NULL, period_end = now() - interval '1 hour'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("force expired: %v", err)
+	}
+	if got := previewNewPeriodEnd(t, pool, user, orgID, "growth", "monthly"); got != nil {
+		t.Errorf("expired: want no new_period_end, got %s", got)
+	}
+
+	forceActive(t, pool, subID, "20 days")
+	var activationID string
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		VALUES ($1, 900, 'USD', 'activation') RETURNING id`, subID).Scan(&activationID); err != nil {
+		t.Fatalf("seed unpaid activation: %v", err)
+	}
+	if got := previewNewPeriodEnd(t, pool, user, orgID, "growth", "monthly"); got == nil ||
+		got.Sub(time.Now().AddDate(0, 1, 0)).Abs() > time.Minute {
+		t.Errorf("unpaid activation: want new_period_end ~one month from now, got %v", got)
+	}
+
+	if _, err := pool.Exec(t.Context(), `UPDATE billing.invoices SET status = 'paid', paid_at = now() WHERE id = $1`, activationID); err != nil {
+		t.Fatalf("pay activation: %v", err)
+	}
+	previewed := previewNewPeriodEnd(t, pool, user, orgID, "growth", "monthly")
+	if previewed == nil {
+		t.Fatal("active: want a prorated new_period_end")
+	}
+	upgradeToGrowth(t, pool, user, orgID)
+	if written, _ := getSubscriptionExpectedEnd(pool, subID); written.Sub(*previewed).Abs() > time.Minute {
+		t.Errorf("active: preview promised %s, the change wrote %s", previewed, written)
 	}
 }
 
@@ -1149,6 +1955,78 @@ func TestIntegration_StripeWebhook_MarksInvoicePaid(t *testing.T) {
 	}
 }
 
+// TestIntegration_StripeWebhook_AsyncPaymentSucceeded_MarksInvoicePaid: a
+// delayed-notification payment method reports success through
+// checkout.session.async_payment_succeeded, which must settle the invoice
+// like a completed checkout.
+func TestIntegration_StripeWebhook_AsyncPaymentSucceeded_MarksInvoicePaid(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_stripe_async_ok_user"
+		orgID = "00000000-0000-0000-0000-000000000b35"
+		extID = "cs_async_b35"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	invID := seedInvoice(pool, subID, "USD", 900)
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
+
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
+		`{"type":"checkout.session.async_payment_succeeded","data":{"object":{"id":"`+extID+`","payment_status":"paid"}}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var invStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+	if invStatus != "paid" {
+		t.Errorf("invoice: want paid, got %q", invStatus)
+	}
+}
+
+// TestIntegration_StripeWebhook_AsyncPaymentFailed_FailsLink: the failure
+// counterpart — checkout.session.async_payment_failed marks the payment
+// link failed like an expired checkout does.
+func TestIntegration_StripeWebhook_AsyncPaymentFailed_FailsLink(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_stripe_async_fail_user"
+		orgID = "00000000-0000-0000-0000-000000000b36"
+		extID = "cs_async_b36"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	invID := seedInvoice(pool, subID, "USD", 900)
+	linkID := seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
+
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
+		`{"type":"checkout.session.async_payment_failed","data":{"object":{"id":"`+extID+`","payment_status":"unpaid"}}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var linkStatus, invStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE id = $1`, linkID).Scan(&linkStatus)
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+	if linkStatus != "failed" || invStatus != "pending" {
+		t.Errorf("want link failed and invoice still pending (payable on a new link), got link=%q invoice=%q", linkStatus, invStatus)
+	}
+}
+
 func TestIntegration_XenditWebhook_MarksInvoicePaid(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
@@ -1380,6 +2258,15 @@ func seedExpiredInvoiceState(
 	t *testing.T, pool *pgxpool.Pool, orgID, user, externalID, subStatus, kind string,
 ) (subID, invID string) {
 	t.Helper()
+	return seedClosedInvoiceState(t, pool, orgID, user, externalID, subStatus, kind, "failed")
+}
+
+// seedClosedInvoiceState is seedExpiredInvoiceState for an invoice closed
+// with invStatus ('failed' or 'void').
+func seedClosedInvoiceState(
+	t *testing.T, pool *pgxpool.Pool, orgID, user, externalID, subStatus, kind, invStatus string,
+) (subID, invID string) {
+	t.Helper()
 	mod := billing.NewModuleForTest(pool, nil)
 	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -1387,8 +2274,8 @@ func seedExpiredInvoiceState(
 	subID = getSubscriptionID(pool, orgID)
 	if err := pool.QueryRow(t.Context(), `
 		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind, status)
-		VALUES ($1, 900, 'USD', $2, 'failed') RETURNING id`,
-		subID, kind).Scan(&invID); err != nil {
+		VALUES ($1, 900, 'USD', $2, $3) RETURNING id`,
+		subID, kind, invStatus).Scan(&invID); err != nil {
 		t.Fatalf("seed %s invoice: %v", kind, err)
 	}
 	seedPaymentLink(pool, invID, externalID, "stripe", "USD", 900)
@@ -1481,27 +2368,32 @@ func TestIntegration_Webhook_LatePaidWebhook_AfterExpiry_ReactivatesRenewal(t *t
 }
 
 // TestIntegration_Webhook_LatePaidWebhook_NotRecovered covers the paid
-// webhooks for a failed invoice that must stay unapplied: a failed renewal
-// invoice whose subscription is live again (the owner already reactivated
-// through another invoice), and a failed additive invoice on an expired
-// subscription. Neither flips the invoice, records a payment, changes the
-// subscription, or emits an event.
+// webhooks for a closed invoice that must stay unapplied: a failed or void
+// renewal whose subscription is live (its replacement is already pending),
+// an additive invoice on an ended subscription, and any invoice of a
+// deleted organization — soft-deleted, or already purged. None flips the
+// invoice, records a payment, changes the subscription, or emits an event.
 func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 	cases := []struct {
-		name, orgID, extID, subStatus, kind string
+		name, orgID, extID, subStatus, kind, invStatus string
+		reader                                         contracts.OrganizationReader
 	}{
-		{"failed invoice on non-expired subscription", "00000000-0000-0000-0000-000000000a72", "stripe_sess_a72", "active", "subscription"},
-		{"additive failed invoice on expired subscription", "00000000-0000-0000-0000-000000000a73", "stripe_sess_a73", "expired", "extension"},
+		{"failed invoice on non-expired subscription", "00000000-0000-0000-0000-000000000a72", "stripe_sess_a72", "active", "subscription", "failed", nil},
+		{"additive failed invoice on expired subscription", "00000000-0000-0000-0000-000000000a73", "stripe_sess_a73", "expired", "extension", "failed", nil},
+		{"void invoice on a live subscription", "00000000-0000-0000-0000-000000000a78", "stripe_sess_a78", "active", "subscription", "void", nil},
+		{"additive failed invoice on cancelled subscription", "00000000-0000-0000-0000-000000000a79", "stripe_sess_a79", "cancelled", "addon_increase", "failed", nil},
+		{"activation of a deleted organization", "00000000-0000-0000-0000-000000000a7a", "stripe_sess_a7a", "cancelled", "activation", "failed", orgStatusReader{status: "deleted"}},
+		{"renewal of a purged organization", "00000000-0000-0000-0000-000000000a7b", "stripe_sess_a7b", "expired", "subscription", "failed", orgStatusReader{err: pgx.ErrNoRows}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testPoolBilling(t)
 			user := "integ_billing_wh_late_noop_user_" + tc.orgID[len(tc.orgID)-3:]
 			setupBillingTest(t, pool, tc.orgID)
-			subID, invID := seedExpiredInvoiceState(t, pool, tc.orgID, user, tc.extID, tc.subStatus, tc.kind)
+			subID, invID := seedClosedInvoiceState(t, pool, tc.orgID, user, tc.extID, tc.subStatus, tc.kind, tc.invStatus)
 
 			suspender := &stubOrgSuspender{}
-			postPaidStripeWebhook(t, billing.NewWebhookModuleEngineWithSuspender(pool, user, tc.orgID, suspender), tc.extID)
+			postPaidStripeWebhook(t, billing.NewWebhookModuleEngineWithOrgReader(pool, user, tc.orgID, suspender, tc.reader), tc.extID)
 
 			var invStatus, subStatus string
 			var payments int
@@ -1514,8 +2406,8 @@ func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 			if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments); err != nil {
 				t.Fatalf("count payments: %v", err)
 			}
-			if invStatus != "failed" {
-				t.Errorf("invoice: want status=failed (not recovered), got %q", invStatus)
+			if invStatus != tc.invStatus {
+				t.Errorf("invoice: want status=%s (not recovered), got %q", tc.invStatus, invStatus)
 			}
 			if subStatus != tc.subStatus {
 				t.Errorf("subscription: want status=%s (unchanged), got %q", tc.subStatus, subStatus)
@@ -2732,12 +3624,13 @@ func TestIntegration_HandleSubscriptionAutoInvoice_NoScheduledCancellation_Invoi
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_ScheduledCancellation_SuspendsAndCancels
-// covers the cancellation branch's full success path: SuspendOrganization is
-// called with the subscription's SubjectID, status becomes cancelled, one
-// applied history row is written, SubscriptionCancelled is published, and no
-// invoice/line item/payment link is created.
-func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledCancellation_SuspendsAndCancels(t *testing.T) {
+// TestIntegration_ScheduledCancellation_AutoInvoiceSkips_CheckApplies covers
+// a scheduled cancel across the end of the paid period: the renewal
+// auto-invoice (3 days before the end) changes nothing — no invoice, no
+// suspension, status and schedule untouched — and the end-of-period check
+// then cancels the subscription, consumes the schedule, suspends the
+// organization and publishes SubscriptionCancelled.
+func TestIntegration_ScheduledCancellation_AutoInvoiceSkips_CheckApplies(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_cancel_user"
@@ -2751,66 +3644,82 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledCancellation_Suspend
 		t.Fatalf("provision: %v", err)
 	}
 	subID := getSubscriptionID(pool, orgID)
-	if _, err := pool.Exec(t.Context(),
-		`UPDATE billing.subscriptions SET status = 'active', scheduled_cancel_at = now() WHERE id = $1`, subID); err != nil {
-		t.Fatalf("seed scheduled cancellation: %v", err)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'active', trial_end = NULL,
+		    period_start = now() - interval '27 days', period_end = now() + interval '3 days'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("force active: %v", err)
 	}
+
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: want 200, got %d: %s", w.Code, w.Body)
+	}
+
 	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
-
-	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err != nil {
-		t.Fatalf("want nil error applying a scheduled cancellation, got %v", err)
+	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)); err != nil {
+		t.Fatalf("auto-invoice: want nil error with a cancellation scheduled, got %v", err)
 	}
-
-	if len(suspender.calls) != 1 {
-		t.Fatalf("want SuspendOrganization called once, got %d", len(suspender.calls))
-	}
-	if suspender.calls[0].orgID != orgID || suspender.calls[0].reason != "subscription cancelled" {
-		t.Errorf("want SuspendOrganization(%q, %q), got (%q, %q)", orgID, "subscription cancelled", suspender.calls[0].orgID, suspender.calls[0].reason)
-	}
-
 	var status string
-	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
-	if status != "cancelled" {
-		t.Errorf("want status=cancelled, got %q", status)
+	var scheduledCancelAt *time.Time
+	pool.QueryRow(t.Context(), `SELECT status, scheduled_cancel_at FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &scheduledCancelAt)
+	if status != "active" || scheduledCancelAt == nil {
+		t.Errorf("after the auto-invoice: want active with the schedule kept, got status=%q scheduled_cancel_at=%v", status, scheduledCancelAt)
 	}
-
-	var historyCount int
-	var phase string
-	var effectiveAt *time.Time
-	pool.QueryRow(t.Context(),
-		`SELECT COUNT(*), MAX(phase), MAX(effective_at) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'cancel'`,
-		subID).Scan(&historyCount, &phase, &effectiveAt)
-	if historyCount != 1 || phase != "applied" {
-		t.Errorf("want 1 cancel history row with phase=applied, got count=%d phase=%q", historyCount, phase)
+	if len(suspender.calls) != 0 {
+		t.Errorf("after the auto-invoice: want no suspension inside the paid period, got %+v", suspender.calls)
 	}
-	if effectiveAt == nil {
-		t.Error("want effective_at set on the applied cancel history row")
-	}
-
 	var invoiceCount int
 	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, subID).Scan(&invoiceCount)
 	if invoiceCount != 0 {
-		t.Errorf("want no invoice created for a cancelled subscription, got %d", invoiceCount)
+		t.Errorf("after the auto-invoice: want no renewal invoice for a cancelled period, got %d", invoiceCount)
 	}
 
-	// Read straight from messaging.outbox, where events.Enqueue writes the
-	// row in the same transaction as the change.
+	// The paid period ends; the end-of-period check applies the cancellation.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET period_end = now() - interval '1 minute' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("end the period: %v", err)
+	}
+	end, _ := getSubscriptionExpectedEnd(pool, subID)
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, end)); err != nil {
+		t.Fatalf("end-of-period check: %v", err)
+	}
+
+	pool.QueryRow(t.Context(), `SELECT status, scheduled_cancel_at FROM billing.subscriptions WHERE id = $1`, subID).
+		Scan(&status, &scheduledCancelAt)
+	if status != "cancelled" || scheduledCancelAt != nil {
+		t.Errorf("after the check: want cancelled with the schedule consumed, got status=%q scheduled_cancel_at=%v", status, scheduledCancelAt)
+	}
+	if len(suspender.calls) != 1 || suspender.calls[0].orgID != orgID || suspender.calls[0].reason != "subscription cancelled" {
+		t.Errorf("want one SuspendOrganization(%q, %q), got %+v", orgID, "subscription cancelled", suspender.calls)
+	}
+	var appliedRows int
+	var effectiveAt *time.Time
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*), MAX(effective_at) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'cancel' AND phase = 'applied'`,
+		subID).Scan(&appliedRows, &effectiveAt)
+	if appliedRows != 1 || effectiveAt == nil {
+		t.Errorf("want one applied cancel row with effective_at set, got count=%d effective_at=%v", appliedRows, effectiveAt)
+	}
 	var cancelledEventCount int
 	pool.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
 		events.RoutingKeySubscriptionCancelled, orgID).Scan(&cancelledEventCount)
-	if cancelledEventCount == 0 {
-		t.Errorf("want a %s outbox row for org %s, found none", events.RoutingKeySubscriptionCancelled, orgID)
+	if cancelledEventCount != 1 {
+		t.Errorf("want one %s outbox row for org %s, got %d", events.RoutingKeySubscriptionCancelled, orgID, cancelledEventCount)
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_SuspendFails_RollsBackAndRetrySucceeds
+// TestIntegration_ExpireIfDue_ScheduledCancel_SuspendFails_RollsBackAndRetrySucceeds
 // covers the redelivery-safety property a message-queue consumer needs: if
 // SuspendOrganization fails, nothing must be left half-applied (status and
 // scheduled_cancel_at unchanged, no history row, no event), and a later
 // redelivery with SuspendOrganization now succeeding completes correctly.
-func TestIntegration_HandleSubscriptionAutoInvoice_SuspendFails_RollsBackAndRetrySucceeds(t *testing.T) {
+func TestIntegration_ExpireIfDue_ScheduledCancel_SuspendFails_RollsBackAndRetrySucceeds(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_cancel_retry_user"
@@ -2824,16 +3733,19 @@ func TestIntegration_HandleSubscriptionAutoInvoice_SuspendFails_RollsBackAndRetr
 		t.Fatalf("provision: %v", err)
 	}
 	subID := getSubscriptionID(pool, orgID)
-	if _, err := pool.Exec(t.Context(),
-		`UPDATE billing.subscriptions SET status = 'active', scheduled_cancel_at = now() WHERE id = $1`, subID); err != nil {
-		t.Fatalf("seed scheduled cancellation: %v", err)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'active', trial_end = NULL, scheduled_cancel_at = now(),
+		    period_end = now() - interval '1 minute'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("seed scheduled cancellation past its period end: %v", err)
 	}
-	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
+	end, _ := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, end)
 
-	// First delivery: SuspendOrganization fails — the whole reconciliation
+	// First delivery: SuspendOrganization fails — the whole transaction
 	// must roll back, touching nothing.
-	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err == nil {
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), body); err == nil {
 		t.Fatal("first delivery: want an error from the failed SuspendOrganization call")
 	}
 
@@ -2851,11 +3763,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_SuspendFails_RollsBackAndRetr
 		t.Errorf("after a failed suspend: want no cancel history row, got %d", historyCountAfterFailure)
 	}
 	// The outbox also carries HandleOrganizationCreated's own provisioning
-	// events (trial-started, the delayed subscription-check/-remind/
-	// -auto-invoice scheduling) from setup above — check specifically for
-	// the one this failed attempt must not have enqueued, not the whole
-	// table. Read straight from messaging.outbox, where events.Enqueue
-	// writes the row in the same transaction as the change.
+	// events — check specifically for the one this failed attempt must not
+	// have enqueued, not the whole table.
 	var cancelledEventCount int
 	pool.QueryRow(t.Context(),
 		`SELECT COUNT(*) FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
@@ -2865,24 +3774,24 @@ func TestIntegration_HandleSubscriptionAutoInvoice_SuspendFails_RollsBackAndRetr
 	}
 
 	// Redelivery: SuspendOrganization now succeeds (failCount exhausted).
-	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err != nil {
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), body); err != nil {
 		t.Fatalf("redelivery: want nil error once SuspendOrganization succeeds, got %v", err)
 	}
-	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
-	if status != "cancelled" {
-		t.Errorf("after successful redelivery: want status=cancelled, got %q", status)
+	pool.QueryRow(t.Context(), `SELECT status, scheduled_cancel_at FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status, &scheduledCancelAt)
+	if status != "cancelled" || scheduledCancelAt != nil {
+		t.Errorf("after successful redelivery: want cancelled with the schedule consumed, got status=%q scheduled_cancel_at=%v", status, scheduledCancelAt)
 	}
 	if len(suspender.calls) != 2 {
 		t.Errorf("want SuspendOrganization called twice (failed once, succeeded once), got %d", len(suspender.calls))
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_RedeliveryAfterAppliedCancellation_IsNoOp
+// TestIntegration_ExpireIfDue_RedeliveryAfterAppliedCancellation_IsNoOp
 // covers event redelivery after a cancellation has already fully applied:
-// the existing status guard (not active/trialing) must catch it before
-// reaching the cancellation branch at all, so SuspendOrganization is not
-// called a second time for the same, already-cancelled subscription.
-func TestIntegration_HandleSubscriptionAutoInvoice_RedeliveryAfterAppliedCancellation_IsNoOp(t *testing.T) {
+// the status guard must stop both the end-of-period check and a late
+// auto-invoice before they act, so the organization is not suspended a
+// second time and no invoice is issued.
+func TestIntegration_ExpireIfDue_RedeliveryAfterAppliedCancellation_IsNoOp(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_cancel_redeliver_user"
@@ -2896,19 +3805,106 @@ func TestIntegration_HandleSubscriptionAutoInvoice_RedeliveryAfterAppliedCancell
 		t.Fatalf("provision: %v", err)
 	}
 	subID := getSubscriptionID(pool, orgID)
-	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
-
-	if _, err := pool.Exec(t.Context(),
-		`UPDATE billing.subscriptions SET status = 'cancelled', scheduled_cancel_at = now() WHERE id = $1`, subID); err != nil {
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'cancelled', trial_end = NULL, period_end = now() - interval '1 minute'
+		WHERE id = $1`, subID); err != nil {
 		t.Fatalf("seed already-cancelled subscription: %v", err)
 	}
+	end, _ := getSubscriptionExpectedEnd(pool, subID)
+	body := encodeSubscriptionCheckEvent(subID, orgID, end)
 
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), body); err != nil {
+		t.Errorf("check redelivery: want nil error against an already-cancelled subscription, got %v", err)
+	}
 	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err != nil {
-		t.Errorf("want nil error redelivering against an already-cancelled subscription, got %v", err)
+		t.Errorf("auto-invoice redelivery: want nil error against an already-cancelled subscription, got %v", err)
 	}
 	if len(suspender.calls) != 0 {
 		t.Errorf("want SuspendOrganization not called again for an already-cancelled subscription, got %d calls", len(suspender.calls))
+	}
+	var invoiceCount int
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, subID).Scan(&invoiceCount)
+	if invoiceCount != 0 {
+		t.Errorf("want no invoice for an already-cancelled subscription, got %d", invoiceCount)
+	}
+}
+
+// waitForLockWaiter blocks until some backend is waiting on a lock while
+// running a statement that mentions relation — proof that the goroutine
+// under test has reached its row-lock and is queued behind the test's own
+// transaction.
+func waitForLockWaiter(t *testing.T, pool *pgxpool.Pool, relation string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := pool.QueryRow(t.Context(), `
+			SELECT COUNT(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%'`, relation).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no backend started waiting on a lock for %s", relation)
+}
+
+// TestIntegration_ExpireIfDue_ConcurrentRenewal_RenewalWins: an expiry check
+// that queues behind a renewal's row lock must judge the subscription by the
+// renewed period it re-reads under its own lock, not by the stale end it was
+// scheduled for — the subscription stays active.
+func TestIntegration_ExpireIfDue_ConcurrentRenewal_RenewalWins(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_expire_race_user"
+		orgID = "00000000-0000-0000-0000-000000000b2a"
+	)
+	setupBillingTest(t, pool, orgID)
+
+	mod := billing.New(pool, billing.ProviderConfig{}, stubRefReader{}, &stubOrgSuspender{}, pool)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'active', trial_end = NULL, period_end = now() - interval '1 minute'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("force a lapsed period: %v", err)
+	}
+	end, _ := getSubscriptionExpectedEnd(pool, subID)
+
+	// A renewal payment is mid-transaction: row locked, period rolled forward.
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET period_end = now() + interval '1 month' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("renewal update: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, orgID, end))
+	}()
+	waitForLockWaiter(t, pool, "billing.subscriptions")
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit renewal: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("expiry check: %v", err)
+	}
+
+	var status string
+	var periodEnd time.Time
+	pool.QueryRow(t.Context(), `SELECT status, period_end FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status, &periodEnd)
+	if status != "active" || !periodEnd.After(time.Now()) {
+		t.Errorf("want the committed renewal to win (active, period_end in the future), got status=%q period_end=%s", status, periodEnd)
 	}
 }
 
@@ -4397,6 +5393,85 @@ func TestIntegration_ExtendSubscription_PaidWebhookWhenExpired(t *testing.T) {
 	}
 }
 
+// TestIntegration_ExtendSubscription_PaidWebhookWhenPastDue: an extension
+// requested while active and paid after a failed renewal made the
+// subscription past_due still adds its months, and the subscription is
+// active again — the extension covers the period the failed renewal backed.
+func TestIntegration_ExtendSubscription_PaidWebhookWhenPastDue(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_extend_past_due"
+		wsID1 = "00000000-0000-0000-0000-000000000f21"
+		wsID2 = "00000000-0000-0000-0000-000000000f22"
+	)
+	cleanupBillingByOrganization(pool, wsID1)
+	cleanupBillingByOrganization(pool, wsID2)
+	t.Cleanup(func() {
+		cleanupBillingByOrganization(pool, wsID1)
+		cleanupBillingByOrganization(pool, wsID2)
+	})
+	seedBillingOrganization(pool, wsID1, user)
+	seedBillingOrganization(pool, wsID2, user)
+
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	mod.SetOrganizationReader(organization.New(pool, testWebhookEncryptionKey, "", 1))
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID1, user))
+	_ = mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(wsID2, user))
+	payProvisioningInvoice(pool, wsID2)
+
+	e := billing.NewWebhookModuleEngine(pool, user, wsID2)
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(wsID2)+"/extend", `{"months":1}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("extend: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID          string `json:"id"`
+			AmountCents int64  `json:"amount_cents"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'past_due' WHERE subject_id = $1`, wsID2); err != nil {
+		t.Fatalf("mark past_due: %v", err)
+	}
+	var subID string
+	var periodEndBefore time.Time
+	if err := pool.QueryRow(t.Context(),
+		`SELECT id, period_end FROM billing.subscriptions WHERE subject_id = $1`, wsID2,
+	).Scan(&subID, &periodEndBefore); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+
+	const extID = "stripe_sess_extend_past_due"
+	seedPaymentLink(pool, resp.Data.ID, extID, "stripe", "USD", resp.Data.AmountCents)
+	postPaidStripeWebhook(t, e, extID)
+
+	var status string
+	var periodEndAfter time.Time
+	if err := pool.QueryRow(t.Context(),
+		`SELECT status, period_end FROM billing.subscriptions WHERE id = $1`, subID,
+	).Scan(&status, &periodEndAfter); err != nil {
+		t.Fatalf("read subscription after payment: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("after paying the extension: want status active, got %q", status)
+	}
+	if want := periodEndBefore.AddDate(0, 1, 0); !periodEndAfter.Equal(want) {
+		t.Errorf("after paying the extension: want period_end %s, got %s", want, periodEndAfter)
+	}
+	var extendRows int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.subscription_history WHERE subscription_id = $1 AND action = 'extend'`, subID,
+	).Scan(&extendRows)
+	if extendRows != 1 {
+		t.Errorf("want 1 'extend' history row, got %d", extendRows)
+	}
+}
+
 // TestIntegration_ExtendSubscription_AtomicOnMidSequenceFailure regression-tests
 // extendSubscription's own db.WithTx wrapping: this route doesn't run under
 // the group-level RLS transaction (removed from billing/module.go so its
@@ -5228,12 +6303,12 @@ func TestIntegration_ActivateTrialNow_NotTrialing_Rejected(t *testing.T) {
 		t.Fatalf("provision: %v", err)
 	}
 
-	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
-	// Already-active (via cancel+resume-after-trial-expired trick is
-	// overkill here) — simplest: cancel while trialing, which flips status
-	// to "cancelled", also not "trialing".
-	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/cancel", `{"reason":"too_expensive"}`))
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'active', trial_end = NULL WHERE id = $1`, getSubscriptionID(pool, orgID)); err != nil {
+		t.Fatalf("force active: %v", err)
+	}
 
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/activate", ""))
 	if w.Code != http.StatusUnprocessableEntity {

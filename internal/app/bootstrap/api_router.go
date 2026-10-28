@@ -102,8 +102,12 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 	}
 	mods.Account.RegisterWebhooks(webhooks)
 
+	server := httpserver.NewServer(engine, cfg.Port)
+	// Open notification streams never finish on their own; end them when
+	// shutdown starts instead of waiting out the graceful timeout.
+	server.OnShutdown(mods.Notification.CloseStreams)
 	return &APIRouter{
-		Server:      httpserver.NewServer(engine, cfg.Port),
+		Server:      server,
 		AuditWriter: auditWriter,
 	}, nil
 }

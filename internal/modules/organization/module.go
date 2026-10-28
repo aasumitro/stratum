@@ -44,8 +44,8 @@ func (m *Module) SuspendOrganization(ctx context.Context, organizationID, reason
 }
 
 // UnsuspendOrganization implements contracts.OrganizationSuspender.
-func (m *Module) UnsuspendOrganization(ctx context.Context, organizationID string) error {
-	return m.svc.unsuspendOrganization(ctx, organizationID)
+func (m *Module) UnsuspendOrganization(ctx context.Context, organizationID string, reasons []string) error {
+	return m.svc.unsuspendOrganization(ctx, organizationID, reasons)
 }
 
 // SetCacheInvalidator wires the cache invalidator after construction.
@@ -175,15 +175,6 @@ func (m *Module) GetOrganizationByID(ctx context.Context, organizationID string)
 		CountryCode:       t.CountryCode,
 		AllowedIPs:        s.AllowedIPs,
 	}, nil
-}
-
-// IsMember implements contracts.OrganizationReader.
-func (m *Module) IsMember(ctx context.Context, organizationID, authSub string) (bool, error) {
-	role, err := m.svc.getMemberRole(ctx, organizationID, authSub)
-	if err != nil {
-		return false, nil
-	}
-	return role != "", nil
 }
 
 // GetMemberRole implements contracts.OrganizationReader.

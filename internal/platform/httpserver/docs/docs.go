@@ -2129,6 +2129,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
+                    },
+                    "422": {
+                        "description": "not trialing, or a cancellation is scheduled (CANCELLATION_SCHEDULED)",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
                     }
                 }
             }
@@ -2193,7 +2199,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled. On a\ntrialing subscription the requested quantity applies immediately. On any other\nsubscription status, an increase (including a brand-new attach) instead creates a\nday-prorated invoice and returns the addon record with pending_quantity/\npending_invoice_id set — the live quantity only rises once that invoice is\nconfirmed paid. A decrease still schedules for the next renewal.",
+                "description": "Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled. On a\ntrialing subscription the requested quantity applies immediately. On any other\nsubscription status, an increase (including a brand-new attach) instead creates a\nday-prorated invoice and returns the addon record with pending_quantity/\npending_invoice_id set — the live quantity only rises once that invoice is\nconfirmed paid. A decrease still schedules for the next renewal. While a\ncancellation is scheduled, a decrease is refused with 422\nCANCELLATION_SCHEDULED on every status, trialing included.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2357,6 +2363,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "a cancellation is scheduled (CANCELLATION_SCHEDULED)",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -3500,14 +3512,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Owner only.",
+                "description": "Owner only. Issues an invoice for the next period and returns the subscription\nunchanged; it reactivates once that invoice is paid. A repeat request while the\ninvoice is still unpaid reuses it instead of issuing another.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "billing"
                 ],
-                "summary": "Resume a cancelled subscription",
+                "summary": "Resume a cancelled or expired subscription",
                 "parameters": [
                     {
                         "type": "string",
@@ -3544,6 +3556,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE)",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -4590,9 +4608,6 @@ const docTemplate = `{
                     }
                 ],
                 "description": "Owner-facing self-service pause — reversible, read-only for everyone including the owner while active. Requires step-up MFA (aal2) if the caller has MFA enabled.",
-                "consumes": [
-                    "application/json"
-                ],
                 "tags": [
                     "organization"
                 ],
@@ -4604,14 +4619,6 @@ const docTemplate = `{
                         "name": "organizationID",
                         "in": "path",
                         "required": true
-                    },
-                    {
-                        "description": "Optional reason",
-                        "name": "body",
-                        "in": "body",
-                        "schema": {
-                            "$ref": "#/definitions/suspendOrganizationRequest"
-                        }
                     }
                 ],
                 "responses": {
@@ -4724,6 +4731,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "owner role or MFA step-up required",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "not paused by the owner (BILLING_HOLD)",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -7301,15 +7314,6 @@ const docTemplate = `{
                 },
                 "table": {
                     "type": "string"
-                }
-            }
-        },
-        "suspendOrganizationRequest": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "maxLength": 500
                 }
             }
         },

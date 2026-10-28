@@ -67,7 +67,7 @@ export function PlanSelector({
   const [cycle, setCycle] = useState<BillingCycle>(currentCycle)
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
-  const { hasPendingInvoice } = usePermissions()
+  const { hasPendingInvoice, hasBlockingInvoice } = usePermissions()
   const { data, isLoading } = useOrgPlansCatalog(organizationId)
 
   const plans = (data?.data ?? [])
@@ -162,7 +162,12 @@ export function PlanSelector({
         <DialogHeader>
           <DialogTitle>{t("billing.plans.changePlanTitle")}</DialogTitle>
           <DialogDescription>
-            {t("billing.plans.changePlanDescription")}
+            {/* With the current period still unpaid there is no paid time
+                to convert: the change restarts the period on the new plan
+                and reissues the unpaid invoice at its price. */}
+            {hasBlockingInvoice
+              ? t("billing.plans.changePlanDescriptionUnpaid")
+              : t("billing.plans.changePlanDescription")}
           </DialogDescription>
         </DialogHeader>
 

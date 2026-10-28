@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -726,5 +727,104 @@ func TestIntegration_Writer_Cleanup_PurgesEventsOlderThanRetention(t *testing.T)
 	}
 	if resource != "/organizations/:id" {
 		t.Errorf("want the within-retention event to survive, got resource %q", resource)
+	}
+}
+
+// auditedEngine runs writer's middleware for an authenticated caller, so
+// every mutating request is audited.
+func auditedEngine(writer *audit.Writer) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: "audit_body_sub"})
+		c.Next()
+	})
+	e.Use(writer.Middleware())
+	return e
+}
+
+// TestIntegration_Middleware_BodyOverLimit_HandlerReadsWholeBody: the audit
+// middleware keeps only the first 4 KB for its record, but the handler must
+// still receive the whole body — a 150-row JSON import is ~7 KB — and the
+// truncated audit copy, no longer valid JSON, is stored as {}.
+func TestIntegration_Middleware_BodyOverLimit_HandlerReadsWholeBody(t *testing.T) {
+	pool := testPool(t)
+	writer := audit.NewWriter(pool, slog.Default(), 90)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE resource = '/audit-large-body'`)
+	})
+
+	type row struct {
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	var req struct {
+		Rows []row `json:"rows"`
+	}
+	for i := range 150 {
+		req.Rows = append(req.Rows, row{Email: fmt.Sprintf("member-%03d@example.com", i), Role: "member"})
+	}
+	body, _ := json.Marshal(req)
+	if len(body) <= 4096 {
+		t.Fatalf("precondition: want a body over 4096 bytes, got %d", len(body))
+	}
+
+	e := auditedEngine(writer)
+	var bindErr error
+	var bound int
+	e.POST("/audit-large-body", func(c *gin.Context) {
+		var in struct {
+			Rows []row `json:"rows"`
+		}
+		bindErr = c.ShouldBindJSON(&in)
+		bound = len(in.Rows)
+		c.Status(http.StatusOK)
+	})
+	r := httptest.NewRequest(http.MethodPost, "/audit-large-body", bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	e.ServeHTTP(httptest.NewRecorder(), r)
+	writer.Stop()
+
+	if bindErr != nil || bound != len(req.Rows) {
+		t.Errorf("handler: want all %d rows of the %d-byte body, got %d (err=%v)", len(req.Rows), len(body), bound, bindErr)
+	}
+	var metadata string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT metadata::text FROM audit.events WHERE resource = '/audit-large-body'`).Scan(&metadata); err != nil {
+		t.Fatalf("read audit event: %v", err)
+	}
+	if metadata != "{}" {
+		t.Errorf("audit metadata for a truncated body: want {}, got %s", metadata)
+	}
+}
+
+// TestIntegration_Writer_MalformedBody_KeepsTheRestOfTheBatch: one request
+// whose body is not valid JSON must not fail the multi-row INSERT for every
+// other event batched with it — it is stored with {} metadata.
+func TestIntegration_Writer_MalformedBody_KeepsTheRestOfTheBatch(t *testing.T) {
+	pool := testPool(t)
+	writer := audit.NewWriter(pool, slog.Default(), 90)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE resource = '/audit-batch'`)
+	})
+
+	e := auditedEngine(writer)
+	// Like POST /me/export: the handler ignores the body and returns 2xx.
+	e.POST("/audit-batch", func(c *gin.Context) { c.Status(http.StatusAccepted) })
+	bodies := []string{`{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`, `{"n":5}`, `{x`}
+	for _, b := range bodies {
+		r := httptest.NewRequest(http.MethodPost, "/audit-batch", strings.NewReader(b))
+		r.Header.Set("Content-Type", "application/json")
+		e.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	writer.Stop()
+
+	var stored, emptyMetadata int
+	pool.QueryRow(t.Context(), `
+		SELECT COUNT(*), COUNT(*) FILTER (WHERE metadata = '{}'::jsonb)
+		FROM audit.events WHERE resource = '/audit-batch'`).Scan(&stored, &emptyMetadata)
+	if stored != len(bodies) || emptyMetadata != 1 {
+		t.Errorf("want all %d events stored (the malformed one with {} metadata), got %d stored, %d with {}",
+			len(bodies), stored, emptyMetadata)
 	}
 }

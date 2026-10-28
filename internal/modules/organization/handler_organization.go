@@ -186,25 +186,20 @@ func (h *handler) deleteOrganization(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-type suspendOrganizationRequest struct {
-	Reason string `json:"reason" binding:"omitempty,max=500"`
-}
-
 // suspendOrganization is the owner-facing self-service pause (the Danger
 // zone "Suspend organization" card) — reversible, read-only for everyone
 // including the owner while active. Distinct trigger from Stratum Studio's
 // operator-driven suspend and billing's auto-suspend-on-expiry, but the
 // same `organizations.status` field and repository methods — an owner who
 // self-suspends can self-unsuspend any time, no different from a billing
-// suspension being cleared by payment.
+// suspension being cleared by payment. It takes no body and always stores
+// the self-service reason: that reason is what lets the owner lift it.
 //
 // @Summary      Suspend an organization
 // @Description  Owner-facing self-service pause — reversible, read-only for everyone including the owner while active. Requires step-up MFA (aal2) if the caller has MFA enabled.
 // @Tags         organization
-// @Accept       json
 // @Security     BearerAuth
-// @Param        organizationID  path  string                      true   "Organization ID"
-// @Param        body            body  suspendOrganizationRequest  false  "Optional reason"
+// @Param        organizationID  path  string  true  "Organization ID"
 // @Success      204             "no content"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
@@ -212,16 +207,7 @@ type suspendOrganizationRequest struct {
 func (h *handler) suspendOrganization(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
-	var req suspendOrganizationRequest
-	if !request.Bind(c, &req) {
-		return
-	}
-	reason := req.Reason
-	if reason == "" {
-		reason = suspendReasonSelfService
-	}
-
-	if err := h.svc.suspendOrganization(c.Request.Context(), ws.ID, reason); err != nil {
+	if err := h.svc.suspendOrganization(c.Request.Context(), ws.ID, suspendReasonSelfService); err != nil {
 		response.FromError(c, err)
 		return
 	}
@@ -236,6 +222,7 @@ func (h *handler) suspendOrganization(c *gin.Context) {
 // @Security     BearerAuth
 // @Param        organizationID  path  string  true  "Organization ID"
 // @Success      204             "no content"
+// @Failure      422             {object}  response.Payload  "not paused by the owner (BILLING_HOLD)"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/unsuspend [post]

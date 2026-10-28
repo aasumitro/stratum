@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
@@ -120,7 +121,8 @@ func (s *service) getInvoicePDFData(
 // createPaymentLink creates a Stripe or Xendit payment link for the invoice.
 // When subjectType is empty, skips ownership check (internal calls like worker auto-invoice);
 // also skips SetOrgContext; only safe for callers guaranteed to run under a BYPASSRLS connection (cmd/worker).
-// Expires any existing pending links for this invoice before creating a new one (idempotency).
+// Expires any existing open links for this invoice — here and at their provider — before
+// creating a new one, so only one checkout can take the payment.
 func (s *service) createPaymentLink(
 	ctx context.Context, subjectType, subjectID, invoiceID string,
 ) (*paymentLinkRecord, error) {
@@ -155,7 +157,11 @@ func (s *service) createPaymentLink(
 
 	expErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
-		return s.repo.expirePendingPaymentLinks(txCtx, tx, invoiceID)
+		links, err := s.repo.expireOpenPaymentLinks(txCtx, tx, invoiceID)
+		if err != nil {
+			return err
+		}
+		return enqueueCheckoutExpiry(txCtx, tx, subjectID, links)
 	})
 	if expErr != nil {
 		return nil, fmt.Errorf("billing.createPaymentLink: expire pending payment links: %w", expErr)
@@ -188,6 +194,51 @@ func (s *service) createPaymentLink(
 		return err
 	})
 	return link, insErr
+}
+
+// enqueueCheckoutExpiry queues closing each link's hosted checkout at its
+// provider, in q's transaction: a link expired locally (its invoice voided,
+// failed or superseded by a new link) must not stay payable at
+// Stripe/Xendit, where a payment would land on an invoice that no longer
+// takes it. One outbox row per link, so each is retried on its own.
+func enqueueCheckoutExpiry(ctx context.Context, q db.Querier, orgID string, links []closedLink) error {
+	for _, l := range links {
+		if err := events.Enqueue(ctx, q, events.ExchangeBilling, events.RoutingKeyPaymentLinkExpire, "billing", orgID,
+			events.PaymentLinkExpire{Provider: l.Provider, ExternalID: l.ExternalID}); err != nil {
+			return fmt.Errorf("billing.enqueueCheckoutExpiry: %w", err)
+		}
+	}
+	return nil
+}
+
+// expireCheckout closes one hosted checkout at its provider (queued by
+// enqueueCheckoutExpiry). A provider with no API key configured cannot be
+// called, so there is nothing to do. A checkout the provider says is no
+// longer open is done — logged, not retried; a rate limit, server error or
+// transport failure is returned so the message is redelivered.
+func (s *service) expireCheckout(ctx context.Context, provider, externalID string) error {
+	var err error
+	switch provider {
+	case providerStripe:
+		if s.provider.StripeAPIKey == "" {
+			return nil
+		}
+		err = expireStripeCheckoutSession(ctx, s.provider, externalID)
+	case providerXendit:
+		if s.provider.XenditAPIKey == "" {
+			return nil
+		}
+		err = expireXenditInvoice(ctx, s.provider, externalID)
+	default:
+		slog.Warn("billing.expireCheckout: unknown provider", "provider", provider, "external_id", externalID)
+		return nil
+	}
+	if errors.Is(err, errCheckoutNotOpen) {
+		slog.Warn("billing.expireCheckout: provider did not expire the checkout",
+			"provider", provider, "external_id", externalID, "error", err)
+		return nil
+	}
+	return err
 }
 
 // checkoutLineItems builds the hosted checkout page's itemized breakdown
@@ -350,22 +401,20 @@ func (s *service) previewInvoice(
 	changingPlan := targetPlan != sub.Plan || targetCycle != sub.Cycle
 	if changingPlan {
 		if oldPlanInfo, err := s.planCatalog(ctx, sub.Plan); err == nil {
-			if sub.PeriodStart != nil && sub.PeriodEnd != nil && sub.Status != statusTrialing {
-				// Mirrors changePlanWithMetadata's own guard (service_subscription.go):
-				// only an actual plan-tier change re-derives period_end via
-				// price-ratio proration. A pure cycle switch on the same plan
-				// doesn't move period_end — see that function's comment for why
-				// re-pricing already-banked time at the new cycle's rate would be
-				// wrong — so the preview must show the unchanged date, not a
-				// prorated one the real change would never produce.
-				if targetPlan != sub.Plan {
-					oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
-					newPrice := int(planInfo.Price(sub.Currency, targetCycle))
-					preview.NewPeriodEnd = new(prorate(time.Now(), *sub.PeriodStart,
-						*sub.PeriodEnd, oldPrice, newPrice, sub.Cycle, targetCycle))
-				} else {
-					preview.NewPeriodEnd = sub.PeriodEnd
-				}
+			// The same period rule the real change applies
+			// (planChangePeriod), so the preview can never promise a date
+			// changePlanWithMetadata wouldn't write.
+			pending, err := s.repo.pendingInvoiceKinds(ctx, s.querier(ctx), sub.ID)
+			if err != nil {
+				return nil, fmt.Errorf("billing.previewInvoice: %w", err)
+			}
+			oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
+			newPrice := int(planInfo.Price(sub.Currency, targetCycle))
+			if _, end := planChangePeriod(time.Now(), sub, pending[invoiceKindActivation], targetPlan != sub.Plan,
+				oldPrice, newPrice, targetCycle); end != nil {
+				preview.NewPeriodEnd = end
+			} else if sub.Status == statusActive || sub.Status == statusPastDue {
+				preview.NewPeriodEnd = sub.PeriodEnd
 			}
 
 			// Dry-run overage resolution if this is a downgrade
