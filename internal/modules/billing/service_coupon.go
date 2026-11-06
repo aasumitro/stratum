@@ -151,6 +151,15 @@ func (s *service) redeemCoupon(ctx context.Context, organizationID, authSub, cod
 	if _, err := s.findActiveCouponRedemption(ctx, q, sub.ID); err == nil {
 		return fmt.Errorf("%w: subscription already has an active coupon", ErrCouponNotRedeemable)
 	}
+	// A used-up coupon stops being the active redemption, so that check alone would let
+	// its code start over with a fresh count, as often as the owner asks.
+	redeemed, err := s.repo.hasRedeemedCoupon(ctx, q, sub.ID, code)
+	if err != nil {
+		return err
+	}
+	if redeemed {
+		return fmt.Errorf("%w: already redeemed on this subscription", ErrCouponNotRedeemable)
+	}
 
 	if ok, err := s.repo.tryIncrementCouponRedeemedCount(ctx, q, code); err != nil {
 		return err

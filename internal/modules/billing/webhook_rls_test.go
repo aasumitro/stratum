@@ -134,6 +134,10 @@ func cleanupWebhookFixture(testPool *pgxpool.Pool, orgID string) {
 		SELECT i.id FROM billing.invoices i JOIN billing.subscriptions s ON s.id = i.subscription_id WHERE s.subject_id = $1)`, orgID)
 	testPool.Exec(ctx, `DELETE FROM billing.subscription_history WHERE subscription_id IN (
 		SELECT id FROM billing.subscriptions WHERE subject_id = $1)`, orgID)
+	testPool.Exec(ctx, `DELETE FROM billing.subscription_addons WHERE subscription_id IN (
+		SELECT id FROM billing.subscriptions WHERE subject_id = $1)`, orgID)
+	testPool.Exec(ctx, `DELETE FROM billing.invoice_line_items WHERE invoice_id IN (
+		SELECT i.id FROM billing.invoices i JOIN billing.subscriptions s ON s.id = i.subscription_id WHERE s.subject_id = $1)`, orgID)
 	testPool.Exec(ctx, `DELETE FROM billing.invoices WHERE subscription_id IN (
 		SELECT id FROM billing.subscriptions WHERE subject_id = $1)`, orgID)
 	testPool.Exec(ctx, `DELETE FROM billing.subscriptions WHERE subject_id = $1`, orgID)
@@ -238,5 +242,114 @@ func TestWebhookRLS_StripePayment_CommitsWithoutOrgContext(t *testing.T) {
 	}
 	if invStatus != "paid" {
 		t.Errorf("invoice: want status=paid, got %q — webhook-driven payment confirmation silently failed to apply", invStatus)
+	}
+}
+
+// The gate's caller holds no transaction. Without an organization context, FORCE RLS
+// hides the invoice, the read finds nothing, and every unpaid organization would be
+// reported as paid up, which no error would ever reveal.
+func TestWebhookRLS_HasUnpaidActivation_SeesTheInvoiceWithNoAmbientTransaction(t *testing.T) {
+	testPool, appPool, _ := webhookRLSPools(t)
+	const (
+		orgID    = "00000000-0000-0000-0000-000000000fa4"
+		ownerSub = "webhook_rls_gate_owner"
+	)
+	t.Cleanup(func() { cleanupWebhookFixture(testPool, orgID) })
+	cleanupWebhookFixture(testPool, orgID)
+
+	invoiceID := seedWebhookFixture(t, testPool, appPool, orgID, ownerSub, "stripe", "USD", 900)
+	mod := billing.New(appPool, billing.ProviderConfig{}, nil, nil, nil)
+
+	unpaid, err := mod.HasUnpaidActivation(t.Context(), orgID)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if unpaid {
+		t.Error("a pending renewal must not read as an unpaid activation")
+	}
+
+	if _, err := testPool.Exec(t.Context(), `UPDATE billing.invoices SET kind = 'activation' WHERE id = $1`, invoiceID); err != nil {
+		t.Fatalf("set kind: %v", err)
+	}
+	unpaid, err = mod.HasUnpaidActivation(t.Context(), orgID)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !unpaid {
+		t.Error("want the pending activation seen under stratum_app with no ambient transaction")
+	}
+
+	if _, err := testPool.Exec(t.Context(), `UPDATE billing.invoices SET status = 'paid', paid_at = now() WHERE id = $1`, invoiceID); err != nil {
+		t.Fatalf("pay: %v", err)
+	}
+	unpaid, err = mod.HasUnpaidActivation(t.Context(), orgID)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if unpaid {
+		t.Error("paying must lift it at once")
+	}
+}
+
+// The reissue runs in the webhook's transaction, under the webhook's own role, and
+// touches tables a payment confirmation otherwise does not write.
+func TestWebhookRLS_AddonPaid_ReissuesTheRenewalUnderTheWebhookRole(t *testing.T) {
+	testPool, appPool, webhookPool := webhookRLSPools(t)
+	const (
+		orgID    = "00000000-0000-0000-0000-000000000fa5"
+		ownerSub = "webhook_rls_reissue_owner"
+	)
+	t.Cleanup(func() { cleanupWebhookFixture(testPool, orgID) })
+	cleanupWebhookFixture(testPool, orgID)
+
+	renewal := seedWebhookFixture(t, testPool, appPool, orgID, ownerSub, "stripe", "USD", 900)
+	ctx := t.Context()
+	var subID, addonInvoice string
+	if err := testPool.QueryRow(ctx, `SELECT subscription_id FROM billing.invoices WHERE id = $1`, renewal).Scan(&subID); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		VALUES ($1, 300, 'USD', 'addon_increase') RETURNING id`, subID).Scan(&addonInvoice); err != nil {
+		t.Fatalf("seed add-on invoice: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity, pending_quantity, pending_invoice_id)
+		VALUES ($1, 'extra-seat', 0, 3, $2)`, subID, addonInvoice); err != nil {
+		t.Fatalf("seed pending increase: %v", err)
+	}
+	extID := "stripe_addon_" + orgID
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO billing.payment_links (invoice_id, provider, currency, amount_cents, external_id, url)
+		VALUES ($1, 'stripe', 'USD', 300, $2, 'https://pay.example.com')`, addonInvoice, extID); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	webhookEngine(t, appPool, webhookPool).ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
+		`{"type":"checkout.session.completed","data":{"object":{"id":"`+extID+`","payment_status":"paid"}}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM billing.invoices WHERE id = $1`, renewal).Scan(&status); err != nil {
+		t.Fatalf("read old renewal: %v", err)
+	}
+	if status != "void" {
+		t.Errorf("old renewal: want void, got %q", status)
+	}
+	var amount int64
+	var number *string
+	if err := testPool.QueryRow(ctx, `
+		SELECT amount_cents, invoice_number FROM billing.invoices
+		WHERE subscription_id = $1 AND kind = 'subscription' AND status = 'pending'`, subID).Scan(&amount, &number); err != nil {
+		t.Fatalf("read reissued renewal: %v", err)
+	}
+	if amount != 1200 {
+		t.Errorf("reissued renewal: want 1200 (900 plan + 3 x 100 seats), got %d", amount)
+	}
+	if number == nil {
+		t.Error("reissued renewal: want an invoice number")
 	}
 }

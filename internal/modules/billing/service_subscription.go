@@ -69,8 +69,9 @@ func (s *service) provisionSubscription(
 			if !errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("billing.provisionSubscription: insert subscription: %w", err)
 			}
-			// Subscription already exists (idempotency: message redelivery or prior partial failure).
-			// Fetch it and fall through — the invoice check below handles the missing-invoice case.
+			// Subscription already exists: a redelivery. Everything here commits as one
+			// transaction, so its first invoice was settled by the delivery that created
+			// it. Issuing again would bill a paid or coupon-covered activation a second time.
 			isNew = false
 			sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 			if err != nil {
@@ -144,7 +145,7 @@ func (s *service) provisionSubscription(
 			}
 		}
 
-		if sub.Status == statusActive && subtotal > 0 {
+		if isNew && sub.Status == statusActive && subtotal > 0 {
 			created, err := s.composeAndInsertActivationInvoice(ctx,
 				s.querier(ctx), subjectID, sub, planInfo, plan, currency, countryCode)
 			if err != nil {
@@ -229,28 +230,25 @@ func (s *service) attachCartSelections(
 	return nil
 }
 
-// composeAndInsertActivationInvoice creates and charges an "activation"
-// invoice for a subscription that just became active with something to
-// bill — the initial invoice for a 2nd+ organization, or a redelivery
-// finding one still missing. Idempotent: returns (nil, nil) when a pending
-// invoice already exists for this subscription (handles retries and
-// redeliveries).
+// composeAndInsertActivationInvoice creates and charges an "activation" invoice for
+// a 2nd+ organization's subscription, which just became active with something to
+// bill. When a coupon covers all of it there is nothing to invoice, and it returns
+// (nil, nil) with the charge settled.
 func (s *service) composeAndInsertActivationInvoice(
 	ctx context.Context, q db.Querier, subjectID string,
 	sub *subscriptionRecord, planInfo *contracts.PlanInfo,
 	plan, currency, countryCode string,
 ) (*events.InvoiceCreated, error) {
-	hasPending, err := s.repo.hasPendingInvoice(ctx, q, sub.ID)
-	if err != nil {
-		return nil, fmt.Errorf("billing.composeAndInsertActivationInvoice: check pending invoice: %w", err)
-	}
-	if hasPending {
-		return nil, nil
-	}
 	composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
 		ctx, q, sub.ID, planInfo, currency, sub.Cycle)
 	if err != nil {
 		return nil, fmt.Errorf("billing.composeAndInsertActivationInvoice: compose invoice amount: %w", err)
+	}
+	if composed <= 0 {
+		if _, err := s.settleCoveredCharge(ctx, sub, invoiceKindActivation, couponCode, changedBySystem); err != nil {
+			return nil, fmt.Errorf("billing.composeAndInsertActivationInvoice: %w", err)
+		}
+		return nil, nil
 	}
 	taxRate := 0
 	if s.taxReader != nil {
@@ -271,6 +269,56 @@ func (s *service) composeAndInsertActivationInvoice(
 		OrgID: subjectID, InvoiceID: inv.ID,
 		Plan: plan, AmountCents: inv.AmountCents, Currency: currency, DueAt: *inv.DueAt,
 	}, nil
+}
+
+// issuePeriodInvoice issues sub's renewal or activation at its current plan, cycle and
+// add-ons, after whatever it replaces has been voided. It returns nil when there is
+// nothing to charge. A coupon covering an activation settles it here. A covered
+// renewal is left to the auto-invoice, which rolls the period when it comes due and
+// is the one to use the coupon, unless the subscription is past due: the auto-invoice
+// ignores that status, and the renewal is already due, so it settles here as well. A
+// plan with no price and no coupon owes nothing.
+func (s *service) issuePeriodInvoice(
+	ctx context.Context, sub *subscriptionRecord, planInfo *contracts.PlanInfo, kind string,
+) (*invoiceRecord, error) {
+	q := s.querier(ctx)
+	composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
+		ctx, q, sub.ID, planInfo, sub.Currency, sub.Cycle)
+	if err != nil {
+		return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
+	}
+	if composed <= 0 {
+		switch {
+		case couponCode == "":
+			return nil, nil
+		case kind == invoiceKindSubscription && sub.Status != statusPastDue:
+			return nil, s.enqueueAutoInvoice(ctx, sub)
+		}
+		outcome, err := s.settleCoveredCharge(ctx, sub, kind, couponCode, changedBySystem)
+		if err != nil {
+			return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
+		}
+		if outcome.scheduleRenewal != nil {
+			s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
+		}
+		return nil, nil
+	}
+	taxRate := 0
+	if s.taxReader != nil {
+		taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
+	}
+	inv, err := s.repo.insertInvoice(ctx, q, sub.SubjectID, sub.ID, composed,
+		taxRate, calculateTax(composed, taxRate), sub.Currency, kind, false, nil)
+	if err != nil {
+		return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
+	}
+	if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+		return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
+	}
+	if err := s.applyInvoiceCharges(ctx, q, sub.ID, inv.ID, sub.Currency, addonLines, couponCode, discountCents); err != nil {
+		return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
+	}
+	return inv, nil
 }
 
 // getSubscription is also exposed cross-module as contracts.BillingReader's
@@ -329,6 +377,30 @@ func (s *service) listPlansCatalog(ctx context.Context, organizationID string) (
 	return plans, nil
 }
 
+// changePlanForOwner is what an owner's PATCH goes through. A lower plan is refused on
+// every status, because /downgrade serves every status and is what resolves the members
+// over its limit. A plan that is not self-serve is refused because its price would not
+// bill for what it grants, unless it is the plan the subscription already has: a customer
+// an operator put on one can still move between its cycles. changePlanWithMetadata stays
+// unguarded, since /downgrade reuses it on a trial. An unknown plan or a missing
+// subscription is left for it to classify.
+func (s *service) changePlanForOwner(
+	ctx context.Context, subjectType, subjectID,
+	plan, cycle, changedBy string, metadata []byte,
+) (string, *subscriptionRecord, error) {
+	sub, subErr := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
+	newPlan, newErr := s.planCatalog(ctx, plan)
+	if subErr == nil && newErr == nil && plan != sub.Plan {
+		if !newPlan.SelfServe(sub.Currency, cycle) {
+			return "", nil, apperr.Validation(planNotSelfServeCode, planNotSelfServeMsg)
+		}
+		if current, err := s.planCatalog(ctx, sub.Plan); err == nil && newPlan.SortOrder < current.SortOrder {
+			return "", nil, apperr.Validation("PLAN_CHANGE_IS_DOWNGRADE", "a lower plan goes through the downgrade flow")
+		}
+	}
+	return s.changePlanWithMetadata(ctx, subjectType, subjectID, plan, cycle, changedBy, metadata)
+}
+
 // Bare repo-call returns below are deliberate: each repo function already
 // self-prefixes (e.g. "billing.findSubscriptionBySubject: ..."), and every
 // path funnels into this function's single deferred apperr classification —
@@ -362,6 +434,14 @@ func (s *service) changePlanWithMetadata(
 
 	sub, err = s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
+		return "", nil, err
+	}
+	// Everything below prorates from the period read here and replaces what is pending,
+	// so a payment in flight must commit first: its period would otherwise be overwritten.
+	if err = s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
+		return "", nil, err
+	}
+	if sub, err = s.repo.findSubscriptionByID(ctx, s.querier(ctx), sub.ID); err != nil {
 		return "", nil, err
 	}
 	// A cancelled sub has no active billing to change — resume it first.
@@ -442,31 +522,8 @@ func (s *service) changePlanWithMetadata(
 		if pending[invoiceKindActivation] {
 			kind = invoiceKindActivation
 		}
-		composed, addonLines, couponCode, discountCents, composeErr := s.composeInvoiceAmount(
-			ctx, s.querier(ctx), updated.ID, newPlanInfo, updated.Currency, cycle)
-		if composeErr != nil {
-			return "", nil, composeErr
-		}
-		if composed > 0 {
-			taxRate := 0
-			if s.taxReader != nil {
-				taxRate, _ = s.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(updated.Currency))
-			}
-			tax := calculateTax(composed, taxRate)
-			inv, invErr := s.repo.insertInvoice(
-				ctx, s.querier(ctx), subjectID, updated.ID, composed,
-				taxRate, tax, updated.Currency, kind, false, nil,
-			)
-			if invErr != nil {
-				return "", nil, invErr
-			}
-			if invErr := s.insertPlanLineItem(ctx, inv, newPlanInfo); invErr != nil {
-				return "", nil, invErr
-			}
-			if invErr := s.applyInvoiceCharges(ctx, s.querier(ctx), updated.ID, inv.ID,
-				updated.Currency, addonLines, couponCode, discountCents); invErr != nil {
-				return "", nil, invErr
-			}
+		if _, err = s.issuePeriodInvoice(ctx, updated, newPlanInfo, kind); err != nil {
+			return "", nil, err
 		}
 	}
 
@@ -475,6 +532,11 @@ func (s *service) changePlanWithMetadata(
 	// transaction: its outbox rows commit or roll back with the change.
 	if updated.PeriodEnd != nil && (sub.PeriodEnd == nil || !updated.PeriodEnd.Equal(*sub.PeriodEnd)) {
 		s.scheduleRenewalSequence(ctx, updated)
+	}
+	// A coupon covering the activation can have granted the longer cycle just now, and
+	// scheduled that end itself. The answer must show it.
+	if updated, err = s.repo.findSubscriptionByID(ctx, s.querier(ctx), updated.ID); err != nil {
+		return "", nil, err
 	}
 
 	if err := s.enqueueEvent(ctx, events.RoutingKeySubscriptionActivated, subjectID,
@@ -539,7 +601,7 @@ func (s *service) cancelSubscription(
 	if err = s.repo.clearAllScheduledAddonQuantityChanges(ctx, s.querier(ctx), sub.ID); err != nil {
 		return nil, err
 	}
-	links, err := s.repo.voidPendingRenewalInvoices(ctx, s.querier(ctx), sub.ID)
+	links, err := s.repo.voidPendingInvoicesOfKinds(ctx, s.querier(ctx), sub.ID, []string{invoiceKindSubscription})
 	if err != nil {
 		return nil, err
 	}

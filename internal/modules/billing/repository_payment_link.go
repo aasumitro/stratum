@@ -33,7 +33,7 @@ type paymentLinkSubject struct {
 
 func (r *repository) insertPaymentLink(
 	ctx context.Context, q db.Querier,
-	invoiceID, provider, currency string,
+	id, invoiceID, provider, currency string,
 	amountCents int64,
 	externalID, url *string,
 	expiresAt *time.Time,
@@ -41,11 +41,11 @@ func (r *repository) insertPaymentLink(
 	var pl paymentLinkRecord
 	err := q.QueryRow(ctx, `
 		INSERT INTO billing.payment_links
-		    (invoice_id, provider, currency, amount_cents, external_id, url, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		    (id, invoice_id, provider, currency, amount_cents, external_id, url, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, invoice_id, provider, currency, amount_cents,
 		          external_id, url, status, expires_at, created_at`,
-		invoiceID, provider, currency, amountCents, externalID, url, expiresAt,
+		id, invoiceID, provider, currency, amountCents, externalID, url, expiresAt,
 	).Scan(&pl.ID, &pl.InvoiceID, &pl.Provider, &pl.Currency, &pl.AmountCents,
 		&pl.ExternalID, &pl.URL, &pl.Status, &pl.ExpiresAt, &pl.CreatedAt)
 	if err != nil {
@@ -98,11 +98,12 @@ func (r *repository) findPaymentLinkWithSubjectByExternalID(
 // event types whose data object is a PaymentIntent (payment_intent.*),
 // which carries a different ID namespace (pi_...) than the Checkout
 // Session ID (cs_...) stored in external_id, so external_id can never
-// match for those events. Most recent link wins if more than one exists
-// for the invoice (mirrors findActivePaymentLinkByInvoice's ordering).
+// match for those events. linkID, carried in the same metadata, names the checkout
+// the event came from. A checkout created before that metadata existed has none, and
+// then the most recent link wins (mirrors findActivePaymentLinkByInvoice's ordering).
 func (r *repository) findPaymentLinkWithSubjectByInvoiceID(
 	ctx context.Context, q db.Querier,
-	invoiceID string,
+	invoiceID, linkID string,
 ) (*paymentLinkSubject, error) {
 	var p paymentLinkSubject
 	err := q.QueryRow(ctx, `
@@ -110,9 +111,9 @@ func (r *repository) findPaymentLinkWithSubjectByInvoiceID(
 		FROM billing.payment_links pl
 		JOIN billing.invoices i ON i.id = pl.invoice_id
 		JOIN billing.subscriptions s ON s.id = i.subscription_id
-		WHERE pl.invoice_id = $1
+		WHERE pl.invoice_id = $1 AND ($2 = '' OR pl.id::text = $2)
 		ORDER BY pl.created_at DESC LIMIT 1`,
-		invoiceID,
+		invoiceID, linkID,
 	).Scan(&p.linkID, &p.invoiceID, &p.subscriptionID, &p.status, &p.subjectType, &p.subjectID)
 	if err != nil {
 		return nil, fmt.Errorf("billing.findPaymentLinkWithSubjectByInvoiceID: %w", err)
@@ -235,6 +236,25 @@ func (r *repository) updatePaymentLinkStatus(ctx context.Context, q db.Querier, 
 		return fmt.Errorf("billing.updatePaymentLinkStatus: %w", err)
 	}
 	return nil
+}
+
+// deleteExpiredWebhookEvents removes inbound replay markers older than days. A
+// provider resending an event older than that is no longer deduped here; invoice
+// status still stops it from applying twice.
+func (r *repository) deleteExpiredWebhookEvents(ctx context.Context, q db.Querier, days int) (int64, error) {
+	removed, err := db.SweepInBatches(ctx, q, `
+		DELETE FROM billing.webhook_events
+		WHERE (provider, event_id) IN (
+			SELECT provider, event_id
+			FROM billing.webhook_events
+			WHERE received_at < now() - make_interval(days => $1)
+			ORDER BY received_at
+			LIMIT $2
+		)`, days)
+	if err != nil {
+		return removed, fmt.Errorf("billing.deleteExpiredWebhookEvents: %w", err)
+	}
+	return removed, nil
 }
 
 // markWebhookProcessed inserts (provider, eventID) into billing.webhook_events.

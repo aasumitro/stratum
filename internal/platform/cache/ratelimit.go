@@ -29,6 +29,9 @@ func NewRateLimiter(client *redis.Client, prefix string) *RateLimiter {
 	return &RateLimiter{limiter: redis_rate.NewLimiter(client), prefix: prefix}
 }
 
+// Prefix returns the namespace this limiter was created with.
+func (r *RateLimiter) Prefix() string { return r.prefix }
+
 func (r *RateLimiter) key(k string) string {
 	return fmt.Sprintf("%s:%s", r.prefix, k)
 }

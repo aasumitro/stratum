@@ -3,6 +3,7 @@ package organization
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -248,6 +249,17 @@ func (m *Module) CleanupExpiredInvitations(ctx context.Context) {
 	_ = m.svc.repo.deleteExpiredInvitations(ctx, m.pool)
 }
 
+// SweepRetention removes webhook deliveries past deliveryDays and purges
+// organizations soft-deleted more than deletedOrgDays ago, and returns how many
+// rows it removed directly (cascades not counted). Both always run, so one failure
+// does not hold up the other. Called only by the worker's ticker, whose pool
+// bypasses RLS: under the API's RLS-constrained pool it would match nothing.
+func (m *Module) SweepRetention(ctx context.Context, deliveryDays, deletedOrgDays int) (int64, error) {
+	removed, deliveryErr := m.svc.repo.deleteExpiredWebhookDeliveries(ctx, m.pool, deliveryDays)
+	purged, purgeErr := m.svc.repo.purgeDeletedOrganizations(ctx, m.pool, deletedOrgDays)
+	return removed + purged, errors.Join(deliveryErr, purgeErr)
+}
+
 // Register mounts organization and member routes onto r.
 //
 //	POST   /organizations
@@ -295,6 +307,9 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		// so a non-member gets 403 before the rate limiter ever runs).
 		scoped := ws.Group("/:organizationID")
 		scoped.Use(deps.Org, deps.RateLimit)
+		if deps.ActivationGate != nil {
+			scoped.Use(deps.ActivationGate)
+		}
 		{
 			scoped.GET("", h.getOrganization)
 			scoped.PATCH("", ownerOnly, h.updateOrganization)

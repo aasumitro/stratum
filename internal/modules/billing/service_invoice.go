@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 
@@ -173,13 +174,16 @@ func (s *service) createPaymentLink(
 	}
 	items := s.checkoutLineItems(ctx, inv)
 
+	// Generated here, not by the insert below: the checkout has to carry it, and the
+	// row only exists once the provider has answered.
+	linkID := uuid.NewV7().String()
 	provider := selectProvider(inv.Currency)
 	var result *paymentLinkResult
 	switch provider {
 	case providerXendit:
 		result, err = createXenditInvoice(ctx, s.provider, invoiceID, label, inv.AmountCents, items)
 	default:
-		result, err = createStripeCheckoutSession(ctx, s.provider, invoiceID, label, inv.AmountCents, inv.Currency, items)
+		result, err = createStripeCheckoutSession(ctx, s.provider, linkID, invoiceID, label, inv.AmountCents, inv.Currency, items)
 	}
 	if err != nil {
 		return nil, err
@@ -189,7 +193,7 @@ func (s *service) createPaymentLink(
 	insErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
 		var err error
-		link, err = s.repo.insertPaymentLink(txCtx, tx, invoiceID, provider, inv.Currency,
+		link, err = s.repo.insertPaymentLink(txCtx, tx, linkID, invoiceID, provider, inv.Currency,
 			inv.AmountCents, &result.ExternalID, &result.URL, result.ExpiresAt)
 		return err
 	})
@@ -585,7 +589,7 @@ func (s *service) applyInvoiceCharges(
 		sortOrder++
 	}
 	if couponCode != "" {
-		if err := s.repo.insertLineItem(ctx, q, invoiceID, "Discount: "+couponCode,
+		if err := s.repo.insertLineItem(ctx, q, invoiceID, discountLinePrefix+couponCode,
 			currency, 1, -discountCents, -discountCents, sortOrder); err != nil {
 			return err
 		}

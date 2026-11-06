@@ -51,6 +51,13 @@ func (m *Module) CloseStreams() {
 	m.closeOnce.Do(func() { close(m.closing) })
 }
 
+// SweepRetention removes notifications past days and returns how many it removed.
+// Called only by the worker's ticker, whose pool bypasses RLS: under the API's
+// RLS-constrained pool it would match nothing.
+func (m *Module) SweepRetention(ctx context.Context, days int) (int64, error) {
+	return m.svc.repo.deleteExpiredMessages(ctx, m.svc.pool, days)
+}
+
 // DeleteAllForUser implements contracts.NotificationWriter — deletes every
 // notification message addressed to a user. Called by the account module's
 // GDPR delete-account flow.

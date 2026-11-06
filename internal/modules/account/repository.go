@@ -23,6 +23,45 @@ type userRecord struct {
 
 type repository struct{}
 
+func (r *repository) deleteExpiredLoginEvents(ctx context.Context, q db.Querier, days int) (int64, error) {
+	removed, err := db.SweepInBatches(ctx, q, `
+		DELETE FROM account.login_events
+		WHERE id IN (
+			SELECT id
+			FROM account.login_events
+			WHERE created_at < now() - make_interval(days => $1)
+			ORDER BY created_at
+			LIMIT $2
+		)`, days)
+	if err != nil {
+		return removed, fmt.Errorf("account.deleteExpiredLoginEvents: %w", err)
+	}
+	return removed, nil
+}
+
+// clearExpiredExports nulls the payload of old completed data exports and keeps
+// the task row as its history. Only rows still holding a payload qualify, which is
+// also what lets the next batch move on to the rows after them.
+func (r *repository) clearExpiredExports(ctx context.Context, q db.Querier, days int) (int64, error) {
+	cleared, err := db.SweepInBatches(ctx, q, `
+		UPDATE account.tasks
+		SET result = NULL
+		WHERE id IN (
+			SELECT id
+			FROM account.tasks
+			WHERE kind = 'export_data'
+			  AND status = 'completed'
+			  AND result IS NOT NULL
+			  AND completed_at < now() - make_interval(days => $1)
+			ORDER BY completed_at
+			LIMIT $2
+		)`, days)
+	if err != nil {
+		return cleared, fmt.Errorf("account.clearExpiredExports: %w", err)
+	}
+	return cleared, nil
+}
+
 func (r *repository) upsertUser(
 	ctx context.Context, q db.Querier,
 	authSub, email, fullName, avatarURL string,

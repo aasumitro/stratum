@@ -6,6 +6,15 @@ import type { AuditFilter } from "../../bindings/github.com/aasumitro/stratum/st
 
 export const AUDIT_PAGE_SIZE = 50
 
+export function useIsOperator(projectId: string) {
+  return useQuery({
+    queryKey: ["audit", "isOperator", projectId],
+    queryFn: () => AuditService.IsOperator(projectId),
+    staleTime: 30_000,
+    retry: 1,
+  })
+}
+
 export function useAuditEvents(projectId: string, filter: AuditFilter) {
   return useQuery({
     queryKey: ["audit", "events", projectId, filter],

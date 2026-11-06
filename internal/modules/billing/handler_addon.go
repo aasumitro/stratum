@@ -33,7 +33,9 @@ type attachAddonRequest struct {
 // @Description  pending_invoice_id set — the live quantity only rises once that invoice is
 // @Description  confirmed paid. A decrease still schedules for the next renewal. While a
 // @Description  cancellation is scheduled, a decrease is refused with 422
-// @Description  CANCELLATION_SCHEDULED on every status, trialing included.
+// @Description  CANCELLATION_SCHEDULED on every status, trialing included. An increase is refused
+// @Description  with 422 PERIOD_INVOICE_PENDING while the first invoice is unpaid, or on an ended
+// @Description  subscription while its Resume invoice is pending.
 // @Tags         billing
 // @Accept       json
 // @Produce      json

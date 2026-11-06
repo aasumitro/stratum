@@ -704,10 +704,10 @@ func TestIntegration_Writer_Cleanup_PurgesEventsOlderThanRetention(t *testing.T)
 	})
 
 	now := time.Now().UTC()
-	seedEvent(t, pool, &orgID, "retention_actor", "POST", "/organizations/:id/members", now.AddDate(0, 0, -100)) // older than 90-day retention
-	seedEvent(t, pool, &orgID, "retention_actor", "PATCH", "/organizations/:id", now.AddDate(0, 0, -10))         // within retention
+	seedEvent(t, pool, &orgID, "retention_actor", "POST", "/organizations/:id/members", now.AddDate(0, 0, -401)) // older than 400-day retention
+	seedEvent(t, pool, &orgID, "retention_actor", "PATCH", "/organizations/:id", now.AddDate(0, 0, -399))        // within retention
 
-	writer := audit.NewWriter(pool, slog.Default(), 90)
+	writer := audit.NewWriter(pool, slog.Default(), 400)
 	defer writer.Stop()
 	audit.RunCleanup(writer)
 

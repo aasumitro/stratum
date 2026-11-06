@@ -563,6 +563,9 @@ func TestPlanChangePeriod(t *testing.T) {
 		return &subscriptionRecord{Status: status, Cycle: cycleMonthly, PeriodStart: &start, PeriodEnd: &end}
 	}
 	prorated := prorate(now, start, end, 900, 2900, cycleMonthly, cycleMonthly)
+	yearEnd := now.AddDate(0, 0, 300)
+	yearlyUnpaid := &subscriptionRecord{Status: statusActive, Cycle: cycleYearly, PeriodStart: &start, PeriodEnd: &yearEnd}
+	shortened := now.AddDate(0, 1, 0)
 
 	cases := []struct {
 		name             string
@@ -577,8 +580,10 @@ func TestPlanChangePeriod(t *testing.T) {
 		{"expired gets its period from Resume", sub(statusExpired), false, true, cycleMonthly, nil, nil},
 		{"cancelled gets its period from Resume", sub(statusCancelled), false, true, cycleMonthly, nil, nil},
 		{"active without a period", &subscriptionRecord{Status: statusActive, Cycle: cycleMonthly}, false, true, cycleMonthly, nil, nil},
-		{"active, unpaid activation, monthly: restart for a month", sub(statusActive), true, true, cycleMonthly, &now, new(now.AddDate(0, 1, 0))},
-		{"past_due, unpaid activation, yearly: restart for a year", sub(statusPastDue), true, false, cycleYearly, &now, new(now.AddDate(1, 0, 0))},
+		{"active, unpaid activation: never lengthens", sub(statusActive), true, true, cycleMonthly, nil, nil},
+		{"active, unpaid activation, same plan and cycle: never lengthens", sub(statusActive), true, false, cycleMonthly, nil, nil},
+		{"past_due, unpaid activation, yearly: never lengthens", sub(statusPastDue), true, false, cycleYearly, nil, nil},
+		{"active, unpaid activation, shorter new cycle: shortens from now", yearlyUnpaid, true, false, cycleMonthly, &now, &shortened},
 		{"active, plan changed: prorate from the current start", sub(statusActive), false, true, cycleMonthly, &start, &prorated},
 		{"past_due, plan changed: prorate", sub(statusPastDue), false, true, cycleMonthly, &start, &prorated},
 		{"active, same-plan cycle switch: period untouched", sub(statusActive), false, false, cycleYearly, nil, nil},
@@ -593,6 +598,20 @@ func TestPlanChangePeriod(t *testing.T) {
 				t.Errorf("start: got %v, want %v", gotStart, c.wantStart)
 			}
 		})
+	}
+}
+
+// A cheaper daily rate would prorate to a later end. A same-plan cycle switch is free
+// and moves that rate, so the period must stay where it is.
+func TestPlanChangePeriod_ProrationNeverLengthens(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	start := now.AddDate(0, 0, -10)
+	end := now.AddDate(0, 0, 20)
+	sub := &subscriptionRecord{Status: statusActive, Cycle: cycleMonthly, PeriodStart: &start, PeriodEnd: &end}
+
+	gotStart, gotEnd := planChangePeriod(now, sub, false, true, 2900, 900, cycleMonthly)
+	if gotStart != nil || gotEnd != nil {
+		t.Errorf("want the period untouched, got %v to %v", gotStart, gotEnd)
 	}
 }
 

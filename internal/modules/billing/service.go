@@ -88,6 +88,11 @@ const (
 	// and activate-now all reject the same way against the same condition).
 	cancellationScheduledCode = "CANCELLATION_SCHEDULED"
 	cancellationScheduledMsg  = "subscription is scheduled to cancel; undo that first"
+
+	// Shared apperr code/message for a plan an owner cannot pick or pay for
+	// themselves, because it has no price to charge.
+	planNotSelfServeCode = "PLAN_NOT_SELF_SERVICE"
+	planNotSelfServeMsg  = "this plan is not available to pick; contact us instead"
 )
 
 var (
@@ -98,6 +103,7 @@ var (
 	ErrCouponNotRedeemable         = errors.New("coupon not redeemable")
 	ErrAddonNotFound               = errors.New("addon not found")
 	ErrUnknownPlan                 = errors.New("unknown plan")
+	ErrPlanNotSelfServe            = errors.New("plan is not available to pick")
 	ErrSubscriptionNotExtendable   = errors.New("subscription is not in an extendable state")
 	ErrExtensionAlreadyPending     = errors.New("an invoice is already pending payment for this subscription")
 	ErrExtensionExceedsMaxDuration = errors.New("extension would exceed the maximum subscription duration")
@@ -305,14 +311,27 @@ func prorate(now, periodStart, periodEnd time.Time, oldPriceCents, newPriceCents
 	return now.Add(newRemaining)
 }
 
+// cycleEnd returns when one billing cycle starting at from ends.
+func cycleEnd(from time.Time, cycle string) time.Time {
+	if cycle == cycleYearly {
+		return from.AddDate(1, 0, 0)
+	}
+	return from.AddDate(0, 1, 0)
+}
+
 // planChangePeriod returns the billing period a plan change produces, or
 // (nil, nil) when the change leaves the period as it is. Only an active or
 // past_due subscription with a period has one to adjust: a trial keeps its
 // trial window, and an ended subscription gets its next period from the
 // Resume payment. While the period is still unpaid (a pending activation
-// invoice) there is no paid value to convert, so the period restarts now on
-// the new plan and cycle. Otherwise a plan-tier change prorates the
-// remaining time, and a same-plan cycle switch keeps period_end — see
+// invoice) it can shorten, to the new cycle counted from now, but never grow:
+// access nobody has paid for must not lengthen, or repeating the change before
+// each end would keep a paid plan free forever. Paying the activation grants
+// the rest (applyActivationPayment). Otherwise a plan-tier change prorates the
+// remaining time, never past the current end: a same-plan cycle switch is free and
+// moves the rate the old price is read at, so leaving each plan on its dearer
+// monthly rate and entering the next on its cheaper yearly one would otherwise grow
+// the period without limit. A same-plan cycle switch keeps period_end — see
 // changePlanWithMetadata for why.
 func planChangePeriod(
 	now time.Time, sub *subscriptionRecord, unpaidActivation, planChanged bool,
@@ -323,13 +342,16 @@ func planChangePeriod(
 	}
 	switch {
 	case unpaidActivation:
-		periodEnd := now.AddDate(0, 1, 0)
-		if newCycle == cycleYearly {
-			periodEnd = now.AddDate(1, 0, 0)
+		periodEnd := cycleEnd(now, newCycle)
+		if periodEnd.After(*sub.PeriodEnd) {
+			return nil, nil
 		}
 		return &now, &periodEnd
 	case planChanged:
 		periodEnd := prorate(now, *sub.PeriodStart, *sub.PeriodEnd, oldPriceCents, newPriceCents, sub.Cycle, newCycle)
+		if periodEnd.After(*sub.PeriodEnd) {
+			return nil, nil
+		}
 		return sub.PeriodStart, &periodEnd
 	default:
 		return nil, nil

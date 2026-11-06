@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+
+	"github.com/aasumitro/stratum/studio/internal/connect"
 )
 
 type Project struct {
@@ -30,11 +32,12 @@ type ProjectInput struct {
 }
 
 type ProjectService struct {
-	db *sql.DB
+	db   *sql.DB
+	pool *connect.PostgresPool
 }
 
-func NewProjectService(db *sql.DB) *ProjectService {
-	return &ProjectService{db: db}
+func NewProjectService(db *sql.DB, pool *connect.PostgresPool) *ProjectService {
+	return &ProjectService{db: db, pool: pool}
 }
 
 func (s *ProjectService) List() ([]Project, error) {
@@ -169,6 +172,7 @@ func (s *ProjectService) Delete(id string) error {
 	if err := deleteProjectSecrets(id); err != nil {
 		return fmt.Errorf("ProjectService.Delete: %w", err)
 	}
+	s.pool.Invalidate(id)
 	return nil
 }
 

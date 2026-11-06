@@ -345,63 +345,68 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		return err
 	}
 
-	pending, err := w.svc.repo.findPendingInvoiceBySubscription(ctx, w.svc.pool, sub.ID)
-	switch {
-	case err == nil:
-		// A pending invoice already exists — most likely a prior delivery of
-		// this event created it but failed before creating its payment link
-		// (the link is a separate write after the invoice's). Regenerate the
-		// link instead of leaving the invoice permanently unpayable; if it
-		// already has one, there's nothing left to do.
-		if _, linkErr := w.svc.repo.findActivePaymentLinkByInvoice(ctx, w.svc.pool, pending.ID); linkErr == nil {
-			return nil
-		}
-		if _, err := w.svc.createPaymentLink(ctx, "", "", pending.ID); err != nil {
-			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: regenerate payment link: %w", err)
-		}
-		return nil
-	case errors.Is(err, pgx.ErrNoRows):
-		// no pending invoice yet — create one below
-	default:
-		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: find pending invoice: %w", err)
-	}
-
-	planInfo, err := w.svc.planCatalog(ctx, sub.Plan)
-	if err != nil {
-		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
-	}
-
-	composed, addonLines, couponCode, discountCents, err := w.svc.composeInvoiceAmount(
-		ctx, w.svc.pool, sub.ID, planInfo, sub.Currency, sub.Cycle)
-	if err != nil {
-		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: compose invoice amount: %w", err)
-	}
-	if composed <= 0 {
-		// Zero-priced plan (e.g. "custom", contact-us only, never self-service
-		// selectable) with no addons — insertInvoice's amount_cents CHECK
-		// requires > 0, and there's nothing to bill anyway. Same guard the
-		// other three composeInvoiceAmount call sites already apply.
-		return nil
-	}
 	taxRate := 0
 	if w.svc.taxReader != nil {
 		taxRate, _ = w.svc.taxReader.GetCountryTaxRate(ctx, countryFromCurrency(sub.Currency))
 	}
-	tax := calculateTax(composed, taxRate)
 
-	// DB-local writes (invoice + line item + charges) wrapped in one
-	// transaction so a mid-sequence failure can't leave an orphaned invoice
-	// with a wrong/missing line-item breakdown — same convention every other
-	// invoice-creation site in this module already uses (provisionSubscription,
-	// extendSubscription, activateTrialNow, resumeSubscription). The payment
-	// link (blocking Stripe/Xendit HTTP call) and event publish stay outside,
-	// after this transaction commits.
-	var inv *invoiceRecord
+	// The decision and the invoice happen under one row lock. Duplicate messages are
+	// expected, since several paths queue one, and a delivery running beside another
+	// must find the invoice it issued. A payment changing the addons must not land
+	// between composing this invoice and issuing it. The payment link is a blocking
+	// provider call, so it stays outside, after the commit.
+	var inv, pending *invoiceRecord
+	var covered *webhookOutcome
 	err = db.WithTx(ctx, w.svc.pool, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
-		var err error
-		inv, err = w.svc.repo.insertInvoice(txCtx, tx, sub.SubjectID, sub.ID,
-			composed, taxRate, tax, sub.Currency, "subscription", false, nil)
+		if err := w.svc.repo.lockSubscriptionForUpdate(txCtx, tx, sub.ID); err != nil {
+			return err
+		}
+		current, err := w.svc.repo.findSubscriptionByID(txCtx, tx, sub.ID)
+		if err != nil {
+			return err
+		}
+		if staleSubscriptionCheck(current, check) || current.ScheduledCancelAt != nil ||
+			(current.Status != statusActive && current.Status != statusTrialing) {
+			return nil
+		}
+
+		// A pending renewal or activation already exists — most likely a prior delivery
+		// of this event created it but failed before creating its payment link (the
+		// link is a separate write after the invoice's).
+		found, err := w.svc.repo.findPendingPeriodInvoice(txCtx, tx, current.ID)
+		switch {
+		case err == nil:
+			pending = found
+			return nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return err
+		}
+
+		planInfo, err := w.svc.planCatalog(txCtx, current.Plan)
+		if err != nil {
+			return err
+		}
+		composed, addonLines, couponCode, discountCents, err := w.svc.composeInvoiceAmount(
+			txCtx, tx, current.ID, planInfo, current.Currency, current.Cycle)
+		if err != nil {
+			return err
+		}
+		if composed <= 0 {
+			// A zero-priced plan (e.g. "custom", contact-us only, never self-service
+			// selectable) with no addons has nothing to bill, and insertInvoice's
+			// amount_cents CHECK requires > 0 anyway. Under a coupon covering the whole
+			// charge there is nothing to pay either, but the period was paid for, so it
+			// renews instead of lapsing.
+			if couponCode == "" {
+				return nil
+			}
+			covered, err = w.svc.settleCoveredCharge(txCtx, current, invoiceKindSubscription, couponCode, changedBySystem)
+			return err
+		}
+
+		inv, err = w.svc.repo.insertInvoice(txCtx, tx, current.SubjectID, current.ID,
+			composed, taxRate, calculateTax(composed, taxRate), current.Currency, invoiceKindSubscription, false, nil)
 		if err != nil {
 			return err
 		}
@@ -409,7 +414,7 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 			return err
 		}
 		if err := w.svc.applyInvoiceCharges(
-			txCtx, tx, sub.ID, inv.ID, sub.Currency,
+			txCtx, tx, current.ID, inv.ID, current.Currency,
 			addonLines, couponCode, discountCents,
 		); err != nil {
 			return err
@@ -418,20 +423,35 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		// HTTP call below starts, matching every other billingPay-group site:
 		// the durability guarantee only needs to cover the DB write and the
 		// outbox row, not a successful provider response too.
-		return events.Enqueue(txCtx, tx, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", sub.SubjectID,
+		return events.Enqueue(txCtx, tx, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", current.SubjectID,
 			events.InvoiceCreated{
-				OrgID: sub.SubjectID, InvoiceID: inv.ID,
-				Plan: sub.Plan, AmountCents: inv.AmountCents, Currency: inv.Currency, DueAt: *inv.DueAt,
-				FromTrial: sub.Status == statusTrialing,
+				OrgID: current.SubjectID, InvoiceID: inv.ID,
+				Plan: current.Plan, AmountCents: inv.AmountCents, Currency: inv.Currency, DueAt: *inv.DueAt,
+				FromTrial: current.Status == statusTrialing,
 			})
 	})
 	if err != nil {
-		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: insert invoice: %w", err)
+		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: %w", err)
 	}
 
-	_, err = w.svc.createPaymentLink(ctx, "", "", inv.ID)
-	if err != nil {
-		return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: create payment link: %w", err)
+	switch {
+	case covered != nil:
+		if covered.scheduleRenewal != nil {
+			w.svc.scheduleRenewalSequence(ctx, covered.scheduleRenewal)
+		}
+	case pending != nil:
+		// Regenerate the link instead of leaving the invoice permanently
+		// unpayable; if it already has one, there's nothing left to do.
+		if _, linkErr := w.svc.repo.findActivePaymentLinkByInvoice(ctx, w.svc.pool, pending.ID); linkErr == nil {
+			return nil
+		}
+		if _, err := w.svc.createPaymentLink(ctx, "", "", pending.ID); err != nil {
+			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: regenerate payment link: %w", err)
+		}
+	case inv != nil:
+		if _, err := w.svc.createPaymentLink(ctx, "", "", inv.ID); err != nil {
+			return fmt.Errorf("billing.HandleSubscriptionAutoInvoice: create payment link: %w", err)
+		}
 	}
 	return nil
 }

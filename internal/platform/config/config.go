@@ -8,6 +8,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,8 +46,17 @@ type Config struct {
 	// and letting a spoofed header evade per-IP rate limiting).
 	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
 
-	AuditRetentionDays  int `env:"AUDIT_RETENTION_DAYS" envDefault:"30"`
+	AuditRetentionDays  int `env:"AUDIT_RETENTION_DAYS" envDefault:"400"`
 	OutboxRetentionDays int `env:"OUTBOX_RETENTION_DAYS" envDefault:"30"`
+
+	// How long personal and operational data lives before the worker's hourly
+	// sweep removes it. All must be > 0 (see Load).
+	LoginEventRetentionDays          int `env:"LOGIN_EVENT_RETENTION_DAYS" envDefault:"400"`
+	DataExportRetentionDays          int `env:"DATA_EXPORT_RETENTION_DAYS" envDefault:"7"`
+	NotificationRetentionDays        int `env:"NOTIFICATION_RETENTION_DAYS" envDefault:"180"`
+	WebhookDeliveryRetentionDays     int `env:"WEBHOOK_DELIVERY_RETENTION_DAYS" envDefault:"30"`
+	DeletedOrganizationRetentionDays int `env:"DELETED_ORGANIZATION_RETENTION_DAYS" envDefault:"30"`
+	WebhookEventRetentionDays        int `env:"WEBHOOK_EVENT_RETENTION_DAYS" envDefault:"90"`
 
 	// StatsToken gates GET /health/stats (goroutine/heap/pool internals —
 	// a reconnaissance surface if reachable from the public internet).
@@ -195,6 +206,12 @@ type StorageConfig struct {
 // of repeating the literal.
 const envDevelopment = "development"
 
+// minAuditRetentionDays keeps audit history longer than the longest compliance
+// observation window. The database function that deletes audit rows enforces the
+// same floor, so this check only makes a bad value fail at boot instead of being
+// quietly overridden.
+const minAuditRetentionDays = 365
+
 // Load reads environment variables into a Config, returning an error
 // (not a panic) so main.go decides how to fail.
 func Load() (*Config, error) {
@@ -209,7 +226,68 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: invalid APP_ENV %q (want development|staging|production)", cfg.Env)
 	}
 
+	if cfg.AuditRetentionDays < minAuditRetentionDays {
+		return nil, fmt.Errorf("config: AUDIT_RETENTION_DAYS must be at least %d, got %d", minAuditRetentionDays, cfg.AuditRetentionDays)
+	}
+	for _, retention := range []struct {
+		env  string
+		days int
+	}{
+		{"LOGIN_EVENT_RETENTION_DAYS", cfg.LoginEventRetentionDays},
+		{"DATA_EXPORT_RETENTION_DAYS", cfg.DataExportRetentionDays},
+		{"NOTIFICATION_RETENTION_DAYS", cfg.NotificationRetentionDays},
+		{"WEBHOOK_DELIVERY_RETENTION_DAYS", cfg.WebhookDeliveryRetentionDays},
+		{"DELETED_ORGANIZATION_RETENTION_DAYS", cfg.DeletedOrganizationRetentionDays},
+		{"WEBHOOK_EVENT_RETENTION_DAYS", cfg.WebhookEventRetentionDays},
+	} {
+		if retention.days <= 0 {
+			return nil, fmt.Errorf("config: %s must be > 0, got %d", retention.env, retention.days)
+		}
+	}
+
 	return cfg, nil
+}
+
+// WarnPlaintextTransport logs one warning per datastore connection that would
+// travel unencrypted outside development. It warns instead of failing because a
+// single-host stack legitimately keeps this traffic on the host. The log names
+// the variable and never its value, which carries credentials.
+func (c *Config) WarnPlaintextTransport(logger *slog.Logger) {
+	if c.Env == envDevelopment {
+		return
+	}
+	for _, ds := range []struct {
+		env       string
+		plaintext bool
+	}{
+		{"POSTGRES_APP_URL", postgresPlaintext(c.Postgres.URL)},
+		{"POSTGRES_WORKER_URL", postgresPlaintext(c.Postgres.WorkerURL)},
+		{"POSTGRES_WEBHOOK_URL", postgresPlaintext(c.Postgres.WebhookURL)},
+		{"POSTGRES_UNSCOPED_URL", postgresPlaintext(c.Postgres.UnscopedURL)},
+		{"REDIS_URL", strings.HasPrefix(c.Redis.URL, "redis://")},
+		{"RABBITMQ_URL", strings.HasPrefix(c.RabbitMQ.URL, "amqp://")},
+	} {
+		if ds.plaintext {
+			logger.Warn("plaintext datastore transport outside development", "env", ds.env)
+		}
+	}
+}
+
+// postgresPlaintext reports whether a connection URL allows an unencrypted
+// session. allow and prefer count too: they settle for plaintext when the server
+// offers nothing better, so an attacker in the path can force it. A URL that does
+// not parse counts as plaintext, because its protection cannot be shown.
+func postgresPlaintext(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return true
+	}
+	switch u.Query().Get("sslmode") {
+	case "", "disable", "allow", "prefer":
+		return true
+	default:
+		return false
+	}
 }
 
 // RequireSecretsOutsideDev enforces that every registered webhook route has

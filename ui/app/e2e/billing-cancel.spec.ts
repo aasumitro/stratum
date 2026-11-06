@@ -141,7 +141,7 @@ test("cancel with a named reason shows review then success", async ({
   // Request payload matches the backend DTO's field names exactly — a
   // frontend/backend field-name mismatch is exactly what a mocked e2e can
   // silently miss unless the real payload shape is asserted here.
-  expect(captured.payload).not.toBeNull()
+  await expect.poll(() => captured.payload).not.toBeNull()
   expect(captured.payload?.reason).toBe("too_expensive")
   expect(captured.payload?.details).toBeUndefined()
 

@@ -52,7 +52,7 @@ type checkoutLineItem struct {
 // invoice's full amountCents — see checkoutLineItem's own doc for why.
 func createStripeCheckoutSession(
 	ctx context.Context, cfg ProviderConfig,
-	invoiceID, label string, amountCents int64,
+	linkID, invoiceID, label string, amountCents int64,
 	currency string, items []checkoutLineItem,
 ) (*paymentLinkResult, error) {
 	form := url.Values{}
@@ -78,6 +78,9 @@ func createStripeCheckoutSession(
 	// PaymentIntent as their data object, so without this, that event type
 	// has no way to resolve back to invoiceID at all (see handleStripeWebhook).
 	form.Set("payment_intent_data[metadata][invoice_id]", invoiceID)
+	// The invoice alone cannot say which checkout a decline came from, and a decline
+	// from one already replaced must not fail the one still open.
+	form.Set("payment_intent_data[metadata][payment_link_id]", linkID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"https://api.stripe.com/v1/checkout/sessions",

@@ -222,7 +222,8 @@ test("upgrading to a higher plan shows new features then requires terms agreemen
   await expect(confirmBtn).toBeEnabled()
   await confirmBtn.click()
 
-  expect(captured.payload).not.toBeNull()
+  // The click returns before the request reaches the route above.
+  await expect.poll(() => captured.payload).not.toBeNull()
   expect(captured.payload?.plan).toBe("growth")
   expect(captured.payload?.cycle).toBe("monthly")
   expect(captured.payload?.terms_agreed).toBe(true)

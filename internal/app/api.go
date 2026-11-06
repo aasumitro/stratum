@@ -32,6 +32,7 @@ func RunAPI() error {
 		return err
 	}
 	defer infra.Close(context.Background())
+	cfg.WarnPlaintextTransport(infra.Log)
 
 	if err := bootstrap.OpenWebhookPool(ctx, infra); err != nil {
 		return err

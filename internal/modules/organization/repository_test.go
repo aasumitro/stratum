@@ -79,8 +79,18 @@ func TestIntegration_CreateAndGetOrganization(t *testing.T) {
 type stubOrgCatalogReader struct{}
 
 func (stubOrgCatalogReader) GetPlanByID(_ context.Context, id string) (*contracts.PlanInfo, error) {
-	if id == "growth" {
-		return &contracts.PlanInfo{ID: "growth"}, nil
+	price := map[string]contracts.PlanPrices{
+		contracts.CurrencyUSD: {Monthly: 2900, Yearly: 29000},
+		contracts.CurrencyIDR: {Monthly: 299000, Yearly: 2990000},
+	}
+	switch id {
+	case "growth":
+		return &contracts.PlanInfo{ID: "growth", Active: true, Prices: price}, nil
+	case "custom":
+		return &contracts.PlanInfo{ID: "custom", Active: true, Prices: map[string]contracts.PlanPrices{
+			contracts.CurrencyUSD: {},
+			contracts.CurrencyIDR: {},
+		}}, nil
 	}
 	return nil, errors.New("plan not found")
 }
@@ -124,6 +134,32 @@ func TestIntegration_CreateOrganization_UnknownPlan_RejectedBeforeDBWrite(t *tes
 	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM organization.organizations WHERE slug = $1`, slug).Scan(&count)
 	if count != 0 {
 		t.Errorf("want no organization row created after unknown-plan rejection, found %d", count)
+	}
+}
+
+// A plan with no price has no first invoice, so picking one would be a free period of
+// whatever it grants. It is arranged with sales.
+func TestIntegration_CreateOrganization_ZeroPricedPlan_RejectedBeforeDBWrite(t *testing.T) {
+	pool := testPool(t)
+	const slug = "integ-ws-zeroplan"
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE slug = $1`, slug)
+	})
+
+	w := httptest.NewRecorder()
+	organization.NewModuleEngineWithCatalogReader(pool, testAuthSub, stubOrgCatalogReader{}).ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"`+slug+`","name":"Integ WS","plan":"custom","cycle":"yearly"}`))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("zero-priced plan: want 422, got %d: %s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "PLAN_NOT_SELF_SERVICE") {
+		t.Errorf("want code PLAN_NOT_SELF_SERVICE, got %s", w.Body)
+	}
+
+	var count int
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM organization.organizations WHERE slug = $1`, slug).Scan(&count)
+	if count != 0 {
+		t.Errorf("want no organization row created, found %d", count)
 	}
 }
 
@@ -1180,6 +1216,94 @@ func TestIntegration_SelfSuspendAndSelfUnsuspend_HappyPath(t *testing.T) {
 // self-unsuspend route can't be used as a free escape hatch from a
 // billing-driven suspension (unpaid invoice) — only a suspension the owner
 // self-triggered through this same route is self-reversible.
+// An owner who suspends just before their subscription expires must not be able
+// to lift the suspension afterwards and keep running on an expired subscription.
+func TestIntegration_BillingSuspension_ReplacesTheOwnersOwn(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-self-dodge","name":"Self Dodge","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	wSuspend := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/suspend", ""))
+	if wSuspend.Code >= 300 {
+		t.Fatalf("self-suspend: got %d: %s", wSuspend.Code, wSuspend.Body)
+	}
+
+	mod := organization.NewModuleForTest(pool)
+	if err := mod.SuspendOrganization(t.Context(), orgID, "subscription expired"); err != nil {
+		t.Fatalf("SuspendOrganization: %v", err)
+	}
+
+	var status, reason string
+	pool.QueryRow(t.Context(), `SELECT status, suspended_reason FROM organization.organizations WHERE id = $1`, orgID).Scan(&status, &reason)
+	if status != "suspended" || reason != "subscription expired" {
+		t.Errorf("want billing's reason to replace the owner's, got %q / %q", status, reason)
+	}
+
+	wUnsuspend := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/unsuspend", ""))
+	if wUnsuspend.Code != http.StatusUnprocessableEntity {
+		t.Errorf("self-unsuspend after expiry: want 422, got %d: %s", wUnsuspend.Code, wUnsuspend.Body)
+	}
+
+	// Suspending again must not put back a reason the owner could lift.
+	wAgain := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/suspend", ""))
+	if wAgain.Code != http.StatusForbidden {
+		t.Errorf("second self-suspend: want 403, got %d: %s", wAgain.Code, wAgain.Body)
+	}
+	pool.QueryRow(t.Context(), `SELECT suspended_reason FROM organization.organizations WHERE id = $1`, orgID).Scan(&reason)
+	if reason != "subscription expired" {
+		t.Errorf("want billing's reason to stay, got %q", reason)
+	}
+}
+
+// Billing must not take over a suspension an operator made for their own reason.
+func TestIntegration_BillingSuspension_LeavesAnOperatorsAlone(t *testing.T) {
+	pool := testPool(t)
+
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-operator-hold","name":"Operator Hold","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE organization.organizations SET status = 'suspended', suspended_reason = 'fraud review' WHERE id = $1`, orgID); err != nil {
+		t.Fatalf("operator suspension: %v", err)
+	}
+
+	mod := organization.NewModuleForTest(pool)
+	if err := mod.SuspendOrganization(t.Context(), orgID, "subscription expired"); err != nil {
+		t.Fatalf("SuspendOrganization: %v", err)
+	}
+
+	var reason string
+	pool.QueryRow(t.Context(), `SELECT suspended_reason FROM organization.organizations WHERE id = $1`, orgID).Scan(&reason)
+	if reason != "fraud review" {
+		t.Errorf("an operator's reason must stay, got %q", reason)
+	}
+}
+
 func TestIntegration_SelfUnsuspend_BlockedForBillingHold(t *testing.T) {
 	pool := testPool(t)
 

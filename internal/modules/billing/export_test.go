@@ -1,6 +1,8 @@
 package billing
 
 import (
+	"context"
+
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -100,6 +102,12 @@ type referenceStub interface {
 	contracts.CountryTaxReader
 }
 
+// CreatePaymentLinkForTest opens a checkout for invoiceID the way the worker does.
+func (m *Module) CreatePaymentLinkForTest(ctx context.Context, invoiceID string) error {
+	_, err := m.svc.createPaymentLink(ctx, "", "", invoiceID)
+	return err
+}
+
 // NewModuleForTest creates a Module backed by a real pool. A nil ref leaves
 // the tax rate unwired — tax defaults to 0 (see service.go's
 // optional-dependency comments).
@@ -189,7 +197,7 @@ func NewModuleEngine(pool *pgxpool.Pool, authSub, organizationID string, ref ...
 	}
 	noopMW := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
-	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: middleware.NewRLSTxMiddleware(pool), MFA: noopMW})
 	return e
 }
 

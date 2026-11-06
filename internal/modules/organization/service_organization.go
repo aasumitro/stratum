@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -27,8 +28,9 @@ var ErrUnknownPlan = errors.New("unknown plan")
 // reject before the organization is written, so a bad selection never leaves
 // behind an org whose subscription-provisioning event fails forever.
 var (
-	ErrUnknownAddon  = errors.New("unknown addon")
-	ErrInvalidCoupon = errors.New("coupon not valid for this account")
+	ErrUnknownAddon     = errors.New("unknown addon")
+	ErrInvalidCoupon    = errors.New("coupon not valid for this account")
+	ErrPlanNotSelfServe = errors.New("plan is not available to pick")
 )
 
 // addonSelection is one addon + quantity chosen at organization-creation
@@ -74,6 +76,8 @@ func (s *service) createOrganization(
 		switch {
 		case errors.Is(err, ErrUnknownPlan):
 			err = apperr.Validation("UNKNOWN_PLAN", "unknown plan")
+		case errors.Is(err, ErrPlanNotSelfServe):
+			err = apperr.Validation("PLAN_NOT_SELF_SERVICE", "this plan is not available to pick; contact us instead")
 		case errors.Is(err, ErrUnknownAddon):
 			err = apperr.Validation("UNKNOWN_ADDON", "unknown addon")
 		case errors.Is(err, ErrInvalidCoupon):
@@ -86,7 +90,7 @@ func (s *service) createOrganization(
 		}
 	}()
 
-	if err := s.validateCatalogSelections(ctx, plan, addons, couponCode, ownerID); err != nil {
+	if err := s.validateCatalogSelections(ctx, plan, cycle, countryCode, addons, couponCode, ownerID); err != nil {
 		return nil, err
 	}
 
@@ -121,17 +125,23 @@ func (s *service) createOrganization(
 // validateCatalogSelections checks plan, every addon ID, and a non-empty
 // coupon code against the live catalog before any DB write happens, so a
 // bad selection never leaves a half-created organization (or one whose
-// subscription-provisioning event fails forever) behind. A no-op when no
+// subscription-provisioning event fails forever) behind. A plan must also be one
+// an owner can pick: with no price there is no first invoice, so it would be a free
+// period of whatever that plan grants. A no-op when no
 // catalogReader is wired — catalog validation is optional, matching every
 // other call site of this dependency in this module.
 func (s *service) validateCatalogSelections(
-	ctx context.Context, plan string, addons []addonSelection, couponCode, ownerID string,
+	ctx context.Context, plan, cycle, countryCode string, addons []addonSelection, couponCode, ownerID string,
 ) error {
 	if s.catalogReader == nil {
 		return nil
 	}
-	if _, err := s.catalogReader.GetPlanByID(ctx, plan); err != nil {
+	planInfo, err := s.catalogReader.GetPlanByID(ctx, plan)
+	if err != nil {
 		return ErrUnknownPlan
+	}
+	if !planInfo.SelfServe(contracts.ResolveCurrency(countryCode), cycle) {
+		return ErrPlanNotSelfServe
 	}
 	for _, a := range addons {
 		if _, err := s.catalogReader.GetAddonByID(ctx, a.AddonID); err != nil {

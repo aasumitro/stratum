@@ -59,7 +59,7 @@ func (h *handler) resolveCountryCode(c *gin.Context) string {
 // @Security     BearerAuth
 // @Param        body  body      createOrganizationRequest              true  "Organization fields"
 // @Success      201   {object}  response.Payload{data=organizationRecord}
-// @Failure      422   {object}  response.Payload  "validation failed"
+// @Failure      422   {object}  response.Payload  "validation failed, or a plan with no price (PLAN_NOT_SELF_SERVICE)"
 // @Failure      401   {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations [post]
 func (h *handler) createOrganization(c *gin.Context) {

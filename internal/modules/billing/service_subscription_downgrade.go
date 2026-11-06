@@ -29,7 +29,7 @@ func (s *service) downgradeSubscription(
 
 	newPlanInfo, err := s.planCatalog(ctx, plan)
 	if err != nil {
-		return nil, contracts.OverageResolution{}, ErrUnknownPlan
+		return nil, contracts.OverageResolution{}, apperr.Validation("UNKNOWN_PLAN", "unknown plan")
 	}
 
 	sub, err := s.getSubscription(ctx, subjectType, subjectID)
@@ -54,6 +54,9 @@ func (s *service) downgradeSubscription(
 		if newPlanInfo.SortOrder >= oldPlanInfo.SortOrder {
 			return nil, contracts.OverageResolution{}, apperr.Validation(
 				"INVALID_DOWNGRADE", "target plan is not a downgrade")
+		}
+		if !newPlanInfo.SelfServe(sub.Currency, cycle) {
+			return nil, contracts.OverageResolution{}, apperr.Validation(planNotSelfServeCode, planNotSelfServeMsg)
 		}
 	}
 

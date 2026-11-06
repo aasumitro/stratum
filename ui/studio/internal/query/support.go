@@ -173,7 +173,7 @@ func ListSupportOrganizationInvoices(ctx context.Context, pool *pgxpool.Pool, or
 func SupportExtendTrial(ctx context.Context, pool *pgxpool.Pool, organizationID string, days int) error {
 	tag, err := pool.Exec(ctx, `
 		UPDATE billing.subscriptions
-		SET trial_end = trial_end + ($1 || ' days')::INTERVAL
+		SET trial_end = trial_end + make_interval(days => $1)
 		WHERE subject_id = $2 AND status = 'trialing'
 	`, days, organizationID)
 	if err != nil {

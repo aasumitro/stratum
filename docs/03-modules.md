@@ -31,7 +31,7 @@ In-house delivery across email (bilingual EN/ID templates), in-app, outbound cus
 Static seed data read by everything: countries (full ISO 3166-1, only Indonesia active by default) and currencies (a curated set, only USD/IDR active). Activating a new market is a Studio toggle rather than a code change.
 
 ## Audit
-Not a module you call — middleware records every non-GET request (and every 4xx/5xx, including anonymous auth failures) into an append-only log, with sensitive fields redacted. Two read surfaces exist: a per-organization admin log and a personal cross-organization log.
+Not a module you call — middleware records every non-GET request (including anonymous auth failures) and any GET a handler flags, with sensitive fields redacted. Provider webhooks record failed calls only. A separate database trigger records every change an operator makes through their own login role. The log is append-only: runtime roles hold no UPDATE or DELETE on it, and the two legitimate rewrites, retention and GDPR anonymization, go through narrow database functions. Two read surfaces exist: a per-organization admin log and a personal cross-organization log.
 
 ## The platform layer
 `internal/platform/` holds the shared infrastructure — audit, cache, config, db, httpserver, mailer, messaging, otel, pdf, storage — one package per concern. Modules depend on the platform, never on each other.

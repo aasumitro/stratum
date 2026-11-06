@@ -61,7 +61,8 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 				ID            string `json:"id"`
 				PaymentStatus string `json:"payment_status"` // "paid" | "unpaid" | "no_payment_required"
 				Metadata      struct {
-					InvoiceID string `json:"invoice_id"`
+					InvoiceID     string `json:"invoice_id"`
+					PaymentLinkID string `json:"payment_link_id"`
 				} `json:"metadata"`
 			} `json:"object"`
 		} `json:"data"`
@@ -78,7 +79,7 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 	// and reports the outcome later through the async_payment_* events, which
 	// carry the same Checkout Session and resolve the same way.
 	var status string
-	var invoiceID string
+	ref := webhookLinkRef{externalID: payload.Data.Object.ID}
 	switch payload.Type {
 	case "checkout.session.completed":
 		status = normalizeStripeStatus(payload.Data.Object.PaymentStatus)
@@ -92,7 +93,8 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 			// — that lookup would never match, so resolve by invoice_id
 			// instead (set on the PaymentIntent at checkout-session
 			// creation, see createStripeCheckoutSession).
-			invoiceID = payload.Data.Object.Metadata.InvoiceID
+			ref.invoiceID = payload.Data.Object.Metadata.InvoiceID
+			ref.linkID = payload.Data.Object.Metadata.PaymentLinkID
 		}
 	default:
 		c.Status(http.StatusOK)
@@ -109,8 +111,7 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 	// processWebhook marks-processed and applies all effects in one transaction, so a
 	// failure here rolls back the marker too — the provider's retry re-runs it cleanly.
 	if err := h.svc.processWebhook(
-		c.Request.Context(), "stripe", payload.ID,
-		payload.Data.Object.ID, invoiceID, status,
+		c.Request.Context(), "stripe", payload.ID, ref, status,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.Status(http.StatusOK) // unknown link — ACK to stop retries
@@ -170,7 +171,7 @@ func (h *handler) handleXenditWebhook(c *gin.Context) {
 	// same invoice ID are each processed once (terminal states never overlap).
 	if err := h.svc.processWebhook(
 		c.Request.Context(), "xendit",
-		payload.ID+"_"+payload.Status, payload.ID, "", status,
+		payload.ID+"_"+payload.Status, webhookLinkRef{externalID: payload.ID}, status,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.Status(http.StatusOK)

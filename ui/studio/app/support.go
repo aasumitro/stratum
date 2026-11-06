@@ -208,6 +208,10 @@ func (s *SupportService) GetOrganizationInvoices(projectID, organizationID strin
 }
 
 func (s *SupportService) ExtendTrial(projectID, organizationID string, days int) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if days <= 0 {
 		return fmt.Errorf("SupportService.ExtendTrial: days must be positive")
 	}
@@ -224,6 +228,10 @@ func (s *SupportService) ExtendTrial(projectID, organizationID string, days int)
 }
 
 func (s *SupportService) ActivateSubscription(projectID, organizationID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "SupportService.ActivateSubscription", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.SupportActivateSubscription(ctx, db, organizationID)
@@ -236,6 +244,10 @@ func (s *SupportService) ActivateSubscription(projectID, organizationID string) 
 }
 
 func (s *SupportService) ChangePlan(projectID, organizationID, plan, cycle string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if plan == "" {
 		return fmt.Errorf("SupportService.ChangePlan: plan is required")
 	}
@@ -255,6 +267,10 @@ func (s *SupportService) ChangePlan(projectID, organizationID, plan, cycle strin
 }
 
 func (s *SupportService) MarkInvoicePaid(projectID, invoiceID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "SupportService.MarkInvoicePaid", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.SupportMarkInvoicePaid(ctx, db, invoiceID)
@@ -267,6 +283,10 @@ func (s *SupportService) MarkInvoicePaid(projectID, invoiceID string) error {
 }
 
 func (s *SupportService) VoidInvoice(projectID, invoiceID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "SupportService.VoidInvoice", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.SupportVoidInvoice(ctx, db, invoiceID)

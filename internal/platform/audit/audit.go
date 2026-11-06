@@ -5,19 +5,25 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
+	"github.com/aasumitro/stratum/internal/platform/otel"
 )
 
 // responseBodyWriter buffers the response body so the audit middleware
@@ -46,8 +52,19 @@ const (
 	maxBodyBytes  = 4096
 	cleanupTick   = 1 * time.Hour
 
+	// dropLogInterval keeps an overflowing buffer from flooding the log at the
+	// exact moment the service is already overloaded.
+	dropLogInterval = 1 * time.Minute
+
+	anonymousActor = "anonymous"
+
 	auditBeforeKey = "audit.before"
 	auditAfterKey  = "audit.after"
+)
+
+var (
+	emptyMetadata = []byte("{}")
+	nulEscape     = []byte(`\u0000`)
 )
 
 // SetBefore stores the state before a mutation so the audit middleware
@@ -89,29 +106,53 @@ type Writer struct {
 	logger        *slog.Logger
 	retentionDays int
 	done          chan struct{}
+
+	// stopCleanup and cleanupDone are set by NewWriter, which starts runCleanup.
+	stopCleanup context.CancelFunc
+	cleanupDone chan struct{}
+
+	// droppedSinceLog counts events lost to a full buffer since run last
+	// reported them. The request path only increments it; run owns the log.
+	droppedSinceLog atomic.Int64
+	dropped         metric.Int64Counter
+	writeFailures   metric.Int64Counter
+	authFailures    metric.Int64Counter
+	sweepFailures   metric.Int64Counter
 }
 
 // NewWriter starts a background goroutine that drains the channel
 // and writes batches to the database. Call Stop to flush remaining events.
 func NewWriter(pool *pgxpool.Pool, logger *slog.Logger, retentionDays int) *Writer {
-	w := &Writer{
+	w := newWriter(pool, logger, retentionDays, bufferSize)
+	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
+	w.stopCleanup = stopCleanup
+	w.cleanupDone = make(chan struct{})
+	go w.run()
+	go w.runCleanup(cleanupCtx)
+	return w
+}
+
+func newWriter(pool *pgxpool.Pool, logger *slog.Logger, retentionDays, buffer int) *Writer {
+	return &Writer{
 		pool:          pool,
-		ch:            make(chan event, bufferSize),
+		ch:            make(chan event, buffer),
 		logger:        logger,
 		retentionDays: retentionDays,
 		done:          make(chan struct{}),
+		dropped:       otel.Counter("stratum.audit.events.dropped", "Audit events lost because the write buffer was full."),
+		writeFailures: otel.Counter("stratum.audit.write.failures", "Audit batches the database refused."),
+		authFailures:  otel.Counter("stratum.http.auth.failures", "Requests answered 401 or 403."),
+		sweepFailures: otel.Counter("stratum.retention.sweep.failures", "Retention sweeps that failed and will retry on the next tick."),
 	}
-	go w.run()
-	return w
 }
 
 func (w *Writer) run() {
 	defer close(w.done)
 	batch := make([]event, 0, batchSize)
 	flushTicker := time.NewTicker(flushInterval)
-	cleanupTicker := time.NewTicker(cleanupTick)
+	dropLogTicker := time.NewTicker(dropLogInterval)
 	defer flushTicker.Stop()
-	defer cleanupTicker.Stop()
+	defer dropLogTicker.Stop()
 
 	for {
 		select {
@@ -120,6 +161,7 @@ func (w *Writer) run() {
 				if len(batch) > 0 {
 					w.flush(batch)
 				}
+				w.logDropped()
 				return
 			}
 			batch = append(batch, e)
@@ -132,9 +174,33 @@ func (w *Writer) run() {
 				w.flush(batch)
 				batch = batch[:0]
 			}
-		case <-cleanupTicker.C:
-			w.cleanup()
+		case <-dropLogTicker.C:
+			w.logDropped()
 		}
+	}
+}
+
+// runCleanup is separate from run because a retention sweep can take seconds, and
+// nothing drains the event buffer while run is busy: under load that would drop the
+// events the sweep is meant to protect.
+func (w *Writer) runCleanup(ctx context.Context) {
+	defer close(w.cleanupDone)
+	ticker := time.NewTicker(cleanupTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.cleanup(ctx)
+		}
+	}
+}
+
+// logDropped reports events lost since the previous report, if any.
+func (w *Writer) logDropped() {
+	if n := w.droppedSinceLog.Swap(0); n > 0 {
+		w.logger.Warn("audit events dropped", "count", n)
 	}
 }
 
@@ -159,20 +225,44 @@ func InsertDirect(
 }
 
 // AnonymizeActor replaces actor with a placeholder across a user's audit
-// events — used by the GDPR account-deletion flow.
+// events — used by the GDPR account-deletion flow. It goes through a database
+// function because runtime roles hold no UPDATE on audit.events.
 func AnonymizeActor(ctx context.Context, pool *pgxpool.Pool, authSub string) error {
-	if _, err := pool.Exec(ctx, `UPDATE audit.events SET actor = 'deleted_user' WHERE actor = $1`, authSub); err != nil {
+	if _, err := pool.Exec(ctx, `SELECT audit.anonymize_actor($1)`, authSub); err != nil {
 		return fmt.Errorf("audit.AnonymizeActor: %w", err)
 	}
 	return nil
 }
 
-func (w *Writer) cleanup() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cutoff := time.Now().AddDate(0, 0, -w.retentionDays)
-	if _, err := w.pool.Exec(ctx, `DELETE FROM audit.events WHERE created_at < $1`, cutoff); err != nil {
-		w.logger.Warn("audit cleanup failed", "error", err)
+// cleanup goes through a database function because runtime roles hold no
+// DELETE on audit.events. The function also enforces the retention floor, and
+// removes a bounded batch per call, so this repeats until nothing is left. The
+// count it logs is the evidence that retention actually ran. A failure is counted
+// because audit rows outliving their retention is a gap someone needs to hear about.
+func (w *Writer) cleanup(ctx context.Context) {
+	var total int64
+	defer func() {
+		if total > 0 {
+			w.logger.Info("audit retention sweep removed rows", "rows", total)
+		}
+	}()
+	for {
+		batchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		var removed int64
+		err := w.pool.QueryRow(batchCtx, `SELECT audit.sweep_expired($1)`, w.retentionDays).Scan(&removed)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			w.sweepFailures.Add(ctx, 1, metric.WithAttributes(attribute.String("module", "audit")))
+			w.logger.Warn("audit cleanup failed", "error", err)
+			return
+		}
+		total += removed
+		if removed == 0 {
+			return
+		}
 	}
 }
 
@@ -196,20 +286,63 @@ func (w *Writer) flush(batch []event) {
 		// One value Postgres rejects as JSON fails the whole multi-row
 		// INSERT and loses every event in the batch, so anything that is not
 		// a valid JSON object or array — a truncated or malformed request
-		// body included — is stored as {} instead.
+		// body included — is stored as {} instead. So is a NUL escape, which
+		// is valid JSON that jsonb refuses: it is the cheapest way to force
+		// the retry below, and nothing drains the buffer while that retry runs.
 		meta := e.metadata
-		if !json.Valid(meta) || (meta[0] != '{' && meta[0] != '[') {
-			meta = []byte("{}")
+		if !json.Valid(meta) || (meta[0] != '{' && meta[0] != '[') || bytes.Contains(meta, nulEscape) {
+			meta = emptyMetadata
 		}
-		args = append(args, e.organizationID, e.actor, e.action, e.resource, e.statusCode, meta, e.ip, e.userAgent)
+		// A request can carry any bytes in this header, and Postgres refuses text
+		// that is not valid UTF-8 or that holds a NUL.
+		userAgent := strings.ReplaceAll(strings.ToValidUTF8(e.userAgent, "\uFFFD"), "\x00", "")
+		args = append(args, e.organizationID, e.actor, e.action, e.resource, e.statusCode, meta, e.ip, userAgent)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if _, err := w.pool.Exec(ctx, b.String(), args...); err != nil {
+		if w.flushAroundRefusedValue(batch, err) {
+			return
+		}
+		w.writeFailures.Add(context.Background(), 1)
 		w.logger.Warn("audit flush failed", "batch_size", len(batch), "error", err)
 	}
+}
+
+// flushAroundRefusedValue handles a batch Postgres refused because of a value in
+// it, and reports whether it did. A batch is one statement, so without this a caller
+// with no account could erase everyone else's events with one crafted request every
+// flush. json.Valid accepts bodies jsonb does not, such as one nested too deeply.
+// So the batch is split in half until the bad row stands alone, which keeps one bad
+// row among hundreds to a handful of statements, and that row is retried once with
+// empty metadata, because the record that the request happened is worth keeping
+// without its body. Any other failure is not the data's fault, and retrying each row
+// would only multiply it.
+func (w *Writer) flushAroundRefusedValue(batch []event, err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || !isRefusedValue(pgErr.Code) {
+		return false
+	}
+	if len(batch) > 1 {
+		mid := len(batch) / 2
+		w.flush(batch[:mid])
+		w.flush(batch[mid:])
+		return true
+	}
+	if !bytes.Equal(batch[0].metadata, emptyMetadata) {
+		batch[0].metadata = emptyMetadata
+		w.flush(batch)
+		return true
+	}
+	return false
+}
+
+// isRefusedValue reports a data exception (class 22) or a program limit such as a
+// value nested too deeply (class 54).
+func isRefusedValue(sqlState string) bool {
+	return strings.HasPrefix(sqlState, "22") || strings.HasPrefix(sqlState, "54")
 }
 
 // Stop closes the channel and blocks until run has drained it and flushed
@@ -217,6 +350,8 @@ func (w *Writer) flush(batch []event) {
 // closing the DB pool right after) will not race the final flush against the
 // pool going away.
 func (w *Writer) Stop() {
+	w.stopCleanup()
+	<-w.cleanupDone
 	close(w.ch)
 	<-w.done
 }
@@ -225,7 +360,48 @@ func (w *Writer) enqueue(e event) {
 	select {
 	case w.ch <- e:
 	default:
-		// channel full — drop rather than block the request
+		// channel full — drop rather than block the request, and keep the
+		// loss visible: a silent gap in an audit trail is worse than a noisy one
+		w.droppedSinceLog.Add(1)
+		w.dropped.Add(context.Background(), 1)
+	}
+}
+
+// recordAuthFailure counts a 401 or 403. Callers run it before deciding whether
+// the request deserves an audit row, so credential probing is counted on every
+// method, including the GETs Middleware does not write a row for.
+func (w *Writer) recordAuthFailure(c *gin.Context) {
+	status := c.Writer.Status()
+	if status != http.StatusUnauthorized && status != http.StatusForbidden {
+		return
+	}
+	w.authFailures.Add(c.Request.Context(), 1, metric.WithAttributes(
+		attribute.Int("status", status),
+		attribute.String("route", c.FullPath()),
+	))
+}
+
+// FailureMiddleware records only failed requests, with no body capture and
+// empty metadata. It is meant for unauthenticated provider callbacks: a forged
+// or misconfigured call leaves a security record, a successful one is already
+// reflected in the state it changed, and neither body belongs in the audit log.
+func (w *Writer) FailureMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+
+		w.recordAuthFailure(c)
+		if c.Writer.Status() < http.StatusBadRequest {
+			return
+		}
+		w.enqueue(event{
+			actor:      anonymousActor,
+			action:     c.Request.Method,
+			resource:   c.FullPath(),
+			statusCode: c.Writer.Status(),
+			metadata:   emptyMetadata,
+			ip:         c.ClientIP(),
+			userAgent:  c.Request.UserAgent(),
+		})
 	}
 }
 
@@ -255,6 +431,8 @@ func (w *Writer) Middleware() gin.HandlerFunc {
 
 		c.Next()
 
+		w.recordAuthFailure(c)
+
 		// Handlers can set "audit.action" to override the default HTTP-method
 		// label or to force-audit a GET; otherwise GETs are skipped entirely.
 		action := c.GetString("audit.action")
@@ -262,7 +440,7 @@ func (w *Writer) Middleware() gin.HandlerFunc {
 			return
 		}
 
-		actor := "anonymous"
+		actor := anonymousActor
 		if claims, ok := middleware.ClaimsFromContext(c); ok {
 			actor = claims.Subject
 		}
@@ -270,7 +448,7 @@ func (w *Writer) Middleware() gin.HandlerFunc {
 		// Skip anonymous requests that are not errors and not explicitly flagged.
 		// This avoids recording probe/health traffic; 4xx from unauthenticated
 		// requests (401 auth failures, 403 RBAC failures) are kept as security signals.
-		if actor == "anonymous" && c.Writer.Status() < http.StatusBadRequest && action == "" {
+		if actor == anonymousActor && c.Writer.Status() < http.StatusBadRequest && action == "" {
 			return
 		}
 

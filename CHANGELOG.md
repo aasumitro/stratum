@@ -6,8 +6,54 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- `audit.events` is append-only again. Runtime roles held UPDATE and DELETE on it through a later
+  migration's blanket grant. Retention and GDPR anonymization now go through narrow database
+  functions, and the 365-day retention floor is enforced in SQL.
+- Every change made through Studio is attributed to a person. Each operator connects with their own
+  Postgres login in the new `stratum_operator` group, and a trigger records the old and new row as
+  `operator:<role>`, minus invite codes, checkout URLs, owner identifiers and any person a row is aimed
+  at. Broadcasts and queue
+  requeue/purge are recorded before they run, and do not run if the record fails. Operator rows cannot
+  be anonymized. Studio refuses changes on any other connection and shows a persistent banner.
+- Failed provider webhook calls now leave an audit row (no body captured).
+- One request can no longer erase other requests' audit events. A batch is one statement, so a single
+  value Postgres refuses, such as a non-UTF-8 `User-Agent` or a `\u0000` in a JSON body, lost the whole
+  batch. The value is now cleaned or dropped, and only that row loses its metadata.
+- HSTS is sent outside development, and boot warns about each datastore connection that would travel
+  unencrypted.
+- CI scans git history for secrets (`gitleaks`), audits npm dependencies, runs on `dev` pushes, and
+  pins its Go tools. Dependabot opens weekly updates. `shadcn` moved to `devDependencies`, and
+  `npm audit fix` cleared every high and critical advisory in both frontends.
+
+### Added
+
+- Retention sweeps in the worker, each configurable: login events (400 days), GDPR export payloads
+  (7), notifications (180), webhook deliveries (30), provider webhook markers (90), and a permanent
+  purge of organizations soft-deleted more than 30 days ago.
+- OpenTelemetry instruments: `stratum.audit.events.dropped`, `stratum.audit.write.failures`,
+  `stratum.http.auth.failures`, `stratum.ratelimit.rejections`, `stratum.outbox.due_unpublished`,
+  `stratum.outbox.exhausted`, `stratum.dlq.messages`, `stratum.retention.sweep.failures`. Audit events
+  dropped on buffer overflow are now counted and logged.
+- `make db-backup` (owner-only file permissions) and `make db-restore-verify`.
+- `docs/14-compliance.md`: SOC 2 control matrix, data inventory and retention schedule,
+  subprocessors, and a production hardening checklist. `docs/12-operations.md` gains incident
+  response, operator access, secret rotation and an alert catalog.
+
 ### Changed
 
+- **Breaking:** `AUDIT_RETENTION_DAYS` defaults to 400 (was 30), and boot fails below 365. Raise it
+  in any existing environment before upgrading.
+- **Breaking:** migration `000011` needs the `stratum_operator` role to exist first
+  (`deploy/postgres-init/01-app-role.sql`, or `docs/12-operations.md` for other environments).
+- **Breaking:** Studio refuses changes unless its connection is an operator login. Switch each
+  project's DSN to one (locally, `stratum_operator_dev` from `deploy/postgres-init/03-operator-role.sql`).
+- **Breaking:** while an organization's first invoice is unpaid, the API refuses writes with
+  `403 ACTIVATION_UNPAID`, for every member and every client. This was enforced only by the web app. Reads,
+  Billing, deleting the organization and leaving it stay open.
+- **Breaking:** `PATCH /billing/plan` refuses a lower plan with `422 PLAN_CHANGE_IS_DOWNGRADE`, on every
+  status. `POST /billing/downgrade` serves all of them.
 - Cancelling is scheduled on every status, trials included: access continues until the end of the
   paid period (or the trial) and the cancel can be undone until then. A pending renewal invoice is
   voided when the cancel is requested; Undo issues it again.
@@ -19,14 +65,81 @@ versioning follows [SemVer](https://semver.org/).
   subscription to `trialing`.
 - While a cancellation is scheduled, a downgrade, an add-on decrease or removal, and activate-now
   are refused with `422 CANCELLATION_SCHEDULED`.
-- A plan change with the first (activation) invoice still unpaid restarts the period on the new plan
-  and reissues the activation at the new price; pending extension and add-on-increase invoices are
-  voided rather than turned into a renewal.
+- A plan change with the first (activation) invoice still unpaid reissues the activation at the new
+  price and never lengthens the period; paying it grants one full cycle from the period's start.
+  Pending extension and add-on-increase invoices are voided rather than turned into a renewal.
 - A pending renewal invoice no longer blocks the organization's navigation in the web app — only an
   unpaid activation invoice does.
 
 ### Fixed
 
+- An owner could keep a paid plan without paying by repeating a plan change while the activation
+  invoice was unpaid, which restarted the period each time.
+- An owner could dodge a billing suspension by suspending the organization just before the period
+  ended, then lifting it. A billing suspension now replaces the owner's own.
+- An owner could grow a paid period without limit by switching cycle on the same plan and then moving
+  between plans, because proration read the old price at whichever rate the free switch had just set.
+  A plan change can now only keep or shorten the period.
+- A provider reporting a checkout we had closed ourselves counted as a failed payment: the subscription
+  went `past_due` and the owner got dunning notices after any plan change, cancel or repeat checkout,
+  and even after paying.
+- A payment landing just after a plan change on an expired subscription reactivated it on the new plan
+  and cycle, so a month's price could buy a year on a dearer plan. It is now logged and left for manual
+  reconciliation, like any other payment nothing applies automatically.
+- Paying the activation invoice in the last three days of the period left no renewal invoice, so the
+  subscription expired at the end of a period the owner had paid for.
+- An add-on increase while the activation invoice was unpaid rode a cycle it was not priced for, and a
+  plan change reissuing that invoice then charged it twice. It is now refused with
+  `422 PERIOD_INVOICE_PENDING`.
+- Adding to an expired or cancelled subscription while its Resume invoice was pending applied at no
+  charge, and paying that invoice then brought the add-on back free for a whole cycle. It is now refused
+  with `422 PERIOD_INVOICE_PENDING`.
+- An add-on raised while a renewal was pending rode that cheaper renewal for a whole cycle, every cycle.
+  Paying the increase now reissues the renewal at the new quantity. A trial's add-on changes do the same
+  for the invoice converting the trial.
+- An invoice priced from a state that has since changed stayed payable. A paid renewal or extension now
+  voids the other one and any pending add-on increase, and a paid add-on increase drops a pending
+  extension.
+- A period under half a month, which an upgrade can leave, rounded to zero months and made an add-on
+  increase free.
+- `POST /organizations` accepted a plan with no price, which meant a free period of it with no invoice,
+  on the unlimited `custom` plan. `PATCH /billing/plan` accepted it too, and a lower plan, which skipped
+  resolving the members over its limit.
+- A pending add-on increase or extension stopped the renewal invoice, so the subscription could expire
+  with nothing to pay.
+- A card declined on a checkout already replaced marked the open one failed and moved the subscription to
+  `past_due`. The checkout now carries its own identity in the PaymentIntent's metadata.
+- A coupon covering a whole charge failed activate-now, Resume and a 2nd+ organization's creation with a
+  500, let a paid-up subscription lapse at renewal, and voided an unpaid activation with no replacement.
+  The charge now has the effect a payment would, with no invoice. A plan with no price and no coupon answers
+  422 on activate-now, Resume and Extend instead of 500.
+- A voided or failed invoice kept the coupon application it used, so what replaced it lost a once-only
+  discount.
+- A coupon absorbing an add-on increase was not used by it, so a once-only coupon paid for one increase after
+  another and was still there for the renewal. A fixed-amount coupon no longer applies to an increase at all,
+  since one split into many small invoices would be absorbed seat by seat.
+- A once-only coupon could be redeemed again on the same subscription after it was used up.
+- Activate-now in a trial's last three days left the conversion invoice open: paying both bought two cycles,
+  and either one left open dunned or blocked an organization that had paid. It now replaces that invoice.
+- A scheduled removal of an add-on left its pending increase payable, and paying it after the renewal removed
+  the row lost the money. A decrease or removal now voids that add-on's pending increase.
+- Requests side by side issued duplicate invoices: up to one per delivery of a duplicate auto-invoice message,
+  and one per click on Extend or activate-now. Invoices are now decided and issued under the subscription's row
+  lock, which also stops a price missing an add-on change in flight, and a plan change overwriting the period a
+  payment in flight just bought.
+- A late payment reactivating a subscription left a Resume invoice open, and that checkout expiring moved
+  the fresh period to `past_due`. A late payment for an invoice issued before an add-on grew is now left for
+  manual reconciliation, like one issued before a plan change.
+- A redelivered `organization.created` issued the first invoice again if the first one had been paid.
+- `POST /billing/downgrade` answered 500 for an unknown plan.
+- A request body holding a number too large for a float skipped audit redaction and was stored as
+  sent. It is now stored as empty metadata.
+- Studio's Extend Trial always failed with an encoding error.
+- Studio's queue requeue lost a message that had no properties: it failed decoding the response after
+  the message had already left the queue.
+- Editing a project's DSN in Studio kept the old connection until the app restarted.
+- The audit retention sweep ran on the goroutine that drains the event buffer, so a slow sweep could
+  drop events under load.
 - A plan change that moved `period_end` never rescheduled renewal, so no renewal invoice was
   created and the subscription expired at the new end.
 - Paying an activation invoice after a failed or expired checkout left the subscription `past_due`.

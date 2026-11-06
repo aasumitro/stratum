@@ -1045,6 +1045,85 @@ func TestIntegration_ResumeSubscription_ConcurrentRequests_OneInvoice(t *testing
 	}
 }
 
+// TestIntegration_Webhook_ActivationPaid_LateInThePeriod_QueuesTheRenewal: the
+// renewal auto-invoice skips a subscription whose activation is still pending, so a
+// payment landing after that point must queue it again, or the period ends with no
+// renewal invoice for an owner who paid.
+func TestIntegration_Webhook_ActivationPaid_LateInThePeriod_QueuesTheRenewal(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_webhook_late_activation_user"
+		orgID = "00000000-0000-0000-0000-000000000b43"
+		extID = "cs_b43"
+	)
+	subID, invID := seedUnpaidActivation(t, pool, orgID, user)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET period_end = now() + interval '2 days', period_start = now() + interval '2 days' - interval '1 month'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("set period: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", 900)
+	postPaidStripeWebhook(t, billing.NewWebhookModuleEngine(pool, user, orgID), extID)
+
+	if n := countOrgOutboxRows(t, pool, events.RoutingKeySubscriptionAutoInvoice, orgID); n != 1 {
+		t.Errorf("renewal auto-invoice: want 1 queued, got %d", n)
+	}
+}
+
+// TestIntegration_Webhook_ProviderReportingOurOwnClosing_IsNotAFailure: closing a
+// checkout ourselves marks its link expired, and the provider then reports the
+// closing the same way it reports an abandoned checkout. Nothing failed, so nothing
+// may move to past_due or send a dunning notice, whatever became of the invoice.
+func TestIntegration_Webhook_ProviderReportingOurOwnClosing_IsNotAFailure(t *testing.T) {
+	cases := []struct{ name, orgID, extID, invStatus string }{
+		{"a new checkout replaced it", "00000000-0000-0000-0000-000000000b44", "cs_b44", "pending"},
+		{"a plan change voided the invoice", "00000000-0000-0000-0000-000000000b45", "cs_b45", "void"},
+		{"another checkout paid the invoice", "00000000-0000-0000-0000-000000000b46", "cs_b46", "paid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			user := "integ_webhook_own_closing_" + tc.orgID[len(tc.orgID)-3:]
+			setupBillingTest(t, pool, tc.orgID)
+			subID := provisionActive(t, pool, tc.orgID, user, "20 days")
+			var invID string
+			if err := pool.QueryRow(t.Context(), `
+				INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind, status)
+				VALUES ($1, 900, 'USD', 'subscription', $2) RETURNING id`, subID, tc.invStatus).Scan(&invID); err != nil {
+				t.Fatalf("seed invoice: %v", err)
+			}
+			seedPaymentLink(pool, invID, tc.extID, "stripe", "USD", 900)
+			if _, err := pool.Exec(t.Context(),
+				`UPDATE billing.payment_links SET status = 'expired' WHERE invoice_id = $1`, invID); err != nil {
+				t.Fatalf("expire link: %v", err)
+			}
+
+			w := httptest.NewRecorder()
+			billing.NewWebhookModuleEngine(pool, user, tc.orgID).ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
+				fmt.Sprintf(`{"type":"checkout.session.expired","data":{"object":{"id":%q}}}`, tc.extID)))
+			if w.Code != http.StatusOK {
+				t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+			}
+
+			var status string
+			pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+			if status != "active" {
+				t.Errorf("subscription: want active, got %q", status)
+			}
+			if n := countOrgOutboxRows(t, pool, events.RoutingKeyInvoiceFailed, tc.orgID); n != 0 {
+				t.Errorf("invoice failed events: want 0, got %d", n)
+			}
+			if got := linkStatuses(t, pool, invID); !slices.Equal(got, []string{"expired"}) {
+				t.Errorf("link: want expired, got %v", got)
+			}
+		})
+	}
+}
+
 // TestIntegration_Webhook_PastDueActivationPaid_Reactivates: an expired
 // checkout past-dues a subscription on its activation invoice; paying that
 // invoice on a second link returns it to active with the period untouched.
@@ -1088,6 +1167,11 @@ func TestIntegration_Webhook_PastDueActivationPaid_Reactivates(t *testing.T) {
 
 	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
 		t.Fatalf("clear outbox: %v", err)
+	}
+	// A period that already covers its cycle, as a real activation's does.
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET period_start = period_end - interval '1 month' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("set period start: %v", err)
 	}
 	periodEndBefore, _ := getSubscriptionExpectedEnd(pool, subID)
 	seedPaymentLink(pool, invID, "cs_b2d_b", "stripe", "USD", 900)
@@ -1482,44 +1566,160 @@ func TestIntegration_ChangePlan_Expired_StaysExpired(t *testing.T) {
 	}
 }
 
-// TestIntegration_ChangePlan_UnpaidActivation_RestartsPeriod: with the
-// first period still unpaid there is no paid value to prorate — the period
-// restarts now on the new plan, the activation is reissued at the new price
-// (still an activation), and paying it leaves the period alone.
-func TestIntegration_ChangePlan_UnpaidActivation_RestartsPeriod(t *testing.T) {
+// changePlanTo sends the plan change as the owner would.
+func changePlanTo(t *testing.T, pool *pgxpool.Pool, user, orgID, plan, cycle string) {
+	t.Helper()
+	e := billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan",
+		fmt.Sprintf(`{"plan":%q,"cycle":%q,"terms_agreed":true}`, plan, cycle)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("change plan to %s/%s: want 200, got %d: %s", plan, cycle, w.Code, w.Body)
+	}
+}
+
+// seedUnpaidActivation gives an org an active subscription whose first invoice is
+// still pending, with period_end one month from period_start.
+func seedUnpaidActivation(t *testing.T, pool *pgxpool.Pool, orgID, user string) (subID, invoiceID string) {
+	t.Helper()
+	setupBillingTest(t, pool, orgID)
+	mod := billing.NewModuleForTest(pool, stubRefReader{})
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID = getSubscriptionID(pool, orgID)
+	forceActive(t, pool, subID, "20 days")
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET period_start = now() - interval '10 days', period_end = now() - interval '10 days' + interval '1 month'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("set period: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		VALUES ($1, 900, 'USD', 'activation') RETURNING id`, subID).Scan(&invoiceID); err != nil {
+		t.Fatalf("seed unpaid activation: %v", err)
+	}
+	return subID, invoiceID
+}
+
+func periodOf(t *testing.T, pool *pgxpool.Pool, subID string) (start, end time.Time) {
+	t.Helper()
+	if err := pool.QueryRow(t.Context(),
+		`SELECT period_start, period_end FROM billing.subscriptions WHERE id = $1`, subID).Scan(&start, &end); err != nil {
+		t.Fatalf("read period: %v", err)
+	}
+	return start, end
+}
+
+// TestIntegration_ChangePlan_CycleSwitchesNeverGrowThePeriod: a same-plan cycle
+// switch is free and moves the rate the next proration reads the old price at. So
+// leaving each plan on its dearer monthly rate and entering the next on its cheaper
+// yearly one must not add time nobody paid for, however often it is repeated.
+func TestIntegration_ChangePlan_CycleSwitchesNeverGrowThePeriod(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_cycle_switches_user"
+		orgID = "00000000-0000-0000-0000-000000000b41"
+	)
+	setupBillingTest(t, pool, orgID)
+	subID := provisionActive(t, pool, orgID, user, "365 days")
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET plan = 'solo', cycle = 'yearly' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("set plan: %v", err)
+	}
+	_, paidEnd := periodOf(t, pool, subID)
+
+	for range 2 {
+		for _, step := range []struct{ plan, cycle string }{
+			{"solo", "monthly"}, {"growth", "yearly"}, {"growth", "monthly"},
+		} {
+			changePlanTo(t, pool, user, orgID, step.plan, step.cycle)
+			if _, end := periodOf(t, pool, subID); end.After(paidEnd) {
+				t.Fatalf("after %s/%s: period_end grew from %s to %s", step.plan, step.cycle, paidEnd, end)
+			}
+		}
+		// PATCH refuses a lower plan, and a downgrade applies at renewal. Going back
+		// directly tests the period rule on its own.
+		if _, err := pool.Exec(t.Context(),
+			`UPDATE billing.subscriptions SET plan = 'solo', cycle = 'yearly' WHERE id = $1`, subID); err != nil {
+			t.Fatalf("set plan: %v", err)
+		}
+	}
+}
+
+// TestIntegration_AttachAddon_EndedSubscription: the period is over, so an increase
+// prorates to nothing and applies at once. A pending invoice was priced without it, so
+// paying that invoice would bring the addon back free for a whole cycle. With no such
+// invoice yet, Resume prices the addon in.
+func TestIntegration_AttachAddon_EndedSubscription(t *testing.T) {
+	cases := []struct {
+		name, orgID string
+		pending     bool
+		wantCode    int
+		wantQty     int
+	}{
+		{"refused while the Resume invoice is pending", "00000000-0000-0000-0000-000000000b4a", true, http.StatusUnprocessableEntity, 0},
+		{"allowed before Resume", "00000000-0000-0000-0000-000000000b4b", false, http.StatusOK, 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			user := "integ_addon_ended_" + tc.orgID[len(tc.orgID)-3:]
+			setupBillingTest(t, pool, tc.orgID)
+			subID := provisionActive(t, pool, tc.orgID, user, "2 days")
+			if _, err := pool.Exec(t.Context(), `
+				UPDATE billing.subscriptions SET status = 'expired', period_end = now() - interval '1 minute' WHERE id = $1`, subID); err != nil {
+				t.Fatalf("end the subscription: %v", err)
+			}
+			if tc.pending {
+				seedInvoice(pool, subID, "USD", 900)
+			}
+
+			w := httptest.NewRecorder()
+			billing.NewModuleEngineWithRealRLS(pool, user, tc.orgID, stubRefReader{}).ServeHTTP(w, httpserver.JSONTestRequest(
+				http.MethodPost, billingURL(tc.orgID)+"/addons", `{"addon_id":"extra-seat","quantity":10}`))
+			if w.Code != tc.wantCode {
+				t.Fatalf("attach: want %d, got %d: %s", tc.wantCode, w.Code, w.Body)
+			}
+
+			var quantity int
+			pool.QueryRow(t.Context(), `
+				SELECT COALESCE(SUM(quantity), 0) FROM billing.subscription_addons WHERE subscription_id = $1`, subID).Scan(&quantity)
+			if quantity != tc.wantQty {
+				t.Errorf("live quantity: want %d, got %d", tc.wantQty, quantity)
+			}
+		})
+	}
+}
+
+// TestIntegration_ChangePlan_UnpaidActivation_NeverLengthensThePeriod: repeating a
+// plan change must not keep a paid plan free. The period stays where it was, and
+// the activation is reissued at the new price (still an activation).
+func TestIntegration_ChangePlan_UnpaidActivation_NeverLengthensThePeriod(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_changeplan_unpaid_activation_user"
 		orgID = "00000000-0000-0000-0000-000000000b31"
 	)
-	setupBillingTest(t, pool, orgID)
-
-	mod := billing.NewModuleForTest(pool, stubRefReader{})
-	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
-		t.Fatalf("provision: %v", err)
-	}
-	subID := getSubscriptionID(pool, orgID)
-	forceActive(t, pool, subID, "20 days")
-	var oldActivation string
-	if err := pool.QueryRow(t.Context(), `
-		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
-		VALUES ($1, 900, 'USD', 'activation') RETURNING id`, subID).Scan(&oldActivation); err != nil {
-		t.Fatalf("seed unpaid activation: %v", err)
-	}
+	subID, oldActivation := seedUnpaidActivation(t, pool, orgID, user)
+	_, endBefore := periodOf(t, pool, subID)
 
 	upgradeToGrowth(t, pool, user, orgID)
+	// The same plan and cycle again, then a longer cycle, then back: none may add time.
+	upgradeToGrowth(t, pool, user, orgID)
+	changePlanTo(t, pool, user, orgID, "growth", "yearly")
+	changePlanTo(t, pool, user, orgID, "growth", "monthly")
 
-	var status string
-	var periodStart, periodEnd time.Time
-	pool.QueryRow(t.Context(), `SELECT status, period_start, period_end FROM billing.subscriptions WHERE id = $1`, subID).
-		Scan(&status, &periodStart, &periodEnd)
+	_, endAfter := periodOf(t, pool, subID)
+	if endAfter.After(endBefore.Add(time.Second)) {
+		t.Errorf("an unpaid period grew: %s -> %s", endBefore, endAfter)
+	}
+
+	var status, oldStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
 	if status != "active" {
 		t.Errorf("want status untouched (active), got %q", status)
 	}
-	if time.Since(periodStart).Abs() > time.Minute || periodEnd.Sub(periodStart.AddDate(0, 1, 0)).Abs() > time.Second {
-		t.Errorf("want the period restarted now for one month, got %s -> %s", periodStart, periodEnd)
-	}
-	var oldStatus string
 	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, oldActivation).Scan(&oldStatus)
 	if oldStatus != "void" {
 		t.Errorf("want the old activation voided, got %q", oldStatus)
@@ -1537,8 +1737,90 @@ func TestIntegration_ChangePlan_UnpaidActivation_RestartsPeriod(t *testing.T) {
 	e := billing.NewWebhookModuleEngine(pool, user, orgID)
 	seedPaymentLink(pool, reissued[0], "cs_b31", "stripe", "USD", amount)
 	postPaidStripeWebhook(t, e, "cs_b31")
-	if after, _ := getSubscriptionExpectedEnd(pool, subID); !after.Equal(periodEnd) {
-		t.Errorf("paying the reissued activation must not move the period: %s -> %s", periodEnd, after)
+	if _, afterPaid := periodOf(t, pool, subID); !afterPaid.Equal(endAfter) {
+		t.Errorf("paying a monthly activation must not move a monthly period: %s -> %s", endAfter, afterPaid)
+	}
+}
+
+// TestIntegration_ChangePlan_UnpaidActivation_PaymentGrantsTheLongerCycle: choosing
+// yearly adds nothing until it is paid for, and paying it buys the whole year.
+func TestIntegration_ChangePlan_UnpaidActivation_PaymentGrantsTheLongerCycle(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_unpaid_yearly_user"
+		orgID = "00000000-0000-0000-0000-000000000b3a"
+	)
+	subID, _ := seedUnpaidActivation(t, pool, orgID, user)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+	})
+	start, endBefore := periodOf(t, pool, subID)
+
+	changePlanTo(t, pool, user, orgID, "growth", "yearly")
+	if _, end := periodOf(t, pool, subID); !end.Equal(endBefore) {
+		t.Fatalf("switching an unpaid period to yearly must add nothing: %s -> %s", endBefore, end)
+	}
+
+	reissued := pendingInvoiceIDs(t, pool, subID, "activation")
+	if len(reissued) != 1 {
+		t.Fatalf("want one pending activation, got %v", reissued)
+	}
+	var amount int64
+	pool.QueryRow(t.Context(), `SELECT amount_cents FROM billing.invoices WHERE id = $1`, reissued[0]).Scan(&amount)
+
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	seedPaymentLink(pool, reissued[0], "cs_b3a", "stripe", "USD", amount)
+	postPaidStripeWebhook(t, e, "cs_b3a")
+
+	startAfter, endAfter := periodOf(t, pool, subID)
+	if !startAfter.Equal(start) {
+		t.Errorf("the payment must keep the period's start: %s -> %s", start, startAfter)
+	}
+	if want := start.AddDate(1, 0, 0); endAfter.Sub(want).Abs() > time.Second {
+		t.Errorf("want one year from the period's start (%s), got %s", want, endAfter)
+	}
+
+	// The renewal sequence must follow the new end, or the subscription would
+	// expire at the end the old messages expect.
+	var queued int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM messaging.outbox
+		WHERE routing_key = $1 AND published_at IS NULL AND payload->>'org_id' = $2
+		  AND (payload->'data'->>'expected_end')::timestamptz > $3`,
+		events.RoutingKeySubscriptionCheck, orgID, endBefore).Scan(&queued); err != nil {
+		t.Fatalf("read queued check: %v", err)
+	}
+	if queued == 0 {
+		t.Error("want an expiry check queued for the new end")
+	}
+}
+
+// TestIntegration_ChangePlan_UnpaidActivation_ShorterCycleShortensThePeriod: a
+// yearly period nobody has paid for must not survive a switch to a monthly price,
+// or paying that price would buy a year.
+func TestIntegration_ChangePlan_UnpaidActivation_ShorterCycleShortensThePeriod(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_changeplan_unpaid_shorter_user"
+		orgID = "00000000-0000-0000-0000-000000000b3b"
+	)
+	subID, _ := seedUnpaidActivation(t, pool, orgID, user)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+	})
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET cycle = 'yearly', period_end = now() + interval '300 days' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("make the unpaid period yearly: %v", err)
+	}
+
+	changePlanTo(t, pool, user, orgID, "growth", "monthly")
+
+	start, end := periodOf(t, pool, subID)
+	if time.Since(start).Abs() > time.Minute {
+		t.Errorf("want the shortened period to start now, got %s", start)
+	}
+	if end.Sub(start.AddDate(0, 1, 0)).Abs() > time.Second {
+		t.Errorf("want one month from now, got %s -> %s", start, end)
 	}
 }
 
@@ -1657,9 +1939,9 @@ func TestIntegration_PreviewInvoice_PlanChangePeriodMatchesChange(t *testing.T) 
 		VALUES ($1, 900, 'USD', 'activation') RETURNING id`, subID).Scan(&activationID); err != nil {
 		t.Fatalf("seed unpaid activation: %v", err)
 	}
-	if got := previewNewPeriodEnd(t, pool, user, orgID, "growth", "monthly"); got == nil ||
-		got.Sub(time.Now().AddDate(0, 1, 0)).Abs() > time.Minute {
-		t.Errorf("unpaid activation: want new_period_end ~one month from now, got %v", got)
+	current, _ := getSubscriptionExpectedEnd(pool, subID)
+	if got := previewNewPeriodEnd(t, pool, user, orgID, "growth", "monthly"); got == nil || got.Sub(current).Abs() > time.Minute {
+		t.Errorf("unpaid activation: want new_period_end to stay at %s, got %v", current, got)
 	}
 
 	if _, err := pool.Exec(t.Context(), `UPDATE billing.invoices SET status = 'paid', paid_at = now() WHERE id = $1`, activationID); err != nil {
@@ -3413,7 +3695,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_InsertsInvoice(t *testing.T) 
 // site in this module. A failure between insertInvoice and
 // insertPlanLineItem/applyInvoiceCharges left a permanently orphaned invoice
 // row — correct amount_cents, but a wrong/missing line-item breakdown — that
-// redelivery never repaired (findPendingInvoiceBySubscription only checks
+// redelivery never repaired (findPendingPeriodInvoice only checks
 // whether a pending invoice exists, not whether its line items are
 // complete). Simulated the same way as
 // TestIntegration_Webhook_ReactivationRollsBackOnHistoryFailure/

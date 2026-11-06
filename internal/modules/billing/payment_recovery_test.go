@@ -201,6 +201,98 @@ func TestIntegration_Webhook_LatePayment_EndedSubscription_Reactivates(t *testin
 	}
 }
 
+// TestIntegration_Webhook_LatePayment_AfterPlanChange_IsNotApplied: reactivating
+// reads the current plan and cycle, so a payment for an invoice the owner then
+// replaced by changing plan must not buy what the replacement costs. Without this a
+// month's price, paid just before the change, would bring back a year on a dearer plan.
+func TestIntegration_Webhook_LatePayment_AfterPlanChange_IsNotApplied(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_late_plan_change"
+		orgID = "00000000-0000-0000-0000-000000000b47"
+		extID = "stripe_sess_b47"
+	)
+	setupBillingTest(t, pool, orgID)
+	subID, invID := seedClosedInvoiceState(t, pool, orgID, user, extID, "expired", "subscription", "pending")
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET plan = 'solo', cycle = 'monthly' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("set plan: %v", err)
+	}
+	changePlanTo(t, pool, user, orgID, "growth", "yearly")
+
+	suspender := &stubOrgSuspender{}
+	e := billing.NewWebhookModuleEngineWithOrgReader(pool, user, orgID, suspender, orgStatusReader{status: "suspended"})
+	postPaidStripeWebhook(t, e, extID)
+
+	var status, invStatus string
+	var payments int
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments)
+	if status != "expired" || invStatus != "void" || payments != 0 {
+		t.Errorf("want expired with the invoice still void and no payment row, got %q, %q, %d", status, invStatus, payments)
+	}
+	if len(suspender.unsuspended) != 0 {
+		t.Errorf("suspension must stay, got %v", suspender.unsuspended)
+	}
+}
+
+// TestIntegration_Webhook_LatePayment_AfterARealExpiry_Reactivates runs the real
+// expiry, whose history row names no target plan, and a downgrade that was scheduled
+// but never applied. Neither changed the plan the payment was for, so neither may
+// stop it being recovered.
+func TestIntegration_Webhook_LatePayment_AfterARealExpiry_Reactivates(t *testing.T) {
+	cases := []struct {
+		name, orgID, extID string
+		scheduleDowngrade  bool
+	}{
+		{"nothing else happened", "00000000-0000-0000-0000-000000000b48", "cs_b48", false},
+		{"a downgrade was scheduled and never applied", "00000000-0000-0000-0000-000000000b49", "cs_b49", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			user := "integ_billing_wh_late_real_expiry_" + tc.orgID[len(tc.orgID)-3:]
+			setupBillingTest(t, pool, tc.orgID)
+			subID := provisionActive(t, pool, tc.orgID, user, "2 days")
+			if _, err := pool.Exec(t.Context(),
+				`UPDATE billing.subscriptions SET plan = 'growth', cycle = 'monthly' WHERE id = $1`, subID); err != nil {
+				t.Fatalf("set plan: %v", err)
+			}
+			invID := seedInvoice(pool, subID, "USD", 2900)
+			seedLinkWithStatus(t, pool, invID, tc.extID, "pending")
+			if tc.scheduleDowngrade {
+				w := httptest.NewRecorder()
+				billing.NewModuleEngineWithRealRLS(pool, user, tc.orgID, stubRefReader{}).ServeHTTP(w, httpserver.JSONTestRequest(
+					http.MethodPost, billingURL(tc.orgID)+"/downgrade", `{"plan":"solo","cycle":"monthly"}`))
+				if w.Code != http.StatusOK {
+					t.Fatalf("schedule downgrade: want 200, got %d: %s", w.Code, w.Body)
+				}
+			}
+
+			if _, err := pool.Exec(t.Context(),
+				`UPDATE billing.subscriptions SET period_end = now() - interval '1 minute' WHERE id = $1`, subID); err != nil {
+				t.Fatalf("end the period: %v", err)
+			}
+			end, _ := getSubscriptionExpectedEnd(pool, subID)
+			mod := billing.NewModuleForTest(pool, stubRefReader{})
+			if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckEvent(subID, tc.orgID, end)); err != nil {
+				t.Fatalf("expiry check: %v", err)
+			}
+
+			postPaidStripeWebhook(t, billing.NewWebhookModuleEngineWithOrgReader(
+				pool, user, tc.orgID, &stubOrgSuspender{}, orgStatusReader{status: "suspended"}), tc.extID)
+
+			var status, invStatus string
+			pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
+			pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+			if status != "active" || invStatus != "paid" {
+				t.Errorf("want active with the invoice paid, got %q, %q", status, invStatus)
+			}
+		})
+	}
+}
+
 // TestIntegration_CancelSubscription_ClosesRenewalCheckoutsAtProvider: the
 // renewal a cancel voids has its open links — pending, or failed and still
 // retryable — expired and queued for closing at the provider; a link

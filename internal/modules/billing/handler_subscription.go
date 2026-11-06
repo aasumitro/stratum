@@ -115,7 +115,10 @@ type changePlanMetadata struct {
 
 // changePlan godoc
 // @Summary      Change the subscription plan
-// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled.
+// @Description  Owner only. Requires step-up MFA (aal2) if the caller has MFA enabled. A lower plan is
+// @Description  refused on every status with PLAN_CHANGE_IS_DOWNGRADE: use POST .../billing/downgrade. A
+// @Description  plan with no price is refused with PLAN_NOT_SELF_SERVICE, unless the subscription is
+// @Description  already on it and only the cycle changes.
 // @Tags         billing
 // @Accept       json
 // @Produce      json
@@ -147,7 +150,7 @@ func (h *handler) changePlan(c *gin.Context) {
 		TermsAgreed: req.TermsAgreed,
 		AgreedAt:    time.Now().UTC(),
 	})
-	_, sub, err := h.svc.changePlanWithMetadata(
+	_, sub, err := h.svc.changePlanForOwner(
 		c.Request.Context(), subjectTypeOrganization,
 		ws.ID, req.Plan, req.Cycle, reqctx.Subject(c), metadata)
 	if err != nil {
@@ -335,13 +338,13 @@ func (h *handler) extendSubscription(c *gin.Context) {
 
 // activateTrialNow godoc
 // @Summary      Activate a trial immediately
-// @Description  Owner only. Converts an active trial to a paid subscription before its scheduled end. Requires step-up MFA (aal2) if the caller has MFA enabled.
+// @Description  Owner only. Converts an active trial to a paid subscription before its scheduled end. Requires step-up MFA (aal2) if the caller has MFA enabled. data is the invoice to pay, or null when a coupon covers the whole charge.
 // @Tags         billing
 // @Produce      json
 // @Security     BearerAuth
 // @Param        organizationID  path      string  true  "Organization ID"
 // @Success      200             {object}  response.Payload{data=invoiceRecord}
-// @Failure      422             {object}  response.Payload  "not trialing, or a cancellation is scheduled (CANCELLATION_SCHEDULED)"
+// @Failure      422             {object}  response.Payload  "not trialing, a cancellation is scheduled (CANCELLATION_SCHEDULED), or the plan has no price (PLAN_NOT_SELF_SERVICE)"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/billing/activate [post]
@@ -362,13 +365,14 @@ func (h *handler) activateTrialNow(c *gin.Context) {
 // @Summary      Resume a cancelled or expired subscription
 // @Description  Owner only. Issues an invoice for the next period and returns the subscription
 // @Description  unchanged; it reactivates once that invoice is paid. A repeat request while the
-// @Description  invoice is still unpaid reuses it instead of issuing another.
+// @Description  invoice is still unpaid reuses it instead of issuing another. A coupon covering the
+// @Description  whole charge reactivates at once, with no invoice.
 // @Tags         billing
 // @Produce      json
 // @Security     BearerAuth
 // @Param        organizationID  path      string  true  "Organization ID"
 // @Success      200             {object}  response.Payload{data=subscriptionRecord}
-// @Failure      422             {object}  response.Payload  "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE)"
+// @Failure      422             {object}  response.Payload  "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE), or the plan has no price (PLAN_NOT_SELF_SERVICE)"
 // @Failure      403             {object}  response.Payload  "owner role required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/billing/resume [post]
