@@ -8,7 +8,7 @@ import {
 } from "@/lib/api/action"
 import { queryKeys } from "@/lib/api/keys"
 import { API } from "@/lib/api/path"
-import { handleHttpError } from "@/lib/api/error"
+import { handleHttpError, parseApiError } from "@/lib/api/error"
 import { useUpdatePreferences } from "@/features/account/hooks"
 import type { Organization } from "@/types/organization"
 
@@ -63,7 +63,7 @@ export function useDeleteOrganization(organizationId: string) {
 export function useSuspendOrganization(organizationId: string) {
   const queryClient = useQueryClient()
   const { t } = useTranslation()
-  return useHTTPActionPost<void, { reason?: string }>({
+  return useHTTPActionPost<void, void>({
     url: API.organizations(organizationId, "suspend"),
     options: {
       onSuccess: () => {
@@ -75,7 +75,10 @@ export function useSuspendOrganization(organizationId: string) {
           queryKey: queryKeys.organizations.list(),
         })
       },
-      onError: () => toast.error(t("organization.danger.suspendFailed")),
+      onError: (error) =>
+        toast.error(
+          parseApiError(error, t("organization.danger.suspendFailed"))
+        ),
     },
   })
 }
@@ -95,14 +98,10 @@ export function useUnsuspendOrganization(organizationId: string) {
           queryKey: queryKeys.organizations.list(),
         })
       },
-      onError: (err) => {
-        const code = (err as { status?: { code?: string } })?.status?.code
+      onError: (error) =>
         toast.error(
-          code === "BILLING_HOLD"
-            ? t("organization.danger.unsuspendBillingHold")
-            : t("organization.danger.unsuspendFailed")
-        )
-      },
+          parseApiError(error, t("organization.danger.unsuspendFailed"))
+        ),
     },
   })
 }

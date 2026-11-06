@@ -11,7 +11,11 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
@@ -278,5 +282,183 @@ func TestIntegration_CancelSubscription_Concurrent_ScheduleAndUndo(t *testing.T)
 	}
 	if fresh.Status != statusActive {
 		t.Errorf("neither call touches status, want active, got %q", fresh.Status)
+	}
+}
+
+// inServiceTx runs fn on a real transaction, the way the RLS middleware wraps
+// a live billing request.
+func inServiceTx(t *testing.T, pool *pgxpool.Pool, fn func(ctx context.Context) error) error {
+	t.Helper()
+	return db.WithTx(t.Context(), pool, func(tx db.Querier) error {
+		return fn(db.WithQuerier(t.Context(), tx))
+	})
+}
+
+// outboxRows returns the outbox payloads for orgID under routingKey.
+func outboxRows(t *testing.T, pool *pgxpool.Pool, routingKey, orgID string) [][]byte {
+	t.Helper()
+	rows, err := pool.Query(t.Context(),
+		`SELECT payload FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`, routingKey, orgID)
+	if err != nil {
+		t.Fatalf("read outbox: %v", err)
+	}
+	defer rows.Close()
+	var out [][]byte
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("scan outbox: %v", err)
+		}
+		out = append(out, payload)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read outbox: %v", err)
+	}
+	return out
+}
+
+func invoiceStatus(t *testing.T, pool *pgxpool.Pool, invoiceID string) string {
+	t.Helper()
+	var status string
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invoiceID).Scan(&status); err != nil {
+		t.Fatalf("read invoice status: %v", err)
+	}
+	return status
+}
+
+// TestIntegration_CancelSubscription_VoidsRenewal_UndoReissues: cancelling
+// after the renewal invoice was issued voids it and expires its link, so a
+// cancelled owner is neither billed nor dunned for the period they gave up;
+// undo queues the auto-invoice again, and delivering it issues a fresh
+// renewal invoice.
+func TestIntegration_CancelSubscription_VoidsRenewal_UndoReissues(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-000000000b25"
+	mod := NewModuleForTest(pool, nil)
+	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET period_end = now() + interval '2 days' WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("move period_end inside the renewal window: %v", err)
+	}
+	renewal, err := r.insertInvoice(t.Context(), pool, orgID, sub.ID, 900, 0, 0, "USD", invoiceKindSubscription, false, nil)
+	if err != nil {
+		t.Fatalf("seed renewal invoice: %v", err)
+	}
+	var linkID string
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO billing.payment_links (invoice_id, provider, currency, amount_cents, external_id, url)
+		VALUES ($1, 'stripe', 'USD', 900, 'cs_b25', 'https://pay.example.com') RETURNING id`,
+		renewal.ID).Scan(&linkID); err != nil {
+		t.Fatalf("seed payment link: %v", err)
+	}
+
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.cancelSubscription(ctx, subjectTypeOrganization, orgID, "sub_owner", "too_expensive", "")
+		return err
+	}); err != nil {
+		t.Fatalf("cancelSubscription: %v", err)
+	}
+	if got := invoiceStatus(t, pool, renewal.ID); got != "void" {
+		t.Errorf("after cancel: want the renewal invoice void, got %q", got)
+	}
+	var linkStatus string
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE id = $1`, linkID).Scan(&linkStatus)
+	if linkStatus != "expired" {
+		t.Errorf("after cancel: want the renewal's payment link expired, got %q", linkStatus)
+	}
+
+	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.undoScheduledCancellation(ctx, subjectTypeOrganization, orgID, "sub_owner")
+		return err
+	}); err != nil {
+		t.Fatalf("undoScheduledCancellation: %v", err)
+	}
+	queued := outboxRows(t, pool, events.RoutingKeySubscriptionAutoInvoice, orgID)
+	if len(queued) != 1 {
+		t.Fatalf("after undo: want exactly one auto-invoice queued, got %d", len(queued))
+	}
+
+	// createPaymentLink fails with an empty ProviderConfig, after the
+	// invoice itself has committed — the invoice is what this asserts.
+	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), queued[0])
+	var pendingRenewals int
+	pool.QueryRow(t.Context(),
+		`SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1 AND kind = 'subscription' AND status = 'pending'`,
+		sub.ID).Scan(&pendingRenewals)
+	if pendingRenewals != 1 {
+		t.Errorf("after delivering the requeued auto-invoice: want one pending renewal invoice, got %d", pendingRenewals)
+	}
+}
+
+// TestIntegration_CancelSubscription_KeepsUnpaidActivation: the unpaid
+// activation invoice backs the period the subscription is already in, so a
+// cancel leaves it payable; only a renewal invoice is voided.
+func TestIntegration_CancelSubscription_KeepsUnpaidActivation(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-000000000b27"
+	mod := NewModuleForTest(pool, nil)
+	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
+	activation, err := r.insertInvoice(t.Context(), pool, orgID, sub.ID, 900, 0, 0, "USD", invoiceKindActivation, false, nil)
+	if err != nil {
+		t.Fatalf("seed activation invoice: %v", err)
+	}
+
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.cancelSubscription(ctx, subjectTypeOrganization, orgID, "sub_owner", "too_expensive", "")
+		return err
+	}); err != nil {
+		t.Fatalf("cancelSubscription: %v", err)
+	}
+	if got := invoiceStatus(t, pool, activation.ID); got != "pending" {
+		t.Errorf("after cancel: want the activation invoice still pending, got %q", got)
+	}
+}
+
+// TestIntegration_UndoScheduledCancellation_QueuesOnlyAutoInvoice: undo far
+// from the period end queues the auto-invoice for 3 days before that end and
+// nothing else — the reminder and expiry check already queued for this end
+// stay valid, and a second reminder would notify the owner twice.
+func TestIntegration_UndoScheduledCancellation_QueuesOnlyAutoInvoice(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-000000000b26"
+	mod := NewModuleForTest(pool, nil)
+	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
+	if err := r.scheduleCancellation(t.Context(), pool, sub.ID); err != nil {
+		t.Fatalf("scheduleCancellation: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
+
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.undoScheduledCancellation(ctx, subjectTypeOrganization, orgID, "sub_owner")
+		return err
+	}); err != nil {
+		t.Fatalf("undoScheduledCancellation: %v", err)
+	}
+
+	if n := len(outboxRows(t, pool, events.RoutingKeySubscriptionAutoInvoice, orgID)); n != 1 {
+		t.Errorf("want exactly one auto-invoice queued, got %d", n)
+	}
+	if n := len(outboxRows(t, pool, events.RoutingKeySubscriptionRemind, orgID)); n != 0 {
+		t.Errorf("want no second reminder queued, got %d", n)
+	}
+	if n := len(outboxRows(t, pool, events.RoutingKeySubscriptionCheck, orgID)); n != 0 {
+		t.Errorf("want no second expiry check queued, got %d", n)
+	}
+	var notBefore time.Time
+	if err := pool.QueryRow(t.Context(),
+		`SELECT not_before FROM messaging.outbox WHERE routing_key = $1 AND payload->>'org_id' = $2`,
+		events.RoutingKeySubscriptionAutoInvoice, orgID).Scan(&notBefore); err != nil {
+		t.Fatalf("read not_before: %v", err)
+	}
+	if due := sub.PeriodEnd.AddDate(0, 0, -3); notBefore.Sub(due).Abs() > time.Minute {
+		t.Errorf("want the auto-invoice due 3 days before period_end (%s), got %s", due, notBefore)
 	}
 }

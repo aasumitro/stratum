@@ -15,6 +15,7 @@ import {
   IconRadar,
   IconTag,
 } from "@tabler/icons-react"
+import { useIsOperator } from "@/hooks/use-audit"
 import { useProjects } from "@/hooks/use-projects"
 import { useLastStatus } from "@/hooks/use-monitor"
 import { useWatchlist, urgentCount } from "@/hooks/use-watchlist"
@@ -27,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
+import { NotOperatorBanner } from "../components/table-helpers"
 import { NavLink, NavSection } from "./nav-link"
 import { monitorStatusDot } from "./utils"
 
@@ -39,6 +41,7 @@ export function StudioLayout() {
   const { data: lastMonitorStatus } = useLastStatus(projectId)
   const { data: watchlistData } = useWatchlist(projectId)
   const watchlistUrgent = urgentCount(watchlistData)
+  const { data: isOperator } = useIsOperator(projectId)
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -195,6 +198,7 @@ export function StudioLayout() {
 
       {/* Content */}
       <main className="flex-1 overflow-y-auto">
+        {isOperator === false ? <NotOperatorBanner /> : null}
         <Outlet />
       </main>
     </div>

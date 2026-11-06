@@ -13,6 +13,10 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
+// billingSuspensionReasons are the suspensions a paid reactivation lifts:
+// only billing's own, never an owner's pause or a Studio operator's.
+var billingSuspensionReasons = []string{suspendReasonExpired, suspendReasonCancelled}
+
 const (
 	statusActive    = "active"
 	statusTrialing  = "trialing"
@@ -22,6 +26,7 @@ const (
 	statusPending   = "pending"
 	statusPaid      = "paid"
 	statusPastDue   = "past_due"
+	statusVoid      = "void"
 	currencyIDR     = "IDR"
 	currencyUSD     = "USD"
 	providerStripe  = "stripe"
@@ -29,6 +34,14 @@ const (
 
 	cycleMonthly = "monthly"
 	cycleYearly  = "yearly"
+
+	// organizationStatusDeleted is contracts.OrganizationInfo.Status for a
+	// deleted organization.
+	organizationStatusDeleted = "deleted"
+
+	// The suspension reasons expireIfDue writes when a subscription ends.
+	suspendReasonExpired   = "subscription expired"
+	suspendReasonCancelled = "subscription cancelled"
 
 	// subjectTypeOrganization is the only subjectType this codebase's
 	// subject-polymorphic subscription model currently exercises — the
@@ -42,18 +55,21 @@ const (
 	discountTypeFixed   = "fixed"
 	discountTypePercent = "percent"
 
-	// changedBy sentinels — history.changed_by is either one of these two
+	// changedBy sentinels — history.changed_by is either one of these
 	// literal markers (non-owner-initiated transitions) or a real auth_sub.
-	changedBySystem  = "system"
-	changedByWebhook = "webhook"
+	// changedByOperator marks a payment a Studio operator confirmed by hand.
+	changedBySystem   = "system"
+	changedByWebhook  = "webhook"
+	changedByOperator = "operator"
 
 	// actorKind values for historyView.ChangedByKind (resolveChangedBy).
 	actorKindUser    = "user"
 	actorKindSystem  = "system"
 	actorKindWebhook = "webhook"
 
-	displayNameSystem  = "System"
-	displayNameWebhook = "Webhook"
+	displayNameSystem   = "System"
+	displayNameWebhook  = "Webhook"
+	displayNameOperator = "Support"
 
 	// subscription_history.phase — a scheduled amendment's first history
 	// row gets historyPhaseScheduled; the renewal worker writes a second row
@@ -68,10 +84,15 @@ const (
 	actionDowngrade = "downgrade"
 
 	// Shared apperr code/message for ErrCancellationScheduled, classified
-	// identically everywhere it's returned (plan downgrade and addon
-	// scheduling both reject the same way against the same condition).
+	// identically everywhere it's returned (plan downgrade, addon decrease
+	// and activate-now all reject the same way against the same condition).
 	cancellationScheduledCode = "CANCELLATION_SCHEDULED"
 	cancellationScheduledMsg  = "subscription is scheduled to cancel; undo that first"
+
+	// Shared apperr code/message for a plan an owner cannot pick or pay for
+	// themselves, because it has no price to charge.
+	planNotSelfServeCode = "PLAN_NOT_SELF_SERVICE"
+	planNotSelfServeMsg  = "this plan is not available to pick; contact us instead"
 )
 
 var (
@@ -82,6 +103,7 @@ var (
 	ErrCouponNotRedeemable         = errors.New("coupon not redeemable")
 	ErrAddonNotFound               = errors.New("addon not found")
 	ErrUnknownPlan                 = errors.New("unknown plan")
+	ErrPlanNotSelfServe            = errors.New("plan is not available to pick")
 	ErrSubscriptionNotExtendable   = errors.New("subscription is not in an extendable state")
 	ErrExtensionAlreadyPending     = errors.New("an invoice is already pending payment for this subscription")
 	ErrExtensionExceedsMaxDuration = errors.New("extension would exceed the maximum subscription duration")
@@ -90,6 +112,7 @@ var (
 	ErrSubscriptionNotResumable    = errors.New("subscription is not in a resumable state")
 	ErrPlanChangeNotAllowed        = errors.New("subscription is not in a state that allows plan changes")
 	ErrNoScheduledCancellation     = errors.New("no scheduled cancellation to undo")
+	ErrCancellationScheduled       = errors.New("subscription is scheduled to cancel")
 )
 
 func calculateTax(subtotalCents int64, taxRateBPS int) int64 {
@@ -286,6 +309,53 @@ func prorate(now, periodStart, periodEnd time.Time, oldPriceCents, newPriceCents
 	ratio := oldPricePerDay / newPricePerDay
 	newRemaining := time.Duration(float64(remaining) * ratio)
 	return now.Add(newRemaining)
+}
+
+// cycleEnd returns when one billing cycle starting at from ends.
+func cycleEnd(from time.Time, cycle string) time.Time {
+	if cycle == cycleYearly {
+		return from.AddDate(1, 0, 0)
+	}
+	return from.AddDate(0, 1, 0)
+}
+
+// planChangePeriod returns the billing period a plan change produces, or
+// (nil, nil) when the change leaves the period as it is. Only an active or
+// past_due subscription with a period has one to adjust: a trial keeps its
+// trial window, and an ended subscription gets its next period from the
+// Resume payment. While the period is still unpaid (a pending activation
+// invoice) it can shorten, to the new cycle counted from now, but never grow:
+// access nobody has paid for must not lengthen, or repeating the change before
+// each end would keep a paid plan free forever. Paying the activation grants
+// the rest (applyActivationPayment). Otherwise a plan-tier change prorates the
+// remaining time, never past the current end: a same-plan cycle switch is free and
+// moves the rate the old price is read at, so leaving each plan on its dearer
+// monthly rate and entering the next on its cheaper yearly one would otherwise grow
+// the period without limit. A same-plan cycle switch keeps period_end — see
+// changePlanWithMetadata for why.
+func planChangePeriod(
+	now time.Time, sub *subscriptionRecord, unpaidActivation, planChanged bool,
+	oldPriceCents, newPriceCents int, newCycle string,
+) (start, end *time.Time) {
+	if (sub.Status != statusActive && sub.Status != statusPastDue) || sub.PeriodStart == nil || sub.PeriodEnd == nil {
+		return nil, nil
+	}
+	switch {
+	case unpaidActivation:
+		periodEnd := cycleEnd(now, newCycle)
+		if periodEnd.After(*sub.PeriodEnd) {
+			return nil, nil
+		}
+		return &now, &periodEnd
+	case planChanged:
+		periodEnd := prorate(now, *sub.PeriodStart, *sub.PeriodEnd, oldPriceCents, newPriceCents, sub.Cycle, newCycle)
+		if periodEnd.After(*sub.PeriodEnd) {
+			return nil, nil
+		}
+		return sub.PeriodStart, &periodEnd
+	default:
+		return nil, nil
+	}
 }
 
 // computeAddonIncreaseProration prices an addon quantity increase for the

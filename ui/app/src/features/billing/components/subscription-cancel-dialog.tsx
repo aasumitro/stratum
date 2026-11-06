@@ -17,16 +17,11 @@ import {
 import {
   useOrgPlansCatalog,
   useCancelSubscription,
-  useResumeSubscription,
   useUndoScheduledCancellation,
 } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import type {
-  BillingCycle,
-  CancelReason,
-  SubscriptionStatus,
-} from "@/types/billing"
+import type { BillingCycle, CancelReason } from "@/types/billing"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -51,7 +46,6 @@ interface Props {
   cycle: BillingCycle
   currency: string
   periodEnd?: string
-  status: SubscriptionStatus
   canCancel: boolean
 }
 
@@ -63,7 +57,6 @@ export function SubscriptionCancelDialog({
   cycle,
   currency,
   periodEnd,
-  status,
   canCancel,
 }: Props) {
   const { t } = useTranslation()
@@ -71,20 +64,18 @@ export function SubscriptionCancelDialog({
   const [step, setStep] = useState<Step>("reason")
   const [reason, setReason] = useState<CancelReason | "">("")
   const [details, setDetails] = useState("")
-  // Trialing has no paid period to protect, so cancellation applies
-  // immediately and flips status to "cancelled" — every other status defers
-  // to renewal instead, leaving status untouched, so the success step here
-  // must offer "undo the schedule" rather than "resume an ended subscription".
-  const isTrialing = status === "trialing"
 
+  // A cancel never ends access early, on any status (trialing included): it
+  // is scheduled for the end of the paid period or trial, so the success
+  // step always offers to undo the schedule.
   const { mutate: cancel, isPending: cancelling } =
     useCancelSubscription(organizationId)
-  const { mutate: resume, isPending: resuming } =
-    useResumeSubscription(organizationId)
   const { mutate: undoCancellation, isPending: undoingCancellation } =
     useUndoScheduledCancellation(organizationId)
   const { data: plansData } = useOrgPlansCatalog(organizationId)
-  const { hasPendingInvoice } = usePermissions()
+  // Only an unpaid activation stays owed after cancelling — it backs the
+  // period in use. A pending renewal invoice is voided by the cancel.
+  const { hasBlockingInvoice } = usePermissions()
 
   const planInfo = (plansData?.data ?? []).find((p) => p.id === plan)
   // The API always scopes prices down to one, server-resolved currency —
@@ -101,12 +92,10 @@ export function SubscriptionCancelDialog({
       )
     : undefined
 
-  // Cancelling flips the subscription's status to "cancelled", which is
-  // exactly what canCancel is derived from — if this component unmounted
-  // whenever canCancel goes false, a successful cancel would tear itself
-  // down mid-flow and the success step would never render. Once the dialog
-  // is open, stay mounted through its own close, regardless of canCancel
-  // changing underneath it.
+  // The subscription refetches after a cancel, and canCancel can turn false
+  // underneath an open dialog (the period ending meanwhile). Unmounting then
+  // would tear the dialog down mid-flow before its success step renders, so
+  // once open it stays mounted through its own close.
   if (!canCancel && !open) return null
 
   function handleClose() {
@@ -133,18 +122,12 @@ export function SubscriptionCancelDialog({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {isTrialing
-                ? t("billing.cancel.successTitle")
-                : t("billing.cancel.scheduledSuccessTitle")}
+              {t("billing.cancel.scheduledSuccessTitle")}
             </DialogTitle>
             <DialogDescription>
-              {isTrialing
-                ? t("billing.cancel.successDescription", {
-                    date: formatDate(periodEnd),
-                  })
-                : t("billing.cancel.scheduledSuccessDescription", {
-                    date: formatDate(periodEnd),
-                  })}
+              {t("billing.cancel.scheduledSuccessDescription", {
+                date: formatDate(periodEnd),
+              })}
             </DialogDescription>
           </DialogHeader>
 
@@ -169,22 +152,18 @@ export function SubscriptionCancelDialog({
           <DialogFooter>
             <Button
               variant="outline"
-              disabled={isTrialing ? resuming : undoingCancellation}
+              disabled={undoingCancellation}
               onClick={() =>
-                isTrialing
-                  ? resume()
-                  : undoCancellation(undefined, { onSuccess: handleClose })
+                undoCancellation(undefined, { onSuccess: handleClose })
               }
             >
-              {(isTrialing ? resuming : undoingCancellation) && (
+              {undoingCancellation && (
                 <IconLoader2
                   data-icon="inline-start"
                   className="animate-spin"
                 />
               )}
-              {isTrialing
-                ? t("billing.subscription.resume")
-                : t("billing.states.scheduledCancelUndo")}
+              {t("billing.states.scheduledCancelUndo")}
             </Button>
             <Button onClick={handleClose}>{t("common.done")}</Button>
           </DialogFooter>
@@ -224,7 +203,7 @@ export function SubscriptionCancelDialog({
             </div>
           </div>
 
-          {hasPendingInvoice && (
+          {hasBlockingInvoice && (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
               {t("billing.cancel.pendingInvoiceNote")}
             </div>

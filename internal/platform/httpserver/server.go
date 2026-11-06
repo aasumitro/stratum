@@ -103,6 +103,14 @@ func (s *Server) Run() error {
 	return nil
 }
 
+// OnShutdown registers f to run when Shutdown starts, for handlers that hold
+// a connection open indefinitely (an SSE stream): Shutdown only waits for
+// in-flight requests, so such a handler must be told to return or it holds
+// the process for the full shutdownTimeout. f must not block.
+func (s *Server) OnShutdown(f func()) {
+	s.httpServer.RegisterOnShutdown(f)
+}
+
 // Shutdown gracefully stops the server: stops accepting new connections
 // and waits up to shutdownTimeout for in-flight requests to finish
 // before forcibly closing remaining connections.

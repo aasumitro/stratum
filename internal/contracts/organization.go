@@ -32,7 +32,6 @@ type OrganizationInfo struct {
 // any module that needs to resolve organization data without owning its schema.
 type OrganizationReader interface {
 	GetOrganizationByID(ctx context.Context, organizationID string) (*OrganizationInfo, error)
-	IsMember(ctx context.Context, organizationID, authSub string) (bool, error)
 	GetMemberRole(ctx context.Context, organizationID, authSub string) (string, error)
 	ListMemberAuthSubs(ctx context.Context, organizationID string) ([]string, error)
 	// GetFirstOrganizationIDForMember returns the auth_sub's earliest-joined
@@ -76,9 +75,12 @@ type OrgMembershipInfo struct {
 
 // OrganizationSuspender is called by the billing module to suspend/unsuspend
 // organizations on subscription expiry or reactivation.
+// UnsuspendOrganization lifts a suspension only when its reason is one of
+// reasons, so billing lifts its own suspensions and never an owner's pause
+// or a Studio operator's; any other state is a no-op, not an error.
 type OrganizationSuspender interface {
 	SuspendOrganization(ctx context.Context, organizationID, reason string) error
-	UnsuspendOrganization(ctx context.Context, organizationID string) error
+	UnsuspendOrganization(ctx context.Context, organizationID string, reasons []string) error
 }
 
 // OrganizationCacheInvalidator is called by the organization module after mutations

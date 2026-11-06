@@ -18,7 +18,7 @@ All configuration is read from the environment once at startup and passed explic
 ```bash
 cp .env.example .env      # fill required values
 make infra-up
-# provision database roles here — staging/production only, see
+# provision database roles (including the stratum_operator group) here — staging/production only, see
 # "Provisioning database roles" below (local dev already did this
 # automatically when the Postgres container first booted)
 make migrate-up
@@ -29,18 +29,18 @@ make run-worker
 
 **Provisioning database roles**: role creation is deliberately not part of the migration
 pipeline (`ADR-0026`) — `db/migrations/000008` only grants privileges to `stratum_app`,
-`stratum_worker`, and `stratum_webhook`, and `000009` to `stratum_app_unscoped`; they never
-create them. This is what lets
+`stratum_worker`, and `stratum_webhook`, `000009` to `stratum_app_unscoped`, and `000011` to
+`stratum_operator`; they never create them. This is what lets
 `make migrate-up` run without the migrator role itself needing `BYPASSRLS` or `CREATEROLE` —
 PostgreSQL only permits a role that already holds `BYPASSRLS` to grant `BYPASSRLS` to a role
 it creates, so embedding `CREATE ROLE ... BYPASSRLS` inside a migration would force every
 migrator, including a deliberately unprivileged production one, to hold it too.
 
-Local dev and CI get this for free: `deploy/postgres-init/01-app-role.sql` creates all four
+Local dev and CI get this for free: `deploy/postgres-init/01-app-role.sql` creates all five
 roles, and either runs automatically (local dev, mounted into the Postgres container's
 `docker-entrypoint-initdb.d`) or as an explicit CI step before migrations. Every other
 environment needs a human to run the equivalent once, with a superuser-equivalent connection,
-**before the first `make migrate-up`** — copy `deploy/postgres-init/01-app-role.sql`'s four
+**before the first `make migrate-up`** — copy `deploy/postgres-init/01-app-role.sql`'s
 `CREATE ROLE` statements, substituting real generated passwords for its hardcoded local-dev
 ones:
 ```sql
@@ -48,7 +48,17 @@ CREATE ROLE stratum_app LOGIN PASSWORD '...';
 CREATE ROLE stratum_worker LOGIN PASSWORD '...' BYPASSRLS;
 CREATE ROLE stratum_webhook LOGIN PASSWORD '...' BYPASSRLS;
 CREATE ROLE stratum_app_unscoped LOGIN PASSWORD '...' BYPASSRLS;
+CREATE ROLE stratum_operator NOLOGIN;
 ```
+**An environment that already ran an older build** needs `CREATE ROLE stratum_operator NOLOGIN`
+before the migrate step that applies `000011`, whose first `GRANT … TO stratum_operator` fails
+otherwise. A local database runs both scripts by hand, for example
+`podman exec -i stratum-postgres psql -U stratum -d stratum < deploy/postgres-init/01-app-role.sql`,
+then the same with `03-operator-role.sql`. Then deploy the new API and worker, and switch Studio to per-operator logins. Any
+`AUDIT_RETENTION_DAYS` below 365 now fails boot, so raise it first. To roll back, redeploy the
+previous binaries, then `make migrate-down`: older binaries delete audit rows directly, which needs
+the privileges the down migration restores.
+
 `stratum_app_unscoped` is used by `cmd/api` only (`POSTGRES_UNSCOPED_URL`, sized by
 `POSTGRES_UNSCOPED_MAX_OPEN_CONNS`) for the organization paths that have no tenant to scope a
 transaction to: the organization middleware's authorization lookups and the cross-org
@@ -68,9 +78,9 @@ code switch. Upgrade an existing environment in this order:
 
 The `organization` and `notification` tables run under `FORCE ROW LEVEL SECURITY` (`000010`),
 like `billing`'s. Two consequences for operators:
-- **Studio's DSN must be the schema owner or a `BYPASSRLS` role.** Studio reads and writes these
-  tables with no tenant scope (support tools, broadcasts); under `stratum_app` it would see
-  nothing.
+- **Studio's DSN must be a `BYPASSRLS` role, and only an operator login can change anything.**
+  Studio reads and writes these tables with no tenant scope (support tools, broadcasts); under
+  `stratum_app` it would see nothing. See "Operator access" below.
 - **A data migration on these tables must scope itself.** `FORCE` also binds a non-superuser
   table owner: set `app.organization_id` (`SELECT set_config('app.organization_id', '<org id>',
   true)`) per organization inside the migration's transaction, or wrap the change in `ALTER
@@ -101,12 +111,40 @@ Storage buckets auto-create on startup. Verify with `GET /health/ready` (expect 
 ## Health and observability
 Three endpoints: `/health` (liveness), `/health/ready` (readiness — returns 503 when a dependency is degraded), and `/health/stats` (goroutines, memory, GC, connection-pool stats). `/health` and `/health/ready` are always safe to expose publicly; `/health/stats` leaks process internals and is gated by the `STATS_TOKEN` env var — set it (any non-empty value) and enter the same value in Studio's project form so its monitoring page can keep polling it. An empty `STATS_TOKEN` leaves the endpoint open (fine for local dev, logged as a startup warning outside development). Telemetry (traces, metrics, logs) is exported via OpenTelemetry when a collector URL is configured, and is a no-op otherwise. Stratum Studio's monitoring page polls the health endpoints and keeps history.
 
+### Alert catalog
+Stratum emits these signals but evaluates none of them. Configure these conditions in whichever backend receives its metrics.
+
+| Condition | Severity | What it means |
+|---|---|---|
+| `stratum.audit.events.dropped` > 0 in 5 min | high | The audit buffer overflowed, so the audit trail has a gap |
+| `stratum.audit.write.failures` > 0 in 5 min | high | The database refused a batch of audit events |
+| `stratum.http.auth.failures{status=401}` above 5× its 7-day hourly baseline | medium | Possible credential stuffing or token probing |
+| any `stratum.http.auth.failures` on a `/webhooks/*` route in 15 min | medium | A forged or misconfigured provider callback |
+| `stratum.outbox.due_unpublished` > 100 for 10 min | high | Event delivery has stalled: rows are due or failed and waiting to retry |
+| `stratum.outbox.exhausted` > 0 | high | Events were abandoned after every retry, and only an operator can recover them; see "Stuck outbox backlog" |
+| `stratum.retention.sweep.failures` > 0 in 2 h | medium | A retention sweep failed, so data may be outliving its documented retention; the `module` attribute and the worker or API log say which |
+| `stratum.dlq.messages` > 0 for 15 min | medium | Messages are dead-lettered; see "Dead-letter backlog" |
+| `/health/ready` not 200 for 2 min | high | A dependency is degraded |
+
+`stratum.ratelimit.rejections{limiter}` counts 429s per limiter, for dashboards rather than paging.
+
 ## Backups and data
-PostgreSQL is the system of record — back it up per your SLA (define RPO/RTO here for your deployment). Redis is disposable cache (roles, rate-limit counters, the token blocklist) — losing it degrades, it doesn't corrupt. RabbitMQ holds in-flight events; a dead-letter backlog is recoverable. Supabase Storage holds user files and should be backed up separately if required.
+PostgreSQL is the system of record. Redis is disposable cache (roles, rate-limit counters, the token blocklist) — losing it degrades, it doesn't corrupt. RabbitMQ holds in-flight events; a dead-letter backlog is recoverable. Supabase Storage holds user files and should be backed up separately if required.
+
+The documented targets are **RPO 24 hours and RTO 4 hours**. Change them here if your SLA differs.
+
+On a managed Postgres, use the provider's point-in-time recovery and take its backups as the source for the restore test. For a self-managed Postgres:
+
+```bash
+make db-backup                                # writes backups/stratum-<UTC timestamp>.dump, readable only by you
+make db-restore-verify FILE=backups/<file>    # restores into a scratch database and checks it
+```
+
+`db-restore-verify` restores into a scratch database (`stratum_restore_verify`, dropped afterwards) and prints one line per check: `pg_restore` exits 0, the migration version matches the live database, and `ref.countries`, `ref.currencies` and `billing.plans` have rows. It ends with `RESULT: PASS`, or `RESULT: FAIL` and exit code 1. It proves integrity, not row-for-row equality. The app has no scheduler, so a systemd timer or launchd job on the host runs `db-backup` at least daily and copies each dump off the host. Run a restore test **every quarter and record the result**: an auditor asks for that record.
 
 ## Runbooks
 
-**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Consumers are idempotent, so requeue is safe for a *transient* failure. One `billing.events.dlq` cause is not transient: an `organization.created` event whose cart-selected coupon was exhausted by someone else before provisioning ran — the organization exists (its create request already succeeded) but has no subscription. Requeuing retries the same now-exhausted coupon and fails identically; the fix is to provision the subscription manually via Studio (without the coupon, or with a different one) and purge the dead-lettered event, not requeue it. No alert currently fires when this happens — it's only visible by checking the queue.
+**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Consumers are idempotent, so requeue is safe for a *transient* failure. One `billing.events.dlq` cause is not transient: an `organization.created` event whose cart-selected coupon was exhausted by someone else before provisioning ran — the organization exists (its create request already succeeded) but has no subscription. Requeuing retries the same now-exhausted coupon and fails identically; the fix is to provision the subscription manually via Studio (without the coupon, or with a different one) and purge the dead-lettered event, not requeue it. `stratum.dlq.messages` reports each dead-letter queue's depth (see the alert catalog).
 
 **Failing customer webhook** — Endpoints auto-disable after a three-day, 100%-failure window and warn below 70% success over 24 hours. Re-enable is only possible via a passing test event, not a direct toggle. Use the deliveries panel to diagnose, then bulk-retry failed deliveries once the receiver is fixed.
 
@@ -118,7 +156,7 @@ PostgreSQL is the system of record — back it up per your SLA (define RPO/RTO h
 
 *Delivery delayed, nothing lost* — rows still retrying:
 ```sql
-SELECT count(*) FROM messaging.outbox WHERE published_at IS NULL AND attempts < 20 AND created_at < now() - interval '5 minutes';
+SELECT count(*) FROM messaging.outbox WHERE published_at IS NULL AND attempts < 20 AND (not_before <= now() OR attempts > 0) AND created_at < now() - interval '5 minutes';
 ```
 A nonzero result means the relay is stuck (worker process down or wedged) or the broker is unreachable — these events are durably queued and will deliver once the relay recovers. Check the worker process is running and can reach RabbitMQ; `attempts`/`last_error` on the oldest unpublished rows show the last failure the relay recorded for them.
 
@@ -205,11 +243,71 @@ WHERE i.status = 'pending' AND pl.status = 'pending' AND i.created_at < now() - 
 ```
 Each result needs manual verification against the payment provider's own dashboard (Stripe/Xendit) before marking anything paid by hand via Studio's support tools — a row in this list only means the invoice looks stale, not that it was actually paid.
 
+## Security incident response
+
+**Severity.** *Critical*: confirmed exposure of customer data or credentials, or an attacker with access. *High*: a likely compromise under investigation, or a control confirmed bypassed. *Medium*: repeated attack signals with no sign of success.
+
+**1. Contain.** Act before investigating further, and keep a timestamped log of every action.
+- Compromised user: ban them in the Supabase dashboard, which stops sign-ins and token refresh. An access token already issued stays valid until it expires (`AUTH_ACCESS_TOKEN_MAX_TTL`).
+- Compromised organization: suspend it from Studio's organization page.
+- Exposed secret: rotate it (see "Secret rotation").
+- Compromised operator: `ALTER ROLE op_<name> NOLOGIN`, and rotate the shared RabbitMQ and Redis credentials they held.
+
+**2. Preserve evidence.** Before cleaning anything up, take a database snapshot (`make db-backup`), export the audit log as CSV from Studio's audit page, and copy the Postgres and application logs off the host. Retention sweeps keep running, so export anything close to its retention limit.
+
+**3. Assess and notify.** Work out what data was affected and whose. Each deadline runs from the point you become aware or finish assessing, so involve legal counsel early:
+- **GDPR Art. 33:** notify the supervisory authority within 72 hours of becoming aware of a personal data breach, unless it is unlikely to result in a risk to individuals. Art. 34: notify affected individuals when the risk is high.
+- **Singapore PDPA:** notify the PDPC within 3 calendar days of assessing a breach as notifiable, and affected individuals where required.
+- Customer contracts often add their own notification terms.
+
+**4. Recover.** Fix the root cause, restore from backup if data was altered (`make db-restore-verify` first), and watch the alert catalog for a recurrence.
+
+**5. Review.** Within two weeks, write a post-incident review: timeline, root cause, what worked, and follow-up actions with owners. Keep it as audit evidence.
+
+## Operator access
+Studio changes are attributed through one Postgres login per person. Never share a login.
+
+**Provision**, with a superuser-equivalent connection. `VALID UNTIL` at most 100 days out; `BYPASSRLS` is set on the login because Postgres does not inherit it through membership, and Studio refuses a login without it:
+```sql
+CREATE ROLE op_<name> LOGIN BYPASSRLS PASSWORD '<generated>' VALID UNTIL '<date within 100 days>' IN ROLE stratum_operator;
+```
+Then put that DSN in the project's Studio form. Editing a project reconnects it immediately.
+
+**Review every quarter** and keep the output as evidence. For each operator, either renew `VALID UNTIL` or set `NOLOGIN`:
+```sql
+SELECT login.rolname,
+       login.rolcanlogin,
+       login.rolvaliduntil,
+       (SELECT max(e.created_at) FROM audit.events e WHERE e.actor = 'operator:' || login.rolname) AS last_change
+FROM pg_auth_members m
+JOIN pg_roles operator_group ON operator_group.oid = m.roleid
+JOIN pg_roles login ON login.oid = m.member
+WHERE operator_group.rolname = 'stratum_operator'
+ORDER BY login.rolname;
+```
+
+**Revoke** with `ALTER ROLE op_<name> NOLOGIN`. Never `DROP` it, so its audit history stays attributable to a role that still exists.
+
+**Break-glass.** The schema owner is the emergency path. The audit trigger does not capture owner or superuser sessions, so `ALTER ROLE <owner> SET log_statement = 'mod'` makes Postgres log every data-modifying statement the owner runs, and that log must be shipped off-host. Record why each break-glass session happened.
+
+## Secret rotation
+Rotate on a schedule, and immediately after any suspected exposure or when someone with access leaves. Restart the API and worker after changing their environment.
+
+| Secret | How to rotate |
+|---|---|
+| `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` | Roll the key, or add a new webhook endpoint secret, in the Stripe dashboard, then update the environment. Stripe can keep the old secret valid for a window, so nothing is missed |
+| `XENDIT_API_KEY`, `XENDIT_CALLBACK_TOKEN` | Generate new values in the Xendit dashboard and update the environment in the same deploy, then check Xendit's callback log for anything rejected in between |
+| `AUTH_SERVICE_ROLE_KEY`, `SUPABASE_WEBHOOK_SECRET` | Roll in Supabase, then update the environment and the database webhook's header together |
+| `STATS_TOKEN` | Change the environment and the value in Studio's project form |
+| Database role passwords | `ALTER ROLE <role> PASSWORD '<generated>'`, then update that role's `POSTGRES_*_URL`. Existing connections stay open until restart |
+| RabbitMQ and Redis credentials | Change them in the broker or cache, then update the environment and every Studio project form |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY` | Follow "Rotating the webhook encryption key" above |
+
 ## No scheduler
 Stratum has no cron. Anything that looks periodic is one of:
 
 - **A future-dated outbox row.** Dunning notices, renewal reminders, and the end-of-period expiry check are written to `messaging.outbox` with a future `not_before`; the relay claims each only once it comes due and publishes it like any immediate event. The delay is a timestamp in the database, not a broker plugin or a scheduler.
-- **A worker-local ticker.** `cmd/worker` runs a handful of `time.Ticker` goroutines in-process — the outbox relay (2s), the outbox retention sweep (hourly), expired-invitation cleanup (hourly), and `ReconcileOverdueSubscriptions` (hourly), which re-enqueues an expiry check for any active/trialing subscription already past its end date so a lost scheduled check can't leave a lapsed subscription entitled. These are not external jobs; they stop when the worker stops.
+- **A worker-local ticker.** `cmd/worker` runs a handful of `time.Ticker` goroutines in-process — the outbox relay (2s), the outbox and module retention sweeps (hourly; module sweeps remove 10,000 rows at a time until none are left and log what they removed), expired-invitation cleanup (hourly), and `ReconcileOverdueSubscriptions` (hourly), which re-enqueues an expiry check for any active/trialing subscription already past its end date so a lost scheduled check can't leave a lapsed subscription entitled. These are not external jobs; they stop when the worker stops.
 - **Lazy/opportunistic work** — e.g. webhook health computed on delivery.
 
 Adding a general-purpose scheduler still isn't judged worth the operational surface.

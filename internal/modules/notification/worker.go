@@ -312,7 +312,10 @@ func (w *Worker) HandleSubscriptionActivated(ctx context.Context, body []byte) e
 	return nil
 }
 
-// HandleSubscriptionCancelled notifies the organization owner that the subscription was cancelled.
+// HandleSubscriptionCancelled notifies the organization owner that the
+// cancellation they scheduled has taken effect: billing.expireIfDue fires
+// it when the paid period (or trial) ends, in the same step that suspends
+// the organization, so the copy says access has ended.
 func (w *Worker) HandleSubscriptionCancelled(ctx context.Context, body []byte) error {
 	evt, err := events.Decode[events.SubscriptionCancelled](body)
 	if err != nil {
@@ -321,7 +324,7 @@ func (w *Worker) HandleSubscriptionCancelled(ctx context.Context, body []byte) e
 	_, err = w.svc.send(
 		ctx, evt.OrgID, w.svc.resolveOwnerAuthSub(ctx, evt.OrgID),
 		"in_app", "subscription_cancelled", "Subscription cancelled",
-		"Your subscription has been cancelled. Access continues until the end of the current period.",
+		"Your subscription has ended as requested and your organization is suspended. Resume it from Billing to restore access.",
 		nil,
 	)
 	if err != nil {
@@ -332,9 +335,9 @@ func (w *Worker) HandleSubscriptionCancelled(ctx context.Context, body []byte) e
 
 // HandleSubscriptionExpired notifies the organization owner that their
 // subscription's trial or paid period lapsed unpaid — distinct from
-// HandleSubscriptionCancelled: by the time this fires the organization has
-// already been suspended (billing.expireIfDue), so the copy must not claim
-// access continues.
+// HandleSubscriptionCancelled, whose end the owner asked for. By the time
+// either fires the organization has already been suspended
+// (billing.expireIfDue), so the copy must not claim access continues.
 func (w *Worker) HandleSubscriptionExpired(ctx context.Context, body []byte) error {
 	evt, err := events.Decode[events.SubscriptionExpired](body)
 	if err != nil {
@@ -343,7 +346,7 @@ func (w *Worker) HandleSubscriptionExpired(ctx context.Context, body []byte) err
 	_, err = w.svc.send(
 		ctx, evt.OrgID, w.svc.resolveOwnerAuthSub(ctx, evt.OrgID),
 		"in_app", "subscription_expired", "Subscription expired",
-		"Your subscription has expired and your organization has been suspended. Pay the outstanding invoice to restore access.",
+		"Your subscription has expired and your organization has been suspended. Resume it from Billing to restore access.",
 		nil,
 	)
 	email, name, lang, ownerSub := w.svc.resolveOwnerEmail(ctx, evt.OrgID)

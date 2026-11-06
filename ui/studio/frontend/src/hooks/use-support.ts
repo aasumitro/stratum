@@ -115,7 +115,9 @@ export function useMarkInvoicePaid(projectId: string, organizationId: string) {
     mutationFn: (invoiceID: string) =>
       SupportService.MarkInvoicePaid(projectId, invoiceID),
     onSuccess: () => {
-      toast.success("Invoice marked as paid")
+      toast.success(
+        "Payment recorded — the invoice turns paid once the app's worker applies it"
+      )
       qc.invalidateQueries({
         queryKey: ["support", "invoices", projectId, organizationId],
       })
@@ -155,7 +157,9 @@ export function useMarkAtRiskPaid(projectId: string) {
     mutationFn: (invoiceID: string) =>
       SupportService.MarkInvoicePaid(projectId, invoiceID),
     onSuccess: () => {
-      toast.success("Invoice marked as paid")
+      toast.success(
+        "Payment recorded — the invoice turns paid once the app's worker applies it"
+      )
       qc.invalidateQueries({ queryKey: ["support", "at-risk", projectId] })
     },
     onError: (err) => toast.error(`Failed: ${wailsError(err)}`),

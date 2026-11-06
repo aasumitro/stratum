@@ -20,6 +20,7 @@ const (
 	RoutingKeyUsageLimitWarning         = "billing.usage.limit-warning"
 )
 
+// RoutingKeySubscriptionExpiringSoon
 // The renewal reminder deliberately uses two keys. RoutingKeySubscriptionRemind
 // is the scheduled check (a delayed outbox row due shortly before the period
 // or trial ends) and only billing consumes it: the handler drops it when the
@@ -42,6 +43,18 @@ const (
 	RoutingKeyInvoicePaymentReminder    = "billing.invoice.payment-reminder"
 	RoutingKeyInvoicePaymentFinalNotice = "billing.invoice.payment-final-notice"
 )
+
+// RoutingKeyPaymentLinkExpire asks billing to close a payment link's hosted
+// checkout at its provider once the link was expired locally (its invoice
+// voided, failed, or superseded by a new link), so the old checkout can no
+// longer take money. Only billing consumes it; Studio enqueues it too when
+// an operator voids an invoice.
+const RoutingKeyPaymentLinkExpire = "billing.payment-link.expire"
+
+// RoutingKeyInvoiceMarkPaid asks billing to apply an operator's "mark paid"
+// from Studio exactly like a confirmed payment. Studio writes it straight to
+// the outbox; only billing consumes it.
+const RoutingKeyInvoiceMarkPaid = "billing.invoice.mark-paid"
 
 type SubscriptionActivated struct {
 	OrgID          string    `json:"org_id"`
@@ -72,6 +85,19 @@ type InvoicePaid struct {
 	AmountCents int       `json:"amount_cents"`
 	Currency    string    `json:"currency"`
 	PaidAt      time.Time `json:"paid_at"`
+}
+
+// PaymentLinkExpire names one hosted checkout to close at its provider:
+// Provider is "stripe" or "xendit", ExternalID the session or invoice ID the
+// provider issued.
+type PaymentLinkExpire struct {
+	Provider   string `json:"provider"`
+	ExternalID string `json:"external_id"`
+}
+
+// InvoiceMarkPaid is an operator's manual payment of one pending invoice.
+type InvoiceMarkPaid struct {
+	InvoiceID string `json:"invoice_id"`
 }
 
 type InvoiceFailed struct {

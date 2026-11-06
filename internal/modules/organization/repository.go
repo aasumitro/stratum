@@ -11,6 +11,43 @@ import (
 
 type repository struct{}
 
+func (r *repository) deleteExpiredWebhookDeliveries(ctx context.Context, q db.Querier, days int) (int64, error) {
+	removed, err := db.SweepInBatches(ctx, q, `
+		DELETE FROM organization.webhook_deliveries
+		WHERE id IN (
+			SELECT id
+			FROM organization.webhook_deliveries
+			WHERE created_at < now() - make_interval(days => $1)
+			ORDER BY created_at
+			LIMIT $2
+		)`, days)
+	if err != nil {
+		return removed, fmt.Errorf("organization.deleteExpiredWebhookDeliveries: %w", err)
+	}
+	return removed, nil
+}
+
+// purgeDeletedOrganizations permanently removes organizations soft-deleted more
+// than days ago, and with them their memberships, invitations, webhook endpoints
+// and deliveries through ON DELETE CASCADE. Only status = 'deleted' qualifies, so
+// an active or suspended organization is never touched however old its updated_at.
+func (r *repository) purgeDeletedOrganizations(ctx context.Context, q db.Querier, days int) (int64, error) {
+	purged, err := db.SweepInBatches(ctx, q, `
+		DELETE FROM organization.organizations
+		WHERE id IN (
+			SELECT id
+			FROM organization.organizations
+			WHERE status = 'deleted'
+			  AND updated_at < now() - make_interval(days => $1)
+			ORDER BY updated_at
+			LIMIT $2
+		)`, days)
+	if err != nil {
+		return purged, fmt.Errorf("organization.purgeDeletedOrganizations: %w", err)
+	}
+	return purged, nil
+}
+
 type organizationRecord struct {
 	ID                string          `json:"id"`
 	Slug              string          `json:"slug"`
@@ -266,12 +303,16 @@ func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timez
 	return nil
 }
 
+// suspendOrganization replaces an owner's own suspension but no other. The owner
+// can lift their own, so leaving it in place would let them suspend just before a
+// subscription expires, keep that reason through the expiry, and then lift it to
+// run on an expired subscription.
 func (r *repository) suspendOrganization(ctx context.Context, q db.Querier, id, reason string) error {
 	_, err := q.Exec(ctx, `
 		UPDATE organization.organizations
 		SET status = 'suspended', suspended_at = now(), suspended_reason = $2, updated_at = now()
-		WHERE id = $1 AND status = 'active'`,
-		id, reason,
+		WHERE id = $1 AND (status = 'active' OR (status = 'suspended' AND suspended_reason = $3))`,
+		id, reason, suspendReasonSelfService,
 	)
 	if err != nil {
 		return fmt.Errorf("organization.suspendOrganization: %w", err)
@@ -279,17 +320,19 @@ func (r *repository) suspendOrganization(ctx context.Context, q db.Querier, id, 
 	return nil
 }
 
-func (r *repository) unsuspendOrganization(ctx context.Context, q db.Querier, id string) error {
-	_, err := q.Exec(ctx, `
+// unsuspendOrganization lifts the suspension only when its reason is one of
+// reasons, and reports whether it did.
+func (r *repository) unsuspendOrganization(ctx context.Context, q db.Querier, id string, reasons []string) (bool, error) {
+	tag, err := q.Exec(ctx, `
 		UPDATE organization.organizations
 		SET status = 'active', suspended_at = NULL, suspended_reason = '', updated_at = now()
-		WHERE id = $1 AND status = 'suspended'`,
-		id,
+		WHERE id = $1 AND status = 'suspended' AND suspended_reason = ANY($2)`,
+		id, reasons,
 	)
 	if err != nil {
-		return fmt.Errorf("organization.unsuspendOrganization: %w", err)
+		return false, fmt.Errorf("organization.unsuspendOrganization: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *repository) updateLogoURL(ctx context.Context, q db.Querier, organizationID, logoURL string) error {

@@ -14,6 +14,10 @@ import { useOrganization } from "@/features/organization/hooks/use-organization"
 import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import { useUnsuspendOrganization } from "@/features/organization/hooks/use-settings"
 import { usePermissions } from "@/hooks/use-permissions"
+import {
+  isBillingSuspensionReason,
+  isSelfSuspensionReason,
+} from "@/hooks/use-billing-status"
 import { Button } from "@/components/ui/button"
 
 // Routes accessible even when billing is blocked by a pending invoice.
@@ -63,15 +67,26 @@ export function OrganizationLayout() {
     void navigate({ to: "/organizations" })
   }, [isError, error, navigate, t, session])
 
-  const { isOwner, hasPendingInvoice, role, canViewBilling } = usePermissions()
+  const {
+    isOwner,
+    hasPendingInvoice,
+    hasBlockingInvoice,
+    role,
+    canViewBilling,
+  } = usePermissions()
   const organization = wsData?.data
   const isSuspended = organization?.status === "suspended"
 
-  // Billing-caused suspension is the one that resolves itself by
-  // payment (the "subscription expired" sentinel billing's auto-suspend
-  // uses) — a self-suspended organization has no invoice to point to.
+  // Billing-caused suspension is the one that resolves itself by payment
+  // (the reasons billing writes when a subscription expires or its
+  // cancellation takes effect) — a self-suspended organization has no
+  // invoice to point to.
   const isBillingCausedSuspension =
-    isSuspended && organization?.suspended_reason === "subscription expired"
+    isSuspended && isBillingSuspensionReason(organization?.suspended_reason)
+  // Only the owner's own pause can be lifted from here; any other reason was
+  // set by support, which lifts it in Studio.
+  const isSelfSuspension =
+    isSuspended && isSelfSuspensionReason(organization?.suspended_reason)
 
   const { data: membersData } = useOrganizationMembers(organizationId, {
     enabled: isSuspended && !isOwner,
@@ -82,19 +97,19 @@ export function OrganizationLayout() {
   const { mutate: unsuspend, isPending: unsuspending } =
     useUnsuspendOrganization(organizationId)
 
-  // Redirect billing-blocked users away from restricted routes. Suspended
-  // organizations are deliberately NOT redirected — every page stays
-  // reachable, read-only.
+  // Redirect owners with an unpaid activation away from restricted routes.
+  // Suspended organizations are deliberately NOT redirected — every page
+  // stays reachable, read-only.
   const subSegments = location.pathname.split("/").filter(Boolean).slice(2) // drop "organization" and organizationId
   const currentSegment = subSegments[0]
   useEffect(() => {
-    if (!hasPendingInvoice || !currentSegment) return
+    if (!hasBlockingInvoice || !currentSegment) return
     if (BILLING_ALLOWED_SEGMENTS.has(currentSegment)) return
     void navigate({
       to: "/organization/$organizationId/billing",
       params: { organizationId },
     })
-  }, [hasPendingInvoice, currentSegment, navigate, organizationId])
+  }, [hasBlockingInvoice, currentSegment, navigate, organizationId])
 
   // One billing banner at a time. On the billing page itself,
   // billing-layout.tsx renders the subscription's state banner with the
@@ -107,7 +122,7 @@ export function OrganizationLayout() {
   const showSuspendedBanner =
     isSuspended && !(onBillingPage && isBillingCausedSuspension)
   const showPendingInvoiceBanner =
-    hasPendingInvoice && !isSuspended && !onBillingPage
+    hasBlockingInvoice && !isSuspended && !onBillingPage
   // An expired subscription only has an invoice to pay once the owner
   // resumes it — until then, "pay the unpaid invoice" would point at nothing.
   const ownerBillingBannerKey = hasPendingInvoice
@@ -166,9 +181,11 @@ export function OrganizationLayout() {
           <span>
             {isBillingCausedSuspension
               ? t(ownerBillingBannerKey)
-              : t("organization.suspendedOwnerSelfBanner", {
-                  reason: organization?.suspended_reason,
-                })}
+              : isSelfSuspension
+                ? t("organization.suspendedOwnerSelfBanner")
+                : t("organization.suspendedOwnerSupportBanner", {
+                    reason: organization?.suspended_reason,
+                  })}
           </span>
           {isBillingCausedSuspension ? (
             <Link
@@ -178,7 +195,7 @@ export function OrganizationLayout() {
             >
               {t("organization.pendingInvoicePay")}
             </Link>
-          ) : (
+          ) : isSelfSuspension ? (
             <Button
               size="sm"
               variant="outline"
@@ -187,7 +204,7 @@ export function OrganizationLayout() {
             >
               {t("organization.danger.unsuspendAction")}
             </Button>
-          )}
+          ) : null}
         </div>
       )}
 

@@ -24,8 +24,10 @@ import (
 // surfacing as a silently misrouted or dead-lettered message in production.
 const goldenConsumerTopology = `account.events|account.delete-account|[user.delete.request]|3|5s|1m0s|account.events.dlx|account.delete-account|account.events.dlx|account.events.dlq|5
 account.events|account.export-data|[user.export.request]|3|5s|1m0s|account.events.dlx|account.export-data|account.events.dlx|account.events.dlq|5
+billing.events|billing.invoice-mark-paid|[billing.invoice.mark-paid]|5|2s|1m0s|billing.events.dlx|billing.invoice-mark-paid|billing.events.dlx|billing.events.dlq|10
 organization.events|billing.organization-created|[organization.created]|5|2s|1m0s|billing.events.dlx|billing.organization-created|billing.events.dlx|billing.events.dlq|10
 organization.events|billing.organization-deleted|[organization.deleted]|5|2s|1m0s|billing.events.dlx|billing.organization-deleted|billing.events.dlx|billing.events.dlq|10
+billing.events|billing.payment-link-expire|[billing.payment-link.expire]|5|2s|1m0s|billing.events.dlx|billing.payment-link-expire|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-auto-invoice|[billing.subscription.auto-invoice]|5|2s|1m0s|billing.events.dlx|billing.subscription-auto-invoice|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-check|[billing.subscription.check]|5|2s|1m0s|billing.events.dlx|billing.subscription-check|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-payment-final|[billing.subscription.payment-final]|5|2s|1m0s|billing.events.dlx|billing.subscription-payment-final|billing.events.dlx|billing.events.dlq|10
@@ -63,7 +65,7 @@ billing.events|organization.webhook-billing|[billing.invoice.created billing.inv
 organization.events|organization.webhook-organization|[organization.created organization.member.invited]|3|5s|1m0s|organization.events.dlx|organization.webhook-organization|organization.events.dlx|organization.events.dlq|10
 organization.events|organization.webhook-retry|[organization.webhook.retry-requested]|3|5s|1m0s|organization.events.dlx|organization.webhook-retry|organization.events.dlx|organization.events.dlq|1`
 
-const goldenConsumerCount = 40
+const goldenConsumerCount = 42
 
 // consumerTopologyLines renders consumers to the same pipe-delimited format
 // goldenConsumerTopology was captured in, sorted by queue name (the golden

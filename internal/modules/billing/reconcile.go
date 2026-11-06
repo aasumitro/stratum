@@ -7,14 +7,14 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts/events"
 )
 
-// ReconcileOverdueSubscriptions is an hourly safety net for subscription
-// expiry. expireIfDue's only trigger is the SubscriptionCheck scheduled at
-// period/trial end; if that one message is lost or misrouted, the
-// subscription stays active past its paid period with nothing else in the
+// ReconcileOverdueSubscriptions is an hourly safety net for the end of a
+// subscription. expireIfDue's only trigger is the SubscriptionCheck
+// scheduled at period/trial end; if that one message is lost or misrouted,
+// the subscription stays live past its paid period with nothing else in the
 // system noticing. This re-enqueues a SubscriptionCheck for every
-// active/trialing subscription already past its end date, so the normal
-// HandleSubscriptionCheck -> expireIfDue path runs and (idempotently)
-// expires it and suspends its organization.
+// active/trialing/past_due subscription already past its end date, so the
+// normal HandleSubscriptionCheck -> expireIfDue path runs and
+// (idempotently) ends it and suspends its organization.
 //
 // Scoped to expiry only: it does not backfill a missed renewal reminder or
 // auto-invoice — a missed reminder is cosmetic, and a missed auto-invoice
@@ -32,10 +32,10 @@ func (s *service) reconcileOverdueSubscriptions(ctx context.Context) {
 		return
 	}
 	for _, sub := range overdue {
-		// Enqueued with the subscription's current end date so the consumer's
-		// stale-check guard still discards it if the period just moved. Each
-		// Enqueue is its own implicitly-committed insert on the pool (no
-		// ambient transaction here) — one failure doesn't hold up the rest.
+		// expireIfDue re-checks the live end under its row lock, so a message
+		// for a period that has just moved on is a no-op. Each Enqueue is its
+		// own implicitly-committed insert on the pool (no ambient transaction
+		// here) — one failure doesn't hold up the rest.
 		if err := s.enqueueEvent(ctx, events.RoutingKeySubscriptionCheck, sub.SubjectID, events.SubscriptionCheck{
 			SubscriptionID: sub.ID,
 			SubjectType:    sub.SubjectType,

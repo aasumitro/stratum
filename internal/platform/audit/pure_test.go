@@ -97,6 +97,13 @@ func TestRedactSensitiveFields(t *testing.T) {
 		}
 	})
 
+	t.Run("valid JSON that cannot be decoded is not stored unredacted", func(t *testing.T) {
+		got := redactSensitiveFields([]byte(`{"password":"hunter2","n":1e999}`))
+		if string(got) != "{}" {
+			t.Errorf("want empty metadata, got %q", got)
+		}
+	})
+
 	t.Run("non-object JSON is returned unchanged", func(t *testing.T) {
 		got := redactSensitiveFields([]byte(`"just a string"`))
 		if string(got) != `"just a string"` {

@@ -39,11 +39,12 @@ func (s *service) listHistory(ctx context.Context, subjectType, subjectID string
 }
 
 // resolveChangedBy turns the raw changed_by value stored on a history row
-// into a display name and an actor kind. "system"/"webhook"/"" are the
-// literal sentinel values other call sites in this file already pass for
-// non-owner-initiated transitions (trial expiry, auto-cancel, payment
-// webhook resume) — anything else is expected to be a real auth_sub, looked
-// up via userReader. Fails open to the raw value if the reader is unwired
+// into a display name and an actor kind. "system"/"webhook"/"operator"/""
+// are the literal sentinel values other call sites pass for
+// non-owner-initiated transitions (trial expiry, auto-cancel, a payment
+// confirmed by webhook or by a Studio operator, which shows as a system
+// actor named "Support") — anything else is expected to be a real auth_sub,
+// looked up via userReader. Fails open to the raw value if the reader is unwired
 // or the lookup misses, so a stale/unknown auth_sub never breaks the list.
 func (s *service) resolveChangedBy(ctx context.Context, changedBy string) (name, kind string) {
 	switch changedBy {
@@ -51,6 +52,8 @@ func (s *service) resolveChangedBy(ctx context.Context, changedBy string) (name,
 		return displayNameSystem, actorKindSystem
 	case changedByWebhook:
 		return displayNameWebhook, actorKindWebhook
+	case changedByOperator:
+		return displayNameOperator, actorKindSystem
 	}
 	if s.userReader != nil {
 		if u, err := s.userReader.GetUserByAuthSub(ctx, changedBy); err == nil && u != nil {

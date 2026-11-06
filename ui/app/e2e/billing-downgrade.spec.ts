@@ -71,33 +71,37 @@ async function mockBillingAPIs(
     })
   })
 
-  // Mock plans catalog
-  await page.route("**/v1/references/plans*", async (route) => {
-    if (route.request().method() !== "GET") return route.continue()
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: [
-          {
-            id: "solo",
-            name: "Solo",
-            sort_order: 10,
-            active: true,
-            prices: { USD: { monthly: 900, yearly: 9000 } },
-          },
-          {
-            id: "growth",
-            name: "Growth",
-            sort_order: 20,
-            active: true,
-            prices: { USD: { monthly: 2900, yearly: 29000 } },
-          },
-        ],
-        status: { error: false },
-      }),
-    })
-  })
+  // Mock plans catalog: the billing page reads the org-scoped catalog,
+  // onboarding reads /references.
+  await page.route(
+    /\/v1\/(references\/plans|organizations\/org-1\/billing\/plans\/catalog)/,
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: [
+            {
+              id: "solo",
+              name: "Solo",
+              sort_order: 10,
+              active: true,
+              prices: { USD: { monthly: 900, yearly: 9000 } },
+            },
+            {
+              id: "growth",
+              name: "Growth",
+              sort_order: 20,
+              active: true,
+              prices: { USD: { monthly: 2900, yearly: 29000 } },
+            },
+          ],
+          status: { error: false },
+        }),
+      })
+    }
+  )
 
   // Mock members
   await page.route("**/v1/organizations/org-1/members", async (route) => {
@@ -264,7 +268,7 @@ test("trialing downgrade with overage shows disclosure and candidates", async ({
   await page.getByRole("button", { name: /confirm downgrade/i }).click()
 
   // Verify request sent empty arrays for manual picks, as we didn't interact
-  expect(captured.payload).not.toBeNull()
+  await expect.poll(() => captured.payload).not.toBeNull()
   expect(captured.payload?.plan).toBe("solo")
   expect(captured.payload?.preferred_member_auth_subs).toEqual([])
 

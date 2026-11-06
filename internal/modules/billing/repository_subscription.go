@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
@@ -132,22 +134,23 @@ func (r *repository) updateSubscriptionPlan(
 	return s, nil
 }
 
+// updateSubscriptionStatus sets a subscription's status; pgx.ErrNoRows when
+// no subscription has that id.
 func (r *repository) updateSubscriptionStatus(
 	ctx context.Context, q db.Querier,
 	id, status string,
-) (*subscriptionRecord, error) {
-	s := new(subscriptionRecord)
-	err := q.QueryRow(ctx,
-		`UPDATE billing.subscriptions SET status = $2, updated_at = now()
-		WHERE id = $1 RETURNING `+subsCols,
+) error {
+	tag, err := q.Exec(ctx,
+		`UPDATE billing.subscriptions SET status = $2, updated_at = now() WHERE id = $1`,
 		id, status,
-	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
-		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+	)
 	if err != nil {
-		return nil, fmt.Errorf("billing.updateSubscriptionStatus: %w", err)
+		return fmt.Errorf("billing.updateSubscriptionStatus: %w", err)
 	}
-	return s, nil
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("billing.updateSubscriptionStatus: %w", pgx.ErrNoRows)
+	}
+	return nil
 }
 
 // activateTrialImmediately converts a trialing subscription to active right
@@ -184,19 +187,18 @@ type overdueSubscription struct {
 	ExpectedEnd time.Time
 }
 
-// listOverdueSubscriptions returns every active/trialing subscription whose
-// current period end (trial_end for a trial, else period_end) is already in
-// the past — the set whose scheduled SubscriptionCheck should have expired
-// them but may have been lost. past_due is deliberately excluded: it reaches
-// the same expireIfDue path once its period_end passes and needs no
-// reconciliation here.
+// listOverdueSubscriptions returns every active/trialing/past_due
+// subscription whose current period end (trial_end for a trial, else
+// period_end) is already in the past — the set whose scheduled
+// SubscriptionCheck should have ended them but may have been lost. past_due
+// is included: it relies on that same single check to end at period_end.
 func (r *repository) listOverdueSubscriptions(ctx context.Context, q db.Querier) ([]overdueSubscription, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id, subject_type, subject_id,
 		       status = 'trialing' AS is_trial,
 		       COALESCE(trial_end, period_end) AS expected_end
 		FROM billing.subscriptions
-		WHERE status IN ('active', 'trialing')
+		WHERE status IN ('active', 'trialing', 'past_due')
 		  AND COALESCE(trial_end, period_end) < now()`)
 	if err != nil {
 		return nil, fmt.Errorf("billing.listOverdueSubscriptions: %w", err)
@@ -231,15 +233,19 @@ func (r *repository) findSubscriptionByID(ctx context.Context, q db.Querier, id 
 	return s, nil
 }
 
+// updateSubscriptionPlanAndPeriod changes plan, cycle and period together.
+// It deliberately never writes status: a plan change alone must not
+// reactivate a subscription or clear a past_due one — only a paid invoice
+// does that.
 func (r *repository) updateSubscriptionPlanAndPeriod(
 	ctx context.Context, q db.Querier,
-	id, plan, cycle string, periodEnd time.Time,
+	id, plan, cycle string, periodStart, periodEnd time.Time,
 ) (*subscriptionRecord, error) {
 	s := new(subscriptionRecord)
 	err := q.QueryRow(ctx,
-		`UPDATE billing.subscriptions SET plan = $2, cycle = $3, status = 'active', period_end = $4, updated_at = now()
+		`UPDATE billing.subscriptions SET plan = $2, cycle = $3, period_start = $4, period_end = $5, updated_at = now()
 		WHERE id = $1 RETURNING `+subsCols,
-		id, plan, cycle, periodEnd,
+		id, plan, cycle, periodStart, periodEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
 		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
@@ -287,9 +293,9 @@ func (r *repository) updateSubscriptionPeriod(
 
 // clearTrialEndAndUpdatePeriod sets the period and clears trial_end in one
 // statement — used when a subscription is definitively leaving the trialing
-// state (expired-reactivation, or resume-from-cancelled past the trial
-// window). The shared updateSubscriptionPeriod is intentionally not modified
-// to avoid breaking the isStillTrialing branch that must preserve trial_end.
+// state (a paid reactivation after expiry or cancellation). The shared
+// updateSubscriptionPeriod leaves trial_end alone for callers that roll a
+// period forward without leaving a trial.
 func (r *repository) clearTrialEndAndUpdatePeriod(
 	ctx context.Context, q db.Querier,
 	id string, periodStart, periodEnd time.Time,

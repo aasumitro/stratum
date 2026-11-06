@@ -203,7 +203,7 @@ test("plain extend happy path sends {months}, not switch_to_annual", async ({
   ).toBeVisible()
   await page.getByRole("button", { name: /confirm/i }).click()
 
-  expect(captured.payload).not.toBeNull()
+  await expect.poll(() => captured.payload).not.toBeNull()
   expect(captured.payload?.months).toBe(3)
   expect(captured.payload?.switch_to_annual).toBeUndefined()
 
@@ -256,7 +256,7 @@ test("switch to annual sends {switch_to_annual: true}, not months", async ({
 
   await page.getByRole("button", { name: /confirm/i }).click()
 
-  expect(captured.payload).not.toBeNull()
+  await expect.poll(() => captured.payload).not.toBeNull()
   expect(captured.payload?.switch_to_annual).toBe(true)
   expect(captured.payload?.months).toBeUndefined()
 

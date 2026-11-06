@@ -34,9 +34,15 @@ type invoiceRecord struct {
 // Invoice kinds that billing decisions branch on. The full set is the
 // billing.invoices.kind CHECK constraint (migration 000004).
 const (
-	invoiceKindSubscription = "subscription"
-	invoiceKindActivation   = "activation"
+	invoiceKindSubscription  = "subscription"
+	invoiceKindActivation    = "activation"
+	invoiceKindExtension     = "extension"
+	invoiceKindAddonIncrease = "addon_increase"
 )
+
+// discountLinePrefix starts the line item recording a coupon on an invoice, followed
+// by the coupon's code. afterVoid reads it back, so the two must agree.
+const discountLinePrefix = "Discount: "
 
 // isPeriodBacking reports whether an invoice of kind pays for the
 // subscription's own period — a renewal or an activation invoice — as
@@ -123,16 +129,18 @@ func (r *repository) findInvoiceByIDAndSubject(
 	return inv, err
 }
 
-// findPendingInvoiceBySubscription returns subscriptionID's pending
-// invoice, or pgx.ErrNoRows if it has none. Used to recover a payment link
-// that failed to generate after its invoice was already created.
-func (r *repository) findPendingInvoiceBySubscription(ctx context.Context, q db.Querier, subscriptionID string) (*invoiceRecord, error) {
+// findPendingPeriodInvoice returns subscriptionID's pending renewal or activation,
+// or pgx.ErrNoRows if it has none. Used to recover a payment link that failed to
+// generate after its invoice was already created. A pending extension or add-on
+// increase does not count: neither backs the period, so neither stands in for the
+// renewal.
+func (r *repository) findPendingPeriodInvoice(ctx context.Context, q db.Querier, subscriptionID string) (*invoiceRecord, error) {
 	inv := new(invoiceRecord)
 	err := q.QueryRow(ctx, `
 		SELECT id, subscription_id, invoice_number, amount_cents, subtotal_cents, tax_rate_bps, tax_cents,
 		       currency, status, kind, switch_to_annual, extension_months, provider_invoice_id, due_at, paid_at, created_at, updated_at
 		FROM billing.invoices
-		WHERE subscription_id = $1 AND status = 'pending'
+		WHERE subscription_id = $1 AND status = 'pending' AND kind IN ('subscription', 'activation')
 		ORDER BY created_at DESC LIMIT 1`,
 		subscriptionID,
 	).Scan(&inv.ID, &inv.SubscriptionID, &inv.InvoiceNumber, &inv.AmountCents,
@@ -159,21 +167,39 @@ func (r *repository) markInvoicePaid(ctx context.Context, q db.Querier, id strin
 	return tag.RowsAffected() > 0, nil
 }
 
-// markFailedInvoicePaid recovers an invoice that expireIfDue failed when
-// its payment had in fact completed at the gateway (see
-// recoverLateRenewalPayment). This is the one sanctioned failed -> paid
-// transition; every other path treats 'failed' as terminal. The WHERE
-// clause makes it a no-op on any other status.
-func (r *repository) markFailedInvoicePaid(ctx context.Context, q db.Querier, id string, paidAt time.Time) (bool, error) {
+// markClosedInvoicePaid recovers an invoice that was closed without payment
+// — 'failed' by expireIfDue or 'void' when superseded — whose payment in
+// fact completed at the gateway (see recoverLatePayment). This is the one
+// sanctioned way out of either state; every other path treats both as
+// terminal. The WHERE clause makes it a no-op on any other status.
+func (r *repository) markClosedInvoicePaid(ctx context.Context, q db.Querier, id string, paidAt time.Time) (bool, error) {
 	tag, err := q.Exec(ctx, `
 		UPDATE billing.invoices SET status = 'paid', paid_at = $2, updated_at = now()
-		WHERE id = $1 AND status = 'failed'`,
+		WHERE id = $1 AND status IN ('failed', 'void')`,
 		id, paidAt,
 	)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// reclaimCouponApplication counts a closed invoice's discount as used after all, because
+// the invoice was paid late with it: closing it gave the application back.
+func (r *repository) reclaimCouponApplication(ctx context.Context, q db.Querier, subscriptionID, invoiceID string) error {
+	_, err := q.Exec(ctx, `
+		UPDATE billing.coupon_redemptions cr
+		SET applied_count = cr.applied_count + 1
+		FROM billing.invoice_line_items li
+		WHERE li.invoice_id = $2 AND li.total_cents < 0
+		  AND cr.subscription_id = $1
+		  AND li.description = '`+discountLinePrefix+`' || cr.coupon_id`,
+		subscriptionID, invoiceID,
+	)
+	if err != nil {
+		return fmt.Errorf("billing.reclaimCouponApplication: %w", err)
+	}
+	return nil
 }
 
 func (r *repository) nextInvoiceNumber(ctx context.Context, q db.Querier, organizationID string, year int) (string, error) {
@@ -259,14 +285,31 @@ func (r *repository) listLineItems(ctx context.Context, q db.Querier, invoiceID 
 	return out, rows.Err()
 }
 
-func (r *repository) hasPendingInvoice(ctx context.Context, q db.Querier, subscriptionID string) (bool, error) {
-	var count int
-	err := q.QueryRow(ctx, `
-		SELECT COUNT(*) FROM billing.invoices
+// pendingInvoiceKinds reports which invoice kinds are pending on
+// subscriptionID, so a caller can tell a pending renewal from an unpaid
+// activation or an additive purchase.
+func (r *repository) pendingInvoiceKinds(ctx context.Context, q db.Querier, subscriptionID string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT kind FROM billing.invoices
 		WHERE subscription_id = $1 AND status = 'pending'`,
 		subscriptionID,
-	).Scan(&count)
-	return count > 0, err
+	)
+	if err != nil {
+		return nil, fmt.Errorf("billing.pendingInvoiceKinds: %w", err)
+	}
+	defer rows.Close()
+	kinds := make(map[string]bool)
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			return nil, fmt.Errorf("billing.pendingInvoiceKinds: scan: %w", err)
+		}
+		kinds[kind] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.pendingInvoiceKinds: %w", err)
+	}
+	return kinds, nil
 }
 
 // hasPendingInvoiceBlockingExtend is hasPendingInvoice narrowed to exclude
@@ -284,18 +327,68 @@ func (r *repository) hasPendingInvoiceBlockingExtend(ctx context.Context, q db.Q
 	return count > 0, err
 }
 
-func (r *repository) voidPendingInvoicesAndLinks(ctx context.Context, q db.Querier, subscriptionID string) error {
-	_, err := q.Exec(ctx, `
+// afterVoid finishes a statement whose "voided" CTE returned the invoices it closed
+// without payment, as void or failed. It expires their open links, returning those links
+// so the caller can close them at the provider too (enqueueCheckoutExpiry). It also gives
+// back the coupon application each one used: the discount was never paid with, and
+// without this whatever replaces the invoice would lose a once-only coupon.
+const afterVoid = `,
+		released AS (
+			UPDATE billing.coupon_redemptions cr
+			SET applied_count = GREATEST(cr.applied_count - used.invoices, 0)
+			FROM (
+				SELECT v.subscription_id, li.description, COUNT(*) AS invoices
+				FROM voided v
+				JOIN billing.invoice_line_items li ON li.invoice_id = v.id
+				WHERE li.total_cents < 0
+				GROUP BY v.subscription_id, li.description
+			) used
+			WHERE cr.subscription_id = used.subscription_id
+			  AND used.description = '` + discountLinePrefix + `' || cr.coupon_id
+		)
+		UPDATE billing.payment_links SET status = 'expired'
+		WHERE invoice_id IN (SELECT id FROM voided) AND status IN ('pending', 'failed')
+		RETURNING provider, external_id`
+
+// voidPendingInvoicesAndLinks voids every pending invoice on the subscription.
+func (r *repository) voidPendingInvoicesAndLinks(ctx context.Context, q db.Querier, subscriptionID string) ([]closedLink, error) {
+	return queryClosedLinks(ctx, q, `
 		WITH voided AS (
 			UPDATE billing.invoices SET status = 'void', updated_at = now()
 			WHERE subscription_id = $1 AND status = 'pending'
-			RETURNING id
-		)
-		UPDATE billing.payment_links SET status = 'expired'
-		WHERE invoice_id IN (SELECT id FROM voided)`,
+			RETURNING id, subscription_id
+		)`+afterVoid,
 		subscriptionID,
 	)
-	return err
+}
+
+// voidPendingInvoicesOfKinds is voidPendingInvoicesAndLinks narrowed to some kinds.
+func (r *repository) voidPendingInvoicesOfKinds(ctx context.Context, q db.Querier, subscriptionID string, kinds []string) ([]closedLink, error) {
+	return queryClosedLinks(ctx, q, `
+		WITH voided AS (
+			UPDATE billing.invoices SET status = 'void', updated_at = now()
+			WHERE subscription_id = $1 AND status = 'pending' AND kind = ANY($2)
+			RETURNING id, subscription_id
+		)`+afterVoid,
+		subscriptionID, kinds,
+	)
+}
+
+// hasPendingActivation reports whether an organization's first invoice is still
+// unpaid, which means the period in use was never paid for.
+func (r *repository) hasPendingActivation(ctx context.Context, q db.Querier, organizationID string) (bool, error) {
+	var pending bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM billing.invoices i
+			JOIN billing.subscriptions s ON s.id = i.subscription_id
+			WHERE s.subject_type = 'organization' AND s.subject_id = $1
+			  AND i.status = 'pending' AND i.kind = 'activation'
+		)`, organizationID).Scan(&pending)
+	if err != nil {
+		return false, fmt.Errorf("billing.hasPendingActivation: %w", err)
+	}
+	return pending, nil
 }
 
 // failPendingInvoicesAndLinks is voidPendingInvoicesAndLinks with the
@@ -306,35 +399,30 @@ func (r *repository) voidPendingInvoicesAndLinks(ctx context.Context, q db.Queri
 // would read as "cancelled before anyone tried to pay", 'failed' records
 // that the money was owed and never came. No kind filter: once the
 // subscription is gone, an unpaid additive invoice (extension, addon
-// increase) is just as dead as an unpaid renewal.
-func (r *repository) failPendingInvoicesAndLinks(ctx context.Context, q db.Querier, subscriptionID string) error {
-	_, err := q.Exec(ctx, `
-		WITH failed AS (
+// increase) is just as dead as an unpaid renewal. Its coupon application comes
+// back, so the Resume invoice still gets the discount.
+func (r *repository) failPendingInvoicesAndLinks(ctx context.Context, q db.Querier, subscriptionID string) ([]closedLink, error) {
+	return queryClosedLinks(ctx, q, `
+		WITH voided AS (
 			UPDATE billing.invoices SET status = 'failed', updated_at = now()
 			WHERE subscription_id = $1 AND status = 'pending'
-			RETURNING id
-		)
-		UPDATE billing.payment_links SET status = 'expired'
-		WHERE invoice_id IN (SELECT id FROM failed)`,
+			RETURNING id, subscription_id
+		)`+afterVoid,
 		subscriptionID,
 	)
-	return err
 }
 
 // voidInvoiceAndLinks is voidPendingInvoicesAndLinks scoped to one invoice
 // instead of every pending invoice on a subscription — used to supersede a
 // single stale addon-increase invoice on a repeat request without touching
 // an unrelated pending invoice (e.g. a renewal) on the same subscription.
-func (r *repository) voidInvoiceAndLinks(ctx context.Context, q db.Querier, invoiceID string) error {
-	_, err := q.Exec(ctx, `
+func (r *repository) voidInvoiceAndLinks(ctx context.Context, q db.Querier, invoiceID string) ([]closedLink, error) {
+	return queryClosedLinks(ctx, q, `
 		WITH voided AS (
 			UPDATE billing.invoices SET status = 'void', updated_at = now()
 			WHERE id = $1 AND status = 'pending'
-			RETURNING id
-		)
-		UPDATE billing.payment_links SET status = 'expired'
-		WHERE invoice_id IN (SELECT id FROM voided)`,
+			RETURNING id, subscription_id
+		)`+afterVoid,
 		invoiceID,
 	)
-	return err
 }

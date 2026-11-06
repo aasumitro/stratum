@@ -42,6 +42,13 @@ func NewAuditService(projects *ProjectService, pool *connect.PostgresPool) *Audi
 	return &AuditService{projects: projects, pool: pool}
 }
 
+// IsOperator reports whether the project's connection may make changes. The
+// frontend shows a persistent banner on a definite no; a connection failure comes
+// back as an error, so an outage is not mistaken for the wrong credentials.
+func (s *AuditService) IsOperator(projectID string) (bool, error) {
+	return withProjectDB(s.projects, s.pool, projectID, "AuditService.IsOperator", 10*time.Second, query.IsOperator)
+}
+
 // ListEvents returns paginated audit events matching the given filter.
 func (s *AuditService) ListEvents(projectID string, filter AuditFilter) ([]AuditEvent, error) {
 	if filter.Limit <= 0 {

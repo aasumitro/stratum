@@ -87,12 +87,12 @@ const plans: Plan[] = [
   },
 ]
 
-function setupApi() {
+function setupApi(invoices: unknown[] = []) {
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url === "/v1/organizations")
       return Promise.resolve(httpResponse([orgListEntry]))
     if (url === `/v1/organizations/${organizationId}/billing/invoices`)
-      return Promise.resolve(httpResponse([]))
+      return Promise.resolve(httpResponse(invoices))
     if (url === `/v1/organizations/${organizationId}`)
       return Promise.resolve(
         httpResponse({
@@ -184,5 +184,42 @@ describe("PlanSelector", () => {
       "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it anytime before that."
     )
     expect(screen.queryByText(/new period end/)).toBeNull()
+  })
+
+  it("explains the period restart while the activation invoice is unpaid", async () => {
+    setupApi([
+      {
+        id: "inv-1",
+        subscription_id: "sub-1",
+        kind: "activation",
+        status: "pending",
+        amount_cents: 1000,
+        tax_rate_bps: 0,
+        tax_cents: 0,
+        switch_to_annual: false,
+        currency: "USD",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ])
+    renderSelector()
+
+    await screen.findByText(
+      "Your current period isn’t paid yet, so the new plan starts a fresh period today at its own price."
+    )
+    expect(
+      screen.queryByText(
+        "Proration converts remaining value to time — no charge or refund today."
+      )
+    ).toBeNull()
+  })
+
+  it("keeps the proration subtitle with no unpaid activation", async () => {
+    setupApi()
+    renderSelector()
+
+    await screen.findByText(
+      "Proration converts remaining value to time — no charge or refund today."
+    )
   })
 })

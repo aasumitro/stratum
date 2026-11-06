@@ -3,6 +3,10 @@ package bootstrap
 import (
 	"fmt"
 
+	"github.com/gin-gonic/gin"
+
+	"github.com/aasumitro/stratum/internal/modules/account"
+	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/platform/audit"
 	"github.com/aasumitro/stratum/internal/platform/cache"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
@@ -65,7 +69,7 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 		auditWriter.Stop()
 		return nil, fmt.Errorf("configuring http server: %w", err)
 	}
-	engine.Use(corsMW, middleware.SecureHeaders(), middleware.MaxBodySize(52<<20)) // 52 MB > 50 MB file cap
+	engine.Use(corsMW, middleware.SecureHeaders(cfg.Env != EnvDevelopment), middleware.MaxBodySize(52<<20)) // 52 MB > 50 MB file cap
 	httpserver.RegisterHealth(engine, httpserver.HealthDeps{Pool: infra.Pool,
 		Redis: infra.Redis, MQ: infra.MQConn, StatsToken: cfg.StatsToken})
 	if cfg.Env == EnvDevelopment {
@@ -79,11 +83,12 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 		AuthSSE: mods.AuthSSEMW,
 		// RateLimit is wired here, not at the v1 group level, so it runs
 		// after each module's Auth/AuthSSE — see RouteDeps.RateLimit.
-		RateLimit:   apiRateMW,
-		Org:         mods.OrgMW,
-		MFA:         mods.MFAMW,
-		RLS:         mods.RLSMW,
-		Idempotency: idempotencyMW,
+		RateLimit:      apiRateMW,
+		Org:            mods.OrgMW,
+		ActivationGate: middleware.NewActivationGateMiddleware(mods.Billing),
+		MFA:            mods.MFAMW,
+		RLS:            mods.RLSMW,
+		Idempotency:    idempotencyMW,
 	}
 
 	v1 := engine.Group("/api/v1")
@@ -94,16 +99,33 @@ func NewAPIRouter(infra *Infra, mods *APIModules) (*APIRouter, error) {
 	mods.Billing.Register(v1, routeDeps)
 	mods.Notification.Register(v1, routeDeps)
 
-	webhooks := engine.Group("/webhooks")
-	webhooks.Use(webhookRateMW)
-	if err := mods.Billing.RegisterWebhooks(webhooks); err != nil {
+	if err := mountWebhooks(engine, webhookRateMW, auditWriter, mods.Billing, mods.Account); err != nil {
 		auditWriter.Stop()
-		return nil, fmt.Errorf("registering billing webhooks: %w", err)
+		return nil, err
 	}
-	mods.Account.RegisterWebhooks(webhooks)
 
+	server := httpserver.NewServer(engine, cfg.Port)
+	// Open notification streams never finish on their own; end them when
+	// shutdown starts instead of waiting out the graceful timeout.
+	server.OnShutdown(mods.Notification.CloseStreams)
 	return &APIRouter{
-		Server:      httpserver.NewServer(engine, cfg.Port),
+		Server:      server,
 		AuditWriter: auditWriter,
 	}, nil
+}
+
+// mountWebhooks registers the public provider callbacks. The failure recorder
+// runs after the rate limiter, so a flood already answered 429 writes nothing
+// and cannot grow the audit table.
+func mountWebhooks(
+	engine *gin.Engine, rateLimit gin.HandlerFunc, auditWriter *audit.Writer,
+	billingMod *billing.Module, accountMod *account.Module,
+) error {
+	webhooks := engine.Group("/webhooks")
+	webhooks.Use(rateLimit, auditWriter.FailureMiddleware())
+	if err := billingMod.RegisterWebhooks(webhooks); err != nil {
+		return fmt.Errorf("registering billing webhooks: %w", err)
+	}
+	accountMod.RegisterWebhooks(webhooks)
+	return nil
 }

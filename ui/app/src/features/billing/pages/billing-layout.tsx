@@ -51,8 +51,7 @@ export function BillingLayout() {
         <a href="#billing-invoices" className="text-sm font-medium underline">
           {t("billing.dunning.payAction")}
         </a>
-      ) : (b.id === "dunning-cancelled" || b.id === "dunning-expired-resume") &&
-        isOwner ? (
+      ) : b.id === "dunning-expired-resume" && isOwner ? (
         <Button
           size="sm"
           variant="outline"
@@ -62,9 +61,7 @@ export function BillingLayout() {
           {resuming && (
             <IconLoader2 data-icon="inline-start" className="animate-spin" />
           )}
-          {b.id === "dunning-expired-resume"
-            ? t("billing.states.resumeGetLink")
-            : t("billing.subscription.resume")}
+          {t("billing.states.resumeGetLink")}
         </Button>
       ) : undefined,
   }))
@@ -77,16 +74,19 @@ export function BillingLayout() {
           button it explains the absence of would be — see
           SubscriptionCard's header — not repeated page-wide here. */}
       <Banner banners={dunningBanners} />
-      {/* expired/past_due already have a dunning banner above pointing at
-          the open invoice; a second bar for it would repeat the same state. */}
-      {sub?.status !== "expired" && sub?.status !== "past_due" && (
-        <PendingChangesBar
-          organizationId={organizationId}
-          nextInvoiceDate={sub?.period_end ?? sub?.trial_end}
-          isOwner={isOwner}
-          hasPendingInvoice={hasPendingInvoice}
-        />
-      )}
+      {/* expired/cancelled/past_due already have a dunning banner above
+          with the action that resolves them; a second bar would repeat the
+          same state. */}
+      {sub?.status !== "expired" &&
+        sub?.status !== "cancelled" &&
+        sub?.status !== "past_due" && (
+          <PendingChangesBar
+            organizationId={organizationId}
+            nextInvoiceDate={sub?.period_end ?? sub?.trial_end}
+            isOwner={isOwner}
+            hasPendingInvoice={hasPendingInvoice}
+          />
+        )}
       <Outlet />
     </div>
   )
