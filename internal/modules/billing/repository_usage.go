@@ -35,6 +35,9 @@ func (r *repository) upsertUsage(
 	return nil
 }
 
+// The current count is the one written last. Each write goes to the row of the
+// subscription's period at that moment, and an upgrade moves period_end earlier,
+// so the row with the latest period_end can be an older count.
 func (r *repository) listCurrentUsage(
 	ctx context.Context, q db.Querier, organizationID string,
 ) ([]usageRecord, error) {
@@ -42,7 +45,7 @@ func (r *repository) listCurrentUsage(
 		SELECT DISTINCT ON (metric) id, organization_id, metric, value, period_start, period_end, recorded_at
 		FROM billing.usage
 		WHERE organization_id = $1
-		ORDER BY metric, period_end DESC`,
+		ORDER BY metric, recorded_at DESC, period_start DESC`,
 		organizationID,
 	)
 	if err != nil {
@@ -64,6 +67,7 @@ func (r *repository) listCurrentUsage(
 	return out, nil
 }
 
+// getCurrentUsage reads one metric by the same rule as listCurrentUsage.
 func (r *repository) getCurrentUsage(
 	ctx context.Context, q db.Querier, organizationID, metric string,
 ) (*usageRecord, error) {
@@ -72,7 +76,7 @@ func (r *repository) getCurrentUsage(
 		SELECT id, organization_id, metric, value, period_start, period_end, recorded_at
 		FROM billing.usage
 		WHERE organization_id = $1 AND metric = $2
-		ORDER BY period_end DESC LIMIT 1`,
+		ORDER BY recorded_at DESC, period_start DESC LIMIT 1`,
 		organizationID, metric,
 	).Scan(&u.ID, &u.OrganizationID, &u.Metric, &u.Value, &u.PeriodStart, &u.PeriodEnd, &u.RecordedAt)
 	if err != nil {

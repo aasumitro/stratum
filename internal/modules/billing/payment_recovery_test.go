@@ -229,8 +229,8 @@ func TestIntegration_Webhook_LatePayment_AfterPlanChange_IsNotApplied(t *testing
 	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
 	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
 	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments)
-	if status != "expired" || invStatus != "void" || payments != 0 {
-		t.Errorf("want expired with the invoice still void and no payment row, got %q, %q, %d", status, invStatus, payments)
+	if status != "expired" || invStatus != "void" || payments != 1 {
+		t.Errorf("want expired with the invoice still void and its payment recorded, got %q, %q, %d", status, invStatus, payments)
 	}
 	if len(suspender.unsuspended) != 0 {
 		t.Errorf("suspension must stay, got %v", suspender.unsuspended)

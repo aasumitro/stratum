@@ -178,3 +178,28 @@ export function useVoidAtRiskInvoice(projectId: string) {
     onError: (err) => toast.error(`Failed: ${wailsError(err)}`),
   })
 }
+
+export function usePaymentsToReview(projectId: string) {
+  return useQuery({
+    queryKey: ["support", "payments-to-review", projectId],
+    queryFn: () => SupportService.GetPaymentsToReview(projectId),
+    staleTime: 30_000,
+    retry: false,
+    enabled: !!projectId,
+  })
+}
+
+export function useMarkPaymentRefunded(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (paymentID: string) =>
+      SupportService.MarkPaymentRefunded(projectId, paymentID),
+    onSuccess: () => {
+      toast.success("Payment marked refunded")
+      qc.invalidateQueries({
+        queryKey: ["support", "payments-to-review", projectId],
+      })
+    },
+    onError: (err) => toast.error(`Failed: ${wailsError(err)}`),
+  })
+}

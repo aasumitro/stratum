@@ -1,6 +1,6 @@
 package audit_test
 
-// Integration tests for the privileges migration 000011 enforces on
+// Integration tests for the privileges migrations 000011 and 000012 enforce on
 // audit.events, run as the real runtime and operator roles. Fixtures go through
 // the test role, which owns the schema and is not limited by those privileges.
 
@@ -192,19 +192,42 @@ func TestAppendOnly_AnonymizeOnlyFromWorker(t *testing.T) {
 		admin.Exec(context.Background(), `DELETE FROM audit.events WHERE organization_id = $1`, orgID)
 	})
 	seedEvent(t, admin, &orgID, sub, "POST", "/anon", time.Now().UTC())
+	if _, err := admin.Exec(t.Context(),
+		`UPDATE audit.events SET ip = '203.0.113.9', user_agent = 'test-agent' WHERE organization_id = $1`, orgID); err != nil {
+		t.Fatalf("seed ip and user agent: %v", err)
+	}
 
 	wantSQLState(t, audit.AnonymizeActor(t.Context(), app, sub), pgInsufficientPrivilege)
 
 	if err := audit.AnonymizeActor(t.Context(), worker, sub); err != nil {
 		t.Fatalf("anonymize as stratum_worker: %v", err)
 	}
-	var actor string
+	var actor, ip, userAgent string
 	if err := admin.QueryRow(t.Context(),
-		`SELECT actor FROM audit.events WHERE organization_id = $1`, orgID).Scan(&actor); err != nil {
+		`SELECT actor, ip, user_agent FROM audit.events WHERE organization_id = $1`, orgID).Scan(&actor, &ip, &userAgent); err != nil {
 		t.Fatalf("read actor: %v", err)
 	}
 	if actor != "deleted_user" {
 		t.Errorf("want actor deleted_user, got %q", actor)
+	}
+	// Where the request came from and with what client identify the person as
+	// much as the actor does.
+	if ip != "" || userAgent != "" {
+		t.Errorf("want ip and user agent cleared, got %q and %q", ip, userAgent)
+	}
+}
+
+// Runtime roles insert the application's own rows, and a stolen runtime
+// credential must not be able to write one that names an operator.
+func TestAppendOnly_RuntimeRolesCannotWriteOperatorRows(t *testing.T) {
+	for _, env := range []string{"POSTGRES_APP_URL", "POSTGRES_WORKER_URL", "POSTGRES_WEBHOOK_URL"} {
+		t.Run(env, func(t *testing.T) {
+			pool := openRolePool(t, env)
+			_, err := pool.Exec(t.Context(), `
+				INSERT INTO audit.events (actor, action, resource, status_code)
+				VALUES ('operator:forged', 'studio.billing.invoices.update', 'billing.invoices/x', 200)`)
+			wantSQLState(t, err, pgInsufficientPrivilege)
+		})
 	}
 }
 
@@ -334,8 +357,9 @@ func TestOperator_CaptureTriggerCoversEveryWritableTable(t *testing.T) {
 		t.Fatalf("list triggers: %v", err)
 	}
 	want := []string{
-		"billing.addon_features", "billing.addons", "billing.coupon_targets", "billing.coupons",
-		"billing.features", "billing.invoices", "billing.payment_links", "billing.plan_features",
+		"billing.addon_features", "billing.addons", "billing.coupon_redemptions", "billing.coupon_targets",
+		"billing.coupons", "billing.features", "billing.invoices", "billing.payment_links", "billing.payments",
+		"billing.plan_features",
 		"billing.plans", "billing.subscriptions", "messaging.outbox", "organization.organizations",
 		"ref.countries", "ref.currencies",
 	}
@@ -641,6 +665,8 @@ func TestOperator_GrantsStopAtTheWriteList(t *testing.T) {
 		`UPDATE account.users SET full_name = 'x' WHERE false`,
 		`UPDATE organization.webhook_endpoints SET enabled = false WHERE false`,
 		`DELETE FROM organization.organizations WHERE false`,
+		`UPDATE billing.payments SET amount_cents = 1 WHERE false`,
+		`UPDATE billing.coupon_redemptions SET coupon_id = 'x' WHERE false`,
 		`SELECT audit.sweep_expired(400)`,
 		`SELECT audit.anonymize_actor('x')`,
 	} {

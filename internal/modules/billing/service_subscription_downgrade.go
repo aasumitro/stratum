@@ -9,6 +9,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
 // downgradeSubscription processes a plan downgrade, enforcing deterministic
@@ -27,20 +28,67 @@ func (s *service) downgradeSubscription(
 			"DOWNGRADE_UNSUPPORTED", "downgrade is only supported for organizations")
 	}
 
-	newPlanInfo, err := s.planCatalog(ctx, plan)
-	if err != nil {
-		return nil, contracts.OverageResolution{}, apperr.Validation("UNKNOWN_PLAN", "unknown plan")
-	}
-
-	sub, err := s.getSubscription(ctx, subjectType, subjectID)
+	// The plan change commits before the organization module resolves the
+	// overage in a transaction of its own: holding this connection while it
+	// takes a second one from the same pool deadlocks the pool under load. If
+	// that resolution fails, the owner repeats the request: the plan is then
+	// already on target and only the overage is resolved.
+	var sub *subscriptionRecord
+	var historyID string
+	var memberLimit int
+	err := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		var err error
+		sub, historyID, memberLimit, err = s.downgradeInTx(db.WithQuerier(ctx, tx), subjectType, subjectID, plan, cycle, changedBy)
+		return err
+	})
 	if err != nil {
 		return nil, contracts.OverageResolution{}, err
 	}
+	if sub.Status != statusTrialing {
+		return sub, contracts.OverageResolution{}, nil
+	}
 
-	// The HTTP layer (RLS middleware) wraps this entire method in a transaction.
+	var res contracts.OverageResolution
+	if s.orgCommander == nil {
+		return sub, res, nil
+	}
+	res, err = s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, removeMemberIDs, memberLimit, false)
+	if err != nil {
+		return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: resolve overage: %w", err)
+	}
+	if historyID != "" {
+		metadata, _ := json.Marshal(res)
+		if err := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+			return s.repo.updateHistoryMetadata(ctx, tx, historyID, metadata)
+		}); err != nil {
+			slog.Error("downgradeSubscription: failed to update history metadata",
+				"history_id", historyID, "organization_id", subjectID, "error", err)
+		}
+	}
+	return sub, res, nil
+}
+
+// downgradeInTx is downgradeSubscription's database part, run inside its
+// transaction. A non-trialing subscription only schedules the downgrade:
+// nothing is resolved until renewal applies it. A trialing one changes plan
+// now, and memberLimit is the limit its members must then fit (-1 when the
+// new plan has none).
+func (s *service) downgradeInTx(
+	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string,
+) (sub *subscriptionRecord, historyID string, memberLimit int, err error) {
+	newPlanInfo, err := s.planCatalog(ctx, plan)
+	if err != nil {
+		return nil, "", -1, apperr.Validation("UNKNOWN_PLAN", "unknown plan")
+	}
+
+	sub, err = s.getSubscription(ctx, subjectType, subjectID)
+	if err != nil {
+		return nil, "", -1, err
+	}
+
 	// Locking the row serializes concurrent downgrade requests for this org.
 	if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
-		return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: %w", err)
+		return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
 	}
 
 	// Validate it is actually a downgrade
@@ -48,15 +96,15 @@ func (s *service) downgradeSubscription(
 	if !alreadyOnTarget {
 		oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)
 		if err != nil {
-			return nil, contracts.OverageResolution{}, fmt.Errorf(
+			return nil, "", -1, fmt.Errorf(
 				"billing.downgradeSubscription: %w: current plan", ErrUnknownPlan)
 		}
 		if newPlanInfo.SortOrder >= oldPlanInfo.SortOrder {
-			return nil, contracts.OverageResolution{}, apperr.Validation(
+			return nil, "", -1, apperr.Validation(
 				"INVALID_DOWNGRADE", "target plan is not a downgrade")
 		}
 		if !newPlanInfo.SelfServe(sub.Currency, cycle) {
-			return nil, contracts.OverageResolution{}, apperr.Validation(planNotSelfServeCode, planNotSelfServeMsg)
+			return nil, "", -1, apperr.Validation(planNotSelfServeCode, planNotSelfServeMsg)
 		}
 	}
 
@@ -64,7 +112,7 @@ func (s *service) downgradeSubscription(
 	// every status, trialing included: the owner undoes it before asking for
 	// a smaller one.
 	if sub.ScheduledCancelAt != nil {
-		return nil, contracts.OverageResolution{}, apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
+		return nil, "", -1, apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
 	}
 
 	// Trialing has no paid period to protect, so a downgrade applies
@@ -74,7 +122,7 @@ func (s *service) downgradeSubscription(
 	// applies the schedule — never reduce entitlement mid-period.
 	if sub.Status != statusTrialing {
 		if err := s.repo.schedulePlanDowngrade(ctx, s.querier(ctx), sub.ID, plan, cycle); err != nil {
-			return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: %w", err)
+			return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
 		}
 		metadata, _ := json.Marshal(struct {
 			ToPlan  string `json:"to_plan"`
@@ -84,47 +132,24 @@ func (s *service) downgradeSubscription(
 		if _, err := s.repo.insertHistoryWithCycle(ctx, s.querier(ctx), sub.ID, actionDowngrade,
 			&sub.Plan, &plan, 0, sub.Currency, changedBy, metadata, &phase, sub.PeriodEnd,
 			&sub.Cycle, &cycle); err != nil {
-			return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: %w", err)
+			return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
 		}
 		// Re-fetch so the caller sees the schedule it just wrote, not the
 		// pre-write snapshot taken before the lock.
 		updated, err := s.getSubscription(ctx, subjectType, subjectID)
 		if err != nil {
-			return nil, contracts.OverageResolution{}, err
+			return nil, "", -1, err
 		}
-		return updated, contracts.OverageResolution{}, nil
+		return updated, "", -1, nil
 	}
 
-	var historyID string
 	if !alreadyOnTarget {
 		historyID, sub, err = s.changePlanWithMetadata(ctx, subjectType, subjectID, plan, cycle, changedBy, nil)
 		if err != nil {
-			return nil, contracts.OverageResolution{}, err
+			return nil, "", -1, err
 		}
 	}
-
-	var res contracts.OverageResolution
-	var metadata []byte
-	if s.orgCommander != nil {
-		memberLimit := s.downgradeTargetLimits(ctx, sub, newPlanInfo)
-		// Execute overage resolution in the organization module. This executes
-		// via its own autonomous transaction but won't deadlock with our row lock.
-		res, err = s.orgCommander.ResolveDowngradeOverage(ctx, subjectID,
-			removeMemberIDs, memberLimit, false)
-		if err != nil {
-			return nil, contracts.OverageResolution{}, fmt.Errorf("billing.downgradeSubscription: resolve overage: %w", err)
-		}
-		metadata, _ = json.Marshal(res)
-	}
-
-	if historyID != "" && metadata != nil {
-		if err := s.repo.updateHistoryMetadata(ctx, s.querier(ctx), historyID, metadata); err != nil {
-			slog.Error("downgradeSubscription: failed to update history metadata",
-				"history_id", historyID, "organization_id", subjectID, "error", err)
-		}
-	}
-
-	return sub, res, nil
+	return sub, historyID, s.downgradeTargetLimits(ctx, sub, newPlanInfo), nil
 }
 
 // undoScheduledPlanDowngrade clears a scheduled plan downgrade before it

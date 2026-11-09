@@ -317,19 +317,35 @@ func SupportVoidInvoice(ctx context.Context, pool *pgxpool.Pool, invoiceID strin
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var orgID string
+	var orgID, subscriptionID string
 	err = tx.QueryRow(ctx, `
 		UPDATE billing.invoices i
 		SET status = 'void', updated_at = now()
 		FROM billing.subscriptions s
 		WHERE i.id = $1 AND i.status = 'pending' AND s.id = i.subscription_id
-		RETURNING s.subject_id
-	`, invoiceID).Scan(&orgID)
+		RETURNING s.subject_id, s.id::text
+	`, invoiceID).Scan(&orgID, &subscriptionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("invoice %s not found or not in pending status", invoiceID)
 	}
 	if err != nil {
 		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
+	}
+	// A voided invoice used no coupon application, so its discount lines give
+	// theirs back, as the app's own void does. The app names a discount line
+	// "Discount: <coupon code>".
+	if _, err := tx.Exec(ctx, `
+		UPDATE billing.coupon_redemptions cr
+		SET applied_count = GREATEST(cr.applied_count - used.invoices, 0)
+		FROM (
+			SELECT li.description, COUNT(*) AS invoices
+			FROM billing.invoice_line_items li
+			WHERE li.invoice_id = $1 AND li.total_cents < 0
+			GROUP BY li.description
+		) used
+		WHERE cr.subscription_id = $2::uuid AND used.description = 'Discount: ' || cr.coupon_id
+	`, invoiceID, subscriptionID); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: release coupon application: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		WITH closed AS (
@@ -352,6 +368,85 @@ func SupportVoidInvoice(ctx context.Context, pool *pgxpool.Pool, invoiceID strin
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
+	}
+	return nil
+}
+
+// PaymentToReview is money a provider took that no invoice was settled by: a
+// payment on an invoice already void or failed, or a second payment of one
+// invoice. The app records it and applies nothing, since there is no refund
+// path; an operator refunds it at the provider and then marks it refunded.
+type PaymentToReview struct {
+	PaymentID        string
+	InvoiceID        string
+	InvoiceStatus    string
+	OrganizationID   string
+	OrganizationName string
+	OrganizationSlug string
+	AmountCents      int64
+	Currency         string
+	Provider         string
+	ExternalID       string
+	PaidAt           time.Time
+}
+
+func GetPaymentsToReview(ctx context.Context, pool *pgxpool.Pool) ([]PaymentToReview, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT p.id::text, i.id::text, i.status,
+		       s.subject_id, COALESCE(t.name, ''), COALESCE(t.slug, ''),
+		       p.amount_cents, p.currency, p.provider, COALESCE(p.external_id, ''), p.paid_at
+		FROM billing.payments p
+		JOIN billing.invoices i ON i.id = p.invoice_id
+		JOIN billing.subscriptions s ON s.id = i.subscription_id
+		LEFT JOIN organization.organizations t ON t.id::text = s.subject_id
+		WHERE p.status = 'completed'
+		  AND (i.status <> 'paid' OR (
+		      SELECT COUNT(*) FROM billing.payments other
+		      WHERE other.invoice_id = p.invoice_id AND other.status = 'completed') > 1)
+		ORDER BY p.paid_at DESC
+		LIMIT 200
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query.GetPaymentsToReview: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PaymentToReview
+	for rows.Next() {
+		var p PaymentToReview
+		if err := rows.Scan(
+			&p.PaymentID, &p.InvoiceID, &p.InvoiceStatus,
+			&p.OrganizationID, &p.OrganizationName, &p.OrganizationSlug,
+			&p.AmountCents, &p.Currency, &p.Provider, &p.ExternalID, &p.PaidAt,
+		); err != nil {
+			return nil, fmt.Errorf("query.GetPaymentsToReview: scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query.GetPaymentsToReview: %w", err)
+	}
+	return out, nil
+}
+
+// SupportMarkPaymentRefunded records that an operator returned a payment at
+// its provider. Only a payment still listed for review can be marked: one on
+// an invoice that is not paid, or one of several on the same invoice.
+func SupportMarkPaymentRefunded(ctx context.Context, pool *pgxpool.Pool, paymentID string) error {
+	tag, err := pool.Exec(ctx, `
+		UPDATE billing.payments p
+		SET status = 'refunded'
+		FROM billing.invoices i
+		WHERE p.id = $1 AND p.status = 'completed' AND i.id = p.invoice_id
+		  AND (i.status <> 'paid' OR (
+		      SELECT COUNT(*) FROM billing.payments other
+		      WHERE other.invoice_id = p.invoice_id AND other.status = 'completed') > 1)
+	`, paymentID)
+	if err != nil {
+		return fmt.Errorf("query.SupportMarkPaymentRefunded: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("payment %s not found or not waiting for review", paymentID)
 	}
 	return nil
 }

@@ -85,7 +85,11 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 		status = normalizeStripeStatus(payload.Data.Object.PaymentStatus)
 	case "checkout.session.async_payment_succeeded":
 		status = statusPaid
-	case "checkout.session.expired", "checkout.session.async_payment_failed", "payment_intent.payment_failed":
+	case "checkout.session.expired":
+		// The owner left the checkout unpaid. That is not a failed payment:
+		// the invoice stays payable through a new checkout.
+		status = statusExpired
+	case "checkout.session.async_payment_failed", "payment_intent.payment_failed":
 		status = statusFailed
 		if payload.Type == "payment_intent.payment_failed" {
 			// The data object here is a PaymentIntent (pi_...), not the

@@ -242,11 +242,9 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billing.GET("/addons", h.listAddons)
 		billing.GET("/plans/catalog", h.listPlansCatalog)
 		billing.GET("/addons/catalog", h.listAddonsCatalog)
-		billing.GET("/preview", h.previewInvoice)
 		billing.GET("/coupons", h.listEligibleCoupons)
 
 		billing.PATCH("/plan", ownerOnly, deps.MFA, h.changePlan)
-		billing.POST("/downgrade", ownerOnly, deps.MFA, h.downgradeSubscription)
 		billing.POST("/downgrade/undo", ownerOnly, deps.MFA, h.undoDowngrade)
 		billing.POST("/cancel", ownerOnly, h.cancelSubscription)
 		billing.POST("/cancel/undo", ownerOnly, h.undoCancellation)
@@ -279,6 +277,13 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		// payment-link HTTP call every other route in this group makes —
 		// see attachAddon/requestAddonIncrease (service_addon.go).
 		billingPay.POST("/addons", ownerOnly, deps.MFA, h.attachAddon)
+		// preview and downgrade call the organization module's overage
+		// resolution, which takes its own connection from the same pool. Under
+		// the request-long transaction above, every such request would hold one
+		// connection while waiting for another, and enough of them at once
+		// deadlock the pool. Their service paths open short transactions instead.
+		billingPay.GET("/preview", h.previewInvoice)
+		billingPay.POST("/downgrade", ownerOnly, deps.MFA, h.downgradeSubscription)
 	}
 }
 

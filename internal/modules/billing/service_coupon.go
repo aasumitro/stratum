@@ -151,24 +151,29 @@ func (s *service) redeemCoupon(ctx context.Context, organizationID, authSub, cod
 	if _, err := s.findActiveCouponRedemption(ctx, q, sub.ID); err == nil {
 		return fmt.Errorf("%w: subscription already has an active coupon", ErrCouponNotRedeemable)
 	}
-	// A used-up coupon stops being the active redemption, so that check alone would let
-	// its code start over with a fresh count, as often as the owner asks.
-	redeemed, err := s.repo.hasRedeemedCoupon(ctx, q, sub.ID, code)
+	return s.takeCouponRedemption(ctx, q, sub.ID, code)
+}
+
+// errCouponAlreadyRedeemed is a code this subscription has redeemed before. A
+// used-up coupon stops being the active redemption, so without this its code
+// could start over with a fresh count, as often as the owner asks.
+var errCouponAlreadyRedeemed = fmt.Errorf("%w: already redeemed on this subscription", ErrCouponNotRedeemable)
+
+// takeCouponRedemption records code as redeemed on subscriptionID: one more use
+// counted against the coupon's limit, and the redemption row. The caller holds
+// the subscription's row lock, so two redemptions cannot both pass the check.
+func (s *service) takeCouponRedemption(ctx context.Context, q db.Querier, subscriptionID, code string) error {
+	redeemed, err := s.repo.hasRedeemedCoupon(ctx, q, subscriptionID, code)
 	if err != nil {
 		return err
 	}
 	if redeemed {
-		return fmt.Errorf("%w: already redeemed on this subscription", ErrCouponNotRedeemable)
+		return errCouponAlreadyRedeemed
 	}
-
 	if ok, err := s.repo.tryIncrementCouponRedeemedCount(ctx, q, code); err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("%w: coupon exhausted", ErrCouponNotRedeemable)
 	}
-
-	if err := s.repo.insertCouponRedemption(ctx, q, code, sub.ID); err != nil {
-		return err
-	}
-	return nil
+	return s.repo.insertCouponRedemption(ctx, q, code, subscriptionID)
 }

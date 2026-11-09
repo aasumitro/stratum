@@ -49,6 +49,12 @@ export function GetOrganizationInvoices(
   return $Call.ByID(1643515586, projectID, organizationID)
 }
 
+export function GetPaymentsToReview(
+  projectID: string
+): $CancellablePromise<$models.PaymentToReview[] | null> {
+  return $Call.ByID(1288690103, projectID)
+}
+
 export function GetUserDetail(
   projectID: string,
   authSub: string
@@ -71,6 +77,13 @@ export function MarkInvoicePaid(
   invoiceID: string
 ): $CancellablePromise<void> {
   return $Call.ByID(2414450307, projectID, invoiceID)
+}
+
+export function MarkPaymentRefunded(
+  projectID: string,
+  paymentID: string
+): $CancellablePromise<void> {
+  return $Call.ByID(1321388259, projectID, paymentID)
 }
 
 export function SearchUsers(

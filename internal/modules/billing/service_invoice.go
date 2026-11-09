@@ -373,9 +373,41 @@ func (s *service) previewInvoice(
 		}
 	}()
 
+	// The organization module resolves overage in a transaction of its own, so
+	// the reads below commit before it runs: holding this connection while it
+	// takes a second one from the same pool deadlocks the pool under load.
+	var overage *overagePreview
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		var err error
+		preview, overage, err = s.composePreview(db.WithQuerier(ctx, tx), subjectType, subjectID, plan, cycle)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if overage != nil {
+		res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, overage.Members.Allowed, true)
+		if err != nil {
+			slog.Error("previewInvoice: failed to dry-run overage resolution",
+				"organization_id", subjectID, "error", err)
+			return preview, nil
+		}
+		overage.Members.AutoSelectRemovals = res.AutoSelectedMemberSubs
+		preview.Overage = overage
+	}
+	return preview, nil
+}
+
+// composePreview is previewInvoice's database part, run inside its
+// transaction. The overage it returns has the limit and the current count;
+// which members would go is filled in after the transaction. nil means the
+// preview shows no overage.
+func (s *service) composePreview(
+	ctx context.Context, subjectType, subjectID, plan, cycle string,
+) (*invoicePreview, *overagePreview, error) {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, fmt.Errorf("billing.previewInvoice: %w", err)
+		return nil, nil, fmt.Errorf("billing.previewInvoice: %w", err)
 	}
 	targetPlan, targetCycle := plan, cycle
 	if targetPlan == "" {
@@ -386,16 +418,16 @@ func (s *service) previewInvoice(
 	}
 	planInfo, err := s.planCatalog(ctx, targetPlan)
 	if err != nil {
-		return nil, ErrUnknownPlan
+		return nil, nil, ErrUnknownPlan
 	}
 
 	total, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
 		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, targetCycle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	preview = &invoicePreview{
+	preview := &invoicePreview{
 		Plan: targetPlan, Cycle: targetCycle, Currency: sub.Currency,
 		PlanLineCents: planInfo.Price(sub.Currency, targetCycle),
 		AddonLines:    addonLines, CouponCode: couponCode, DiscountCents: discountCents,
@@ -403,61 +435,46 @@ func (s *service) previewInvoice(
 	}
 
 	changingPlan := targetPlan != sub.Plan || targetCycle != sub.Cycle
-	if changingPlan {
-		if oldPlanInfo, err := s.planCatalog(ctx, sub.Plan); err == nil {
-			// The same period rule the real change applies
-			// (planChangePeriod), so the preview can never promise a date
-			// changePlanWithMetadata wouldn't write.
-			pending, err := s.repo.pendingInvoiceKinds(ctx, s.querier(ctx), sub.ID)
-			if err != nil {
-				return nil, fmt.Errorf("billing.previewInvoice: %w", err)
-			}
-			oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
-			newPrice := int(planInfo.Price(sub.Currency, targetCycle))
-			if _, end := planChangePeriod(time.Now(), sub, pending[invoiceKindActivation], targetPlan != sub.Plan,
-				oldPrice, newPrice, targetCycle); end != nil {
-				preview.NewPeriodEnd = end
-			} else if sub.Status == statusActive || sub.Status == statusPastDue {
-				preview.NewPeriodEnd = sub.PeriodEnd
-			}
-
-			// Dry-run overage resolution if this is a downgrade
-			if planInfo.SortOrder < oldPlanInfo.SortOrder && s.orgCommander != nil {
-				if overage, err := s.hypotheticalDowngradeOveragePreview(ctx, subjectID, sub, planInfo); err == nil {
-					preview.Overage = overage
-				} else {
-					slog.Error("previewInvoice: failed to dry-run overage resolution",
-						"organization_id", subjectID, "error", err)
-				}
-			}
+	if !changingPlan {
+		if s.orgCommander == nil {
+			return preview, nil, nil
 		}
-	} else if s.orgCommander != nil {
-		// Not a hypothetical change — preview whatever is already scheduled
+		// Not a hypothetical change: preview whatever is already scheduled
 		// to apply at renewal (a plan downgrade and/or addon decreases).
-		if overage, err := s.scheduledOveragePreview(ctx, subjectID, sub); err != nil {
+		overage, err := s.scheduledOveragePreview(ctx, sub)
+		if err != nil {
 			slog.Error("previewInvoice: failed to compute scheduled overage preview",
 				"organization_id", subjectID, "error", err)
-		} else if overage != nil {
-			preview.Overage = overage
+			return preview, nil, nil
 		}
+		return preview, overage, nil
 	}
 
-	return preview, nil
-}
-
-// hypotheticalDowngradeOveragePreview dry-runs member-overage resolution
-// for a hypothetical plan/cycle change that's a downgrade — how many
-// members would need to be removed under the new plan's limit, and which
-// ones ResolveDowngradeOverage would auto-select. Read-only: dryRun=true on
-// the ResolveDowngradeOverage call means nothing is actually removed.
-func (s *service) hypotheticalDowngradeOveragePreview(
-	ctx context.Context, subjectID string, sub *subscriptionRecord, planInfo *contracts.PlanInfo,
-) (*overagePreview, error) {
-	memberLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
-	res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, memberLimit, true)
+	oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, err
+		return preview, nil, nil
 	}
+	// The same period rule the real change applies (planChangePeriod), so
+	// the preview can never promise a date changePlanWithMetadata wouldn't
+	// write.
+	pending, err := s.repo.pendingInvoiceKinds(ctx, s.querier(ctx), sub.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("billing.previewInvoice: %w", err)
+	}
+	oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
+	newPrice := int(planInfo.Price(sub.Currency, targetCycle))
+	if _, end := planChangePeriod(time.Now(), sub, pending[invoiceKindActivation], targetPlan != sub.Plan,
+		oldPrice, newPrice, targetCycle); end != nil {
+		preview.NewPeriodEnd = end
+	} else if sub.Status == statusActive || sub.Status == statusPastDue {
+		preview.NewPeriodEnd = sub.PeriodEnd
+	}
+
+	if planInfo.SortOrder >= oldPlanInfo.SortOrder || s.orgCommander == nil {
+		return preview, nil, nil
+	}
+	// A downgrade: how many members the new plan's limit would leave over.
+	memberLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
 	usages, _ := s.repo.listCurrentUsage(ctx, s.querier(ctx), subjectID)
 	var curMembers int
 	for _, u := range usages {
@@ -465,25 +482,17 @@ func (s *service) hypotheticalDowngradeOveragePreview(
 			curMembers = int(u.Value)
 		}
 	}
-	return &overagePreview{
-		Members: metricOverage{
-			Current:            curMembers,
-			Allowed:            memberLimit,
-			AutoSelectRemovals: res.AutoSelectedMemberSubs,
-		},
-	}, nil
+	return preview, &overagePreview{Members: metricOverage{Current: curMembers, Allowed: memberLimit}}, nil
 }
 
-// scheduledOveragePreview dry-runs member-overage resolution for whatever
-// amendment is already scheduled to apply at sub's next renewal (a plan
-// downgrade and/or addon decreases), using the same combined future-state
-// computation the renewal worker itself applies from
-// (resolveFutureOveragePreview) — so this preview can never disagree with
-// what actually happens at renewal. Returns (nil, nil), not an error, both
-// when nothing is scheduled and when what's scheduled wouldn't put the
-// organization over its future limit — both are steady states, not
-// failures.
-func (s *service) scheduledOveragePreview(ctx context.Context, subjectID string, sub *subscriptionRecord) (*overagePreview, error) {
+// scheduledOveragePreview is the overage of whatever amendment is already
+// scheduled to apply at sub's next renewal (a plan downgrade and/or addon
+// decreases), from the same combined future-state computation the renewal
+// worker itself applies (resolveFutureOveragePreview), so this preview can
+// never disagree with what actually happens at renewal. Returns nil, not an
+// error, both when nothing is scheduled and when what's scheduled wouldn't
+// put the organization over its future limit: both are steady states.
+func (s *service) scheduledOveragePreview(ctx context.Context, sub *subscriptionRecord) (*overagePreview, error) {
 	scheduledAddons, err := s.repo.listScheduledAddonChanges(ctx, s.querier(ctx), sub.ID)
 	if err != nil || (sub.ScheduledPlan == nil && len(scheduledAddons) == 0) {
 		return nil, nil
@@ -495,15 +504,8 @@ func (s *service) scheduledOveragePreview(ctx context.Context, subjectID string,
 	if overage.MemberLimit < 0 || overage.CurrentMembers <= int64(overage.MemberLimit) {
 		return nil, nil
 	}
-	res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, overage.MemberLimit, true)
-	if err != nil {
-		return nil, fmt.Errorf("dry-run scheduled overage resolution: %w", err)
-	}
 	return &overagePreview{
-		Members: metricOverage{
-			Current: int(overage.CurrentMembers), Allowed: overage.MemberLimit,
-			AutoSelectRemovals: res.AutoSelectedMemberSubs,
-		},
+		Members: metricOverage{Current: int(overage.CurrentMembers), Allowed: overage.MemberLimit},
 	}, nil
 }
 

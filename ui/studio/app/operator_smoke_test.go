@@ -41,6 +41,7 @@ type smokeEnv struct {
 	operatorProject       string
 	orgID, paidInvoice    string
 	voidInvoice, ownerDSN string
+	payment               string
 	started               time.Time
 }
 
@@ -103,6 +104,10 @@ func (e *smokeEnv) cleanup(t *testing.T) {
 		`DROP FUNCTION IF EXISTS audit.smoke_refuse()`,
 		`DELETE FROM messaging.outbox WHERE payload->>'org_id' IN (SELECT id::text FROM organization.organizations WHERE slug = '` + smokeOrgSlug + `')`,
 		`DELETE FROM billing.payment_links WHERE external_id = 'cs_studio_smoke'`,
+		`DELETE FROM billing.payments WHERE external_id = 'pi_studio_smoke'`,
+		`DELETE FROM billing.invoice_line_items WHERE description = 'Discount: STUDIO_SMOKE_VOID'`,
+		`DELETE FROM billing.coupon_redemptions WHERE coupon_id = 'STUDIO_SMOKE_VOID'`,
+		`DELETE FROM billing.coupons WHERE code = 'STUDIO_SMOKE_VOID'`,
 		`DELETE FROM billing.invoices WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_id IN (SELECT id::text FROM organization.organizations WHERE slug = '` + smokeOrgSlug + `'))`,
 		`DELETE FROM billing.subscriptions WHERE subject_id IN (SELECT id::text FROM organization.organizations WHERE slug = '` + smokeOrgSlug + `')`,
 		`DROP TRIGGER IF EXISTS smoke_refuse ON notification.messages`,
@@ -162,6 +167,22 @@ func (e *smokeEnv) seed(t *testing.T) {
 		INSERT INTO billing.payment_links (invoice_id, provider, currency, amount_cents, external_id, url)
 		VALUES ($1, 'stripe', 'USD', 100, 'cs_studio_smoke', 'https://checkout.example/smoke-secret')`, e.voidInvoice)
 	must(err, "payment link")
+
+	// The invoice to void carries a coupon's discount, so voiding it gives the
+	// application back, and a payment that settled nothing waits for review.
+	_, err = e.admin.Exec(ctx, `
+		INSERT INTO billing.coupons (code, name, discount_type, percent_off) VALUES ('STUDIO_SMOKE_VOID', 'Smoke void', 'percent', 10)`)
+	must(err, "coupon")
+	_, err = e.admin.Exec(ctx, `
+		INSERT INTO billing.coupon_redemptions (coupon_id, subscription_id, applied_count) VALUES ('STUDIO_SMOKE_VOID', $1, 1)`, subscription)
+	must(err, "coupon redemption")
+	_, err = e.admin.Exec(ctx, `
+		INSERT INTO billing.invoice_line_items (invoice_id, description, unit_price_cents, total_cents, currency)
+		VALUES ($1, 'Discount: STUDIO_SMOKE_VOID', -10, -10, 'USD')`, e.voidInvoice)
+	must(err, "discount line")
+	must(e.admin.QueryRow(ctx, `
+		INSERT INTO billing.payments (invoice_id, amount_cents, currency, provider, external_id)
+		VALUES ($1, 100, 'USD', 'stripe', 'pi_studio_smoke') RETURNING id`, e.voidInvoice).Scan(&e.payment), "payment")
 }
 
 func (e *smokeEnv) broker(t *testing.T, method, path string, body any) {
@@ -284,6 +305,7 @@ func (e *smokeEnv) mutations(projectID string) []smokeMutation {
 		{"ActivateSubscription", "studio.billing.subscriptions.update", func() error { return support.ActivateSubscription(projectID, e.orgID) }},
 		{"MarkInvoicePaid", "studio.messaging.outbox.insert", func() error { return support.MarkInvoicePaid(projectID, e.paidInvoice) }},
 		{"VoidInvoice", "studio.billing.invoices.update", func() error { return support.VoidInvoice(projectID, e.voidInvoice) }},
+		{"MarkPaymentRefunded", "studio.billing.payments.update", func() error { return support.MarkPaymentRefunded(projectID, e.payment) }},
 
 		{"SuspendOrganization", "studio.organization.organizations.update", func() error {
 			return e.services.OrganizationOps.SuspendOrganization(projectID, e.orgID, "smoke")
@@ -564,6 +586,25 @@ func TestOperatorSmoke(t *testing.T) {
 			if after := e.auditCount(t, m.action); after <= before {
 				t.Errorf("%s: no %s row added (%d before, %d after)", m.method, m.action, before, after)
 			}
+		}
+	})
+
+	t.Run("Void gives the coupon application back and the refund is recorded", func(t *testing.T) {
+		var applied int
+		var paymentStatus string
+		if err := e.admin.QueryRow(t.Context(),
+			`SELECT applied_count FROM billing.coupon_redemptions WHERE coupon_id = 'STUDIO_SMOKE_VOID'`).Scan(&applied); err != nil {
+			t.Fatalf("read redemption: %v", err)
+		}
+		if err := e.admin.QueryRow(t.Context(),
+			`SELECT status FROM billing.payments WHERE id = $1`, e.payment).Scan(&paymentStatus); err != nil {
+			t.Fatalf("read payment: %v", err)
+		}
+		if applied != 0 || paymentStatus != "refunded" {
+			t.Errorf("want applied_count 0 and payment refunded, got %d and %q", applied, paymentStatus)
+		}
+		if n := e.auditCount(t, "studio.billing.coupon_redemptions.update"); n != 1 {
+			t.Errorf("want one coupon_redemptions audit row, got %d", n)
 		}
 	})
 

@@ -221,7 +221,7 @@ jobs:
         run: npm run build
 
       - name: Unit tests
-        run: LC_ALL=en_US.UTF-8 npm test
+        run: npm test
 
       - name: Dependency audit
         run: npm audit --audit-level=high
@@ -287,7 +287,8 @@ jobs:
       - name: Build
         run: go build ./...
 
-      # The other Studio tests need an OS keychain or a live database. This one only reads source,
-      # and it is what stops a new mutating method from skipping operator attribution.
-      - name: Operator guard
-        run: go test ./app/ -run TestMutatingMethodsRequireOperator
+      # The keychain is an in-memory fake in tests. The operator smoke test needs a live database
+      # and broker and skips without them; the operator guard only reads source, and is what stops
+      # a new mutating method from skipping operator attribution.
+      - name: Test
+        run: go test ./...

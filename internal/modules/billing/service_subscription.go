@@ -198,20 +198,14 @@ func (s *service) attachCartSelections(
 	if couponCode == "" {
 		return nil
 	}
-	redemptions, err := s.repo.listCouponRedemptionsForSubscription(ctx, q, subscriptionID)
-	if err != nil {
-		return fmt.Errorf("billing.attachCartSelections: list coupon redemptions: %w", err)
+	if err := s.repo.lockSubscriptionForUpdate(ctx, q, subscriptionID); err != nil {
+		return fmt.Errorf("billing.attachCartSelections: %w", err)
 	}
-	for _, r := range redemptions {
-		if r.CouponCode == couponCode {
-			return nil // already redeemed
-		}
-	}
-	ok, err := s.repo.tryIncrementCouponRedeemedCount(ctx, q, couponCode)
-	if err != nil {
-		return fmt.Errorf("billing.attachCartSelections: increment coupon redeemed count: %w", err)
-	}
-	if !ok {
+	err := s.takeCouponRedemption(ctx, q, subscriptionID, couponCode)
+	switch {
+	case errors.Is(err, errCouponAlreadyRedeemed):
+		return nil // a redelivery: this subscription already has it
+	case errors.Is(err, ErrCouponNotRedeemable):
 		// Deliberate fail-loud: the coupon was valid when the org-creation
 		// request was accepted but got exhausted by someone else before this
 		// event was processed. This runs off the organization.created
@@ -222,10 +216,9 @@ func (s *service) attachCartSelections(
 		// transient; the organization is left without a subscription until
 		// someone drains billing.events.dlq. No DLQ alerting exists yet —
 		// accepted tradeoff over silently dropping the discount.
-		return fmt.Errorf("billing.attachCartSelections: %w: coupon exhausted", ErrCouponNotRedeemable)
-	}
-	if err := s.repo.insertCouponRedemption(ctx, q, couponCode, subscriptionID); err != nil {
-		return fmt.Errorf("billing.attachCartSelections: insert coupon redemption: %w", err)
+		return fmt.Errorf("billing.attachCartSelections: %w", err)
+	case err != nil:
+		return fmt.Errorf("billing.attachCartSelections: redeem coupon: %w", err)
 	}
 	return nil
 }

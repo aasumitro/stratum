@@ -99,7 +99,7 @@ func startsWithRequireOperator(fn *ast.FuncDecl) bool {
 }
 
 func TestMutatingMethodsRequireOperator(t *testing.T) {
-	if got := len(mutatingMethods(t)); got != 34 {
-		t.Errorf("found %d mutating methods, want 34; a new one also needs a case in the operator smoke test", got)
+	if got := len(mutatingMethods(t)); got != 35 {
+		t.Errorf("found %d mutating methods, want 35; a new one also needs a case in the operator smoke test", got)
 	}
 }

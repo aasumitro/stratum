@@ -30,7 +30,9 @@ make test               # unit + handler, -race -count=1
 make test-integration   # needs TEST_DATABASE_URL
 ```
 
-Stop any local `cmd/worker` before `make test-integration`. The suite writes outbox rows into the same database the worker relays from, so a running worker publishes them before `t.Cleanup` deletes them, and its consumers act on them — including sending email through the configured SMTP.
+Stop any local `cmd/worker` before `make test-integration`. The suite writes outbox rows into the same database the worker relays from, so a running worker publishes them before `t.Cleanup` deletes them, and its consumers act on them — including sending email through the configured SMTP. The outbox relay tests claim only their own rows: other due rows are locked for the length of each batch, so the relay's `SKIP LOCKED` passes over the dev data.
+
+Web's unit tests run with `npm test` in `ui/app`, which pins `LC_ALL=en_US.UTF-8` and `TZ=UTC`, so date assertions hold on any machine. Studio's Go tests (`go test ./...` in `ui/studio`) use an in-memory keychain; the operator smoke test runs only when `STUDIO_SMOKE_OWNER_URL`, `STUDIO_SMOKE_OPERATOR_URL` and `STUDIO_SMOKE_MQ_URL` point at a database and broker.
 
 Web's e2e suite runs separately, from `ui/app`:
 

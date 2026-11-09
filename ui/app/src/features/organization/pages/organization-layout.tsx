@@ -18,6 +18,7 @@ import {
   isBillingSuspensionReason,
   isSelfSuspensionReason,
 } from "@/hooks/use-billing-status"
+import { Banner, type BannerItem } from "@/components/shared/banner"
 import { Button } from "@/components/ui/button"
 
 // Routes accessible even when billing is blocked by a pending invoice.
@@ -129,6 +130,80 @@ export function OrganizationLayout() {
     ? "organization.suspendedOwnerBillingBanner"
     : "organization.suspendedOwnerExpiredBanner"
 
+  const banners: BannerItem[] = []
+  if (showSuspendedBanner && !isOwner) {
+    banners.push({
+      id: "suspended",
+      severity: "warning",
+      message: owner
+        ? t("organization.suspendedMemberBanner", {
+            ownerName:
+              owner.full_name || owner.email || t("organization.roles.owner"),
+          })
+        : t("organization.suspendedBanner"),
+      action: owner?.email ? (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            void navigator.clipboard.writeText(owner.email!)
+            toast.success(t("organization.copyOwnerEmailSuccess"))
+          }}
+        >
+          <IconCopy data-icon="inline-start" />
+          {t("organization.copyOwnerEmail")}
+        </Button>
+      ) : undefined,
+    })
+  }
+  if (showSuspendedBanner && isOwner) {
+    banners.push({
+      id: "suspended",
+      severity: "warning",
+      message: isBillingCausedSuspension
+        ? t(ownerBillingBannerKey)
+        : isSelfSuspension
+          ? t("organization.suspendedOwnerSelfBanner")
+          : t("organization.suspendedOwnerSupportBanner", {
+              reason: organization?.suspended_reason,
+            }),
+      action: isBillingCausedSuspension ? (
+        <Link
+          to="/organization/$organizationId/billing"
+          params={{ organizationId }}
+          className="text-sm font-medium underline"
+        >
+          {t("organization.pendingInvoicePay")}
+        </Link>
+      ) : isSelfSuspension ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={unsuspending}
+          onClick={() => unsuspend()}
+        >
+          {t("organization.danger.unsuspendAction")}
+        </Button>
+      ) : undefined,
+    })
+  }
+  if (showPendingInvoiceBanner) {
+    banners.push({
+      id: "pending-invoice",
+      severity: "critical",
+      message: t("organization.pendingInvoiceBanner"),
+      action: (
+        <Link
+          to="/organization/$organizationId/billing"
+          params={{ organizationId }}
+          className="text-sm font-medium underline"
+        >
+          {t("organization.pendingInvoicePay")}
+        </Link>
+      ),
+    })
+  }
+
   // Top-level segments below a role's threshold (PERMISSION_MATRIX) hide
   // from the sidebar (sidebar-organization-nav.tsx's ORG_NAV `.filter`),
   // but the route itself is still reachable by typing the URL directly —
@@ -149,77 +224,7 @@ export function OrganizationLayout() {
       {/* Suspended lockout: shell stays, banner names who can help
           (member/admin) or the reason + fix (owner). Every page below
           stays reachable; UI-only mutation gating happens per-page. */}
-      {showSuspendedBanner && !isOwner && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
-          <span>
-            {owner
-              ? t("organization.suspendedMemberBanner", {
-                  ownerName:
-                    owner.full_name ||
-                    owner.email ||
-                    t("organization.roles.owner"),
-                })
-              : t("organization.suspendedBanner")}
-          </span>
-          {owner?.email && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                void navigator.clipboard.writeText(owner.email!)
-                toast.success(t("organization.copyOwnerEmailSuccess"))
-              }}
-            >
-              <IconCopy data-icon="inline-start" />
-              {t("organization.copyOwnerEmail")}
-            </Button>
-          )}
-        </div>
-      )}
-      {showSuspendedBanner && isOwner && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
-          <span>
-            {isBillingCausedSuspension
-              ? t(ownerBillingBannerKey)
-              : isSelfSuspension
-                ? t("organization.suspendedOwnerSelfBanner")
-                : t("organization.suspendedOwnerSupportBanner", {
-                    reason: organization?.suspended_reason,
-                  })}
-          </span>
-          {isBillingCausedSuspension ? (
-            <Link
-              to="/organization/$organizationId/billing"
-              params={{ organizationId }}
-              className="text-sm font-medium underline"
-            >
-              {t("organization.pendingInvoicePay")}
-            </Link>
-          ) : isSelfSuspension ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={unsuspending}
-              onClick={() => unsuspend()}
-            >
-              {t("organization.danger.unsuspendAction")}
-            </Button>
-          ) : null}
-        </div>
-      )}
-
-      {showPendingInvoiceBanner && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {t("organization.pendingInvoiceBanner")}{" "}
-          <Link
-            to="/organization/$organizationId/billing"
-            params={{ organizationId }}
-            className="font-medium underline"
-          >
-            {t("organization.pendingInvoicePay")}
-          </Link>
-        </div>
-      )}
+      <Banner banners={banners} />
 
       {/* Keyed by organizationId: switching organizations — including
           editing the URL directly — only changes this param, it doesn't

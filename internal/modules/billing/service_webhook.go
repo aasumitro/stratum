@@ -253,6 +253,17 @@ func (s *service) handleWebhook(ctx context.Context, ref webhookLinkRef, normali
 				return nil, fmt.Errorf("billing.handleWebhook: recover late payment: %w", err)
 			}
 			if !recovered {
+				// The money arrived but buys nothing. Record it against the
+				// invoice it paid, so it is on file and an operator can settle
+				// it by hand: there is no refund path.
+				pl, err := s.repo.findPaymentLinkByExternalID(ctx, s.querier(ctx), ref.externalID)
+				if err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: find payment link: %w", err)
+				}
+				if err := s.repo.insertPayment(ctx, s.querier(ctx), link.invoiceID, pl.AmountCents,
+					pl.Currency, pl.Provider, pl.ExternalID, now); err != nil {
+					return nil, fmt.Errorf("billing.handleWebhook: record unapplied payment: %w", err)
+				}
 				return outcome, nil
 			}
 			// The invoice is now 'paid': fall through so the shared paid path
@@ -273,7 +284,10 @@ func (s *service) handleWebhook(ctx context.Context, ref webhookLinkRef, normali
 		}
 	}
 
-	if normalizedStatus == statusFailed || normalizedStatus == statusExpired {
+	// An expired checkout closes only its link. Nobody tried to pay and failed:
+	// the invoice stays pending and a new checkout can pay it, and an invoice
+	// still unpaid when its period ends is settled by expireIfDue.
+	if normalizedStatus == statusFailed {
 		outcome.failed = &events.InvoiceFailed{OrgID: link.subjectID, InvoiceID: link.invoiceID, FailedAt: time.Now()}
 	}
 

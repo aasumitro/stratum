@@ -53,13 +53,23 @@ invoice created → payment link → customer pays on the gateway's page → web
 
 There is no autopay and no stored card data by design — renewal is always a manual hosted-checkout payment.
 
+A checkout the owner leaves unpaid until it expires (Stripe's `checkout.session.expired`, Xendit's
+`EXPIRED`) is not a failed payment: only its link closes. The invoice stays payable, Pay opens a new
+checkout, and nothing else changes: no failure notice, no dunning, no `billing.invoice.failed`, no
+`past_due`. An invoice still unpaid when its period or trial ends is closed by the expiry, as for any
+unpaid invoice. Only a payment attempt that failed (a declined card, a bank debit that bounced,
+Xendit's `FAILED`) notifies the owner, starts dunning and, for a renewal or activation, moves the
+subscription to `past_due`.
+
 When an invoice is voided or failed, or a new payment link replaces an old one, the old checkout is
 closed at Stripe/Xendit as well (the worker calls the provider's expire endpoint), so it can no
 longer take money. If a payment still lands on such an invoice — a checkout completed just before
 it closed — and the subscription has already ended, the payment reactivates the subscription like
 a Resume payment, unless the plan, the cycle or an add-on grew after the invoice was issued, since
-that payment did not buy them. Those, and a payment on a live subscription, whose replacement invoice
-is already pending, are logged for manual reconciliation. A paid reactivation lifts only billing's own suspension,
+that payment did not buy them. Those, a payment on a live subscription whose replacement invoice
+is already pending, and a second payment of an invoice already paid are recorded as payments against
+the invoice they paid and applied to nothing. Studio lists them under Support for an operator to
+refund at the provider; there is no refund in the app. A paid reactivation lifts only billing's own suspension,
 never an owner's pause or a support suspension.
 
 ## Invoices
@@ -68,7 +78,7 @@ Invoices get sequential per-organization numbers and are rendered to a brand-sty
 
 ## Usage and quotas
 
-One metric is tracked today — `members` — recorded automatically (and fire-and-forget) after each relevant action. Before an invite, add or join, current usage is compared to the effective quota (plan limit + any add-on deltas); a request at the limit is refused with HTTP 422 `PLAN_LIMIT_REACHED`. A one-time warning fires when usage crosses 90% of a metered limit.
+One metric is tracked today — `members` — recorded automatically (and fire-and-forget) after each relevant action. The current count is the one recorded last; an upgrade moves `period_end` earlier, so the row with the latest end can be older. Before an invite, add or join, current usage is compared to the effective quota (plan limit + any add-on deltas); a request at the limit is refused with HTTP 422 `PLAN_LIMIT_REACHED`. A one-time warning fires when usage crosses 90% of a metered limit.
 
 ## Renewal and dunning
 

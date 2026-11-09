@@ -1124,8 +1124,8 @@ func TestIntegration_Webhook_ProviderReportingOurOwnClosing_IsNotAFailure(t *tes
 	}
 }
 
-// TestIntegration_Webhook_PastDueActivationPaid_Reactivates: an expired
-// checkout past-dues a subscription on its activation invoice; paying that
+// TestIntegration_Webhook_PastDueActivationPaid_Reactivates: a failed
+// payment past-dues a subscription on its activation invoice; paying that
 // invoice on a second link returns it to active with the period untouched.
 // With the end now within 3 days — after the renewal auto-invoice already
 // skipped the past_due subscription — the payment also queues an
@@ -1155,14 +1155,14 @@ func TestIntegration_Webhook_PastDueActivationPaid_Reactivates(t *testing.T) {
 	seedPaymentLink(pool, invID, "cs_b2d_a", "stripe", "USD", 900)
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
-		`{"type":"checkout.session.expired","data":{"object":{"id":"cs_b2d_a"}}}`))
+		`{"type":"checkout.session.async_payment_failed","data":{"object":{"id":"cs_b2d_a","payment_status":"unpaid"}}}`))
 	if w.Code != http.StatusOK {
-		t.Fatalf("expired-checkout webhook: want 200, got %d: %s", w.Code, w.Body)
+		t.Fatalf("failed-payment webhook: want 200, got %d: %s", w.Code, w.Body)
 	}
 	var status string
 	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&status)
 	if status != "past_due" {
-		t.Fatalf("after the expired checkout: want past_due, got %q", status)
+		t.Fatalf("after the failed payment: want past_due, got %q", status)
 	}
 
 	if _, err := pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID); err != nil {
@@ -2653,8 +2653,10 @@ func TestIntegration_Webhook_LatePaidWebhook_AfterExpiry_ReactivatesRenewal(t *t
 // webhooks for a closed invoice that must stay unapplied: a failed or void
 // renewal whose subscription is live (its replacement is already pending),
 // an additive invoice on an ended subscription, and any invoice of a
-// deleted organization — soft-deleted, or already purged. None flips the
-// invoice, records a payment, changes the subscription, or emits an event.
+// deleted organization — soft-deleted, or already purged — and a second
+// payment of an invoice already paid. None flips the invoice, changes the
+// subscription, or emits an event. The money did arrive, so each records its
+// payment row, which is how an operator finds it to settle by hand.
 func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 	cases := []struct {
 		name, orgID, extID, subStatus, kind, invStatus string
@@ -2666,6 +2668,7 @@ func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 		{"additive failed invoice on cancelled subscription", "00000000-0000-0000-0000-000000000a79", "stripe_sess_a79", "cancelled", "addon_increase", "failed", nil},
 		{"activation of a deleted organization", "00000000-0000-0000-0000-000000000a7a", "stripe_sess_a7a", "cancelled", "activation", "failed", orgStatusReader{status: "deleted"}},
 		{"renewal of a purged organization", "00000000-0000-0000-0000-000000000a7b", "stripe_sess_a7b", "expired", "subscription", "failed", orgStatusReader{err: pgx.ErrNoRows}},
+		{"second payment of a paid invoice", "00000000-0000-0000-0000-000000000a7c", "stripe_sess_a7c", "active", "subscription", "paid", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2694,8 +2697,8 @@ func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 			if subStatus != tc.subStatus {
 				t.Errorf("subscription: want status=%s (unchanged), got %q", tc.subStatus, subStatus)
 			}
-			if payments != 0 {
-				t.Errorf("billing.payments: want 0 rows, got %d", payments)
+			if payments != 1 {
+				t.Errorf("billing.payments: want 1 row (the money arrived), got %d", payments)
 			}
 			if len(suspender.unsuspended) != 0 {
 				t.Errorf("UnsuspendOrganization: want no calls, got %v", suspender.unsuspended)
@@ -4611,7 +4614,7 @@ func TestIntegration_Webhook_ConcurrentFailedDeliveries_AppliesOnce(t *testing.T
 	e := billing.NewWebhookModuleEngine(pool, user, orgID)
 
 	payloadFor := func(eventID string) string {
-		return `{"id":"` + eventID + `","type":"checkout.session.expired","data":{"object":{"id":"` + extID + `"}}}`
+		return `{"id":"` + eventID + `","type":"checkout.session.async_payment_failed","data":{"object":{"id":"` + extID + `","payment_status":"unpaid"}}}`
 	}
 
 	var wg sync.WaitGroup

@@ -41,7 +41,7 @@ Owner **T** means the template implements the mechanism; **A** means the adopter
 
 The audit trail records every non-GET request, handler-flagged GETs, and provider webhook calls that fail. An unflagged GET writes no row, including one answered 401 or 403; `stratum.http.auth.failures` counts those instead.
 
-**What append-only does not cover.** Runtime roles keep INSERT, so a stolen runtime credential can add false rows, including ones naming an operator, though it cannot change or remove real ones. A stolen `stratum_worker` credential can also anonymize a named customer's rows through `audit.anonymize_actor`, though not operator or `anonymous` rows. The schema owner can edit anything, and only the Postgres log shows it.
+**What append-only does not cover.** Runtime roles keep INSERT, so a stolen runtime credential can add false rows, though not ones naming an operator, and it cannot change or remove real ones. A stolen `stratum_worker` credential can also anonymize a named customer's rows through `audit.anonymize_actor`, though not operator or `anonymous` rows. The schema owner can edit anything, and only the Postgres log shows it.
 
 ## Data inventory and retention
 
@@ -52,7 +52,7 @@ Every period below is the default and can be changed through its environment var
 | `account.users` | Email, name, avatar | Life of the account | Account deletion |
 | `account.login_events` | IP address, user agent | `LOGIN_EVENT_RETENTION_DAYS`, 400 days | Worker sweep; also account deletion |
 | `account.tasks.result` | A full personal-data export | `DATA_EXPORT_RETENTION_DAYS`, 7 days | Worker sweep clears the payload and keeps the task row |
-| `audit.events` | Actor, IP address, user agent; before/after values in `metadata`. Operator rows' `metadata` leaves out invite codes, checkout URLs, organization owners and the person a coupon target or subscription is aimed at | `AUDIT_RETENTION_DAYS`, 400 days, minimum 365 | `audit.sweep_expired`, hourly from the API. Account deletion anonymizes the actor only; everything else stays until retention removes the row |
+| `audit.events` | Actor, IP address, user agent; before/after values in `metadata`. Operator rows' `metadata` leaves out invite codes, checkout URLs, organization owners and the person a coupon target or subscription is aimed at | `AUDIT_RETENTION_DAYS`, 400 days, minimum 365 | `audit.sweep_expired`, hourly from the API. Account deletion anonymizes the actor and clears the IP address and user agent; everything else stays until retention removes the row |
 | `notification.messages` | Message content | `NOTIFICATION_RETENTION_DAYS`, 180 days | Worker sweep; also account deletion |
 | `organization.invitations` | Email | Until expiry | Hourly expired-invitation cleanup; also organization purge |
 | `organization.memberships` | The member's `auth_sub` | Life of the membership | Account deletion, member removal, organization purge |

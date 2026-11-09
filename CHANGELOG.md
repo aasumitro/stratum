@@ -8,6 +8,9 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Security
 
+- Runtime roles can no longer write an audit row naming an operator. Only the database functions
+  that record Studio's changes can (migration `000012`).
+- Deleting an account now also clears the IP address and user agent on its audit rows.
 - `audit.events` is append-only again. Runtime roles held UPDATE and DELETE on it through a later
   migration's blanket grant. Retention and GDPR anonymization now go through narrow database
   functions, and the 365-day retention floor is enforced in SQL.
@@ -29,6 +32,9 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Added
 
+- Studio lists payments to review: money a provider took that settled nothing (a payment on a void or
+  failed invoice, or a second payment of one invoice). An operator refunds each at the provider and
+  marks it refunded in Studio.
 - Retention sweeps in the worker, each configurable: login events (400 days), GDPR export payloads
   (7), notifications (180), webhook deliveries (30), provider webhook markers (90), and a permanent
   purge of organizations soft-deleted more than 30 days ago.
@@ -43,6 +49,14 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Changed
 
+- **Breaking:** an expired checkout (Stripe `checkout.session.expired`, Xendit `EXPIRED`) is no longer a
+  failed payment. Only its link closes: the invoice stays payable through a new checkout, and there is
+  no failure notice, no dunning, no `past_due`, and no `billing.invoice.failed` customer webhook.
+  Previously Stripe's expiry past-dued a subscription about two days before its period ended. A
+  declined card or a failed bank debit still counts as a failure.
+- Studio's Void gives back the coupon application the voided invoice's discount used, as the app's
+  own void does.
+- `npm test` in `ui/app` pins the locale and time zone.
 - **Breaking:** `AUDIT_RETENTION_DAYS` defaults to 400 (was 30), and boot fails below 365. Raise it
   in any existing environment before upgrading.
 - **Breaking:** migration `000011` needs the `stratum_operator` role to exist first
@@ -73,6 +87,14 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
+- A payment that settled nothing (on a void or failed invoice, or a second payment of one invoice) was
+  only logged. It is now recorded as a payment, and the owner's payment list shows it.
+- Member usage read an old count after an upgrade moved `period_end` earlier, so limit checks for
+  invites, adds and joins used the count from before the upgrade.
+- Previewing a downgrade and downgrading held a database connection while overage resolution waited
+  for a second one from the same pool. Under load, enough of them at once stalled every request.
+- The outbox relay's integration tests published the dev database's due rows to a fake publisher, so
+  they never reached the broker.
 - An owner could keep a paid plan without paying by repeating a plan change while the activation
   invoice was unpaid, which restarted the period each time.
 - An owner could dodge a billing suspension by suspending the organization just before the period

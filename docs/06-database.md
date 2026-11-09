@@ -29,6 +29,7 @@ Migrations live in `db/migrations/` as numbered up/down pairs, one per schema:
 | 000009 | `-` | grant privileges for the unscoped API role (`stratum_app_unscoped`): the `organization` schema + `messaging.outbox` |
 | 000010 | `organization`, `notification` | row-level security (`FORCE ROW LEVEL SECURITY`) + tenant/caller policies |
 | 000011 | `audit` | makes `audit.events` append-only for runtime roles; grants for the `stratum_operator` group; a trigger on 14 tables attributing operator changes; retention, anonymization and operator-action functions |
+| 000012 | `billing`, `audit` | operator column grants on `billing.coupon_redemptions.applied_count` and `billing.payments.status`, with the attribution trigger on both; refuses `operator:` audit rows from anyone but the table owner; anonymization also clears IP and user agent |
 
 During the current development phase, changes are edited **in place** into the existing schema file (which requires fresh infra after a rewrite); genuinely new schemas would start at `000012`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 
