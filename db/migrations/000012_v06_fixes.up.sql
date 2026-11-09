@@ -12,16 +12,17 @@ CREATE TRIGGER audit_operator_change AFTER INSERT OR UPDATE OR DELETE ON billing
 
 -- An operator row is written only by capture_operator_change and record_operator_action, which run as
 -- the owner of audit.events. Runtime roles keep INSERT for the application's own rows, so without this
--- a stolen runtime credential could write a row naming an operator. SECURITY INVOKER on purpose:
--- current_user here is the role that inserted.
+-- a stolen runtime credential could write a row naming an operator. A role holding the owner's
+-- privileges passes: it could drop this trigger anyway. SECURITY INVOKER on purpose: current_user here
+-- is the role that inserted.
 CREATE FUNCTION audit.refuse_forged_operator_row() RETURNS trigger
     LANGUAGE plpgsql
     SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-    IF NEW.actor LIKE 'operator:%' AND current_user <> (
-        SELECT pg_get_userbyid(c.relowner) FROM pg_class c WHERE c.oid = 'audit.events'::regclass
-    ) THEN
+    IF NEW.actor LIKE 'operator:%' AND NOT pg_has_role(current_user, (
+        SELECT c.relowner FROM pg_class c WHERE c.oid = 'audit.events'::regclass
+    ), 'USAGE') THEN
         RAISE EXCEPTION 'audit.events: % may not write operator rows', current_user
             USING ERRCODE = 'insufficient_privilege';
     END IF;
