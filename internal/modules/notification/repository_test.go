@@ -584,7 +584,6 @@ type markReadOwnerReader struct{}
 func (markReadOwnerReader) GetOrganizationByID(_ context.Context, _ string) (*contracts.OrganizationInfo, error) {
 	return &contracts.OrganizationInfo{OwnerID: testAuthSubNotif}, nil
 }
-func (markReadOwnerReader) IsMember(_ context.Context, _, _ string) (bool, error) { return true, nil }
 func (markReadOwnerReader) GetMemberRole(_ context.Context, _, _ string) (string, error) {
 	return "owner", nil
 }
@@ -610,7 +609,6 @@ type stubNotifWsReader struct{}
 func (stubNotifWsReader) GetOrganizationByID(_ context.Context, _ string) (*contracts.OrganizationInfo, error) {
 	return &contracts.OrganizationInfo{OwnerID: "notif-owner-sub", Locale: "id"}, nil
 }
-func (stubNotifWsReader) IsMember(_ context.Context, _, _ string) (bool, error) { return true, nil }
 func (stubNotifWsReader) GetMemberRole(_ context.Context, _, _ string) (string, error) {
 	return "member", nil
 }

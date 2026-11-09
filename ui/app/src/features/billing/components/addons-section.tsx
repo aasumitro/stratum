@@ -26,6 +26,10 @@ import {
   applyAmendmentDiff,
 } from "@/features/billing/utils"
 import type { AmendmentDiff, AmendmentChange } from "@/features/billing/utils"
+import {
+  scheduledChangeDate,
+  scheduledChangeLocked,
+} from "@/features/billing/scheduled-change"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -79,6 +83,12 @@ export function AddonsSection({ organizationId }: Props) {
   const cycle = subData?.data?.cycle ?? "monthly"
   const isTrialing = subData?.data?.status === "trialing"
   const periodEnd = subData?.data?.period_end
+  const scheduledDate = subData?.data
+    ? scheduledChangeDate(subData.data)
+    : periodEnd
+  const scheduleLocked = subData?.data
+    ? scheduledChangeLocked(subData.data)
+    : false
   // The API always scopes prices down to one, server-resolved currency —
   // read it back from the data itself rather than the subscription's own
   // currency field, so this never depends on the two staying in sync.
@@ -182,14 +192,14 @@ export function AddonsSection({ organizationId }: Props) {
                           <Badge variant="outline">
                             {scheduledRemoval
                               ? t("billing.addons.scheduledRemovalBadge", {
-                                  date: formatDate(periodEnd),
+                                  date: formatDate(scheduledDate),
                                 })
                               : t("billing.addons.scheduledQuantityBadge", {
                                   quantity: addonRow.scheduled_quantity,
-                                  date: formatDate(periodEnd),
+                                  date: formatDate(scheduledDate),
                                 })}
                           </Badge>
-                          {isOwner && (
+                          {isOwner && !scheduleLocked && (
                             <Button
                               variant="ghost"
                               size="icon"

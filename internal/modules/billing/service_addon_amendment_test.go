@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
@@ -390,6 +391,11 @@ func TestIntegration_AttachAddon_Active_SecondIncrease_VoidsAndReissues(t *testi
 		t.Fatal("want pending_invoice_id set after first increase")
 	}
 	firstInvoiceID := *first.PendingInvoiceID
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO billing.payment_links (invoice_id, provider, currency, amount_cents, external_id, url)
+		VALUES ($1, 'stripe', 'USD', 100, 'cs_b1d_first', 'https://pay.example.com')`, firstInvoiceID); err != nil {
+		t.Fatalf("seed the first invoice's checkout: %v", err)
+	}
 
 	second, err := mod.svc.attachAddon(t.Context(), orgID, "extra-seat", 8, "sub_owner")
 	if err != nil {
@@ -411,6 +417,18 @@ func TestIntegration_AttachAddon_Active_SecondIncrease_VoidsAndReissues(t *testi
 	pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, *second.PendingInvoiceID).Scan(&secondStatus)
 	if secondStatus != "pending" {
 		t.Errorf("want the second (current) invoice still pending, got status=%q", secondStatus)
+	}
+	// The voided invoice's checkout is closed here and queued for closing
+	// at its provider.
+	var linkStatus string
+	var queued int
+	pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE external_id = 'cs_b1d_first'`).Scan(&linkStatus)
+	pool.QueryRow(t.Context(), `
+		SELECT COUNT(*) FROM messaging.outbox
+		WHERE routing_key = $1 AND payload->>'org_id' = $2 AND payload->'data'->>'external_id' = 'cs_b1d_first'`,
+		events.RoutingKeyPaymentLinkExpire, orgID).Scan(&queued)
+	if linkStatus != "expired" || queued != 1 {
+		t.Errorf("voided invoice's checkout: want expired and queued once for the provider, got %q and %d", linkStatus, queued)
 	}
 }
 

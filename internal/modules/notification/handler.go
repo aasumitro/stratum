@@ -39,6 +39,8 @@ var (
 
 type handler struct {
 	svc *service
+	// closing ends open streams when the server shuts down (Module.CloseStreams).
+	closing <-chan struct{}
 }
 
 // sseOpenKey is the Redis counter key tracking how many notification
@@ -144,6 +146,11 @@ func (h *handler) streamNotifications(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	// Send the status line and headers now: the browser's EventSource only
+	// reports the stream open once they arrive, and the loop below writes
+	// nothing until the first notification or refresh tick.
+	c.Writer.WriteHeaderNow()
+	c.Writer.Flush()
 
 	ctx := c.Request.Context()
 	sub := h.svc.redis.Subscribe(ctx, "notif:"+subject)
@@ -171,6 +178,8 @@ func (h *handler) streamNotifications(c *gin.Context) {
 			h.svc.redis.Expire(ctx, slotKey, sseSlotTTL)
 			return true
 		case <-ctx.Done():
+			return false
+		case <-h.closing:
 			return false
 		}
 	})

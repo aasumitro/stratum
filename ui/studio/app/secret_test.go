@@ -2,13 +2,21 @@ package app
 
 import (
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/zalando/go-keyring"
 )
 
-// These tests hit the real OS keychain (macOS Keychain / Windows Credential
-// Manager / Linux Secret Service) — there is no in-process fake for it.
+// The package's tests use go-keyring's in-memory store instead of the OS
+// keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service),
+// so they run where none exists, such as CI. What they check is how Studio
+// stores, reads and deletes a project's secrets, not the keychain itself.
+func TestMain(m *testing.M) {
+	keyring.MockInit()
+	os.Exit(m.Run())
+}
+
 func TestProjectSecrets_RoundTrip(t *testing.T) {
 	id := "secret-test-" + t.Name()
 	t.Cleanup(func() { _ = deleteProjectSecrets(id) })

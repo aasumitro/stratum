@@ -6,6 +6,9 @@ bin/
 *.so
 *.dylib
 
+# Database dumps from make db-backup
+backups/
+
 # Environment
 .env
 .env.local

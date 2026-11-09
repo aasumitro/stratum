@@ -69,6 +69,20 @@ type AtRiskInvoice struct {
 	DaysPending      int    `json:"days_pending"`
 }
 
+type PaymentToReview struct {
+	PaymentID        string `json:"payment_id"`
+	InvoiceID        string `json:"invoice_id"`
+	InvoiceStatus    string `json:"invoice_status"`
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name"`
+	OrganizationSlug string `json:"organization_slug"`
+	AmountCents      int64  `json:"amount_cents"`
+	Currency         string `json:"currency"`
+	Provider         string `json:"provider"`
+	ExternalID       string `json:"external_id"`
+	PaidAt           string `json:"paid_at"`
+}
+
 type SupportService struct {
 	db       *sql.DB
 	projects *ProjectService
@@ -208,6 +222,10 @@ func (s *SupportService) GetOrganizationInvoices(projectID, organizationID strin
 }
 
 func (s *SupportService) ExtendTrial(projectID, organizationID string, days int) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if days <= 0 {
 		return fmt.Errorf("SupportService.ExtendTrial: days must be positive")
 	}
@@ -224,6 +242,10 @@ func (s *SupportService) ExtendTrial(projectID, organizationID string, days int)
 }
 
 func (s *SupportService) ActivateSubscription(projectID, organizationID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "SupportService.ActivateSubscription", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.SupportActivateSubscription(ctx, db, organizationID)
@@ -236,6 +258,10 @@ func (s *SupportService) ActivateSubscription(projectID, organizationID string) 
 }
 
 func (s *SupportService) ChangePlan(projectID, organizationID, plan, cycle string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if plan == "" {
 		return fmt.Errorf("SupportService.ChangePlan: plan is required")
 	}
@@ -255,6 +281,10 @@ func (s *SupportService) ChangePlan(projectID, organizationID, plan, cycle strin
 }
 
 func (s *SupportService) MarkInvoicePaid(projectID, invoiceID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "SupportService.MarkInvoicePaid", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.SupportMarkInvoicePaid(ctx, db, invoiceID)
@@ -267,6 +297,10 @@ func (s *SupportService) MarkInvoicePaid(projectID, invoiceID string) error {
 }
 
 func (s *SupportService) VoidInvoice(projectID, invoiceID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "SupportService.VoidInvoice", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.SupportVoidInvoice(ctx, db, invoiceID)
@@ -275,6 +309,48 @@ func (s *SupportService) VoidInvoice(projectID, invoiceID string) error {
 		return err
 	}
 	s.logAction(projectID, "void_invoice", invoiceID, "")
+	return nil
+}
+
+func (s *SupportService) GetPaymentsToReview(projectID string) ([]PaymentToReview, error) {
+	raw, err := withProjectDB(s.projects, s.pool, projectID, "SupportService.GetPaymentsToReview", 15*time.Second, query.GetPaymentsToReview)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PaymentToReview, len(raw))
+	for i, p := range raw {
+		out[i] = PaymentToReview{
+			PaymentID:        p.PaymentID,
+			InvoiceID:        p.InvoiceID,
+			InvoiceStatus:    p.InvoiceStatus,
+			OrganizationID:   p.OrganizationID,
+			OrganizationName: p.OrganizationName,
+			OrganizationSlug: p.OrganizationSlug,
+			AmountCents:      p.AmountCents,
+			Currency:         p.Currency,
+			Provider:         p.Provider,
+			ExternalID:       p.ExternalID,
+			PaidAt:           p.PaidAt.Format(time.RFC3339),
+		}
+	}
+	return out, nil
+}
+
+// MarkPaymentRefunded records a refund the operator already made at the
+// payment's provider; Studio never moves money itself.
+func (s *SupportService) MarkPaymentRefunded(projectID, paymentID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
+	err := withProjectDBErr(s.projects, s.pool, projectID, "SupportService.MarkPaymentRefunded", 15*time.Second,
+		func(ctx context.Context, db *pgxpool.Pool) error {
+			return query.SupportMarkPaymentRefunded(ctx, db, paymentID)
+		})
+	if err != nil {
+		return err
+	}
+	s.logAction(projectID, "mark_payment_refunded", paymentID, "")
 	return nil
 }
 

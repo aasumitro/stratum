@@ -27,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { cn } from "@/lib/ui"
+import { PaymentsReviewSection } from "./payments-review-section"
 import { formatCents } from "./utils"
 
 function daysPendingChip(days: number, status: string) {
@@ -69,6 +70,7 @@ export function AtRiskTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-4 p-6">
+      <PaymentsReviewSection projectId={projectId} />
       {isLoading ? (
         <div className="divide-y rounded-md border">
           {Array.from({ length: 5 }).map((_, i) => (

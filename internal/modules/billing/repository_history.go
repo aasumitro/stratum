@@ -143,3 +143,34 @@ func (r *repository) listHistory(
 	}
 	return out, nil
 }
+
+// purchaseGrewSince reports whether what the subscription would be reactivated with now
+// is more than an invoice issued at since was priced for: its plan or cycle changed, or
+// an addon rose. Only a change that took effect counts: a scheduled downgrade and an
+// increase waiting on its own invoice have changed nothing yet, and a cancel or expire
+// row names no target plan. A change and the invoice it reissues share one transaction
+// and so one timestamp, which is why this compares strictly. A scheduled downgrade the
+// system applied at its boundary does not count: the renewal it follows was priced from
+// it, so reactivating on it gives exactly what that invoice bought.
+func (r *repository) purchaseGrewSince(ctx context.Context, q db.Querier, subscriptionID string, since time.Time) (bool, error) {
+	var changed bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM billing.subscription_history
+			WHERE subscription_id = $1 AND changed_at > $2 AND COALESCE(phase, 'applied') = 'applied'
+			  AND NOT (action = 'downgrade' AND changed_by = 'system')
+			  AND (
+			    (action IN ('upgrade', 'downgrade')
+			      AND (from_plan IS DISTINCT FROM to_plan OR from_cycle IS DISTINCT FROM to_cycle))
+			    OR (action = 'addon_change'
+			      AND NOT COALESCE((metadata->>'pending')::boolean, false)
+			      AND (metadata->>'to_quantity')::int > (metadata->>'from_quantity')::int)
+			  )
+		)`,
+		subscriptionID, since,
+	).Scan(&changed)
+	if err != nil {
+		return false, fmt.Errorf("billing.purchaseGrewSince: %w", err)
+	}
+	return changed, nil
+}

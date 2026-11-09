@@ -71,6 +71,7 @@ func GetRenewalsDue(ctx context.Context, pool *pgxpool.Pool) ([]WatchlistItem, e
 		JOIN organization.organizations t ON t.id::text = s.subject_id
 		LEFT JOIN billing.plans p ON p.id = s.plan
 		WHERE s.status = 'active'
+		  AND s.scheduled_cancel_at IS NULL
 		  AND s.period_end IS NOT NULL
 		  AND s.period_end >= now()
 		  AND s.period_end <= now() + INTERVAL '7 days'
@@ -93,7 +94,8 @@ func GetCancellationsTakingEffect(ctx context.Context, pool *pgxpool.Pool) ([]Wa
 		FROM billing.subscriptions s
 		JOIN organization.organizations t ON t.id::text = s.subject_id
 		LEFT JOIN billing.plans p ON p.id = s.plan
-		WHERE s.status = 'cancelled'
+		WHERE s.scheduled_cancel_at IS NOT NULL
+		  AND s.status IN ('active', 'trialing', 'past_due')
 		  AND s.period_end IS NOT NULL
 		  AND s.period_end >= now()
 		ORDER BY s.period_end ASC

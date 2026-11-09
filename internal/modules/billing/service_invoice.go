@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"uuid"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
@@ -120,7 +122,8 @@ func (s *service) getInvoicePDFData(
 // createPaymentLink creates a Stripe or Xendit payment link for the invoice.
 // When subjectType is empty, skips ownership check (internal calls like worker auto-invoice);
 // also skips SetOrgContext; only safe for callers guaranteed to run under a BYPASSRLS connection (cmd/worker).
-// Expires any existing pending links for this invoice before creating a new one (idempotency).
+// Expires any existing open links for this invoice — here and at their provider — before
+// creating a new one, so only one checkout can take the payment.
 func (s *service) createPaymentLink(
 	ctx context.Context, subjectType, subjectID, invoiceID string,
 ) (*paymentLinkRecord, error) {
@@ -155,7 +158,11 @@ func (s *service) createPaymentLink(
 
 	expErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
-		return s.repo.expirePendingPaymentLinks(txCtx, tx, invoiceID)
+		links, err := s.repo.expireOpenPaymentLinks(txCtx, tx, invoiceID)
+		if err != nil {
+			return err
+		}
+		return enqueueCheckoutExpiry(txCtx, tx, subjectID, links)
 	})
 	if expErr != nil {
 		return nil, fmt.Errorf("billing.createPaymentLink: expire pending payment links: %w", expErr)
@@ -167,13 +174,16 @@ func (s *service) createPaymentLink(
 	}
 	items := s.checkoutLineItems(ctx, inv)
 
+	// Generated here, not by the insert below: the checkout has to carry it, and the
+	// row only exists once the provider has answered.
+	linkID := uuid.NewV7().String()
 	provider := selectProvider(inv.Currency)
 	var result *paymentLinkResult
 	switch provider {
 	case providerXendit:
 		result, err = createXenditInvoice(ctx, s.provider, invoiceID, label, inv.AmountCents, items)
 	default:
-		result, err = createStripeCheckoutSession(ctx, s.provider, invoiceID, label, inv.AmountCents, inv.Currency, items)
+		result, err = createStripeCheckoutSession(ctx, s.provider, linkID, invoiceID, label, inv.AmountCents, inv.Currency, items)
 	}
 	if err != nil {
 		return nil, err
@@ -182,12 +192,71 @@ func (s *service) createPaymentLink(
 	var link *paymentLinkRecord
 	insErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
+		// The app voids an invoice under its subscription's lock, in one
+		// statement whose snapshot could miss a link committed meanwhile.
+		if err := s.repo.lockSubscriptionForUpdate(txCtx, tx, inv.SubscriptionID); err != nil {
+			return err
+		}
 		var err error
-		link, err = s.repo.insertPaymentLink(txCtx, tx, invoiceID, provider, inv.Currency,
+		link, err = s.repo.insertPaymentLink(txCtx, tx, linkID, invoiceID, provider, inv.Currency,
 			inv.AmountCents, &result.ExternalID, &result.URL, result.ExpiresAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The invoice closed while the provider created this checkout, so
+			// close the checkout too: paid, it would take money for nothing.
+			return enqueueCheckoutExpiry(txCtx, tx, subjectID,
+				[]closedLink{{Provider: provider, ExternalID: result.ExternalID}})
+		}
 		return err
 	})
+	if insErr == nil && link == nil {
+		return nil, ErrInvoiceNotPayable
+	}
 	return link, insErr
+}
+
+// enqueueCheckoutExpiry queues closing each link's hosted checkout at its
+// provider, in q's transaction: a link expired locally (its invoice voided,
+// failed or superseded by a new link) must not stay payable at
+// Stripe/Xendit, where a payment would land on an invoice that no longer
+// takes it. One outbox row per link, so each is retried on its own.
+func enqueueCheckoutExpiry(ctx context.Context, q db.Querier, orgID string, links []closedLink) error {
+	for _, l := range links {
+		if err := events.Enqueue(ctx, q, events.ExchangeBilling, events.RoutingKeyPaymentLinkExpire, "billing", orgID,
+			events.PaymentLinkExpire{Provider: l.Provider, ExternalID: l.ExternalID}); err != nil {
+			return fmt.Errorf("billing.enqueueCheckoutExpiry: %w", err)
+		}
+	}
+	return nil
+}
+
+// expireCheckout closes one hosted checkout at its provider (queued by
+// enqueueCheckoutExpiry). A provider with no API key configured cannot be
+// called, so there is nothing to do. A checkout the provider says is no
+// longer open is done — logged, not retried; a rate limit, server error or
+// transport failure is returned so the message is redelivered.
+func (s *service) expireCheckout(ctx context.Context, provider, externalID string) error {
+	var err error
+	switch provider {
+	case providerStripe:
+		if s.provider.StripeAPIKey == "" {
+			return nil
+		}
+		err = expireStripeCheckoutSession(ctx, s.provider, externalID)
+	case providerXendit:
+		if s.provider.XenditAPIKey == "" {
+			return nil
+		}
+		err = expireXenditInvoice(ctx, s.provider, externalID)
+	default:
+		slog.Warn("billing.expireCheckout: unknown provider", "provider", provider, "external_id", externalID)
+		return nil
+	}
+	if errors.Is(err, errCheckoutNotOpen) {
+		slog.Warn("billing.expireCheckout: provider did not expire the checkout",
+			"provider", provider, "external_id", externalID, "error", err)
+		return nil
+	}
+	return err
 }
 
 // checkoutLineItems builds the hosted checkout page's itemized breakdown
@@ -256,14 +325,15 @@ func (s *service) createPaymentLinkForOwner(
 	return link, nil
 }
 
-func (s *service) insertPlanLineItem(ctx context.Context, inv *invoiceRecord, planInfo *contracts.PlanInfo) error {
-	subtotal := int64(0)
-	if inv.SubtotalCents != nil {
-		subtotal = *inv.SubtotalCents
-	}
+// insertPlanLineItem writes the plan's own price for cycle, the cycle the
+// invoice was composed for. Add-ons and a discount get their own lines
+// (applyInvoiceCharges), so together the lines add up to the subtotal: an
+// itemized checkout charges exactly their sum.
+func (s *service) insertPlanLineItem(ctx context.Context, inv *invoiceRecord, planInfo *contracts.PlanInfo, cycle string) error {
+	price := planInfo.Price(inv.Currency, cycle)
 	desc := planInfo.Name + " plan"
 	return s.repo.insertLineItem(ctx, s.querier(ctx), inv.ID,
-		desc, inv.Currency, 1, subtotal, subtotal, 0)
+		desc, inv.Currency, 1, price, price, 0)
 }
 
 // invoicePreview is a read-only composition of what the next invoice would
@@ -318,9 +388,41 @@ func (s *service) previewInvoice(
 		}
 	}()
 
+	// The organization module resolves overage in a transaction of its own, so
+	// the reads below commit before it runs: holding this connection while it
+	// takes a second one from the same pool deadlocks the pool under load.
+	var overage *overagePreview
+	err = s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
+		var err error
+		preview, overage, err = s.composePreview(db.WithQuerier(ctx, tx), subjectType, subjectID, plan, cycle)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if overage != nil {
+		res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, overage.Members.Allowed, true)
+		if err != nil {
+			slog.Error("previewInvoice: failed to dry-run overage resolution",
+				"organization_id", subjectID, "error", err)
+			return preview, nil
+		}
+		overage.Members.AutoSelectRemovals = res.AutoSelectedMemberSubs
+		preview.Overage = overage
+	}
+	return preview, nil
+}
+
+// composePreview is previewInvoice's database part, run inside its
+// transaction. The overage it returns has the limit and the current count;
+// which members would go is filled in after the transaction. nil means the
+// preview shows no overage.
+func (s *service) composePreview(
+	ctx context.Context, subjectType, subjectID, plan, cycle string,
+) (*invoicePreview, *overagePreview, error) {
 	sub, err := s.repo.findSubscriptionBySubject(ctx, s.querier(ctx), subjectType, subjectID)
 	if err != nil {
-		return nil, fmt.Errorf("billing.previewInvoice: %w", err)
+		return nil, nil, fmt.Errorf("billing.previewInvoice: %w", err)
 	}
 	targetPlan, targetCycle := plan, cycle
 	if targetPlan == "" {
@@ -331,16 +433,16 @@ func (s *service) previewInvoice(
 	}
 	planInfo, err := s.planCatalog(ctx, targetPlan)
 	if err != nil {
-		return nil, ErrUnknownPlan
+		return nil, nil, ErrUnknownPlan
 	}
 
 	total, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
-		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, targetCycle)
+		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, targetCycle, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	preview = &invoicePreview{
+	preview := &invoicePreview{
 		Plan: targetPlan, Cycle: targetCycle, Currency: sub.Currency,
 		PlanLineCents: planInfo.Price(sub.Currency, targetCycle),
 		AddonLines:    addonLines, CouponCode: couponCode, DiscountCents: discountCents,
@@ -348,63 +450,46 @@ func (s *service) previewInvoice(
 	}
 
 	changingPlan := targetPlan != sub.Plan || targetCycle != sub.Cycle
-	if changingPlan {
-		if oldPlanInfo, err := s.planCatalog(ctx, sub.Plan); err == nil {
-			if sub.PeriodStart != nil && sub.PeriodEnd != nil && sub.Status != statusTrialing {
-				// Mirrors changePlanWithMetadata's own guard (service_subscription.go):
-				// only an actual plan-tier change re-derives period_end via
-				// price-ratio proration. A pure cycle switch on the same plan
-				// doesn't move period_end — see that function's comment for why
-				// re-pricing already-banked time at the new cycle's rate would be
-				// wrong — so the preview must show the unchanged date, not a
-				// prorated one the real change would never produce.
-				if targetPlan != sub.Plan {
-					oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
-					newPrice := int(planInfo.Price(sub.Currency, targetCycle))
-					preview.NewPeriodEnd = new(prorate(time.Now(), *sub.PeriodStart,
-						*sub.PeriodEnd, oldPrice, newPrice, sub.Cycle, targetCycle))
-				} else {
-					preview.NewPeriodEnd = sub.PeriodEnd
-				}
-			}
-
-			// Dry-run overage resolution if this is a downgrade
-			if planInfo.SortOrder < oldPlanInfo.SortOrder && s.orgCommander != nil {
-				if overage, err := s.hypotheticalDowngradeOveragePreview(ctx, subjectID, sub, planInfo); err == nil {
-					preview.Overage = overage
-				} else {
-					slog.Error("previewInvoice: failed to dry-run overage resolution",
-						"organization_id", subjectID, "error", err)
-				}
-			}
+	if !changingPlan {
+		if s.orgCommander == nil {
+			return preview, nil, nil
 		}
-	} else if s.orgCommander != nil {
-		// Not a hypothetical change — preview whatever is already scheduled
+		// Not a hypothetical change: preview whatever is already scheduled
 		// to apply at renewal (a plan downgrade and/or addon decreases).
-		if overage, err := s.scheduledOveragePreview(ctx, subjectID, sub); err != nil {
+		overage, err := s.scheduledOveragePreview(ctx, sub)
+		if err != nil {
 			slog.Error("previewInvoice: failed to compute scheduled overage preview",
 				"organization_id", subjectID, "error", err)
-		} else if overage != nil {
-			preview.Overage = overage
+			return preview, nil, nil
 		}
+		return preview, overage, nil
 	}
 
-	return preview, nil
-}
-
-// hypotheticalDowngradeOveragePreview dry-runs member-overage resolution
-// for a hypothetical plan/cycle change that's a downgrade — how many
-// members would need to be removed under the new plan's limit, and which
-// ones ResolveDowngradeOverage would auto-select. Read-only: dryRun=true on
-// the ResolveDowngradeOverage call means nothing is actually removed.
-func (s *service) hypotheticalDowngradeOveragePreview(
-	ctx context.Context, subjectID string, sub *subscriptionRecord, planInfo *contracts.PlanInfo,
-) (*overagePreview, error) {
-	memberLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
-	res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, memberLimit, true)
+	oldPlanInfo, err := s.planCatalog(ctx, sub.Plan)
 	if err != nil {
-		return nil, err
+		return preview, nil, nil
 	}
+	// The same period rule the real change applies (planChangePeriod), so
+	// the preview can never promise a date changePlanWithMetadata wouldn't
+	// write.
+	pending, err := s.repo.pendingInvoiceKinds(ctx, s.querier(ctx), sub.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("billing.previewInvoice: %w", err)
+	}
+	oldPrice := int(oldPlanInfo.Price(sub.Currency, sub.Cycle))
+	newPrice := int(planInfo.Price(sub.Currency, targetCycle))
+	if _, end := planChangePeriod(time.Now(), sub, pending[invoiceKindActivation], targetPlan != sub.Plan,
+		oldPrice, newPrice, targetCycle); end != nil {
+		preview.NewPeriodEnd = end
+	} else if sub.Status == statusActive || sub.Status == statusPastDue {
+		preview.NewPeriodEnd = sub.PeriodEnd
+	}
+
+	if planInfo.SortOrder >= oldPlanInfo.SortOrder || s.orgCommander == nil {
+		return preview, nil, nil
+	}
+	// A downgrade: how many members the new plan's limit would leave over.
+	memberLimit := s.downgradeTargetLimits(ctx, sub, planInfo)
 	usages, _ := s.repo.listCurrentUsage(ctx, s.querier(ctx), subjectID)
 	var curMembers int
 	for _, u := range usages {
@@ -412,25 +497,17 @@ func (s *service) hypotheticalDowngradeOveragePreview(
 			curMembers = int(u.Value)
 		}
 	}
-	return &overagePreview{
-		Members: metricOverage{
-			Current:            curMembers,
-			Allowed:            memberLimit,
-			AutoSelectRemovals: res.AutoSelectedMemberSubs,
-		},
-	}, nil
+	return preview, &overagePreview{Members: metricOverage{Current: curMembers, Allowed: memberLimit}}, nil
 }
 
-// scheduledOveragePreview dry-runs member-overage resolution for whatever
-// amendment is already scheduled to apply at sub's next renewal (a plan
-// downgrade and/or addon decreases), using the same combined future-state
-// computation the renewal worker itself applies from
-// (resolveFutureOveragePreview) — so this preview can never disagree with
-// what actually happens at renewal. Returns (nil, nil), not an error, both
-// when nothing is scheduled and when what's scheduled wouldn't put the
-// organization over its future limit — both are steady states, not
-// failures.
-func (s *service) scheduledOveragePreview(ctx context.Context, subjectID string, sub *subscriptionRecord) (*overagePreview, error) {
+// scheduledOveragePreview is the overage of whatever amendment is already
+// scheduled to apply at sub's next renewal (a plan downgrade and/or addon
+// decreases), from the same combined future-state computation the renewal
+// worker itself applies (resolveFutureOveragePreview), so this preview can
+// never disagree with what actually happens at renewal. Returns nil, not an
+// error, both when nothing is scheduled and when what's scheduled wouldn't
+// put the organization over its future limit: both are steady states.
+func (s *service) scheduledOveragePreview(ctx context.Context, sub *subscriptionRecord) (*overagePreview, error) {
 	scheduledAddons, err := s.repo.listScheduledAddonChanges(ctx, s.querier(ctx), sub.ID)
 	if err != nil || (sub.ScheduledPlan == nil && len(scheduledAddons) == 0) {
 		return nil, nil
@@ -442,15 +519,8 @@ func (s *service) scheduledOveragePreview(ctx context.Context, subjectID string,
 	if overage.MemberLimit < 0 || overage.CurrentMembers <= int64(overage.MemberLimit) {
 		return nil, nil
 	}
-	res, err := s.orgCommander.ResolveDowngradeOverage(ctx, subjectID, nil, overage.MemberLimit, true)
-	if err != nil {
-		return nil, fmt.Errorf("dry-run scheduled overage resolution: %w", err)
-	}
 	return &overagePreview{
-		Members: metricOverage{
-			Current: int(overage.CurrentMembers), Allowed: overage.MemberLimit,
-			AutoSelectRemovals: res.AutoSelectedMemberSubs,
-		},
+		Members: metricOverage{Current: int(overage.CurrentMembers), Allowed: overage.MemberLimit},
 	}, nil
 }
 
@@ -476,7 +546,7 @@ type lineItemSpec struct {
 // (no active coupon) is the expected steady-state case, not an error here.
 func (s *service) composeInvoiceAmount(
 	ctx context.Context, q db.Querier, subscriptionID string,
-	planInfo *contracts.PlanInfo, currency, cycle string,
+	planInfo *contracts.PlanInfo, currency, cycle string, quantities map[string]int,
 ) (subtotal int64, addonLines []lineItemSpec, couponCode string, discountCents int64, err error) {
 	subtotal = planInfo.Price(currency, cycle)
 
@@ -485,6 +555,14 @@ func (s *service) composeInvoiceAmount(
 		return 0, nil, "", 0, fmt.Errorf("billing.composeInvoiceAmount: list attached addons: %w", err)
 	}
 	for _, a := range addons {
+		// quantities overrides the live quantity, for an invoice priced from
+		// what is scheduled; a quantity of 0 drops the add-on.
+		if q, ok := quantities[a.AddonID]; ok {
+			a.Quantity = q
+		}
+		if a.Quantity == 0 {
+			continue
+		}
 		unitPrice := int64(0)
 		if prices, ok := a.Prices[currency]; ok {
 			unitPrice = int64(prices.Monthly)
@@ -536,7 +614,7 @@ func (s *service) applyInvoiceCharges(
 		sortOrder++
 	}
 	if couponCode != "" {
-		if err := s.repo.insertLineItem(ctx, q, invoiceID, "Discount: "+couponCode,
+		if err := s.repo.insertLineItem(ctx, q, invoiceID, discountLinePrefix+couponCode,
 			currency, 1, -discountCents, -discountCents, sortOrder); err != nil {
 			return err
 		}
@@ -552,4 +630,34 @@ func selectProvider(currency string) string {
 		return providerXendit
 	}
 	return providerStripe
+}
+
+// futurePricing is what the next period is priced from: the scheduled plan and
+// cycle when a downgrade is scheduled, else the live ones, and each add-on's
+// scheduled quantity where one is set. A renewal is priced this way, so what
+// the owner pays matches what applies at the boundary.
+func (s *service) futurePricing(
+	ctx context.Context, q db.Querier, sub *subscriptionRecord,
+) (planInfo *contracts.PlanInfo, cycle string, quantities map[string]int, err error) {
+	plan, cycle := sub.Plan, sub.Cycle
+	if sub.ScheduledPlan != nil {
+		plan = *sub.ScheduledPlan
+	}
+	if sub.ScheduledCycle != nil {
+		cycle = *sub.ScheduledCycle
+	}
+	if planInfo, err = s.planCatalog(ctx, plan); err != nil {
+		return nil, "", nil, fmt.Errorf("billing.futurePricing: %w", err)
+	}
+	scheduled, err := s.repo.listScheduledAddonChanges(ctx, q, sub.ID)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("billing.futurePricing: %w", err)
+	}
+	if len(scheduled) > 0 {
+		quantities = make(map[string]int, len(scheduled))
+		for _, a := range scheduled {
+			quantities[a.AddonID] = a.ScheduledQuantity
+		}
+	}
+	return planInfo, cycle, quantities, nil
 }

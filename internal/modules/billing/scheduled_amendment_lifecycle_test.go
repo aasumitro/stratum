@@ -20,6 +20,8 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/db"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // fakeOrgCommander is a minimal contracts.OrganizationCommander for these
@@ -54,7 +56,9 @@ func (f *fakeOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason 
 	return nil
 }
 
-func (f *fakeOrgSuspender) UnsuspendOrganization(_ context.Context, _ string) error { return nil }
+func (f *fakeOrgSuspender) UnsuspendOrganization(_ context.Context, _ string, _ []string) error {
+	return nil
+}
 
 // encodeSubscriptionCheckBody builds the event body HandleSubscriptionAutoInvoice
 // decodes — only Data matters to events.Decode, so the envelope's other
@@ -135,30 +139,20 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 		t.Fatalf("want scheduled_quantity=1, got %v", addon.ScheduledQuantity)
 	}
 
-	// Advance to renewal.
+	// Advance to renewal: the invoice is priced from what is scheduled, and
+	// nothing applies yet.
 	body := encodeSubscriptionCheckBody(sub.ID, orgID, *fresh.PeriodEnd)
 	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body) // payment link fails on empty ProviderConfig, same as every other worker test
 
-	applied, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	notYet, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
 	if err != nil {
-		t.Fatalf("findSubscriptionByID after renewal: %v", err)
+		t.Fatalf("findSubscriptionByID after renewal invoice: %v", err)
 	}
-	if applied.Plan != "solo" || applied.Cycle != cycleMonthly {
-		t.Errorf("want plan/cycle applied to solo/monthly, got %s/%s", applied.Plan, applied.Cycle)
+	if notYet.Plan != "growth" || notYet.ScheduledPlan == nil {
+		t.Errorf("want nothing applied when the renewal is issued, got plan=%s scheduled=%v", notYet.Plan, notYet.ScheduledPlan)
 	}
-	if applied.ScheduledPlan != nil || applied.ScheduledCycle != nil || applied.ScheduledRequestedAt != nil {
-		t.Errorf("want every scheduled_* column cleared after apply, got %+v", applied)
-	}
-	appliedAddon, err := r.findAttachedAddon(t.Context(), pool, sub.ID, "extra-seat")
-	if err != nil {
-		t.Fatalf("findAttachedAddon after renewal: %v", err)
-	}
-	if appliedAddon.Quantity != 1 || appliedAddon.ScheduledQuantity != nil {
-		t.Errorf("want addon quantity applied to 1 with schedule cleared, got quantity=%d scheduled_quantity=%v",
-			appliedAddon.Quantity, appliedAddon.ScheduledQuantity)
-	}
-	if commander.calls != 0 {
-		t.Errorf("want no overage resolution needed (usage is 0, well within solo+addon's combined limit), got %d calls", commander.calls)
+	if notYet.ScheduledEffectiveAt == nil || !notYet.ScheduledEffectiveAt.Equal(*fresh.PeriodEnd) {
+		t.Errorf("want the schedule effective at the period end %s, got %v", fresh.PeriodEnd, notYet.ScheduledEffectiveAt)
 	}
 
 	var invoiceCount int
@@ -172,7 +166,8 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planCatalog: %v", err)
 	}
-	wantSubtotal, _, couponCode, discountCents, err := mod.svc.composeInvoiceAmount(t.Context(), pool, sub.ID, planInfo, "USD", cycleMonthly)
+	wantSubtotal, _, couponCode, discountCents, err := mod.svc.composeInvoiceAmount(t.Context(), pool, sub.ID, planInfo, "USD", cycleMonthly,
+		map[string]int{"extra-seat": 1})
 	if err != nil {
 		t.Fatalf("composeInvoiceAmount: %v", err)
 	}
@@ -180,7 +175,35 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 		t.Fatalf("test setup assumption violated: expected no coupon in this scenario, got couponCode=%q discountCents=%d", couponCode, discountCents)
 	}
 	if invoiceAmount != wantSubtotal {
-		t.Errorf("want the invoice's amount_cents to match an independent composeInvoiceAmount call against post-apply state (%d), got %d", wantSubtotal, invoiceAmount)
+		t.Errorf("want the renewal priced from the scheduled plan and quantity (%d), got %d", wantSubtotal, invoiceAmount)
+	}
+
+	// The renewal is paid and the boundary passes: the schedule applies.
+	effective := makeScheduleDue(t, pool, sub.ID)
+	if err := mod.Worker.HandleApplyScheduled(t.Context(), encodeSubscriptionCheckBody(sub.ID, orgID, effective)); err != nil {
+		t.Fatalf("HandleApplyScheduled: %v", err)
+	}
+
+	applied, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	if err != nil {
+		t.Fatalf("findSubscriptionByID after renewal: %v", err)
+	}
+	if applied.Plan != "solo" || applied.Cycle != cycleMonthly {
+		t.Errorf("want plan/cycle applied to solo/monthly, got %s/%s", applied.Plan, applied.Cycle)
+	}
+	if applied.ScheduledPlan != nil || applied.ScheduledCycle != nil || applied.ScheduledRequestedAt != nil || applied.ScheduledEffectiveAt != nil {
+		t.Errorf("want every scheduled_* column cleared after apply, got %+v", applied)
+	}
+	appliedAddon, err := r.findAttachedAddon(t.Context(), pool, sub.ID, "extra-seat")
+	if err != nil {
+		t.Fatalf("findAttachedAddon after renewal: %v", err)
+	}
+	if appliedAddon.Quantity != 1 || appliedAddon.ScheduledQuantity != nil {
+		t.Errorf("want addon quantity applied to 1 with schedule cleared, got quantity=%d scheduled_quantity=%v",
+			appliedAddon.Quantity, appliedAddon.ScheduledQuantity)
+	}
+	if commander.calls != 0 {
+		t.Errorf("want no overage resolution needed (usage is 0, well within solo+addon's combined limit), got %d calls", commander.calls)
 	}
 
 	history, err := r.listHistory(t.Context(), pool, sub.ID)
@@ -211,8 +234,10 @@ func TestIntegration_ScheduledAmendmentLifecycle_CombinedApply(t *testing.T) {
 
 // TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes covers:
 // scheduling a cancellation while a plan downgrade and an addon decrease are
-// already scheduled clears both immediately, and advancing to renewal
-// suspends the organization, transitions status, and generates no invoice.
+// already scheduled clears both immediately; the renewal auto-invoice then
+// changes nothing (no invoice, no suspension, nothing applied), and the
+// end-of-period check suspends the organization, transitions status, and
+// consumes the schedule.
 func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testing.T) {
 	pool := testPoolAmendment(t)
 	r := &repository{}
@@ -276,7 +301,31 @@ func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testi
 
 	body := encodeSubscriptionCheckBody(sub.ID, orgID, *superseded.PeriodEnd)
 	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err != nil {
-		t.Fatalf("HandleSubscriptionAutoInvoice: want nil error applying a scheduled cancellation, got %v", err)
+		t.Fatalf("HandleSubscriptionAutoInvoice: want nil error with a cancellation scheduled, got %v", err)
+	}
+	if len(suspender.calls) != 0 {
+		t.Fatalf("renewal auto-invoice: want no suspension inside the paid period, got %d calls", len(suspender.calls))
+	}
+	afterAutoInvoice, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	if err != nil {
+		t.Fatalf("findSubscriptionByID after auto-invoice: %v", err)
+	}
+	if afterAutoInvoice.Status != statusActive || afterAutoInvoice.ScheduledCancelAt == nil {
+		t.Fatalf("renewal auto-invoice: want status active with the schedule kept, got status=%q scheduled_cancel_at=%v",
+			afterAutoInvoice.Status, afterAutoInvoice.ScheduledCancelAt)
+	}
+
+	// The paid period ends; the end-of-period check applies the cancellation.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET period_end = now() - interval '1 minute' WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("move period_end into the past: %v", err)
+	}
+	ended, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	if err != nil {
+		t.Fatalf("findSubscriptionByID after period end: %v", err)
+	}
+	if err := mod.Worker.HandleSubscriptionCheck(t.Context(), encodeSubscriptionCheckBody(sub.ID, orgID, *ended.PeriodEnd)); err != nil {
+		t.Fatalf("HandleSubscriptionCheck: %v", err)
 	}
 
 	if len(suspender.calls) != 1 {
@@ -285,10 +334,18 @@ func TestIntegration_ScheduledAmendmentLifecycle_CancellationSupersedes(t *testi
 	if suspender.calls[0].orgID != orgID {
 		t.Errorf("want SuspendOrganization called with %q, got %q", orgID, suspender.calls[0].orgID)
 	}
-	var status string
-	pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, sub.ID).Scan(&status)
-	if status != statusCancelled {
-		t.Errorf("want status=cancelled, got %q", status)
+	final, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
+	if err != nil {
+		t.Fatalf("findSubscriptionByID after check: %v", err)
+	}
+	if final.Status != statusCancelled {
+		t.Errorf("want status=cancelled, got %q", final.Status)
+	}
+	if final.ScheduledCancelAt != nil {
+		t.Errorf("want scheduled_cancel_at consumed once applied, got %v", final.ScheduledCancelAt)
+	}
+	if final.Plan != "growth" {
+		t.Errorf("want the superseded downgrade never applied, got plan=%q", final.Plan)
 	}
 	var invoiceCount int
 	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, sub.ID).Scan(&invoiceCount)
@@ -345,9 +402,11 @@ func TestIntegration_ScheduledAmendmentLifecycle_RedeliverySafety(t *testing.T) 
 	if err != nil {
 		t.Fatalf("findSubscriptionByID: %v", err)
 	}
-	body := encodeSubscriptionCheckBody(sub.ID, orgID, *scheduled.PeriodEnd)
+	_ = scheduled
+	effective := makeScheduleDue(t, pool, sub.ID)
+	body := encodeSubscriptionCheckBody(sub.ID, orgID, effective)
 
-	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err == nil {
+	if err := mod.Worker.HandleApplyScheduled(t.Context(), body); err == nil {
 		t.Fatal("first delivery: want an error from the failed overage resolution")
 	}
 	afterFailure, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
@@ -358,18 +417,10 @@ func TestIntegration_ScheduledAmendmentLifecycle_RedeliverySafety(t *testing.T) 
 		t.Fatalf("after a failed overage resolution: want plan=growth with scheduled_plan still solo, got plan=%q scheduled_plan=%v",
 			afterFailure.Plan, afterFailure.ScheduledPlan)
 	}
-	var invoiceCountAfterFailure int
-	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, sub.ID).Scan(&invoiceCountAfterFailure)
-	if invoiceCountAfterFailure != 0 {
-		t.Errorf("want no invoice created after a failed overage resolution, got %d", invoiceCountAfterFailure)
+
+	if err := mod.Worker.HandleApplyScheduled(t.Context(), body); err != nil {
+		t.Fatalf("redelivery: %v", err)
 	}
-
-	// Redelivery: the fake now succeeds (failCount exhausted). The overage
-	// step's own transaction commits independently of what happens next —
-	// createPaymentLink still fails with an empty ProviderConfig, same as
-	// every other worker test in this package, so that error is expected.
-	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
-
 	afterRetry, err := r.findSubscriptionByID(t.Context(), pool, sub.ID)
 	if err != nil {
 		t.Fatalf("findSubscriptionByID after retry: %v", err)
@@ -381,9 +432,27 @@ func TestIntegration_ScheduledAmendmentLifecycle_RedeliverySafety(t *testing.T) 
 	if commander.calls != 2 {
 		t.Errorf("want ResolveDowngradeOverage called twice total (failed once, succeeded once), got %d", commander.calls)
 	}
-	var invoiceCountAfterRetry int
-	pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1`, sub.ID).Scan(&invoiceCountAfterRetry)
-	if invoiceCountAfterRetry != 1 {
-		t.Errorf("want exactly 1 invoice after successful redelivery (not skipped, not doubled), got %d", invoiceCountAfterRetry)
+
+	// A third delivery finds nothing scheduled and changes nothing.
+	if err := mod.Worker.HandleApplyScheduled(t.Context(), body); err != nil {
+		t.Fatalf("third delivery: %v", err)
 	}
+	if commander.calls != 2 {
+		t.Errorf("a delivery with nothing scheduled must not resolve overage, got %d calls", commander.calls)
+	}
+}
+
+// makeScheduleDue puts subID where its schedule applies: the renewal priced
+// from it paid (period_end moved past the boundary) and the boundary passed. It
+// returns that boundary.
+func makeScheduleDue(t *testing.T, pool *pgxpool.Pool, subID string) time.Time {
+	t.Helper()
+	var effective time.Time
+	if err := pool.QueryRow(t.Context(), `
+		UPDATE billing.subscriptions
+		SET scheduled_effective_at = now() - interval '1 minute', period_end = now() + interval '1 month'
+		WHERE id = $1 RETURNING scheduled_effective_at`, subID).Scan(&effective); err != nil {
+		t.Fatalf("make the schedule due: %v", err)
+	}
+	return effective
 }

@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button"
 import { useUndoScheduledDowngrade } from "@/features/billing/hooks"
 import { cn } from "@/lib/ui"
 import type { Subscription } from "@/types/billing"
+import {
+  scheduledChangeDate,
+  scheduledChangeLocked,
+} from "@/features/billing/scheduled-change"
 
 const STATUS_BADGE: Record<string, string> = {
   active: "bg-emerald-500/10 text-emerald-600",
@@ -60,10 +64,10 @@ export function SubscriptionDetailsGrid({
                 <Badge variant="outline">
                   {t("billing.downgrade.scheduledBadge", {
                     plan: sub.scheduled_plan,
-                    date: formatDate(sub.period_end),
+                    date: formatDate(scheduledChangeDate(sub)),
                   })}
                 </Badge>
-                {isOwner && (
+                {isOwner && !scheduledChangeLocked(sub) && (
                   <Button
                     variant="ghost"
                     size="icon"

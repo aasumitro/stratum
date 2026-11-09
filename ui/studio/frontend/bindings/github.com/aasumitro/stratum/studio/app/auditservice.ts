@@ -33,6 +33,15 @@ export function ExportCSV(
 }
 
 /**
+ * IsOperator reports whether the project's connection may make changes. The
+ * frontend shows a persistent banner on a definite no; a connection failure comes
+ * back as an error, so an outage is not mistaken for the wrong credentials.
+ */
+export function IsOperator(projectID: string): $CancellablePromise<boolean> {
+  return $Call.ByID(3240263539, projectID)
+}
+
+/**
  * ListEvents returns paginated audit events matching the given filter.
  */
 export function ListEvents(

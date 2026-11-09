@@ -124,6 +124,86 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.HandleSubscriptionAutoInvoice, log),
 
+		// billing: close a locally expired payment link's checkout at its
+		// provider (outbox row written wherever links are expired)
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.payment-link-expire",
+				BindingKeys:          []string{events.RoutingKeyPaymentLinkExpire},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.payment-link-expire",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandlePaymentLinkExpire, log),
+
+		// billing: apply an operator's mark-paid from Studio (Studio writes
+		// the outbox row directly)
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.invoice-mark-paid",
+				BindingKeys:          []string{events.RoutingKeyInvoiceMarkPaid},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.invoice-mark-paid",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandleInvoiceMarkPaid, log),
+
+		// billing: apply a scheduled downgrade / add-on decrease at its boundary
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.subscription-apply-scheduled",
+				BindingKeys:          []string{events.RoutingKeySubscriptionApplyScheduled},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.subscription-apply-scheduled",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandleApplyScheduled, log),
+
+		// billing: a Studio operator's trial extension and plan change
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.operator-trial-extend",
+				BindingKeys:          []string{events.RoutingKeyOperatorTrialExtend},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.operator-trial-extend",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandleOperatorTrialExtend, log),
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.operator-plan-change",
+				BindingKeys:          []string{events.RoutingKeyOperatorPlanChange},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.operator-plan-change",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandleOperatorPlanChange, log),
+
 		// billing: cancel subscription when organization is deleted
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeOrganization},

@@ -54,18 +54,43 @@ Everything is read once at startup from the environment (see `.env.example`). Th
 | `POSTGRES_WORKER_URL` | Postgres connection for Worker (`stratum_worker` role) (required) |
 | `POSTGRES_WEBHOOK_URL` | Postgres connection for payment webhooks (`stratum_webhook` role) (required, both binaries) |
 | `POSTGRES_UNSCOPED_URL` | Postgres connection for the API's organization paths with no tenant scope — authorization lookups, cross-org invite/join (`stratum_app_unscoped` role) (required, both binaries) |
+| `POSTGRES_MAX_OPEN_CONNS` | Size of the main pool (default 20) |
+| `POSTGRES_BACKGROUND_MAX_OPEN_CONNS` | Size of the API's background pool, which must stay below the main pool (default 5) |
+| `POSTGRES_UNSCOPED_MAX_OPEN_CONNS` | Size of the API's unscoped pool, which must stay below the main pool (default 5) |
+| `POSTGRES_MAX_IDLE_TIME` | How long an idle connection stays open (default 5m) |
+| `POSTGRES_STATEMENT_TIMEOUT` | Per-statement timeout on every pool, 0 disables (default 30s) |
+| `POSTGRES_URL` | Schema-owner connection for `make migrate-*` only; no binary reads it |
+| `POSTGRES_TEST_URL` | `stratum_test` role for `make test-integration`; local dev and CI only |
+| `POSTGRES_OPERATOR_URL` | `stratum_operator_dev` login for integration tests and local Studio; local dev and CI only |
 | `REDIS_URL` | Redis connection (required) |
 | `RABBITMQ_URL` | RabbitMQ connection (required) |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER` | JWKS endpoint + issuer for token validation (required) |
 | `AUTH_AUDIENCE`, `AUTH_ADMIN_URL`, `AUTH_SERVICE_ROLE_KEY` | Supabase audience + Admin API (sessions, MFA sync) |
 | `AUTH_ACCESS_TOKEN_MAX_TTL` | Max access-token lifetime (must match or exceed Supabase JWT expiry, default: 1h) |
 | `SUPABASE_WEBHOOK_SECRET` | Shared header for the auth.users Database Webhook (email sync) |
-| `STRIPE_*`, `XENDIT_*` | Payment providers (USD / IDR) |
-| `SMTP_*` | Email delivery |
+| `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL` | Stripe payments (USD) |
+| `XENDIT_API_KEY`, `XENDIT_CALLBACK_TOKEN`, `XENDIT_ALLOWED_CIDRS` | Xendit payments (IDR) |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_NAME` | Email delivery |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY` | Passphrase encrypting customer webhook signing secrets (required) |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY_PREVIOUS`, `WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION` | Set only while rotating that passphrase |
+| `APP_ENV` | `development`, `staging` or `production`; outside development, boot enforces secrets, and HSTS and transport warnings turn on (default `development`) |
+| `PORT`, `APP_URL` | API listen port and the web app's public URL |
+| `SERVICE_NAME`, `SERVICE_VERSION` | Telemetry resource attributes |
+| `LOG_LEVEL`, `LOG_FORMAT` | Logger settings (defaults `info`, `json`) |
+| `TRUSTED_PROXIES` | CIDR ranges allowed to supply the client IP; set this behind any proxy or load balancer |
+| `STATS_TOKEN` | Gates `GET /health/stats`; required outside development |
+| `GEOIP_DB_PATH` | MaxMind Country database for billing country resolution; required outside development |
 | `STORAGE_URL` | Supabase S3-compatible storage (optional — nil-safe if unset) |
 | `OTEL_COLLECTOR_URL` | OpenTelemetry collector (optional — telemetry disabled if empty) |
 | `CORS_ORIGINS` | Comma-separated allowed origins (empty = allow all, dev only) |
-| `AUDIT_RETENTION_DAYS` | Audit log retention (default 30) |
+| `AUDIT_RETENTION_DAYS` | Audit log retention (default 400). Boot fails below 365, and the database enforces the same floor |
+| `OUTBOX_RETENTION_DAYS` | How long published outbox rows are kept (default 30) |
+| `LOGIN_EVENT_RETENTION_DAYS` | Login history retention (default 400) |
+| `DATA_EXPORT_RETENTION_DAYS` | How long a completed GDPR export stays downloadable (default 7) |
+| `NOTIFICATION_RETENTION_DAYS` | Notification retention (default 180) |
+| `WEBHOOK_DELIVERY_RETENTION_DAYS` | Customer webhook delivery log retention (default 30) |
+| `DELETED_ORGANIZATION_RETENTION_DAYS` | Grace period before a soft-deleted organization is permanently purged (default 30) |
+| `WEBHOOK_EVENT_RETENTION_DAYS` | Provider webhook replay marker retention (default 90) |
 
 Many integrations degrade gracefully when unconfigured — storage, SMTP, OpenTelemetry, and payment webhook verification all skip cleanly in local dev. Real credentials live in `.env.local` (gitignored) and are never committed or logged.
 

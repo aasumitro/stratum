@@ -1,16 +1,15 @@
 // @vitest-environment jsdom
 //
-// Render-level tests for SubscriptionCancelDialog's trial-vs-active branch:
-// on an active subscription cancellation defers to renewal (status stays
-// "active"), so the success step must offer "Undo cancellation" instead of
-// "Resume subscription" and state that access continues rather than "your
-// subscription has been cancelled"; trialing cancels immediately and keeps
-// today's Resume-based success step exactly as before. Uses createElement
-// instead of JSX so this stays a .ts file, matching this repo's other test
-// files. Mocks the axios client (the HTTP boundary every hook here
-// ultimately calls through), not the hooks themselves.
+// Render-level tests for SubscriptionCancelDialog: a cancel is scheduled for
+// the end of the paid period (or trial) on every status, so the success step
+// states that access continues and offers "Undo cancellation"; the review
+// step warns about an unpaid invoice only when it stays owed after the
+// cancel (an activation), not for a renewal the cancel voids. Uses
+// createElement instead of JSX so this stays a .ts file, matching this
+// repo's other test files. Mocks the axios client (the HTTP boundary every
+// hook here ultimately calls through), not the hooks themselves.
 //
-// SubscriptionCancelDialog pulls in usePermissions() (via hasPendingInvoice),
+// SubscriptionCancelDialog pulls in usePermissions() (via hasBlockingInvoice),
 // which reads `organizationId` through TanStack Router's useParams — same
 // reason addons-section.test.ts needs a real router context, not just
 // QueryClientProvider.
@@ -32,8 +31,9 @@ vi.mock("@/lib/api/axios", () => ({
 }))
 
 import { api } from "@/lib/api/axios"
+import { queryKeys } from "@/lib/api/keys"
 import { SubscriptionCancelDialog } from "./subscription-cancel-dialog"
-import type { SubscriptionStatus } from "@/types/billing"
+import type { Invoice } from "@/types/billing"
 import type { Plan } from "@/types/reference"
 
 const organizationId = "org-1"
@@ -82,7 +82,23 @@ const plans: Plan[] = [
   },
 ]
 
-function setupApi() {
+function pendingInvoice(kind: Invoice["kind"]): Invoice {
+  return {
+    id: "inv-1",
+    subscription_id: "sub-1",
+    kind,
+    status: "pending",
+    amount_cents: 5000,
+    tax_rate_bps: 0,
+    tax_cents: 0,
+    switch_to_annual: false,
+    currency: "USD",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  }
+}
+
+function setupApi(invoices: Invoice[] = []) {
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url === "/v1/organizations")
       return Promise.resolve(httpResponse([orgListEntry]))
@@ -104,6 +120,8 @@ function setupApi() {
       )
     if (url === `/v1/organizations/${organizationId}/billing/plans/catalog`)
       return Promise.resolve(httpResponse(plans))
+    if (url === `/v1/organizations/${organizationId}/billing/invoices`)
+      return Promise.resolve(httpResponse(invoices))
     return Promise.reject(new Error(`unexpected GET ${url}`))
   })
 }
@@ -120,7 +138,7 @@ afterEach(() => {
   cleanup()
 })
 
-function renderDialog(status: SubscriptionStatus) {
+function renderDialog() {
   const rootRoute = createRootRoute()
   const route = createRoute({
     getParentRoute: () => rootRoute,
@@ -132,7 +150,6 @@ function renderDialog(status: SubscriptionStatus) {
         cycle: "monthly",
         currency: "USD",
         periodEnd: "2026-09-01T00:00:00Z",
-        status,
         canCancel: true,
       }),
   })
@@ -158,11 +175,11 @@ async function goThroughToConfirm() {
   ;(await screen.findByRole("button", { name: "Confirm cancellation" })).click()
 }
 
-describe("SubscriptionCancelDialog — active (deferred) subscription", () => {
+describe("SubscriptionCancelDialog", () => {
   it("shows scheduled-cancellation success copy and an Undo cancellation action", async () => {
     setupApi()
     vi.mocked(api.post).mockResolvedValue(httpResponse({}))
-    renderDialog("active")
+    renderDialog()
 
     await goThroughToConfirm()
 
@@ -170,7 +187,9 @@ describe("SubscriptionCancelDialog — active (deferred) subscription", () => {
     screen.getByText(
       "Your subscription remains active until Sep 1, 2026 and will not renew. You can undo this anytime before then."
     )
-    expect(screen.queryByText("Subscription cancelled")).toBeNull()
+    expect(
+      screen.queryByRole("button", { name: "Resume subscription" })
+    ).toBeNull()
 
     screen.getByRole("button", { name: "Undo cancellation" }).click()
 
@@ -188,27 +207,38 @@ describe("SubscriptionCancelDialog — active (deferred) subscription", () => {
       expect(screen.queryByText("Cancellation scheduled")).toBeNull()
     )
   })
-})
 
-describe("SubscriptionCancelDialog — trialing subscription", () => {
-  it("keeps the original immediate-cancel success copy and a Resume action", async () => {
-    setupApi()
-    vi.mocked(api.post).mockResolvedValue(httpResponse({}))
-    renderDialog("trialing")
+  it.each([
+    ["activation", true],
+    ["subscription", false],
+  ] as const)(
+    "warns about a pending %s invoice staying owed: %s",
+    async (kind, warned) => {
+      setupApi([pendingInvoice(kind)])
+      renderDialog()
 
-    await goThroughToConfirm()
+      ;(
+        await screen.findByRole("button", { name: "Cancel subscription" })
+      ).click()
+      ;(await screen.findByRole("radio", { name: "No longer need it" })).click()
+      ;(await screen.findByRole("button", { name: "Continue" })).click()
+      await screen.findByText("Review cancellation")
 
-    await screen.findByText("Subscription cancelled")
-    expect(screen.queryByText("Cancellation scheduled")).toBeNull()
-
-    screen.getByRole("button", { name: "Resume subscription" }).click()
-
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith(
-        `/v1/organizations/${organizationId}/billing/resume`,
-        undefined,
-        expect.anything()
-      )
-    )
-  })
+      const note =
+        "You still have an unpaid invoice. Cancelling doesn't clear it — you can pay it from Billing, or it stays outstanding."
+      if (warned) {
+        await screen.findByText(note)
+      } else {
+        // The invoices query must have settled before absence means anything.
+        await waitFor(() =>
+          expect(
+            queryClient.getQueryState(
+              queryKeys.billing.invoices(organizationId)
+            )?.status
+          ).toBe("success")
+        )
+        expect(screen.queryByText(note)).toBeNull()
+      }
+    }
+  )
 })

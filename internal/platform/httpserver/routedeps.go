@@ -18,9 +18,13 @@ type RouteDeps struct {
 	// AuthSSE) in every module's route group, never at the engine/group
 	// level ahead of auth, or its key derivation silently falls back to
 	// client IP (see middleware.ByAuthenticatedSubject).
-	RateLimit   gin.HandlerFunc
-	Org         gin.HandlerFunc
-	MFA         gin.HandlerFunc
-	RLS         gin.HandlerFunc
-	Idempotency gin.HandlerFunc
+	RateLimit gin.HandlerFunc
+	Org       gin.HandlerFunc
+	// ActivationGate refuses writes while an organization's first invoice is unpaid.
+	// Billing's own routes stay open for paying it, so only the organization module's
+	// scoped group mounts it. Nil in a test harness that has no billing behind it.
+	ActivationGate gin.HandlerFunc
+	MFA            gin.HandlerFunc
+	RLS            gin.HandlerFunc
+	Idempotency    gin.HandlerFunc
 }

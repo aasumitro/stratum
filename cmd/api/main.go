@@ -14,7 +14,7 @@ import (
 
 func main() {
 	if err := app.RunAPI(); err != nil {
-		slog.Error("startup failed", "error", err)
+		slog.Error("api stopped with error", "error", err)
 		os.Exit(1)
 	}
 }

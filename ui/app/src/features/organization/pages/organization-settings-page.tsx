@@ -364,6 +364,7 @@ export function OrganizationSettingsPage() {
               organizationId={organizationId}
               slug={organization.slug}
               status={organization.status}
+              suspendedReason={organization.suspended_reason}
             />
           </SettingsSection>
         )}

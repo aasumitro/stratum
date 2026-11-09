@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,6 +18,10 @@ import (
 type Module struct {
 	svc    *service
 	Worker *Worker
+
+	// closing is closed by CloseStreams; every open SSE stream returns on it.
+	closing   chan struct{}
+	closeOnce sync.Once
 }
 
 func New(
@@ -36,7 +41,21 @@ func New(
 		appURL:     appURL,
 		redis:      redis,
 	}
-	return &Module{svc: svc, Worker: &Worker{svc: svc}}
+	return &Module{svc: svc, Worker: &Worker{svc: svc}, closing: make(chan struct{})}
+}
+
+// CloseStreams ends every open notification stream, so a server shutting
+// down isn't held open by them (httpserver.Server.OnShutdown). Safe to call
+// more than once; streams opened afterwards end at once.
+func (m *Module) CloseStreams() {
+	m.closeOnce.Do(func() { close(m.closing) })
+}
+
+// SweepRetention removes notifications past days and returns how many it removed.
+// Called only by the worker's ticker, whose pool bypasses RLS: under the API's
+// RLS-constrained pool it would match nothing.
+func (m *Module) SweepRetention(ctx context.Context, days int) (int64, error) {
+	return m.svc.repo.deleteExpiredMessages(ctx, m.svc.pool, days)
 }
 
 // DeleteAllForUser implements contracts.NotificationWriter — deletes every
@@ -74,7 +93,7 @@ func (m *Module) ListForUser(ctx context.Context, authSub string, limit int) ([]
 //	PATCH /me/notifications/read-all      ?organization_id= optional filter
 //	PATCH /me/notifications/:id/read
 func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
-	h := &handler{svc: m.svc}
+	h := &handler{svc: m.svc, closing: m.closing}
 
 	// /stream is registered outside the group with AuthSSE (Auth plus a
 	// __session cookie fallback) instead of deps.Auth — EventSource can't

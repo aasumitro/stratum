@@ -26,7 +26,11 @@ vi.mock("@/lib/api/axios", () => ({
 }))
 
 import { api } from "@/lib/api/axios"
-import { useBillingStatus } from "./use-billing-status"
+import {
+  isBillingSuspensionReason,
+  isSelfSuspensionReason,
+  useBillingStatus,
+} from "./use-billing-status"
 import type { Invoice } from "@/types/billing"
 
 const organizationId = "org-1"
@@ -145,7 +149,18 @@ describe("useBillingStatus", () => {
     setupApi([pendingInvoice("activation")])
     const getResult = renderInOrg()
     await waitFor(() => expect(getResult()?.hasPendingInvoice).toBe(true))
+    expect(getResult()?.hasBlockingInvoice).toBe(true)
     expect(getResult()?.isBillingBlocked).toBe(true)
+  })
+
+  it("does not block on a pending renewal invoice", async () => {
+    // A renewal invoice is issued 3 days before the paid period ends: the
+    // billing page shows it, but the period in use is still paid for.
+    setupApi([pendingInvoice("subscription")])
+    const getResult = renderInOrg()
+    await waitFor(() => expect(getResult()?.hasPendingInvoice).toBe(true))
+    expect(getResult()?.hasBlockingInvoice).toBe(false)
+    expect(getResult()?.isBillingBlocked).toBe(false)
   })
 
   it("does not block on a pending extension invoice", async () => {
@@ -166,5 +181,29 @@ describe("useBillingStatus", () => {
     await waitFor(() => expect(getResult()?.isOwner).toBe(true))
     expect(getResult()?.hasPendingInvoice).toBe(false)
     expect(getResult()?.isBillingBlocked).toBe(false)
+  })
+})
+
+describe("isBillingSuspensionReason", () => {
+  it.each([
+    ["subscription expired", true],
+    ["subscription cancelled", true],
+    ["Suspended by organization owner", false],
+    ["abuse report", false],
+    [undefined, false],
+  ] as const)("%s -> %s", (reason, want) => {
+    expect(isBillingSuspensionReason(reason)).toBe(want)
+  })
+})
+
+describe("isSelfSuspensionReason", () => {
+  it.each([
+    ["Suspended by organization owner", true],
+    ["subscription expired", false],
+    ["subscription cancelled", false],
+    ["abuse report", false],
+    [undefined, false],
+  ] as const)("%s -> %s", (reason, want) => {
+    expect(isSelfSuspensionReason(reason)).toBe(want)
   })
 })

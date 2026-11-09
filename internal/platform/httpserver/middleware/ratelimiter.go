@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/cache"
+	"github.com/aasumitro/stratum/internal/platform/otel"
 )
 
 const (
@@ -126,6 +129,8 @@ func NewRateLimitMiddleware(
 	if len(catalog) > 0 {
 		rc = catalog[0]
 	}
+	rejections := otel.Counter("stratum.ratelimit.rejections", "Requests answered 429 by a rate limiter.")
+	limiterAttr := metric.WithAttributes(attribute.String("limiter", limiter.Prefix()))
 
 	return func(c *gin.Context) {
 		limit := defaultLimit
@@ -174,6 +179,7 @@ func NewRateLimitMiddleware(
 		c.Header("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(result.ResetAfter).Unix(), 10))
 
 		if !result.Allowed {
+			rejections.Add(c.Request.Context(), 1, limiterAttr)
 			c.Header("Retry-After", strconv.Itoa(int(result.RetryAfter.Seconds())))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":       "rate limit exceeded",

@@ -63,7 +63,9 @@ export function useExtendTrial(projectId: string, authSub: string) {
       days: number
     }) => SupportService.ExtendTrial(projectId, organizationID, days),
     onSuccess: () => {
-      toast.success("Trial extended")
+      toast.success(
+        "Trial extension sent — the app applies it and reschedules renewal"
+      )
       qc.invalidateQueries({
         queryKey: ["support", "user", projectId, authSub],
       })
@@ -100,7 +102,9 @@ export function useChangePlan(projectId: string, authSub: string) {
       cycle: string
     }) => SupportService.ChangePlan(projectId, organizationID, plan, cycle),
     onSuccess: () => {
-      toast.success("Plan changed")
+      toast.success(
+        "Plan change sent — the app applies it and reprices pending invoices"
+      )
       qc.invalidateQueries({
         queryKey: ["support", "user", projectId, authSub],
       })
@@ -115,7 +119,9 @@ export function useMarkInvoicePaid(projectId: string, organizationId: string) {
     mutationFn: (invoiceID: string) =>
       SupportService.MarkInvoicePaid(projectId, invoiceID),
     onSuccess: () => {
-      toast.success("Invoice marked as paid")
+      toast.success(
+        "Payment recorded — the invoice turns paid once the app's worker applies it"
+      )
       qc.invalidateQueries({
         queryKey: ["support", "invoices", projectId, organizationId],
       })
@@ -155,7 +161,9 @@ export function useMarkAtRiskPaid(projectId: string) {
     mutationFn: (invoiceID: string) =>
       SupportService.MarkInvoicePaid(projectId, invoiceID),
     onSuccess: () => {
-      toast.success("Invoice marked as paid")
+      toast.success(
+        "Payment recorded — the invoice turns paid once the app's worker applies it"
+      )
       qc.invalidateQueries({ queryKey: ["support", "at-risk", projectId] })
     },
     onError: (err) => toast.error(`Failed: ${wailsError(err)}`),
@@ -170,6 +178,31 @@ export function useVoidAtRiskInvoice(projectId: string) {
     onSuccess: () => {
       toast.success("Invoice voided")
       qc.invalidateQueries({ queryKey: ["support", "at-risk", projectId] })
+    },
+    onError: (err) => toast.error(`Failed: ${wailsError(err)}`),
+  })
+}
+
+export function usePaymentsToReview(projectId: string) {
+  return useQuery({
+    queryKey: ["support", "payments-to-review", projectId],
+    queryFn: () => SupportService.GetPaymentsToReview(projectId),
+    staleTime: 30_000,
+    retry: false,
+    enabled: !!projectId,
+  })
+}
+
+export function useMarkPaymentRefunded(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (paymentID: string) =>
+      SupportService.MarkPaymentRefunded(projectId, paymentID),
+    onSuccess: () => {
+      toast.success("Payment marked refunded")
+      qc.invalidateQueries({
+        queryKey: ["support", "payments-to-review", projectId],
+      })
     },
     onError: (err) => toast.error(`Failed: ${wailsError(err)}`),
   })

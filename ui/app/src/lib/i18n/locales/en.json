@@ -108,7 +108,7 @@
       "INVALID_TIMEZONE": "Invalid timezone.",
       "INVALID_LOCALE": "Invalid locale.",
       "ORGANIZATION_SUSPEND_FAILED": "Failed to suspend the organization.",
-      "BILLING_HOLD": "This organization was suspended for an unpaid invoice — pay it to reactivate.",
+      "BILLING_HOLD": "Only a pause the owner started can be lifted here. A billing suspension lifts once the subscription is paid; for anything else, contact support.",
       "ORGANIZATION_UNSUSPEND_FAILED": "Failed to reactivate the organization.",
       "FEATURE_NOT_AVAILABLE": "Webhooks aren't available on your current plan.",
       "WEBHOOK_URL_NOT_ALLOWED": "The webhook URL must be HTTPS and resolve to a public address.",
@@ -200,6 +200,12 @@
       "COUPON_NOT_REDEEMABLE": "This coupon is not redeemable.",
       "COUPON_REDEEM_FAILED": "Failed to redeem the coupon.",
       "CANCELLATION_SCHEDULED": "Subscription is scheduled to cancel — undo that first.",
+      "AMENDMENT_ALREADY_PAID": "A scheduled change is already paid for and takes effect at the end of this period. Change it after that.",
+      "PLAN_NOT_SELF_SERVICE": "This plan isn't available to pick here. Contact us to arrange it.",
+      "PLAN_CHANGE_IS_DOWNGRADE": "A lower plan goes through the downgrade flow.",
+      "PERIOD_INVOICE_PENDING": "Pay the pending invoice before adding to this subscription.",
+      "ACTIVATION_UNPAID": "This organization's first invoice is unpaid. The owner can pay it under Billing.",
+      "BILLING_STATUS_UNAVAILABLE": "Couldn't check this organization's billing status. Try again.",
       "INVALID_BODY": "Cannot read the request body.",
       "INVALID_SIGNATURE": "Invalid signature.",
       "INVALID_TOKEN": "Invalid token.",
@@ -347,11 +353,11 @@
       },
       "subscription_cancelled": {
         "title": "Subscription cancelled",
-        "body": "Your subscription has been cancelled. Access continues until the end of the current period."
+        "body": "Your subscription has ended as requested and your organization is suspended. Resume it from Billing to restore access."
       },
       "subscription_expired": {
         "title": "Subscription expired",
-        "body": "Your subscription has expired and your organization has been suspended. Pay the outstanding invoice to restore access."
+        "body": "Your subscription has expired and your organization has been suspended. Resume it from Billing to restore access."
       },
       "subscription_resumed": {
         "title": "Subscription reactivated",
@@ -906,6 +912,11 @@
       "suspendOrganization": "Suspend organization",
       "unsuspendAction": "Unsuspend",
       "unsuspendOrganization": "Unsuspend organization",
+      "suspended": "Organization suspended",
+      "suspendFailed": "Failed to suspend organization",
+      "unsuspended": "Organization unsuspended",
+      "unsuspendFailed": "Failed to unsuspend organization",
+      "unsuspendBySupport": "Suspended by support — contact support to lift it.",
       "transferAck": "I understand this is immediate — I become an Admin",
       "transferAction": "Transfer ownership",
       "transferConfirm": "Transfer now",
@@ -1063,8 +1074,9 @@
     "copyOwnerEmailSuccess": "Owner email copied",
     "suspendedMemberBanner": "This organization is suspended. Contact {{ownerName}} (owner) to resolve.",
     "suspendedOwnerBillingBanner": "Unpaid invoice — pay to reactivate instantly.",
-    "suspendedOwnerExpiredBanner": "Subscription expired — resume it to reactivate.",
-    "suspendedOwnerSelfBanner": "Suspended: {{reason}}"
+    "suspendedOwnerExpiredBanner": "Subscription ended — resume it to reactivate.",
+    "suspendedOwnerSelfBanner": "You paused this organization — unsuspend it to restore access.",
+    "suspendedOwnerSupportBanner": "Suspended by support: {{reason}}. Contact support to lift it."
   },
   "settings": {
     "title": "Settings",
@@ -1163,10 +1175,10 @@
       "trialDaysLeft": "{{days}} days left",
       "changePlan": "Change plan",
       "cancel": "Cancel subscription",
-      "resume": "Resume subscription",
-      "cancelled": "Subscription cancelled",
+      "cancelled": "Cancellation scheduled",
       "cancelFailed": "Failed to cancel subscription",
-      "resumed": "Subscription resumed",
+      "resumed": "Invoice issued — pay it to reactivate your subscription.",
+      "reactivated": "Subscription reactivated.",
       "resumeFailed": "Failed to resume subscription",
       "planChanged": "Plan changed",
       "planChangeFailed": "Failed to change plan",
@@ -1251,7 +1263,7 @@
       "toBeRemoved": "Will be removed",
       "autoSelected": "(auto-selected)",
       "confirmDowngrade": "Confirm downgrade",
-      "scheduledReviewNote": "This takes effect at renewal on {{date}} — your current plan and its limits stay active until then, and you can undo it anytime before that.",
+      "scheduledReviewNote": "This takes effect at renewal on {{date}} — your current plan and its limits stay active until then, and you can undo it until your renewal invoice is paid.",
       "successTitle": "Downgrade complete",
       "successDescription": "Your plan has been changed.",
       "successEffectiveOn": "Effective {{date}}.",
@@ -1290,8 +1302,6 @@
       "exportPersonalData": "Export my personal data (Account)",
       "exportOrganizationData": "Export organization data (Audit log)",
       "confirmCancel": "Confirm cancellation",
-      "successTitle": "Subscription cancelled",
-      "successDescription": "Your access continues until {{date}}. You can resume anytime before then.",
       "scheduledSuccessTitle": "Cancellation scheduled",
       "scheduledSuccessDescription": "Your subscription remains active until {{date}} and will not renew. You can undo this anytime before then."
     },
@@ -1333,6 +1343,7 @@
       "selectionRequired": "Choose a plan to continue",
       "changePlanTitle": "Change plan",
       "changePlanDescription": "Proration converts remaining value to time — no charge or refund today.",
+      "changePlanDescriptionUnpaid": "Your current period isn’t paid yet, so the new plan starts a fresh period today at its own price.",
       "noChargeToday": "No charge today.",
       "prorationExplainer": "Your remaining value converts to time: new period end {{newDate}} (was {{oldDate}}).",
       "nextInvoiceTotalNote": "Billed on your next invoice.",
@@ -1453,8 +1464,10 @@
       "activating": "Activating…",
       "activateSuccessTitle": "Subscription activated",
       "activateSuccessDescription": "Your subscription is active now — pay the invoice below to keep it that way.",
+      "activateCoveredDescription": "Your subscription is active now. A coupon covered the whole charge, so there is nothing to pay.",
       "activatePendingPaymentNote": "Your subscription is already active, but stays that way only once this invoice is paid, below.",
       "activated": "Subscription activated — check Invoices to pay",
+      "activatedCovered": "Subscription activated.",
       "activateFailed": "Failed to activate subscription"
     },
     "addons": {
@@ -1512,7 +1525,6 @@
       "overdue": "Payment {{days}} days overdue.",
       "finalNotice": "Final notice — expires soon, access will pause.",
       "trialEndingSoon": "Trial ends in {{days}} days.",
-      "cancelledAccessUntil": "Subscription cancelled — access until {{date}}.",
       "payAction": "Pay →"
     },
     "pay": {

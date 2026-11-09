@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 //
 // Render-level tests for SubscriptionStatusBanner's scheduled-cancellation
-// banner: a distinct sub-state of "active" (status never actually left
-// active — only scheduled_cancel_at is set), shown alongside an "Undo
-// cancellation" action that fires the callback prop passed in from
-// SubscriptionCard (which owns the mutation), not a hook here. Also pins
-// that past_due/expired/cancelled render nothing: billing-layout.tsx's
-// dunning banner is the one banner for those states.
+// banner: a sub-state of active/trialing/past_due (status stays until the
+// cancellation takes effect — only scheduled_cancel_at is set), shown
+// alongside an "Undo cancellation" action that fires the callback prop
+// passed in from SubscriptionCard (which owns the mutation), not a hook
+// here. Also pins that past_due/expired/cancelled without a schedule render
+// nothing: billing-layout.tsx's dunning banner is the one banner for those
+// states.
 import { createElement } from "react"
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -78,6 +79,37 @@ describe("SubscriptionStatusBanner", () => {
     screen.getByText(
       "Your subscription remains active until Sep 1, 2026 and won't renew."
     )
+  })
+
+  it.each(["trialing", "past_due"] as const)(
+    "shows the scheduled-cancellation banner for a %s subscription too",
+    (status) => {
+      renderBanner(
+        subscription({ status, scheduled_cancel_at: "2026-08-01T00:00:00Z" })
+      )
+      screen.getByText("Cancellation scheduled")
+      screen.getByRole("button", { name: "Undo cancellation" })
+    }
+  )
+
+  it("hides the trial's activate action while a cancellation is scheduled", () => {
+    renderBanner(
+      subscription({
+        status: "trialing",
+        scheduled_cancel_at: "2026-08-01T00:00:00Z",
+      })
+    )
+    expect(screen.queryByText("Activate & pay now")).toBeNull()
+  })
+
+  it("renders nothing once the cancellation took effect", () => {
+    const { container } = renderBanner(
+      subscription({
+        status: "cancelled",
+        scheduled_cancel_at: "2026-08-01T00:00:00Z",
+      })
+    )
+    expect(container.firstChild).toBeNull()
   })
 
   it("fires onUndoCancellation when the owner clicks Undo cancellation", () => {

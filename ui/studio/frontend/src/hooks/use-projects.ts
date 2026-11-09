@@ -26,7 +26,12 @@ export function useUpdateProject() {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: ProjectInput }) =>
       ProjectService.Update(id, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["projects"] }),
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] })
+      queryClient.invalidateQueries({
+        queryKey: ["audit", "isOperator", id],
+      })
+    },
   })
 }
 
