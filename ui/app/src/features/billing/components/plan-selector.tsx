@@ -16,6 +16,7 @@ import { formatPrice } from "@/features/billing/utils"
 import type { BillingCycle, SubscriptionStatus } from "@/types/billing"
 import { cn } from "@/lib/ui"
 import { InvoicePreviewNote } from "./invoice-preview-note"
+import { downgradeAppliesNow } from "@/features/billing/scheduled-change"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -251,7 +252,7 @@ export function PlanSelector({
 
         {isChanging &&
           selectedPlan !== "custom" &&
-          (isDowngrade && subscriptionStatus !== "trialing" ? (
+          (isDowngrade && !downgradeAppliesNow(subscriptionStatus) ? (
             <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
               <b className="text-foreground">
                 {t("billing.plans.noChargeToday")}

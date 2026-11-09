@@ -347,6 +347,11 @@ func planChangePeriod(
 			return nil, nil
 		}
 		return &now, &periodEnd
+	case planChanged && newPriceCents <= 0:
+		// A plan with no price (one an operator sets for a contract billed
+		// outside the app) buys no time of its own to prorate into: the period
+		// stays, rather than ending now.
+		return nil, nil
 	case planChanged:
 		periodEnd := prorate(now, *sub.PeriodStart, *sub.PeriodEnd, oldPriceCents, newPriceCents, sub.Cycle, newCycle)
 		if periodEnd.After(*sub.PeriodEnd) {

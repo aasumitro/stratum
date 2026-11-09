@@ -2,7 +2,6 @@ package billing
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
+	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
 
@@ -215,96 +215,6 @@ func (w *Worker) reconcileScheduledCancellation(
 	return sub, nil
 }
 
-// reconcileScheduledOverage applies sub's scheduled plan downgrade and/or
-// addon quantity decreases, resolving any resulting member overage exactly
-// once against the fully combined future state before either applies —
-// never two separate overage checks for one renewal. Like
-// reconcileScheduledCancellation, this takes its own row lock in a short
-// transaction and commits before the caller composes a renewal invoice, so
-// composeInvoiceAmount's blocking payment-provider call never runs inside a
-// held transaction. Re-reads the subscription and its scheduled addons
-// fresh under the lock rather than trusting the caller's copy, so a
-// concurrent redelivery that already applied the schedule is a safe no-op
-// here rather than a stale double-apply.
-func (w *Worker) reconcileScheduledOverage(ctx context.Context, subscriptionID string) (*subscriptionRecord, error) {
-	var result *subscriptionRecord
-	err := db.WithTx(ctx, w.svc.pool, func(tx db.Querier) error {
-		txCtx := db.WithQuerier(ctx, tx)
-		q := w.svc.querier(txCtx)
-
-		if err := w.svc.repo.lockSubscriptionForUpdate(txCtx, q, subscriptionID); err != nil {
-			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-		}
-		sub, err := w.svc.repo.findSubscriptionByID(txCtx, q, subscriptionID)
-		if err != nil {
-			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-		}
-		scheduledAddons, err := w.svc.repo.listScheduledAddonChanges(txCtx, q, subscriptionID)
-		if err != nil {
-			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-		}
-		hasScheduledPlan := sub.ScheduledPlan != nil
-		if !hasScheduledPlan && len(scheduledAddons) == 0 {
-			result = sub
-			return nil
-		}
-
-		if w.svc.orgCommander != nil {
-			overage, err := w.svc.resolveFutureOveragePreview(txCtx, sub)
-			if err != nil {
-				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-			}
-			if overage.MemberLimit >= 0 && overage.CurrentMembers > int64(overage.MemberLimit) {
-				if _, err := w.svc.orgCommander.ResolveDowngradeOverage(txCtx, sub.SubjectID,
-					nil, overage.MemberLimit, false); err != nil {
-					return fmt.Errorf("billing.reconcileScheduledOverage: resolve overage: %w", err)
-				}
-			}
-		}
-
-		if hasScheduledPlan {
-			if _, err := w.svc.repo.applyScheduledPlanDowngrade(txCtx, q, sub.ID); err != nil {
-				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-			}
-			phase := historyPhaseApplied
-			appliedAt := time.Now()
-			if _, err := w.svc.repo.insertHistoryWithCycle(txCtx, q, sub.ID, actionDowngrade,
-				&sub.Plan, sub.ScheduledPlan, 0, sub.Currency, changedBySystem, nil, &phase, &appliedAt,
-				&sub.Cycle, sub.ScheduledCycle); err != nil {
-				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-			}
-		}
-		for _, a := range scheduledAddons {
-			if a.ScheduledQuantity == 0 {
-				if err := w.svc.repo.deleteSubscriptionAddon(txCtx, q, sub.ID, a.AddonID); err != nil {
-					return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-				}
-			} else if err := w.svc.repo.applyScheduledAddonQuantityChange(txCtx, q, sub.ID, a.AddonID, a.ScheduledQuantity); err != nil {
-				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-			}
-			addonMetadata, _ := json.Marshal(addonChangeMetadata{
-				AddonID: a.AddonID, FromQuantity: a.LiveQuantity, ToQuantity: a.ScheduledQuantity,
-			})
-			addonPhase := historyPhaseApplied
-			addonAppliedAt := time.Now()
-			if _, err := w.svc.repo.insertHistoryWithPhase(txCtx, q, sub.ID, "addon_change",
-				nil, nil, 0, sub.Currency, changedBySystem, addonMetadata, &addonPhase, &addonAppliedAt); err != nil {
-				return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-			}
-		}
-
-		result, err = w.svc.repo.findSubscriptionByID(txCtx, q, sub.ID)
-		if err != nil {
-			return fmt.Errorf("billing.reconcileScheduledOverage: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
 // HandlePaymentLinkExpire closes a locally expired payment link's hosted
 // checkout at its provider (events.RoutingKeyPaymentLinkExpire).
 func (w *Worker) HandlePaymentLinkExpire(ctx context.Context, body []byte) error {
@@ -325,6 +235,50 @@ func (w *Worker) HandleInvoiceMarkPaid(ctx context.Context, body []byte) error {
 	return w.svc.applyMarkedPaid(ctx, evt.InvoiceID)
 }
 
+// HandleApplyScheduled applies a scheduled plan downgrade or add-on decrease at
+// the boundary it was scheduled for (events.RoutingKeySubscriptionApplyScheduled).
+func (w *Worker) HandleApplyScheduled(ctx context.Context, body []byte) error {
+	check, err := events.Decode[events.SubscriptionCheck](body)
+	if err != nil {
+		return fmt.Errorf("billing.HandleApplyScheduled: decode: %w", err)
+	}
+	return w.svc.applyScheduledAtBoundary(ctx, check)
+}
+
+// HandleOperatorTrialExtend applies a Studio operator's trial extension
+// (events.RoutingKeyOperatorTrialExtend).
+func (w *Worker) HandleOperatorTrialExtend(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.OperatorTrialExtend](body)
+	if err != nil {
+		return fmt.Errorf("billing.HandleOperatorTrialExtend: decode: %w", err)
+	}
+	return w.svc.extendTrialByOperator(ctx, evt.OrgID, evt.TrialEnd)
+}
+
+// HandleOperatorPlanChange applies a Studio operator's plan change
+// (events.RoutingKeyOperatorPlanChange) through the same path as an owner's,
+// so pending invoices are repriced and renewal follows a moved end. A request
+// that can never apply (no subscription, an unknown plan, a cancelled
+// subscription) is logged and dropped: retrying would not change the answer.
+func (w *Worker) HandleOperatorPlanChange(ctx context.Context, body []byte) error {
+	evt, err := events.Decode[events.OperatorPlanChange](body)
+	if err != nil {
+		return fmt.Errorf("billing.HandleOperatorPlanChange: decode: %w", err)
+	}
+	err = db.WithTx(ctx, w.svc.pool, func(tx db.Querier) error {
+		_, _, err := w.svc.changePlanWithMetadata(db.WithQuerier(ctx, tx), subjectTypeOrganization,
+			evt.OrgID, evt.Plan, evt.Cycle, changedByOperator, nil)
+		return err
+	})
+	var appErr *apperr.Error
+	if errors.As(err, &appErr) && appErr.Kind != apperr.KindInternal {
+		slog.Warn("billing.HandleOperatorPlanChange: not applied", "organization_id", evt.OrgID,
+			"plan", evt.Plan, "cycle", evt.Cycle, "error", err)
+		return nil
+	}
+	return err
+}
+
 // HandleSubscriptionAutoInvoice generates a renewal invoice 3 days before expiry.
 func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte) error {
 	check, err := events.Decode[events.SubscriptionCheck](body)
@@ -337,11 +291,6 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		// err nil + sub nil covers every early-return case (not found, wrong
 		// status, stale check, cancellation scheduled) — either way there's
 		// no invoice to compose.
-		return err
-	}
-
-	sub, err = w.reconcileScheduledOverage(ctx, sub.ID)
-	if err != nil {
 		return err
 	}
 
@@ -383,12 +332,13 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 			return err
 		}
 
-		planInfo, err := w.svc.planCatalog(txCtx, current.Plan)
+		// Priced from what applies at the boundary; nothing is applied here.
+		planInfo, cycle, quantities, err := w.svc.futurePricing(txCtx, tx, current)
 		if err != nil {
 			return err
 		}
 		composed, addonLines, couponCode, discountCents, err := w.svc.composeInvoiceAmount(
-			txCtx, tx, current.ID, planInfo, current.Currency, current.Cycle)
+			txCtx, tx, current.ID, planInfo, current.Currency, cycle, quantities)
 		if err != nil {
 			return err
 		}
@@ -410,7 +360,7 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		if err != nil {
 			return err
 		}
-		if err := w.svc.insertPlanLineItem(txCtx, inv, planInfo); err != nil {
+		if err := w.svc.insertPlanLineItem(txCtx, inv, planInfo, cycle); err != nil {
 			return err
 		}
 		if err := w.svc.applyInvoiceCharges(
@@ -426,7 +376,7 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 		return events.Enqueue(txCtx, tx, events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", current.SubjectID,
 			events.InvoiceCreated{
 				OrgID: current.SubjectID, InvoiceID: inv.ID,
-				Plan: current.Plan, AmountCents: inv.AmountCents, Currency: inv.Currency, DueAt: *inv.DueAt,
+				Plan: planInfo.ID, AmountCents: inv.AmountCents, Currency: inv.Currency, DueAt: *inv.DueAt,
 				FromTrial: current.Status == statusTrialing,
 			})
 	})

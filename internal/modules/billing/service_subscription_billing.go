@@ -256,6 +256,9 @@ func (s *service) extendSubscription(
 			return
 		}
 		inv = nil
+		if _, ok := errors.AsType[*apperr.Error](err); ok {
+			return
+		}
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			err = apperr.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found", err)
@@ -314,6 +317,11 @@ func (s *service) extendSubscription(
 		}
 		if sub.Status != statusActive || sub.PeriodStart == nil || sub.PeriodEnd == nil {
 			return ErrSubscriptionNotExtendable
+		}
+		// The renewal priced from a schedule is paid: the months after it are
+		// already at the scheduled price, so nothing is added until it applies.
+		if scheduleLocked(sub) {
+			return errAmendmentAlreadyPaid()
 		}
 		if switchToAnnual {
 			if sub.Cycle != cycleMonthly {
@@ -467,7 +475,7 @@ func (s *service) activateTrialNow(
 			return err
 		}
 		composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
-			ctx, tx, sub.ID, planInfo, sub.Currency, sub.Cycle)
+			ctx, tx, sub.ID, planInfo, sub.Currency, sub.Cycle, nil)
 		if err != nil {
 			return err
 		}
@@ -483,7 +491,7 @@ func (s *service) activateTrialNow(
 			if err != nil {
 				return err
 			}
-			if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+			if err := s.insertPlanLineItem(ctx, inv, planInfo, sub.Cycle); err != nil {
 				return err
 			}
 			if err := s.applyInvoiceCharges(ctx, tx, sub.ID, inv.ID, sub.Currency,
@@ -618,12 +626,12 @@ func (s *service) resumeWithInvoice(ctx context.Context, sub *subscriptionRecord
 		if kinds[invoiceKindSubscription] {
 			return nil
 		}
-		planInfo, err := s.planCatalog(ctx, current.Plan)
+		planInfo, cycle, quantities, err := s.futurePricing(ctx, tx, current)
 		if err != nil {
-			return fmt.Errorf("billing.resumeWithInvoice: %w: current plan", ErrUnknownPlan)
+			return fmt.Errorf("billing.resumeWithInvoice: %w: %w", ErrUnknownPlan, err)
 		}
 		composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
-			ctx, tx, current.ID, planInfo, current.Currency, current.Cycle)
+			ctx, tx, current.ID, planInfo, current.Currency, cycle, quantities)
 		if err != nil {
 			return err
 		}
@@ -646,7 +654,7 @@ func (s *service) resumeWithInvoice(ctx context.Context, sub *subscriptionRecord
 		if err != nil {
 			return err
 		}
-		if err := s.insertPlanLineItem(ctx, inv, planInfo); err != nil {
+		if err := s.insertPlanLineItem(ctx, inv, planInfo, cycle); err != nil {
 			return err
 		}
 		if err := s.applyInvoiceCharges(
@@ -755,4 +763,39 @@ func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscription
 		events.RoutingKeySubscriptionCheck, "billing", sub.SubjectID, checkPayload, d); err != nil {
 		slog.Error("billing.scheduleRenewalSequence: enqueue expiry check failed", "subscription_id", sub.ID, "error", err)
 	}
+}
+
+// extendTrialByOperator sets a trialing subscription's trial, and with it the
+// period, to end at trialEnd, and schedules renewal for that end: the
+// conversion invoice, its reminder and the expiry check all key on the end.
+// Only a later end applies, so a redelivery changes nothing.
+func (s *service) extendTrialByOperator(ctx context.Context, organizationID string, trialEnd time.Time) error {
+	return db.WithTx(ctx, s.pool, func(tx db.Querier) error {
+		ctx := db.WithQuerier(ctx, tx)
+		q := s.querier(ctx)
+		sub, err := s.repo.findSubscriptionBySubject(ctx, q, subjectTypeOrganization, organizationID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("billing.extendTrialByOperator: %w", err)
+		}
+		if err := s.repo.lockSubscriptionForUpdate(ctx, q, sub.ID); err != nil {
+			return fmt.Errorf("billing.extendTrialByOperator: %w", err)
+		}
+		if sub, err = s.repo.findSubscriptionByID(ctx, q, sub.ID); err != nil {
+			return fmt.Errorf("billing.extendTrialByOperator: %w", err)
+		}
+		if sub.Status != statusTrialing || sub.TrialEnd == nil || !trialEnd.After(*sub.TrialEnd) {
+			return nil
+		}
+		if err := s.repo.updateTrialEnd(ctx, q, sub.ID, trialEnd); err != nil {
+			return fmt.Errorf("billing.extendTrialByOperator: %w", err)
+		}
+		if sub, err = s.repo.findSubscriptionByID(ctx, q, sub.ID); err != nil {
+			return fmt.Errorf("billing.extendTrialByOperator: %w", err)
+		}
+		s.scheduleRenewalSequence(ctx, sub)
+		return nil
+	})
 }

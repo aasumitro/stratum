@@ -149,8 +149,17 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 
 		switch {
 		case existingQuantity == 0 || quantity >= existingQuantity:
+			hadSchedule := rowExists && existing.ScheduledQuantity != nil
+			if hadSchedule && scheduleLocked(sub) {
+				return errAmendmentAlreadyPaid()
+			}
 			if err := s.repo.clearScheduledAddonQuantityChange(txCtx, tx, sub.ID, addonID); err != nil {
 				return err
+			}
+			if hadSchedule && sub.Status != statusTrialing {
+				if err := s.afterScheduleChange(txCtx, sub); err != nil {
+					return err
+				}
 			}
 			if quantity == existingQuantity {
 				return nil // no-op: nothing changed, nothing to bill (trialing or not)
@@ -212,6 +221,9 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 		case sub.Status == statusTrialing:
 			return s.applyTrialAddonChange(txCtx, tx, sub, addonID, existingQuantity, quantity, changedBy)
 		default:
+			if scheduleLocked(sub) {
+				return errAmendmentAlreadyPaid()
+			}
 			if err := s.dropPendingIncrease(txCtx, tx, sub, existing); err != nil {
 				return err
 			}
@@ -219,7 +231,10 @@ func (s *service) attachAddon(ctx context.Context, organizationID, addonID strin
 				return err
 			}
 			phase := historyPhaseScheduled
-			return s.insertAddonChangeHistory(txCtx, tx, sub, addonID, existingQuantity, quantity, changedBy, &phase, sub.PeriodEnd, false)
+			if err := s.insertAddonChangeHistory(txCtx, tx, sub, addonID, existingQuantity, quantity, changedBy, &phase, sub.PeriodEnd, false); err != nil {
+				return err
+			}
+			return s.afterScheduleChange(txCtx, sub)
 		}
 	})
 	if err != nil {
@@ -488,6 +503,9 @@ func (s *service) detachAddon(ctx context.Context, organizationID, addonID, chan
 		}
 		return nil
 	}
+	if scheduleLocked(sub) {
+		return errAmendmentAlreadyPaid()
+	}
 	if err := s.dropPendingIncrease(ctx, s.querier(ctx), sub, existing); err != nil {
 		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
 	}
@@ -496,6 +514,9 @@ func (s *service) detachAddon(ctx context.Context, organizationID, addonID, chan
 	}
 	phase := historyPhaseScheduled
 	if err := s.insertAddonChangeHistory(ctx, s.querier(ctx), sub, addonID, existing.Quantity, 0, changedBy, &phase, sub.PeriodEnd, false); err != nil {
+		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
+	}
+	if err := s.afterScheduleChange(ctx, sub); err != nil {
 		return apperr.Internal(addonDetachFailedCode, addonDetachFailedMsg, err)
 	}
 	return nil
@@ -516,6 +537,12 @@ func (s *service) undoScheduledAddonQuantityChange(
 	if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
 		return nil, apperr.Internal("ADDON_UNDO_FAILED", "failed to undo scheduled addon change", err)
 	}
+	if sub, err = s.repo.findSubscriptionByID(ctx, s.querier(ctx), sub.ID); err != nil {
+		return nil, apperr.Internal("ADDON_UNDO_FAILED", "failed to undo scheduled addon change", err)
+	}
+	if scheduleLocked(sub) {
+		return nil, errAmendmentAlreadyPaid()
+	}
 	addon, err := s.repo.findAttachedAddon(ctx, s.querier(ctx), sub.ID, addonID)
 	if err != nil {
 		return nil, apperr.NotFound("ADDON_NOT_FOUND", "addon not found", ErrAddonNotFound)
@@ -530,6 +557,9 @@ func (s *service) undoScheduledAddonQuantityChange(
 	now := time.Now()
 	if err := s.insertAddonChangeHistory(ctx, s.querier(ctx), sub, addonID,
 		addon.Quantity, *addon.ScheduledQuantity, changedBy, &phase, &now, false); err != nil {
+		return nil, apperr.Internal("ADDON_UNDO_FAILED", "failed to undo scheduled addon change", err)
+	}
+	if err := s.afterScheduleChange(ctx, sub); err != nil {
 		return nil, apperr.Internal("ADDON_UNDO_FAILED", "failed to undo scheduled addon change", err)
 	}
 	updated, err := s.repo.findAttachedAddon(ctx, s.querier(ctx), sub.ID, addonID)

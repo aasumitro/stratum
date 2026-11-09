@@ -2668,7 +2668,7 @@ func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 		{"additive failed invoice on cancelled subscription", "00000000-0000-0000-0000-000000000a79", "stripe_sess_a79", "cancelled", "addon_increase", "failed", nil},
 		{"activation of a deleted organization", "00000000-0000-0000-0000-000000000a7a", "stripe_sess_a7a", "cancelled", "activation", "failed", orgStatusReader{status: "deleted"}},
 		{"renewal of a purged organization", "00000000-0000-0000-0000-000000000a7b", "stripe_sess_a7b", "expired", "subscription", "failed", orgStatusReader{err: pgx.ErrNoRows}},
-		{"second payment of a paid invoice", "00000000-0000-0000-0000-000000000a7c", "stripe_sess_a7c", "active", "subscription", "paid", nil},
+		{"payment of an invoice an operator already marked paid", "00000000-0000-0000-0000-000000000a7c", "stripe_sess_a7c", "active", "subscription", "paid", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2688,7 +2688,7 @@ func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 			if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.subscriptions WHERE id = $1`, subID).Scan(&subStatus); err != nil {
 				t.Fatalf("read subscription: %v", err)
 			}
-			if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments); err != nil {
+			if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM billing.payments WHERE invoice_id = $1 AND unapplied`, invID).Scan(&payments); err != nil {
 				t.Fatalf("count payments: %v", err)
 			}
 			if invStatus != tc.invStatus {
@@ -2698,7 +2698,7 @@ func TestIntegration_Webhook_LatePaidWebhook_NotRecovered(t *testing.T) {
 				t.Errorf("subscription: want status=%s (unchanged), got %q", tc.subStatus, subStatus)
 			}
 			if payments != 1 {
-				t.Errorf("billing.payments: want 1 row (the money arrived), got %d", payments)
+				t.Errorf("billing.payments: want 1 unapplied row (the money arrived), got %d", payments)
 			}
 			if len(suspender.unsuspended) != 0 {
 				t.Errorf("UnsuspendOrganization: want no calls, got %v", suspender.unsuspended)
@@ -4237,11 +4237,11 @@ func TestIntegration_HandleSubscriptionAutoInvoice_NothingScheduled_OverageUntou
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_WithinLimits_AppliesWithoutOverageCall
+// TestIntegration_ApplyScheduled_ScheduledPlanDowngrade_WithinLimits_AppliesWithoutOverageCall
 // covers a scheduled plan downgrade whose future limits current usage stays
 // within: ResolveDowngradeOverage must not be called, and the plan/cycle
 // swap plus its applied history row still happen.
-func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_WithinLimits_AppliesWithoutOverageCall(t *testing.T) {
+func TestIntegration_ApplyScheduled_ScheduledPlanDowngrade_WithinLimits_AppliesWithoutOverageCall(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_overage_ok_user"
@@ -4263,9 +4263,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_Within
 	seedScheduledPlanDowngrade(t, pool, subID)
 	seedMemberUsage(t, pool, orgID, 1) // solo's limit is 1 — exactly at, not over
 
-	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
-	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
+	body := scheduleDueAtBoundary(t, pool, subID, orgID)
+	_ = mod.Worker.HandleApplyScheduled(t.Context(), body)
 
 	if commander.calls != 0 {
 		t.Errorf("want ResolveDowngradeOverage not called when usage is within the new plan's limit, got %d calls", commander.calls)
@@ -4290,11 +4289,11 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_Within
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_OverLimit_CallsOverageBeforeApplying
+// TestIntegration_ApplyScheduled_ScheduledPlanDowngrade_OverLimit_CallsOverageBeforeApplying
 // covers a scheduled plan downgrade whose future limit current usage
 // exceeds: ResolveDowngradeOverage must be called before the plan swap
 // commits.
-func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_OverLimit_CallsOverageBeforeApplying(t *testing.T) {
+func TestIntegration_ApplyScheduled_ScheduledPlanDowngrade_OverLimit_CallsOverageBeforeApplying(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_overage_plan_user"
@@ -4316,9 +4315,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_OverLi
 	seedScheduledPlanDowngrade(t, pool, subID)
 	seedMemberUsage(t, pool, orgID, 2) // solo's limit is 1 — over
 
-	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
-	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
+	body := scheduleDueAtBoundary(t, pool, subID, orgID)
+	_ = mod.Worker.HandleApplyScheduled(t.Context(), body)
 
 	if commander.calls != 1 {
 		t.Errorf("want ResolveDowngradeOverage called once when usage exceeds the new plan's limit, got %d calls", commander.calls)
@@ -4330,11 +4328,11 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledPlanDowngrade_OverLi
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_ScheduledAddonDecrease_OverLimit_AppliesQuantity
+// TestIntegration_ApplyScheduled_ScheduledAddonDecrease_OverLimit_AppliesQuantity
 // covers a scheduled addon quantity decrease (no plan change) whose
 // resulting limit current usage exceeds: ResolveDowngradeOverage is called
 // once, and only on success does the addon's live quantity update.
-func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledAddonDecrease_OverLimit_AppliesQuantity(t *testing.T) {
+func TestIntegration_ApplyScheduled_ScheduledAddonDecrease_OverLimit_AppliesQuantity(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_overage_addon_user"
@@ -4356,9 +4354,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledAddonDecrease_OverLi
 	seedAddonWithScheduledQuantity(t, pool, subID, "extra-seat", 2, 1)
 	seedMemberUsage(t, pool, orgID, 3) // over the future limit of 2
 
-	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
-	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
+	body := scheduleDueAtBoundary(t, pool, subID, orgID)
+	_ = mod.Worker.HandleApplyScheduled(t.Context(), body)
 
 	if commander.calls != 1 {
 		t.Errorf("want ResolveDowngradeOverage called once for a scheduled addon decrease over the future limit, got %d calls", commander.calls)
@@ -4373,13 +4370,13 @@ func TestIntegration_HandleSubscriptionAutoInvoice_ScheduledAddonDecrease_OverLi
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_CombinedPlanAndAddon_ExactlyOneOverageCall
+// TestIntegration_ApplyScheduled_CombinedPlanAndAddon_ExactlyOneOverageCall
 // covers the specific compounding scenario a scheduled plan downgrade *and*
 // scheduled addon decreases together create: overage must resolve exactly
 // once against the fully combined future state, never two separate calls —
 // the case most likely to regress silently into two calls if this block is
 // later "simplified" into two independent checks.
-func TestIntegration_HandleSubscriptionAutoInvoice_CombinedPlanAndAddon_ExactlyOneOverageCall(t *testing.T) {
+func TestIntegration_ApplyScheduled_CombinedPlanAndAddon_ExactlyOneOverageCall(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_overage_combo_user"
@@ -4403,9 +4400,8 @@ func TestIntegration_HandleSubscriptionAutoInvoice_CombinedPlanAndAddon_ExactlyO
 	seedAddonWithScheduledQuantity(t, pool, subID, "extra-seat", 2, 1)
 	seedMemberUsage(t, pool, orgID, 3) // over the combined future limit of 2
 
-	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
-	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
+	body := scheduleDueAtBoundary(t, pool, subID, orgID)
+	_ = mod.Worker.HandleApplyScheduled(t.Context(), body)
 
 	if commander.calls != 1 {
 		t.Errorf("want exactly 1 combined ResolveDowngradeOverage call for a plan downgrade and an addon decrease scheduled together, got %d", commander.calls)
@@ -4421,13 +4417,13 @@ func TestIntegration_HandleSubscriptionAutoInvoice_CombinedPlanAndAddon_ExactlyO
 	}
 }
 
-// TestIntegration_HandleSubscriptionAutoInvoice_OverageResolutionFails_RollsBackAndRetrySucceeds
+// TestIntegration_ApplyScheduled_OverageResolutionFails_RollsBackAndRetrySucceeds
 // covers the same redelivery-safety property the cancellation branch above
 // requires, here for the overage branch: a failed
 // ResolveDowngradeOverage call must leave scheduled_plan/the addon's
 // scheduled_quantity fully intact (nothing half-applied), and a later
 // redelivery with the call now succeeding must complete correctly.
-func TestIntegration_HandleSubscriptionAutoInvoice_OverageResolutionFails_RollsBackAndRetrySucceeds(t *testing.T) {
+func TestIntegration_ApplyScheduled_OverageResolutionFails_RollsBackAndRetrySucceeds(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (
 		user  = "integ_autoinv_overage_retry_user"
@@ -4449,11 +4445,10 @@ func TestIntegration_HandleSubscriptionAutoInvoice_OverageResolutionFails_RollsB
 	seedScheduledPlanDowngrade(t, pool, subID)
 	seedMemberUsage(t, pool, orgID, 2) // over solo's limit of 1
 
-	expectedEnd, isTrial := getSubscriptionExpectedEnd(pool, subID)
-	body := encodeSubscriptionCheckEvent(subID, orgID, expectedEnd, isTrial)
+	body := scheduleDueAtBoundary(t, pool, subID, orgID)
 
 	// First delivery: ResolveDowngradeOverage fails — nothing must apply.
-	if err := mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body); err == nil {
+	if err := mod.Worker.HandleApplyScheduled(t.Context(), body); err == nil {
 		t.Fatal("first delivery: want an error from the failed overage resolution")
 	}
 	var plan string
@@ -4475,7 +4470,7 @@ func TestIntegration_HandleSubscriptionAutoInvoice_OverageResolutionFails_RollsB
 	// happens next — createPaymentLink still fails with an empty
 	// ProviderConfig, same as every other test in this file using
 	// billing.New/NewModuleForTest, so that error is expected and ignored.
-	_ = mod.Worker.HandleSubscriptionAutoInvoice(t.Context(), body)
+	_ = mod.Worker.HandleApplyScheduled(t.Context(), body)
 	pool.QueryRow(t.Context(), `SELECT plan FROM billing.subscriptions WHERE id = $1`, subID).Scan(&plan)
 	if plan != "solo" {
 		t.Errorf("after successful redelivery: want plan=solo, got %q", plan)
@@ -7972,4 +7967,19 @@ func TestIntegration_ReconcileOverdueSubscriptions_EnqueuesForOverdueOnly(t *tes
 	if got := countChecks(healthyOrg); got != 0 {
 		t.Errorf("healthy subscription: want 0 billing.subscription.check outbox rows, got %d", got)
 	}
+}
+
+// scheduleDueAtBoundary makes subID's schedule due, as when its renewal was paid
+// and the boundary it was scheduled for has passed, and returns the
+// apply-scheduled message for that boundary.
+func scheduleDueAtBoundary(t *testing.T, pool *pgxpool.Pool, subID, orgID string) []byte {
+	t.Helper()
+	var effective time.Time
+	if err := pool.QueryRow(t.Context(), `
+		UPDATE billing.subscriptions
+		SET scheduled_effective_at = now() - interval '1 minute', period_end = now() + interval '1 month'
+		WHERE id = $1 RETURNING scheduled_effective_at`, subID).Scan(&effective); err != nil {
+		t.Fatalf("make the schedule due: %v", err)
+	}
+	return encodeSubscriptionCheckEvent(subID, orgID, effective, false)
 }

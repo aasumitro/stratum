@@ -49,6 +49,16 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Changed
 
+- **Breaking:** a scheduled downgrade or add-on decrease now applies at the end of the period it was
+  scheduled for, once the renewal is paid, instead of when the renewal invoice is issued three days
+  earlier. The renewal invoice is priced at the scheduled plan and quantities, and is reissued when
+  the schedule changes while it is unpaid. Undo, a plan change and Extend are refused with
+  `422 AMENDMENT_ALREADY_PAID` once that renewal is paid. The subscription carries
+  `scheduled_effective_at`.
+- A downgrade on an expired or cancelled subscription applies at once, and Resume is priced at it.
+- Studio's Extend Trial and Change Plan are applied by the app's billing worker: a trial extension
+  moves the period and the renewal sequence with it, and a plan change reprices pending invoices.
+
 - **Breaking:** an expired checkout (Stripe `checkout.session.expired`, Xendit `EXPIRED`) is no longer a
   failed payment. Only its link closes: the invoice stays payable through a new checkout, and there is
   no failure notice, no dunning, no `past_due`, and no `billing.invoice.failed` customer webhook.
@@ -87,6 +97,20 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
+- Every invoice with add-ons listed them twice: the plan line carried the whole subtotal, add-ons
+  included, and the add-on lines followed. An itemized Stripe checkout charges the sum of its lines,
+  so it charged more than the invoice. The plan line is now the plan's own price.
+- On a `past_due` subscription, cancelling and then undoing left no renewal invoice to pay, so it
+  expired anyway. Undo now issues the renewal.
+- Deleting an organization whose subscription had ended left its Resume invoice payable, and paying
+  it reactivated the deleted organization's subscription.
+- A checkout created while its invoice was being voided stayed open and could take money that
+  settled nothing; it is now closed at the provider.
+- A late "pending" report flipped a paid payment link back to payable.
+- A downgrade scheduled after the renewal invoice was issued billed the old plan for one more full
+  period; an upgrade kept an earlier scheduled downgrade, which then reverted it at renewal.
+- A payment for an invoice an operator had already marked paid was not listed for review.
+- Studio's Void left an add-on increase pending on the voided invoice.
 - A payment that settled nothing (on a void or failed invoice, or a second payment of one invoice) was
   only logged. It is now recorded as a payment, and the owner's payment list shows it.
 - Member usage read an old count after an upgrade moved `period_end` earlier, so limit checks for

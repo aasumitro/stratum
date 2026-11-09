@@ -46,6 +46,7 @@ export interface Subscription {
   scheduled_plan?: string
   scheduled_cycle?: BillingCycle
   scheduled_cancel_at?: string
+  scheduled_effective_at?: string
   created_at: string
   updated_at: string
 }

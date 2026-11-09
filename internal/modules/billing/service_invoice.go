@@ -192,11 +192,25 @@ func (s *service) createPaymentLink(
 	var link *paymentLinkRecord
 	insErr := s.withOrgTx(ctx, subjectType, subjectID, func(tx db.Querier) error {
 		txCtx := db.WithQuerier(ctx, tx)
+		// The app voids an invoice under its subscription's lock, in one
+		// statement whose snapshot could miss a link committed meanwhile.
+		if err := s.repo.lockSubscriptionForUpdate(txCtx, tx, inv.SubscriptionID); err != nil {
+			return err
+		}
 		var err error
 		link, err = s.repo.insertPaymentLink(txCtx, tx, linkID, invoiceID, provider, inv.Currency,
 			inv.AmountCents, &result.ExternalID, &result.URL, result.ExpiresAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The invoice closed while the provider created this checkout, so
+			// close the checkout too: paid, it would take money for nothing.
+			return enqueueCheckoutExpiry(txCtx, tx, subjectID,
+				[]closedLink{{Provider: provider, ExternalID: result.ExternalID}})
+		}
 		return err
 	})
+	if insErr == nil && link == nil {
+		return nil, ErrInvoiceNotPayable
+	}
 	return link, insErr
 }
 
@@ -311,14 +325,15 @@ func (s *service) createPaymentLinkForOwner(
 	return link, nil
 }
 
-func (s *service) insertPlanLineItem(ctx context.Context, inv *invoiceRecord, planInfo *contracts.PlanInfo) error {
-	subtotal := int64(0)
-	if inv.SubtotalCents != nil {
-		subtotal = *inv.SubtotalCents
-	}
+// insertPlanLineItem writes the plan's own price for cycle, the cycle the
+// invoice was composed for. Add-ons and a discount get their own lines
+// (applyInvoiceCharges), so together the lines add up to the subtotal: an
+// itemized checkout charges exactly their sum.
+func (s *service) insertPlanLineItem(ctx context.Context, inv *invoiceRecord, planInfo *contracts.PlanInfo, cycle string) error {
+	price := planInfo.Price(inv.Currency, cycle)
 	desc := planInfo.Name + " plan"
 	return s.repo.insertLineItem(ctx, s.querier(ctx), inv.ID,
-		desc, inv.Currency, 1, subtotal, subtotal, 0)
+		desc, inv.Currency, 1, price, price, 0)
 }
 
 // invoicePreview is a read-only composition of what the next invoice would
@@ -422,7 +437,7 @@ func (s *service) composePreview(
 	}
 
 	total, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
-		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, targetCycle)
+		ctx, s.querier(ctx), sub.ID, planInfo, sub.Currency, targetCycle, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -531,7 +546,7 @@ type lineItemSpec struct {
 // (no active coupon) is the expected steady-state case, not an error here.
 func (s *service) composeInvoiceAmount(
 	ctx context.Context, q db.Querier, subscriptionID string,
-	planInfo *contracts.PlanInfo, currency, cycle string,
+	planInfo *contracts.PlanInfo, currency, cycle string, quantities map[string]int,
 ) (subtotal int64, addonLines []lineItemSpec, couponCode string, discountCents int64, err error) {
 	subtotal = planInfo.Price(currency, cycle)
 
@@ -540,6 +555,14 @@ func (s *service) composeInvoiceAmount(
 		return 0, nil, "", 0, fmt.Errorf("billing.composeInvoiceAmount: list attached addons: %w", err)
 	}
 	for _, a := range addons {
+		// quantities overrides the live quantity, for an invoice priced from
+		// what is scheduled; a quantity of 0 drops the add-on.
+		if q, ok := quantities[a.AddonID]; ok {
+			a.Quantity = q
+		}
+		if a.Quantity == 0 {
+			continue
+		}
 		unitPrice := int64(0)
 		if prices, ok := a.Prices[currency]; ok {
 			unitPrice = int64(prices.Monthly)
@@ -607,4 +630,34 @@ func selectProvider(currency string) string {
 		return providerXendit
 	}
 	return providerStripe
+}
+
+// futurePricing is what the next period is priced from: the scheduled plan and
+// cycle when a downgrade is scheduled, else the live ones, and each add-on's
+// scheduled quantity where one is set. A renewal is priced this way, so what
+// the owner pays matches what applies at the boundary.
+func (s *service) futurePricing(
+	ctx context.Context, q db.Querier, sub *subscriptionRecord,
+) (planInfo *contracts.PlanInfo, cycle string, quantities map[string]int, err error) {
+	plan, cycle := sub.Plan, sub.Cycle
+	if sub.ScheduledPlan != nil {
+		plan = *sub.ScheduledPlan
+	}
+	if sub.ScheduledCycle != nil {
+		cycle = *sub.ScheduledCycle
+	}
+	if planInfo, err = s.planCatalog(ctx, plan); err != nil {
+		return nil, "", nil, fmt.Errorf("billing.futurePricing: %w", err)
+	}
+	scheduled, err := s.repo.listScheduledAddonChanges(ctx, q, sub.ID)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("billing.futurePricing: %w", err)
+	}
+	if len(scheduled) > 0 {
+		quantities = make(map[string]int, len(scheduled))
+		for _, a := range scheduled {
+			quantities[a.AddonID] = a.ScheduledQuantity
+		}
+	}
+	return planInfo, cycle, quantities, nil
 }

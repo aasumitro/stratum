@@ -56,6 +56,38 @@ const RoutingKeyPaymentLinkExpire = "billing.payment-link.expire"
 // the outbox; only billing consumes it.
 const RoutingKeyInvoiceMarkPaid = "billing.invoice.mark-paid"
 
+// RoutingKeySubscriptionApplyScheduled applies a scheduled plan downgrade or
+// add-on decrease at the boundary it was scheduled for (payload
+// SubscriptionCheck, ExpectedEnd being that boundary). Delayed until then and
+// checked on delivery; only billing consumes it.
+const RoutingKeySubscriptionApplyScheduled = "billing.subscription.apply-scheduled"
+
+// RoutingKeyOperatorTrialExtend and RoutingKeyOperatorPlanChange carry a
+// Studio operator's trial extension and plan change to billing, which applies
+// them through its own path: a trial extension moves the trial's end and
+// reschedules renewal, and a plan change reprices what is pending exactly as
+// an owner's would. Studio writes them straight to the outbox; only billing
+// consumes them.
+const (
+	RoutingKeyOperatorTrialExtend = "billing.subscription.operator-trial-extend"
+	RoutingKeyOperatorPlanChange  = "billing.subscription.operator-plan-change"
+)
+
+// OperatorTrialExtend sets a trialing organization's trial to end at TrialEnd.
+// It carries the new end rather than a number of days, so a redelivery
+// extends nothing twice.
+type OperatorTrialExtend struct {
+	OrgID    string    `json:"org_id"`
+	TrialEnd time.Time `json:"trial_end"`
+}
+
+// OperatorPlanChange moves an organization's subscription to Plan and Cycle.
+type OperatorPlanChange struct {
+	OrgID string `json:"org_id"`
+	Plan  string `json:"plan"`
+	Cycle string `json:"cycle"`
+}
+
 type SubscriptionActivated struct {
 	OrgID          string    `json:"org_id"`
 	SubscriptionID string    `json:"subscription_id"`

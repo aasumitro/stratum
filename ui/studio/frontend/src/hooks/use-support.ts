@@ -63,7 +63,9 @@ export function useExtendTrial(projectId: string, authSub: string) {
       days: number
     }) => SupportService.ExtendTrial(projectId, organizationID, days),
     onSuccess: () => {
-      toast.success("Trial extended")
+      toast.success(
+        "Trial extension sent — the app applies it and reschedules renewal"
+      )
       qc.invalidateQueries({
         queryKey: ["support", "user", projectId, authSub],
       })
@@ -100,7 +102,9 @@ export function useChangePlan(projectId: string, authSub: string) {
       cycle: string
     }) => SupportService.ChangePlan(projectId, organizationID, plan, cycle),
     onSuccess: () => {
-      toast.success("Plan changed")
+      toast.success(
+        "Plan change sent — the app applies it and reprices pending invoices"
+      )
       qc.invalidateQueries({
         queryKey: ["support", "user", projectId, authSub],
       })

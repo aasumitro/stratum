@@ -360,7 +360,7 @@ func TestOperator_CaptureTriggerCoversEveryWritableTable(t *testing.T) {
 		"billing.addon_features", "billing.addons", "billing.coupon_redemptions", "billing.coupon_targets",
 		"billing.coupons", "billing.features", "billing.invoices", "billing.payment_links", "billing.payments",
 		"billing.plan_features",
-		"billing.plans", "billing.subscriptions", "messaging.outbox", "organization.organizations",
+		"billing.plans", "billing.subscription_addons", "billing.subscriptions", "messaging.outbox", "organization.organizations",
 		"ref.countries", "ref.currencies",
 	}
 	if len(got) != len(want) {
@@ -667,6 +667,7 @@ func TestOperator_GrantsStopAtTheWriteList(t *testing.T) {
 		`DELETE FROM organization.organizations WHERE false`,
 		`UPDATE billing.payments SET amount_cents = 1 WHERE false`,
 		`UPDATE billing.coupon_redemptions SET coupon_id = 'x' WHERE false`,
+		`UPDATE billing.subscription_addons SET quantity = 1 WHERE false`,
 		`SELECT audit.sweep_expired(400)`,
 		`SELECT audit.anonymize_actor('x')`,
 	} {

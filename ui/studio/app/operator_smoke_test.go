@@ -105,6 +105,7 @@ func (e *smokeEnv) cleanup(t *testing.T) {
 		`DELETE FROM messaging.outbox WHERE payload->>'org_id' IN (SELECT id::text FROM organization.organizations WHERE slug = '` + smokeOrgSlug + `')`,
 		`DELETE FROM billing.payment_links WHERE external_id = 'cs_studio_smoke'`,
 		`DELETE FROM billing.payments WHERE external_id = 'pi_studio_smoke'`,
+		`DELETE FROM billing.subscription_addons WHERE subscription_id IN (SELECT id FROM billing.subscriptions WHERE subject_id IN (SELECT id::text FROM organization.organizations WHERE slug = '` + smokeOrgSlug + `'))`,
 		`DELETE FROM billing.invoice_line_items WHERE description = 'Discount: STUDIO_SMOKE_VOID'`,
 		`DELETE FROM billing.coupon_redemptions WHERE coupon_id = 'STUDIO_SMOKE_VOID'`,
 		`DELETE FROM billing.coupons WHERE code = 'STUDIO_SMOKE_VOID'`,
@@ -181,8 +182,13 @@ func (e *smokeEnv) seed(t *testing.T) {
 		VALUES ($1, 'Discount: STUDIO_SMOKE_VOID', -10, -10, 'USD')`, e.voidInvoice)
 	must(err, "discount line")
 	must(e.admin.QueryRow(ctx, `
-		INSERT INTO billing.payments (invoice_id, amount_cents, currency, provider, external_id)
-		VALUES ($1, 100, 'USD', 'stripe', 'pi_studio_smoke') RETURNING id`, e.voidInvoice).Scan(&e.payment), "payment")
+		INSERT INTO billing.payments (invoice_id, amount_cents, currency, provider, external_id, unapplied)
+		VALUES ($1, 100, 'USD', 'stripe', 'pi_studio_smoke', true) RETURNING id`, e.voidInvoice).Scan(&e.payment), "payment")
+	// An add-on increase gated on the invoice to void: voiding it releases the add-on.
+	_, err = e.admin.Exec(ctx, `
+		INSERT INTO billing.subscription_addons (subscription_id, addon_id, quantity, pending_quantity, pending_invoice_id)
+		VALUES ($1, 'extra-seat', 1, 2, $2)`, subscription, e.voidInvoice)
+	must(err, "pending add-on increase")
 }
 
 func (e *smokeEnv) broker(t *testing.T, method, path string, body any) {
@@ -300,8 +306,8 @@ func (e *smokeEnv) mutations(projectID string) []smokeMutation {
 		{"DeletePlan", "studio.billing.plans.delete", func() error { return catalog.DeletePlan(projectID, plan) }},
 		{"DeleteFeature", "studio.billing.features.delete", func() error { return catalog.DeleteFeature(projectID, feature) }},
 
-		{"ExtendTrial", "studio.billing.subscriptions.update", func() error { return support.ExtendTrial(projectID, e.orgID, 3) }},
-		{"ChangePlan", "studio.billing.subscriptions.update", func() error { return support.ChangePlan(projectID, e.orgID, "growth", "yearly") }},
+		{"ExtendTrial", "studio.messaging.outbox.insert", func() error { return support.ExtendTrial(projectID, e.orgID, 3) }},
+		{"ChangePlan", "studio.messaging.outbox.insert", func() error { return support.ChangePlan(projectID, e.orgID, "growth", "yearly") }},
 		{"ActivateSubscription", "studio.billing.subscriptions.update", func() error { return support.ActivateSubscription(projectID, e.orgID) }},
 		{"MarkInvoicePaid", "studio.messaging.outbox.insert", func() error { return support.MarkInvoicePaid(projectID, e.paidInvoice) }},
 		{"VoidInvoice", "studio.billing.invoices.update", func() error { return support.VoidInvoice(projectID, e.voidInvoice) }},
@@ -605,6 +611,17 @@ func TestOperatorSmoke(t *testing.T) {
 		}
 		if n := e.auditCount(t, "studio.billing.coupon_redemptions.update"); n != 1 {
 			t.Errorf("want one coupon_redemptions audit row, got %d", n)
+		}
+		var pendingLeft int
+		if err := e.admin.QueryRow(t.Context(),
+			`SELECT count(*) FROM billing.subscription_addons WHERE pending_invoice_id = $1`, e.voidInvoice).Scan(&pendingLeft); err != nil {
+			t.Fatalf("read add-on: %v", err)
+		}
+		if pendingLeft != 0 {
+			t.Errorf("want the add-on increase released by the void, got %d still pending on it", pendingLeft)
+		}
+		if n := e.auditCount(t, "studio.billing.subscription_addons.update"); n != 1 {
+			t.Errorf("want one subscription_addons audit row, got %d", n)
 		}
 	})
 

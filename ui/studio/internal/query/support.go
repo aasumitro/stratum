@@ -17,6 +17,8 @@ const (
 	outboxExchangeBilling   = "billing.events"
 	routingKeyMarkPaid      = "billing.invoice.mark-paid"
 	routingKeyCheckoutClose = "billing.payment-link.expire"
+	routingKeyTrialExtend   = "billing.subscription.operator-trial-extend"
+	routingKeyPlanChange    = "billing.subscription.operator-plan-change"
 )
 
 type SupportUser struct {
@@ -170,12 +172,26 @@ func ListSupportOrganizationInvoices(ctx context.Context, pool *pgxpool.Pool, or
 	return out, nil
 }
 
+// SupportExtendTrial asks the app's billing worker to move a trialing
+// subscription's trial end by days. Billing moves the period with it and
+// reschedules the conversion invoice, its reminder and the expiry check, which
+// all key on the end. The new end is computed here, so a redelivered request
+// extends nothing twice.
 func SupportExtendTrial(ctx context.Context, pool *pgxpool.Pool, organizationID string, days int) error {
 	tag, err := pool.Exec(ctx, `
-		UPDATE billing.subscriptions
-		SET trial_end = trial_end + make_interval(days => $1)
-		WHERE subject_id = $2 AND status = 'trialing'
-	`, days, organizationID)
+		WITH target AS (
+			SELECT gen_random_uuid() AS id, s.subject_id,
+			       s.trial_end + make_interval(days => $2) AS trial_end
+			FROM billing.subscriptions s
+			WHERE s.subject_id = $1 AND s.status = 'trialing' AND s.trial_end IS NOT NULL
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT t.id, $3::text, $4::text,
+		       jsonb_build_object('id', t.id, 'type', $4::text, 'source', 'studio', 'time', now(),
+		                          'org_id', t.subject_id,
+		                          'data', jsonb_build_object('org_id', t.subject_id, 'trial_end', t.trial_end))
+		FROM target t
+	`, organizationID, days, outboxExchangeBilling, routingKeyTrialExtend)
 	if err != nil {
 		return fmt.Errorf("query.SupportExtendTrial: %w", err)
 	}
@@ -204,20 +220,10 @@ func SupportActivateSubscription(ctx context.Context, pool *pgxpool.Pool, organi
 	return nil
 }
 
+// SupportChangePlan asks the app's billing worker to change an organization's
+// plan through the same path an owner's change takes, so pending invoices are
+// repriced and renewal follows a moved end. Billing applies it moments later.
 func SupportChangePlan(ctx context.Context, pool *pgxpool.Pool, organizationID, plan, cycle string) error {
-	tag, err := pool.Exec(ctx, `
-		UPDATE billing.subscriptions
-		SET plan = $2, cycle = $3
-		WHERE subject_id = $1
-		  AND EXISTS (SELECT 1 FROM billing.plans WHERE id = $2)
-	`, organizationID, plan, cycle)
-	if err != nil {
-		return fmt.Errorf("query.SupportChangePlan: %w", err)
-	}
-	if tag.RowsAffected() > 0 {
-		return nil
-	}
-
 	var planExists bool
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM billing.plans WHERE id = $1)
@@ -227,7 +233,26 @@ func SupportChangePlan(ctx context.Context, pool *pgxpool.Pool, organizationID, 
 	if !planExists {
 		return fmt.Errorf("plan %q does not exist", plan)
 	}
-	return fmt.Errorf("no subscription found for organization %s", organizationID)
+	tag, err := pool.Exec(ctx, `
+		WITH target AS (
+			SELECT gen_random_uuid() AS id, s.subject_id
+			FROM billing.subscriptions s
+			WHERE s.subject_id = $1
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT t.id, $4::text, $5::text,
+		       jsonb_build_object('id', t.id, 'type', $5::text, 'source', 'studio', 'time', now(),
+		                          'org_id', t.subject_id,
+		                          'data', jsonb_build_object('org_id', t.subject_id, 'plan', $2::text, 'cycle', $3::text))
+		FROM target t
+	`, organizationID, plan, cycle, outboxExchangeBilling, routingKeyPlanChange)
+	if err != nil {
+		return fmt.Errorf("query.SupportChangePlan: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no subscription found for organization %s", organizationID)
+	}
+	return nil
 }
 
 type AtRiskInvoice struct {
@@ -331,6 +356,15 @@ func SupportVoidInvoice(ctx context.Context, pool *pgxpool.Pool, invoiceID strin
 	if err != nil {
 		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
 	}
+	// An add-on increase gated on this invoice no longer waits for anything, as
+	// when the app voids it.
+	if _, err := tx.Exec(ctx, `
+		UPDATE billing.subscription_addons
+		SET pending_quantity = NULL, pending_invoice_id = NULL
+		WHERE pending_invoice_id = $1
+	`, invoiceID); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: clear pending add-on: %w", err)
+	}
 	// A voided invoice used no coupon application, so its discount lines give
 	// theirs back, as the app's own void does. The app names a discount line
 	// "Discount: <coupon code>".
@@ -372,10 +406,10 @@ func SupportVoidInvoice(ctx context.Context, pool *pgxpool.Pool, invoiceID strin
 	return nil
 }
 
-// PaymentToReview is money a provider took that no invoice was settled by: a
-// payment on an invoice already void or failed, or a second payment of one
-// invoice. The app records it and applies nothing, since there is no refund
-// path; an operator refunds it at the provider and then marks it refunded.
+// PaymentToReview is money a provider took that settled nothing: a payment on
+// an invoice already void, failed or paid. The app records it as unapplied and
+// applies nothing, since there is no refund path; an operator refunds it at
+// the provider and then marks it refunded.
 type PaymentToReview struct {
 	PaymentID        string
 	InvoiceID        string
@@ -399,10 +433,7 @@ func GetPaymentsToReview(ctx context.Context, pool *pgxpool.Pool) ([]PaymentToRe
 		JOIN billing.invoices i ON i.id = p.invoice_id
 		JOIN billing.subscriptions s ON s.id = i.subscription_id
 		LEFT JOIN organization.organizations t ON t.id::text = s.subject_id
-		WHERE p.status = 'completed'
-		  AND (i.status <> 'paid' OR (
-		      SELECT COUNT(*) FROM billing.payments other
-		      WHERE other.invoice_id = p.invoice_id AND other.status = 'completed') > 1)
+		WHERE p.status = 'completed' AND p.unapplied
 		ORDER BY p.paid_at DESC
 		LIMIT 200
 	`)
@@ -430,17 +461,12 @@ func GetPaymentsToReview(ctx context.Context, pool *pgxpool.Pool) ([]PaymentToRe
 }
 
 // SupportMarkPaymentRefunded records that an operator returned a payment at
-// its provider. Only a payment still listed for review can be marked: one on
-// an invoice that is not paid, or one of several on the same invoice.
+// its provider. Only an unapplied payment still listed for review can be marked.
 func SupportMarkPaymentRefunded(ctx context.Context, pool *pgxpool.Pool, paymentID string) error {
 	tag, err := pool.Exec(ctx, `
-		UPDATE billing.payments p
+		UPDATE billing.payments
 		SET status = 'refunded'
-		FROM billing.invoices i
-		WHERE p.id = $1 AND p.status = 'completed' AND i.id = p.invoice_id
-		  AND (i.status <> 'paid' OR (
-		      SELECT COUNT(*) FROM billing.payments other
-		      WHERE other.invoice_id = p.invoice_id AND other.status = 'completed') > 1)
+		WHERE id = $1 AND status = 'completed' AND unapplied
 	`, paymentID)
 	if err != nil {
 		return fmt.Errorf("query.SupportMarkPaymentRefunded: %w", err)

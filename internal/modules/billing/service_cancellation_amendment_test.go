@@ -462,3 +462,83 @@ func TestIntegration_UndoScheduledCancellation_QueuesOnlyAutoInvoice(t *testing.
 		t.Errorf("want the auto-invoice due 3 days before period_end (%s), got %s", due, notBefore)
 	}
 }
+
+// A past_due subscription's renewal is due and the auto-invoice skips that
+// status. Cancelling voids the renewal, so undoing must issue it again
+// directly, or the subscription the owner chose to keep expires with nothing
+// to pay.
+func TestIntegration_UndoCancel_PastDue_ReissuesTheRenewal(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-00000000f1b2"
+	mod := NewModuleForTest(pool, nil)
+	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'past_due', period_end = now() + interval '2 days' WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("make past_due: %v", err)
+	}
+	if _, err := r.insertInvoice(t.Context(), pool, orgID, sub.ID, 900, 0, 0, "USD", invoiceKindSubscription, false, nil); err != nil {
+		t.Fatalf("seed renewal invoice: %v", err)
+	}
+
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.cancelSubscription(ctx, subjectTypeOrganization, orgID, "sub_owner", "too_expensive", "")
+		return err
+	}); err != nil {
+		t.Fatalf("cancelSubscription: %v", err)
+	}
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.undoScheduledCancellation(ctx, subjectTypeOrganization, orgID, "sub_owner")
+		return err
+	}); err != nil {
+		t.Fatalf("undoScheduledCancellation: %v", err)
+	}
+
+	var pending int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT COUNT(*) FROM billing.invoices
+		WHERE subscription_id = $1 AND kind = 'subscription' AND status = 'pending'`, sub.ID).Scan(&pending); err != nil {
+		t.Fatalf("count pending renewals: %v", err)
+	}
+	if pending != 1 {
+		t.Errorf("after undo on past_due: want one pending renewal, got %d", pending)
+	}
+}
+
+// A past_due activation stays pending through a cancel (only renewals are
+// voided). Undo must leave it as what the owner pays, not add a renewal that
+// would roll the period on an unpaid first one.
+func TestIntegration_UndoCancel_PastDueActivation_IssuesNoRenewal(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-00000000f1b3"
+	mod := NewModuleForTest(pool, nil)
+	sub := makeActiveAmendmentSubscription(t, pool, r, orgID)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'past_due', period_end = now() + interval '2 days' WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("make past_due: %v", err)
+	}
+	if _, err := r.insertInvoice(t.Context(), pool, orgID, sub.ID, 900, 0, 0, "USD", invoiceKindActivation, false, nil); err != nil {
+		t.Fatalf("seed activation invoice: %v", err)
+	}
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.cancelSubscription(ctx, subjectTypeOrganization, orgID, "sub_owner", "too_expensive", "")
+		return err
+	}); err != nil {
+		t.Fatalf("cancelSubscription: %v", err)
+	}
+	if err := inServiceTx(t, pool, func(ctx context.Context) error {
+		_, err := mod.svc.undoScheduledCancellation(ctx, subjectTypeOrganization, orgID, "sub_owner")
+		return err
+	}); err != nil {
+		t.Fatalf("undoScheduledCancellation: %v", err)
+	}
+	var renewals int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT COUNT(*) FROM billing.invoices WHERE subscription_id = $1 AND kind = 'subscription'`, sub.ID).Scan(&renewals); err != nil {
+		t.Fatalf("count renewals: %v", err)
+	}
+	if renewals != 0 {
+		t.Errorf("want no renewal next to the pending activation, got %d", renewals)
+	}
+}

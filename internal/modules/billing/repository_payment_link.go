@@ -39,10 +39,16 @@ func (r *repository) insertPaymentLink(
 	expiresAt *time.Time,
 ) (*paymentLinkRecord, error) {
 	var pl paymentLinkRecord
+	// Inserted only while the invoice is still pending: it can be voided while
+	// the provider call that created this checkout was in flight, and its void
+	// expired only the links that existed then. FOR SHARE makes a void racing
+	// this insert either finish first (and the row is skipped) or wait for it
+	// (and see the link). No row means pgx.ErrNoRows.
 	err := q.QueryRow(ctx, `
 		INSERT INTO billing.payment_links
 		    (id, invoice_id, provider, currency, amount_cents, external_id, url, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8
+		WHERE EXISTS (SELECT 1 FROM billing.invoices WHERE id = $2 AND status = 'pending' FOR SHARE)
 		RETURNING id, invoice_id, provider, currency, amount_cents,
 		          external_id, url, status, expires_at, created_at`,
 		id, invoiceID, provider, currency, amountCents, externalID, url, expiresAt,

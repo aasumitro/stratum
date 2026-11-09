@@ -181,7 +181,7 @@ describe("PlanSelector", () => {
     soloOption.click()
 
     await screen.findByText(
-      "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it anytime before that."
+      "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it until your renewal invoice is paid."
     )
     expect(screen.queryByText(/new period end/)).toBeNull()
   })

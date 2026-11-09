@@ -30,6 +30,8 @@ Migrations live in `db/migrations/` as numbered up/down pairs, one per schema:
 | 000010 | `organization`, `notification` | row-level security (`FORCE ROW LEVEL SECURITY`) + tenant/caller policies |
 | 000011 | `audit` | makes `audit.events` append-only for runtime roles; grants for the `stratum_operator` group; a trigger on 14 tables attributing operator changes; retention, anonymization and operator-action functions |
 | 000012 | `billing`, `audit` | operator column grants on `billing.coupon_redemptions.applied_count` and `billing.payments.status`, with the attribution trigger on both; refuses `operator:` audit rows from anyone but the table owner; anonymization also clears IP and user agent |
+| 000013 | `billing` | `payments.unapplied` marks a payment that settled nothing (backfilled); operator column grant on `subscription_addons(pending_quantity, pending_invoice_id)` with the attribution trigger |
+| 000014 | `billing` | `subscriptions.scheduled_effective_at`, the boundary a scheduled downgrade or add-on decrease applies at (backfilled from `period_end`) |
 
 During the current development phase, changes are edited **in place** into the existing schema file (which requires fresh infra after a rewrite); genuinely new schemas would start at `000012`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 

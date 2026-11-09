@@ -44,7 +44,7 @@ func (s *service) downgradeSubscription(
 	if err != nil {
 		return nil, contracts.OverageResolution{}, err
 	}
-	if sub.Status != statusTrialing {
+	if sub.Status != statusTrialing && sub.Status != statusExpired && sub.Status != statusCancelled {
 		return sub, contracts.OverageResolution{}, nil
 	}
 
@@ -86,8 +86,13 @@ func (s *service) downgradeInTx(
 		return nil, "", -1, err
 	}
 
-	// Locking the row serializes concurrent downgrade requests for this org.
+	// Locking the row serializes concurrent downgrade requests for this org, and
+	// every check below reads it again under the lock: a payment can change the
+	// status or lock the schedule while this waits.
 	if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
+		return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
+	}
+	if sub, err = s.repo.findSubscriptionByID(ctx, s.querier(ctx), sub.ID); err != nil {
 		return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
 	}
 
@@ -115,6 +120,41 @@ func (s *service) downgradeInTx(
 		return nil, "", -1, apperr.Validation(cancellationScheduledCode, cancellationScheduledMsg)
 	}
 
+	// An ended subscription has no period running, so the downgrade applies
+	// now and a Resume is priced at the new plan. Its pending Resume invoice was
+	// priced at the old one and is voided; asking to Resume again issues a new one.
+	if sub.Status == statusExpired || sub.Status == statusCancelled {
+		if !alreadyOnTarget {
+			if _, err := s.repo.updateSubscriptionPlan(ctx, s.querier(ctx), sub.ID, plan, cycle); err != nil {
+				return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
+			}
+			// The owner's choice now replaces a schedule still waiting to apply.
+			if err := s.repo.clearScheduledPlanDowngrade(ctx, s.querier(ctx), sub.ID); err != nil {
+				return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
+			}
+			if _, err := s.repo.syncScheduledEffectiveAt(ctx, s.querier(ctx), sub.ID); err != nil {
+				return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
+			}
+			phase := historyPhaseApplied
+			now := time.Now()
+			if historyID, err = s.repo.insertHistoryWithCycle(ctx, s.querier(ctx), sub.ID, actionDowngrade,
+				&sub.Plan, &plan, 0, sub.Currency, changedBy, nil, &phase, &now, &sub.Cycle, &cycle); err != nil {
+				return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
+			}
+			if err := s.voidSuperseded(ctx, sub, invoiceKindSubscription); err != nil {
+				return nil, "", -1, err
+			}
+		}
+		updated, err := s.getSubscription(ctx, subjectType, subjectID)
+		if err != nil {
+			return nil, "", -1, err
+		}
+		return updated, historyID, s.downgradeTargetLimits(ctx, updated, newPlanInfo), nil
+	}
+	if scheduleLocked(sub) {
+		return nil, "", -1, errAmendmentAlreadyPaid()
+	}
+
 	// Trialing has no paid period to protect, so a downgrade applies
 	// immediately. Every other status defers to renewal instead:
 	// scheduled_plan/cycle are written here, but the live plan/cycle (and
@@ -133,6 +173,9 @@ func (s *service) downgradeInTx(
 			&sub.Plan, &plan, 0, sub.Currency, changedBy, metadata, &phase, sub.PeriodEnd,
 			&sub.Cycle, &cycle); err != nil {
 			return nil, "", -1, fmt.Errorf("billing.downgradeSubscription: %w", err)
+		}
+		if err := s.afterScheduleChange(ctx, sub); err != nil {
+			return nil, "", -1, err
 		}
 		// Re-fetch so the caller sees the schedule it just wrote, not the
 		// pre-write snapshot taken before the lock.
@@ -167,6 +210,12 @@ func (s *service) undoScheduledPlanDowngrade(
 	if err := s.repo.lockSubscriptionForUpdate(ctx, s.querier(ctx), sub.ID); err != nil {
 		return nil, fmt.Errorf("billing.undoScheduledPlanDowngrade: %w", err)
 	}
+	if sub, err = s.repo.findSubscriptionByID(ctx, s.querier(ctx), sub.ID); err != nil {
+		return nil, fmt.Errorf("billing.undoScheduledPlanDowngrade: %w", err)
+	}
+	if scheduleLocked(sub) {
+		return nil, errAmendmentAlreadyPaid()
+	}
 	if sub.ScheduledPlan == nil {
 		return nil, apperr.Validation("NO_SCHEDULED_DOWNGRADE", "no scheduled plan downgrade to undo")
 	}
@@ -178,6 +227,9 @@ func (s *service) undoScheduledPlanDowngrade(
 	if _, err := s.repo.insertHistoryWithCycle(ctx, s.querier(ctx), sub.ID, actionDowngrade,
 		&sub.Plan, sub.ScheduledPlan, 0, sub.Currency, changedBy, nil, &phase, &now,
 		&sub.Cycle, sub.ScheduledCycle); err != nil {
+		return nil, fmt.Errorf("billing.undoScheduledPlanDowngrade: %w", err)
+	}
+	if err := s.afterScheduleChange(ctx, sub); err != nil {
 		return nil, fmt.Errorf("billing.undoScheduledPlanDowngrade: %w", err)
 	}
 	return s.getSubscription(ctx, subjectType, subjectID)

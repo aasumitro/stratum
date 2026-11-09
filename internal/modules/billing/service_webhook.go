@@ -214,7 +214,10 @@ func (s *service) handleWebhook(ctx context.Context, ref webhookLinkRef, normali
 		return nil, fmt.Errorf("billing.handleWebhook: find payment link with subject (post-lock): %w", err)
 	}
 
-	if link.status == normalizedStatus {
+	// A paid link is settled: no later report about the same checkout, such as
+	// a redelivered "completed but unpaid" from an async payment method, may
+	// make it look payable again.
+	if link.status == normalizedStatus || link.status == statusPaid {
 		return nil, nil
 	}
 
@@ -223,8 +226,7 @@ func (s *service) handleWebhook(ctx context.Context, ref webhookLinkRef, normali
 	// the invoice was settled, voided, or has a newer checkout, so past_due and a
 	// dunning notice here would be false. A failure reported after the link's own
 	// payment does not undo that payment either.
-	if (normalizedStatus == statusFailed || normalizedStatus == statusExpired) &&
-		(link.status == statusExpired || link.status == statusPaid) {
+	if (normalizedStatus == statusFailed || normalizedStatus == statusExpired) && link.status == statusExpired {
 		return nil, nil
 	}
 
@@ -261,7 +263,7 @@ func (s *service) handleWebhook(ctx context.Context, ref webhookLinkRef, normali
 					return nil, fmt.Errorf("billing.handleWebhook: find payment link: %w", err)
 				}
 				if err := s.repo.insertPayment(ctx, s.querier(ctx), link.invoiceID, pl.AmountCents,
-					pl.Currency, pl.Provider, pl.ExternalID, now); err != nil {
+					pl.Currency, pl.Provider, pl.ExternalID, now, true); err != nil {
 					return nil, fmt.Errorf("billing.handleWebhook: record unapplied payment: %w", err)
 				}
 				return outcome, nil
@@ -342,7 +344,7 @@ func (s *service) applyInvoicePayment(
 	if pl != nil {
 		if err := s.repo.insertPayment(
 			ctx, s.querier(ctx), link.invoiceID, pl.AmountCents,
-			pl.Currency, pl.Provider, pl.ExternalID, now,
+			pl.Currency, pl.Provider, pl.ExternalID, now, false,
 		); err != nil {
 			return fmt.Errorf("billing.applyInvoicePayment: insert payment: %w", err)
 		}
@@ -438,6 +440,9 @@ func (s *service) applyActivationPayment(ctx context.Context, outcome *webhookOu
 			updated, err := s.repo.updateSubscriptionPlanAndPeriod(ctx, s.querier(ctx), sub.ID, sub.Plan, sub.Cycle, *sub.PeriodStart, end)
 			if err != nil {
 				return fmt.Errorf("billing.applyActivationPayment: grant the paid cycle: %w", err)
+			}
+			if err := s.followPeriodEnd(ctx, sub, end); err != nil {
+				return fmt.Errorf("billing.applyActivationPayment: %w", err)
 			}
 			outcome.scheduleRenewal = updated
 			return nil
@@ -563,12 +568,28 @@ func (s *service) applyExpiredReactivation(
 	ctx context.Context, outcome *webhookOutcome, link *paymentLinkSubject, sub *subscriptionRecord,
 	changedBy string, now time.Time,
 ) error {
+	// The Resume invoice was priced from the scheduled cycle when one is set.
+	cycle := sub.Cycle
+	if sub.ScheduledCycle != nil {
+		cycle = *sub.ScheduledCycle
+	}
 	periodEnd := now.AddDate(0, 1, 0)
-	if sub.Cycle == cycleYearly {
+	if cycle == cycleYearly {
 		periodEnd = now.AddDate(1, 0, 0)
 	}
 	if err := s.repo.updateSubscriptionStatus(ctx, s.querier(ctx), sub.ID, statusActive); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: reactivate subscription: %w", err)
+	}
+	// A schedule left from before the end applies now: the new period starts here.
+	if sub.ScheduledEffectiveAt != nil {
+		if err := s.repo.moveScheduledEffectiveAt(ctx, s.querier(ctx), sub.ID, now); err != nil {
+			return fmt.Errorf("billing.applyExpiredReactivation: %w", err)
+		}
+		moved := *sub
+		moved.ScheduledEffectiveAt = &now
+		if err := s.enqueueApplyScheduled(ctx, &moved); err != nil {
+			return err
+		}
 	}
 	if err := s.repo.clearTrialEndAndUpdatePeriod(ctx, s.querier(ctx), sub.ID, now, periodEnd); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: update period on reactivation: %w", err)
@@ -653,6 +674,11 @@ func (s *service) applyExtensionPayment(
 			return fmt.Errorf("billing.applyExtensionPayment: reactivate past-due subscription: %w", err)
 		}
 	}
+	// The added months were priced at the live plan, so a schedule waiting for
+	// the old end now takes effect at the new one.
+	if err := s.followPeriodEnd(ctx, sub, newPeriodEnd); err != nil {
+		return fmt.Errorf("billing.applyExtensionPayment: %w", err)
+	}
 	if _, err := s.repo.insertHistory(ctx, s.querier(ctx), sub.ID, "extend",
 		&sub.Plan, &sub.Plan, inv.AmountCents, inv.Currency, changedBy, nil); err != nil {
 		return fmt.Errorf("billing.applyExtensionPayment: insert extend history: %w", err)
@@ -685,9 +711,20 @@ func (s *service) applyRenewalPayment(
 	ctx context.Context, outcome *webhookOutcome,
 	inv *invoiceRecord, sub *subscriptionRecord, changedBy string,
 ) error {
+	// The renewal was priced from the scheduled cycle when one is set, so it
+	// buys a period of that length.
+	cycle := sub.Cycle
+	if sub.ScheduledCycle != nil {
+		cycle = *sub.ScheduledCycle
+	}
 	periodEnd := sub.PeriodEnd.AddDate(0, 1, 0)
-	if sub.Cycle == cycleYearly {
+	if cycle == cycleYearly {
 		periodEnd = sub.PeriodEnd.AddDate(1, 0, 0)
+	}
+	// The schedule this renewal was priced from applies at the boundary it
+	// starts from; a payment arriving after that boundary applies it at once.
+	if err := s.enqueueApplyScheduled(ctx, sub); err != nil {
+		return err
 	}
 	switch sub.Status {
 	case statusTrialing:

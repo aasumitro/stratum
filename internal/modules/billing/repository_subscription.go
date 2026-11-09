@@ -30,10 +30,13 @@ type subscriptionRecord struct {
 	// the subscription itself.
 	ScheduledRequestedAt *time.Time `json:"-"`
 	ScheduledCancelAt    *time.Time `json:"scheduled_cancel_at,omitempty"`
+	// ScheduledEffectiveAt is when a scheduled plan downgrade or add-on
+	// decrease takes effect: the period end it was scheduled against.
+	ScheduledEffectiveAt *time.Time `json:"scheduled_effective_at,omitempty"`
 }
 
 const subsCols = `id, subject_type, subject_id, plan, status, cycle, currency, period_start, period_end, trial_end, created_at, updated_at,
-	scheduled_plan, scheduled_cycle, scheduled_requested_at, scheduled_cancel_at`
+	scheduled_plan, scheduled_cycle, scheduled_requested_at, scheduled_cancel_at, scheduled_effective_at`
 
 func (r *repository) findSubscriptionBySubject(
 	ctx context.Context, q db.Querier,
@@ -45,7 +48,7 @@ func (r *repository) findSubscriptionBySubject(
 		subjectType, subjectID,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.findSubscriptionBySubject: %w", err)
 	}
@@ -88,7 +91,7 @@ func (r *repository) insertSubscription(
 		subjectType, subjectID, plan, cycle, currency, now, periodEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.insertSubscription: %w", err)
 	}
@@ -109,7 +112,7 @@ func (r *repository) insertSubscriptionWithTrial(
 		subjectType, subjectID, plan, cycle, currency, now, trialEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.insertSubscriptionWithTrial: %w", err)
 	}
@@ -127,7 +130,7 @@ func (r *repository) updateSubscriptionPlan(
 		id, plan, cycle,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.updateSubscriptionPlan: %w", err)
 	}
@@ -170,7 +173,7 @@ func (r *repository) activateTrialImmediately(
 		id, periodStart, periodEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.activateTrialImmediately: %w", err)
 	}
@@ -226,7 +229,7 @@ func (r *repository) findSubscriptionByID(ctx context.Context, q db.Querier, id 
 		`SELECT `+subsCols+` FROM billing.subscriptions WHERE id = $1`, id,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.findSubscriptionByID: %w", err)
 	}
@@ -248,7 +251,7 @@ func (r *repository) updateSubscriptionPlanAndPeriod(
 		id, plan, cycle, periodStart, periodEnd,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.updateSubscriptionPlanAndPeriod: %w", err)
 	}
@@ -381,7 +384,7 @@ func (r *repository) applyScheduledPlanDowngrade(ctx context.Context, q db.Queri
 		subscriptionID,
 	).Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.Plan, &s.Status,
 		&s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.TrialEnd, &s.CreatedAt, &s.UpdatedAt,
-		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt)
+		&s.ScheduledPlan, &s.ScheduledCycle, &s.ScheduledRequestedAt, &s.ScheduledCancelAt, &s.ScheduledEffectiveAt)
 	if err != nil {
 		return nil, fmt.Errorf("billing.applyScheduledPlanDowngrade: %w", err)
 	}
@@ -414,6 +417,53 @@ func (r *repository) clearScheduledCancellation(ctx context.Context, q db.Querie
 	)
 	if err != nil {
 		return fmt.Errorf("billing.clearScheduledCancellation: %w", err)
+	}
+	return nil
+}
+
+// updateTrialEnd moves a trial's end and its period's end together: a trial's
+// period ends when the trial does.
+func (r *repository) updateTrialEnd(ctx context.Context, q db.Querier, subscriptionID string, trialEnd time.Time) error {
+	if _, err := q.Exec(ctx, `
+		UPDATE billing.subscriptions
+		SET trial_end = $2, period_end = $2, updated_at = now()
+		WHERE id = $1 AND status = 'trialing'`,
+		subscriptionID, trialEnd); err != nil {
+		return fmt.Errorf("billing.updateTrialEnd: %w", err)
+	}
+	return nil
+}
+
+// syncScheduledEffectiveAt keeps scheduled_effective_at in line with what is
+// scheduled: kept when already set, the current period_end when an amendment
+// is newly scheduled, and cleared when nothing is scheduled any more. It
+// returns the value it left.
+func (r *repository) syncScheduledEffectiveAt(ctx context.Context, q db.Querier, subscriptionID string) (*time.Time, error) {
+	var effective *time.Time
+	err := q.QueryRow(ctx, `
+		UPDATE billing.subscriptions s
+		SET scheduled_effective_at = CASE
+		        WHEN s.scheduled_plan IS NOT NULL OR EXISTS (
+		            SELECT 1 FROM billing.subscription_addons sa
+		            WHERE sa.subscription_id = s.id AND sa.scheduled_quantity IS NOT NULL)
+		        THEN COALESCE(s.scheduled_effective_at, s.period_end)
+		    END,
+		    updated_at = now()
+		WHERE s.id = $1
+		RETURNING s.scheduled_effective_at`, subscriptionID).Scan(&effective)
+	if err != nil {
+		return nil, fmt.Errorf("billing.syncScheduledEffectiveAt: %w", err)
+	}
+	return effective, nil
+}
+
+// moveScheduledEffectiveAt points a waiting schedule at a new boundary, when
+// what moved period_end (an extension) was not priced from it.
+func (r *repository) moveScheduledEffectiveAt(ctx context.Context, q db.Querier, subscriptionID string, effective time.Time) error {
+	if _, err := q.Exec(ctx, `
+		UPDATE billing.subscriptions SET scheduled_effective_at = $2, updated_at = now()
+		WHERE id = $1 AND scheduled_effective_at IS NOT NULL`, subscriptionID, effective); err != nil {
+		return fmt.Errorf("billing.moveScheduledEffectiveAt: %w", err)
 	}
 	return nil
 }

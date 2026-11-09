@@ -20,14 +20,18 @@ type paymentRecord struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// insertPayment records money a provider took for invoiceID. unapplied marks a
+// payment that settled nothing (the invoice no longer took it), which an
+// operator has to refund at the provider.
 func (r *repository) insertPayment(
 	ctx context.Context, q db.Querier,
 	invoiceID string, amountCents int64, currency, provider string, externalID *string, paidAt time.Time,
+	unapplied bool,
 ) error {
 	_, err := q.Exec(ctx, `
-		INSERT INTO billing.payments (invoice_id, amount_cents, currency, provider, external_id, paid_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		invoiceID, amountCents, currency, provider, externalID, paidAt,
+		INSERT INTO billing.payments (invoice_id, amount_cents, currency, provider, external_id, paid_at, unapplied)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		invoiceID, amountCents, currency, provider, externalID, paidAt, unapplied,
 	)
 	if err != nil {
 		return fmt.Errorf("billing.insertPayment: %w", err)

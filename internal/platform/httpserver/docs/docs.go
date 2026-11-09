@@ -7212,6 +7212,10 @@ const docTemplate = `{
                 "scheduled_cycle": {
                     "type": "string"
                 },
+                "scheduled_effective_at": {
+                    "description": "ScheduledEffectiveAt is when a scheduled plan downgrade or add-on\ndecrease takes effect: the period end it was scheduled against.",
+                    "type": "string"
+                },
                 "scheduled_plan": {
                     "type": "string"
                 },
@@ -7267,6 +7271,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "scheduled_cycle": {
+                    "type": "string"
+                },
+                "scheduled_effective_at": {
+                    "description": "ScheduledEffectiveAt is when a scheduled plan downgrade or add-on\ndecrease takes effect: the period end it was scheduled against.",
                     "type": "string"
                 },
                 "scheduled_plan": {
