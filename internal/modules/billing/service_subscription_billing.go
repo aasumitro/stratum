@@ -677,9 +677,7 @@ func (s *service) resumeWithInvoice(ctx context.Context, sub *subscriptionRecord
 		// Payment link is a convenience, not load-bearing — see extendSubscription.
 		_, _ = s.createPaymentLink(ctx, subjectTypeOrganization, sub.SubjectID, inv.ID)
 	}
-	if covered != nil && covered.scheduleRenewal != nil {
-		s.scheduleRenewalSequence(ctx, covered.scheduleRenewal)
-	}
+	s.afterOutcome(ctx, covered)
 
 	return sub, nil
 }

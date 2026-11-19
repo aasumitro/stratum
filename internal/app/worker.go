@@ -95,7 +95,8 @@ func RunWorker() error {
 
 	// Hourly safety net: re-enqueue an expiry check for any active/trialing
 	// subscription already past its end date, in case its originally
-	// scheduled SubscriptionCheck was lost. Expiry only — see
+	// scheduled SubscriptionCheck was lost, and the apply for any scheduled
+	// downgrade already due, in case its message dead-lettered — see
 	// billing.ReconcileOverdueSubscriptions.
 	wg.Go(func() {
 		ticker := time.NewTicker(time.Hour)

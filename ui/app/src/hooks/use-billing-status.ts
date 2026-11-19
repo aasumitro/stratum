@@ -5,9 +5,11 @@ interface BillingStatus {
   isOwner: boolean
   isSuspended: boolean
   hasPendingInvoice: boolean
-  /** an unpaid activation invoice — the period in use was never paid */
+  /** an unpaid activation invoice, for every role — the period in use was never paid */
+  activationUnpaid: boolean
+  /** activationUnpaid for the owner, the one role that can pay it — drives the redirect to Billing */
   hasBlockingInvoice: boolean
-  /** blocking invoice or suspended — gates Members/Webhooks/Files nav + redirects */
+  /** unpaid activation or suspended, for every role — the org-state lock behind the amber dots */
   isBillingBlocked: boolean
 }
 
@@ -42,7 +44,7 @@ export function useBillingStatus(): BillingStatus {
 
   const { data: invoicesData } = useInvoices(
     organizationId ?? "",
-    !!organizationId && isOwner
+    !!organizationId
   )
   const pending = (invoicesData?.data ?? []).filter(
     (i) => i.status === "pending"
@@ -58,15 +60,17 @@ export function useBillingStatus(): BillingStatus {
   // Only an unpaid activation means the period in use right now was never
   // paid. A renewal invoice is issued 3 days before a paid period ends, so
   // it shows on the billing page but must not lock the owner out of the
-  // period they already have.
-  const hasBlockingInvoice =
-    isOwner && pending.some((i) => i.kind === "activation")
+  // period they already have. The API refuses every member's writes while
+  // the activation is unpaid, so every role sees it; only the owner can pay
+  // it, so only the owner is sent to Billing.
+  const activationUnpaid = pending.some((i) => i.kind === "activation")
 
   return {
     isOwner,
     isSuspended,
     hasPendingInvoice,
-    hasBlockingInvoice,
-    isBillingBlocked: hasBlockingInvoice || isSuspended,
+    activationUnpaid,
+    hasBlockingInvoice: isOwner && activationUnpaid,
+    isBillingBlocked: activationUnpaid || isSuspended,
   }
 }

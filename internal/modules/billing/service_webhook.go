@@ -37,6 +37,33 @@ type webhookOutcome struct {
 	extended        *events.SubscriptionExtended
 	failed          *events.InvoiceFailed
 	scheduleRenewal *subscriptionRecord
+	// unsuspendOrgID is the organization a reactivation lifts billing's
+	// suspension from, once the transaction that reactivated it commits (see
+	// afterOutcome).
+	unsuspendOrgID string
+}
+
+// afterOutcome runs what a paid outcome leaves for after its transaction
+// commits. It lifts billing's suspension: UnsuspendOrganization opens its own
+// transaction from the same pool, so a caller still holding one would wait on
+// a second connection, and enough concurrent reactivations would stall the
+// pool. Suspension state lives in the organization module, never in billing's
+// transaction, so a failure is logged and the committed reactivation stands.
+// Only billing's own suspension reasons lift: an owner's pause or a Studio
+// operator's suspension stays. Then it schedules the renewal sequence.
+// outcome may be nil.
+func (s *service) afterOutcome(ctx context.Context, outcome *webhookOutcome) {
+	if outcome == nil {
+		return
+	}
+	if outcome.unsuspendOrgID != "" && s.orgSuspender != nil {
+		if err := s.orgSuspender.UnsuspendOrganization(ctx, outcome.unsuspendOrgID, billingSuspensionReasons); err != nil {
+			slog.Error("UnsuspendOrganization failed", "organization_id", outcome.unsuspendOrgID, "error", err)
+		}
+	}
+	if outcome.scheduleRenewal != nil {
+		s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
+	}
 }
 
 // enqueueWebhookOutcome writes an outbox row for every event outcome
@@ -114,12 +141,7 @@ func (s *service) processWebhook(ctx context.Context, provider, eventID string, 
 	if err != nil {
 		return err
 	}
-	if outcome == nil {
-		return nil
-	}
-	if outcome.scheduleRenewal != nil {
-		s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
-	}
+	s.afterOutcome(ctx, outcome)
 	return nil
 }
 
@@ -167,9 +189,7 @@ func (s *service) applyMarkedPaid(ctx context.Context, invoiceID string) error {
 	if err != nil {
 		return err
 	}
-	if outcome != nil && outcome.scheduleRenewal != nil {
-		s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
-	}
+	s.afterOutcome(ctx, outcome)
 	return nil
 }
 
@@ -608,15 +628,9 @@ func (s *service) applyExpiredReactivation(
 		&sub.Plan, &sub.Plan, 0, sub.Currency, changedBy, nil); err != nil {
 		return fmt.Errorf("billing.applyExpiredReactivation: insert resume history: %w", err)
 	}
-	// Suspension state lives in the organization module (a separate
-	// schema/service, not this transaction) — a failure here is logged, not
-	// rolled back; the paid reactivation itself already committed correctly
-	// and shouldn't be undone over this. Only billing's own suspension
-	// lifts: an owner's pause or a Studio operator's suspension stays.
-	if s.orgSuspender != nil && sub.SubjectType == subjectTypeOrganization {
-		if err := s.orgSuspender.UnsuspendOrganization(ctx, sub.SubjectID, billingSuspensionReasons); err != nil {
-			slog.Error("UnsuspendOrganization failed", "organization_id", sub.SubjectID, "error", err)
-		}
+	// Billing's suspension is lifted once this transaction commits (afterOutcome).
+	if sub.SubjectType == subjectTypeOrganization {
+		outcome.unsuspendOrgID = sub.SubjectID
 	}
 	outcome.resumed = &events.SubscriptionResumed{OrgID: link.subjectID, SubscriptionID: sub.ID, Plan: sub.Plan, ResumedAt: now}
 	outcome.scheduleRenewal = &subscriptionRecord{

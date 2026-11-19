@@ -223,6 +223,39 @@ func (r *repository) listOverdueSubscriptions(ctx context.Context, q db.Querier)
 	return out, nil
 }
 
+// listDueSchedules returns every subscription whose schedule
+// applyScheduledAtBoundary would apply now: the boundary has passed, and the
+// renewal priced from it is paid (period_end moved past it) or the subscription
+// expired there. The condition mirrors scheduleDue, so nothing comes back that
+// the apply would turn down. Only ID, SubjectType, SubjectID and
+// ScheduledEffectiveAt are filled.
+func (r *repository) listDueSchedules(ctx context.Context, q db.Querier) ([]subscriptionRecord, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, subject_type, subject_id, scheduled_effective_at
+		FROM billing.subscriptions
+		WHERE scheduled_effective_at < now()
+		  AND (status = 'expired'
+		       OR (status IN ('active', 'past_due') AND period_end > scheduled_effective_at))`)
+	if err != nil {
+		return nil, fmt.Errorf("billing.listDueSchedules: %w", err)
+	}
+
+	var out []subscriptionRecord
+	for rows.Next() {
+		var s subscriptionRecord
+		if err := rows.Scan(&s.ID, &s.SubjectType, &s.SubjectID, &s.ScheduledEffectiveAt); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("billing.listDueSchedules: scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("billing.listDueSchedules: %w", err)
+	}
+	return out, nil
+}
+
 func (r *repository) findSubscriptionByID(ctx context.Context, q db.Querier, id string) (*subscriptionRecord, error) {
 	s := new(subscriptionRecord)
 	err := q.QueryRow(ctx,

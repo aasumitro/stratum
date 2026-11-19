@@ -1073,6 +1073,8 @@
     "copyOwnerEmail": "Salin email pemilik",
     "copyOwnerEmailSuccess": "Email pemilik disalin",
     "suspendedMemberBanner": "Organisasi ini ditangguhkan. Hubungi {{ownerName}} (pemilik) untuk menyelesaikannya.",
+    "activationUnpaidMemberBanner": "Faktur pertama organisasi ini belum dibayar, jadi perubahan dijeda. Hubungi {{ownerName}} (pemilik) untuk membayarnya.",
+    "activationUnpaidBanner": "Faktur pertama organisasi ini belum dibayar, jadi perubahan dijeda sampai pemilik membayarnya.",
     "suspendedOwnerBillingBanner": "Faktur belum dibayar — bayar untuk mengaktifkan kembali secara instan.",
     "suspendedOwnerExpiredBanner": "Langganan berakhir — lanjutkan untuk mengaktifkan kembali.",
     "suspendedOwnerSelfBanner": "Anda menjeda organisasi ini — aktifkan kembali untuk memulihkan akses.",

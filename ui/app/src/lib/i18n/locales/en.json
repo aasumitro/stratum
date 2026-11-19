@@ -1073,6 +1073,8 @@
     "copyOwnerEmail": "Copy owner email",
     "copyOwnerEmailSuccess": "Owner email copied",
     "suspendedMemberBanner": "This organization is suspended. Contact {{ownerName}} (owner) to resolve.",
+    "activationUnpaidMemberBanner": "This organization's first invoice is unpaid, so changes are paused. Contact {{ownerName}} (owner) to pay it.",
+    "activationUnpaidBanner": "This organization's first invoice is unpaid, so changes are paused until the owner pays it.",
     "suspendedOwnerBillingBanner": "Unpaid invoice — pay to reactivate instantly.",
     "suspendedOwnerExpiredBanner": "Subscription ended — resume it to reactivate.",
     "suspendedOwnerSelfBanner": "You paused this organization — unsuspend it to restore access.",

@@ -21,6 +21,7 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/billing"
 	"github.com/aasumitro/stratum/internal/modules/organization"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 )
@@ -37,13 +38,16 @@ func (stubRefReader) GetCountryTaxRate(_ context.Context, _ string) (int, error)
 // tests: it records every SuspendOrganization call and can be told to fail
 // its first N calls before succeeding, to simulate a failed attempt
 // followed by a successful redelivery. UnsuspendOrganization calls are
-// recorded too (never failed), with the reasons they were allowed to lift,
-// for the webhook reactivation tests.
+// recorded too (never failed), with the reasons they were allowed to lift and
+// whether the caller still held a transaction, for the reactivation tests: the
+// real UnsuspendOrganization opens its own transaction from the same pool, so a
+// caller still holding one waits for a second connection.
 type stubOrgSuspender struct {
 	failCount        int
 	calls            []struct{ orgID, reason string }
 	unsuspended      []string
 	unsuspendReasons [][]string
+	unsuspendInTx    []bool
 }
 
 func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason string) error {
@@ -55,9 +59,10 @@ func (s *stubOrgSuspender) SuspendOrganization(_ context.Context, orgID, reason 
 	return nil
 }
 
-func (s *stubOrgSuspender) UnsuspendOrganization(_ context.Context, orgID string, reasons []string) error {
+func (s *stubOrgSuspender) UnsuspendOrganization(ctx context.Context, orgID string, reasons []string) error {
 	s.unsuspended = append(s.unsuspended, orgID)
 	s.unsuspendReasons = append(s.unsuspendReasons, reasons)
+	s.unsuspendInTx = append(s.unsuspendInTx, db.HasQuerier(ctx))
 	return nil
 }
 
@@ -2640,6 +2645,9 @@ func TestIntegration_Webhook_LatePaidWebhook_AfterExpiry_ReactivatesRenewal(t *t
 	}
 	if !slices.Equal(suspender.unsuspended, []string{orgID}) {
 		t.Errorf("UnsuspendOrganization calls: want [%s], got %v", orgID, suspender.unsuspended)
+	}
+	if slices.Contains(suspender.unsuspendInTx, true) {
+		t.Errorf("UnsuspendOrganization: want it called after the webhook transaction committed, got a call inside it")
 	}
 	if n := countOrgOutboxRows(t, pool, events.RoutingKeyInvoicePaid, orgID); n != 1 {
 		t.Errorf("outbox %s: want 1, got %d", events.RoutingKeyInvoicePaid, n)

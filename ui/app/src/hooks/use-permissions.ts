@@ -21,6 +21,7 @@ export interface Permissions {
   canEditSettings: boolean
   canUploadLogo: boolean
   hasPendingInvoice: boolean
+  activationUnpaid: boolean
   hasBlockingInvoice: boolean
 }
 
@@ -46,6 +47,7 @@ export function usePermissions(): Permissions {
     // admin+ (no matching matrix action — settingsGeneral.edit is owner-only, which is narrower than logo upload's real permission)
     canUploadLogo: isAdminUp,
     hasPendingInvoice: billing.hasPendingInvoice,
+    activationUnpaid: billing.activationUnpaid,
     hasBlockingInvoice: billing.hasBlockingInvoice,
   }
 }

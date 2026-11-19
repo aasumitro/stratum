@@ -97,6 +97,17 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
+- A scheduled downgrade or add-on decrease whose apply message dead-lettered stayed unapplied, and locked
+  against changes, until the next renewal was paid. The worker's hourly reconcile now sends the apply again
+  for every schedule that is due.
+- Studio's Change Plan said "sent" for a change the billing worker then refused and only logged. It now
+  refuses up front a target or current plan that is not active, a cancelled subscription, and a downgrade
+  that is already paid for.
+- A Resume covered in full by a coupon lifted the organization's suspension while still holding its
+  database connection. The lift opens a second one from the same pool, so enough at once could stall the
+  API. A reactivation now lifts the suspension after its transaction commits, on every payment path.
+- Admins and members learned about an unpaid activation only when a change was refused. They now see a
+  banner naming the owner, and the Settings warning dots, as the owner does.
 - Every invoice with add-ons listed them twice: the plan line carried the whole subtotal, add-ons
   included, and the add-on lines followed. An itemized Stripe checkout charges the sum of its lines,
   so it charged more than the invoice. The plan line is now the plan's own price.

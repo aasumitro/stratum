@@ -917,6 +917,12 @@ func TestIntegration_CoveredCharge_Resume(t *testing.T) {
 	if len(suspender.unsuspended) != 1 {
 		t.Errorf("want billing's suspension lifted once, got %d", len(suspender.unsuspended))
 	}
+	// UnsuspendOrganization opens its own transaction from the API pool. Called
+	// while the Resume transaction still held a connection, enough concurrent
+	// covered Resumes would each wait for a second one and stall the pool.
+	if slices.Contains(suspender.unsuspendInTx, true) {
+		t.Errorf("UnsuspendOrganization: want it called after the Resume transaction committed, got a call inside it")
+	}
 }
 
 func getJSONStatus(t *testing.T, w *httptest.ResponseRecorder) string {

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +122,7 @@ func (e *smokeEnv) cleanup(t *testing.T) {
 		`DELETE FROM billing.addons WHERE id = 'studio_smoke_addon'`,
 		`DELETE FROM billing.plan_features WHERE plan_id = 'studio_smoke_plan'`,
 		`DELETE FROM billing.plans WHERE id = 'studio_smoke_plan'`,
+		`DELETE FROM billing.plans WHERE id = 'studio_smoke_retired'`,
 		`DELETE FROM billing.features WHERE id = 'studio_smoke_feature'`,
 		`DELETE FROM ref.countries WHERE code = 'ZS'`,
 		`DELETE FROM ref.currencies WHERE code = 'ZZS'`,
@@ -340,6 +342,18 @@ func (e *smokeEnv) mutations(projectID string) []smokeMutation {
 			return err
 		}},
 	}
+}
+
+// planChangeRows counts the operator plan changes queued for the smoke organization.
+func (e *smokeEnv) planChangeRows(t *testing.T) int {
+	t.Helper()
+	var rows int
+	if err := e.admin.QueryRow(t.Context(), `
+		SELECT count(*) FROM messaging.outbox
+		WHERE routing_key = 'billing.subscription.operator-plan-change' AND payload->>'org_id' = $1`, e.orgID).Scan(&rows); err != nil {
+		t.Fatalf("count plan change rows: %v", err)
+	}
+	return rows
 }
 
 func (e *smokeEnv) auditCount(t *testing.T, action string) int {
@@ -579,6 +593,69 @@ func TestOperatorSmoke(t *testing.T) {
 		}
 		if messages != 0 {
 			t.Errorf("%d messages sent although the audit record failed", messages)
+		}
+	})
+
+	// The billing worker cannot report a refusal back to Studio: it only logs it.
+	// So every refusal it would make on state Studio can read is caught before
+	// anything is queued.
+	t.Run("Change Plan refuses up front what billing would refuse", func(t *testing.T) {
+		ctx := t.Context()
+		var periodEnd time.Time
+		if err := e.admin.QueryRow(ctx,
+			`SELECT period_end FROM billing.subscriptions WHERE subject_id = $1`, e.orgID).Scan(&periodEnd); err != nil {
+			t.Fatalf("read subscription: %v", err)
+		}
+		if _, err := e.admin.Exec(ctx, `
+			INSERT INTO billing.plans (id, name, prices, sort_order, active)
+			VALUES ('studio_smoke_retired', 'Smoke Retired', '{"USD":{"monthly":100,"yearly":1000}}', 99, false)`); err != nil {
+			t.Fatalf("seed inactive plan: %v", err)
+		}
+		defer func() {
+			background := context.Background()
+			if _, err := e.admin.Exec(background, `
+				UPDATE billing.subscriptions
+				SET status = 'trialing', plan = 'solo', period_end = $2,
+				    scheduled_plan = NULL, scheduled_cycle = NULL,
+				    scheduled_requested_at = NULL, scheduled_effective_at = NULL
+				WHERE subject_id = $1`, e.orgID, periodEnd); err != nil {
+				t.Errorf("restore subscription: %v", err)
+			}
+			if _, err := e.admin.Exec(background, `DELETE FROM billing.plans WHERE id = 'studio_smoke_retired'`); err != nil {
+				t.Errorf("remove inactive plan: %v", err)
+			}
+		}()
+
+		cases := []struct{ name, setup, plan, want string }{
+			{"inactive target plan", "", "studio_smoke_retired", "is not active"},
+			{"inactive current plan",
+				`UPDATE billing.subscriptions SET plan = 'studio_smoke_retired' WHERE subject_id = $1`,
+				"growth", "current plan"},
+			{"cancelled subscription",
+				`UPDATE billing.subscriptions SET plan = 'solo', status = 'cancelled' WHERE subject_id = $1`,
+				"growth", "cancelled"},
+			{"schedule already paid for", `
+				UPDATE billing.subscriptions
+				SET status = 'active', scheduled_plan = 'solo', scheduled_cycle = 'monthly',
+				    scheduled_requested_at = now(), scheduled_effective_at = now() - interval '1 day',
+				    period_end = now() + interval '29 days'
+				WHERE subject_id = $1`,
+				"growth", "already paid for"},
+		}
+		for _, c := range cases {
+			if c.setup != "" {
+				if _, err := e.admin.Exec(ctx, c.setup, e.orgID); err != nil {
+					t.Fatalf("%s: setup: %v", c.name, err)
+				}
+			}
+			before := e.planChangeRows(t)
+			err := e.services.Support.ChangePlan(e.operatorProject, e.orgID, c.plan, "monthly")
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("%s: want an error containing %q, got %v", c.name, c.want, err)
+			}
+			if queued := e.planChangeRows(t) - before; queued != 0 {
+				t.Errorf("%s: %d plan changes queued, want none", c.name, queued)
+			}
 		}
 	})
 

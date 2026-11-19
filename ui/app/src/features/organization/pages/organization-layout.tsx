@@ -71,6 +71,7 @@ export function OrganizationLayout() {
   const {
     isOwner,
     hasPendingInvoice,
+    activationUnpaid,
     hasBlockingInvoice,
     role,
     canViewBilling,
@@ -90,11 +91,27 @@ export function OrganizationLayout() {
     isSuspended && isSelfSuspensionReason(organization?.suspended_reason)
 
   const { data: membersData } = useOrganizationMembers(organizationId, {
-    enabled: isSuspended && !isOwner,
+    enabled: (isSuspended || activationUnpaid) && !isOwner,
   })
   const owner = (membersData?.data ?? []).find(
     (m) => m.auth_sub === organization?.owner_id
   )
+  const ownerName = owner
+    ? owner.full_name || owner.email || t("organization.roles.owner")
+    : undefined
+  const copyOwnerEmailAction = owner?.email ? (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => {
+        void navigator.clipboard.writeText(owner.email!)
+        toast.success(t("organization.copyOwnerEmailSuccess"))
+      }}
+    >
+      <IconCopy data-icon="inline-start" />
+      {t("organization.copyOwnerEmail")}
+    </Button>
+  ) : undefined
   const { mutate: unsuspend, isPending: unsuspending } =
     useUnsuspendOrganization(organizationId)
 
@@ -124,6 +141,11 @@ export function OrganizationLayout() {
     isSuspended && !(onBillingPage && isBillingCausedSuspension)
   const showPendingInvoiceBanner =
     hasBlockingInvoice && !isSuspended && !onBillingPage
+  // A non-owner cannot pay, but every write they try is refused until the
+  // owner does: say so up front rather than on the first refused write. It
+  // stays on /billing too, which shows a non-owner nothing about it.
+  const showActivationUnpaidBanner =
+    activationUnpaid && !isOwner && !isSuspended
   // An expired subscription only has an invoice to pay once the owner
   // resumes it — until then, "pay the unpaid invoice" would point at nothing.
   const ownerBillingBannerKey = hasPendingInvoice
@@ -135,25 +157,10 @@ export function OrganizationLayout() {
     banners.push({
       id: "suspended",
       severity: "warning",
-      message: owner
-        ? t("organization.suspendedMemberBanner", {
-            ownerName:
-              owner.full_name || owner.email || t("organization.roles.owner"),
-          })
+      message: ownerName
+        ? t("organization.suspendedMemberBanner", { ownerName })
         : t("organization.suspendedBanner"),
-      action: owner?.email ? (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => {
-            void navigator.clipboard.writeText(owner.email!)
-            toast.success(t("organization.copyOwnerEmailSuccess"))
-          }}
-        >
-          <IconCopy data-icon="inline-start" />
-          {t("organization.copyOwnerEmail")}
-        </Button>
-      ) : undefined,
+      action: copyOwnerEmailAction,
     })
   }
   if (showSuspendedBanner && isOwner) {
@@ -185,6 +192,16 @@ export function OrganizationLayout() {
           {t("organization.danger.unsuspendAction")}
         </Button>
       ) : undefined,
+    })
+  }
+  if (showActivationUnpaidBanner) {
+    banners.push({
+      id: "activation-unpaid",
+      severity: "warning",
+      message: ownerName
+        ? t("organization.activationUnpaidMemberBanner", { ownerName })
+        : t("organization.activationUnpaidBanner"),
+      action: copyOwnerEmailAction,
     })
   }
   if (showPendingInvoiceBanner) {

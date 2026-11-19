@@ -301,9 +301,7 @@ func (s *service) issuePeriodInvoice(
 		if err != nil {
 			return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
 		}
-		if outcome.scheduleRenewal != nil {
-			s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
-		}
+		s.afterOutcome(ctx, outcome)
 		return nil, nil
 	}
 	taxRate := 0

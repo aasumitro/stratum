@@ -386,9 +386,7 @@ func (w *Worker) HandleSubscriptionAutoInvoice(ctx context.Context, body []byte)
 
 	switch {
 	case covered != nil:
-		if covered.scheduleRenewal != nil {
-			w.svc.scheduleRenewalSequence(ctx, covered.scheduleRenewal)
-		}
+		w.svc.afterOutcome(ctx, covered)
 	case pending != nil:
 		// Regenerate the link instead of leaving the invoice permanently
 		// unpayable; if it already has one, there's nothing left to do.

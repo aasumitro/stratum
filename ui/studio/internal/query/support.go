@@ -223,16 +223,59 @@ func SupportActivateSubscription(ctx context.Context, pool *pgxpool.Pool, organi
 // SupportChangePlan asks the app's billing worker to change an organization's
 // plan through the same path an owner's change takes, so pending invoices are
 // repriced and renewal follows a moved end. Billing applies it moments later.
+//
+// The worker cannot answer back: a change it refuses is only logged there. So
+// the refusals that depend on state Studio can read are checked here first,
+// with billing's own rules: both plans must be active (billing prices the
+// change from each), a cancelled subscription is resumed by its owner first,
+// and a scheduled downgrade whose renewal is already paid cannot be replaced
+// until it applies. A change of state between this read and the worker's
+// apply still ends in the worker's log.
 func SupportChangePlan(ctx context.Context, pool *pgxpool.Pool, organizationID, plan, cycle string) error {
-	var planExists bool
-	if err := pool.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM billing.plans WHERE id = $1)
-	`, plan).Scan(&planExists); err != nil {
-		return fmt.Errorf("query.SupportChangePlan: %w", err)
-	}
-	if !planExists {
+	var targetActive bool
+	err := pool.QueryRow(ctx, `SELECT active FROM billing.plans WHERE id = $1`, plan).Scan(&targetActive)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("plan %q does not exist", plan)
 	}
+	if err != nil {
+		return fmt.Errorf("query.SupportChangePlan: %w", err)
+	}
+	if !targetActive {
+		return fmt.Errorf("plan %q is not active; billing only changes to an active plan", plan)
+	}
+
+	var (
+		status, currentPlan string
+		currentPlanActive   bool
+		scheduledFrom       *time.Time
+		scheduleLocked      bool
+	)
+	err = pool.QueryRow(ctx, `
+		SELECT s.status,
+		       s.plan,
+		       p.active,
+		       s.scheduled_effective_at,
+		       COALESCE(s.period_end > s.scheduled_effective_at, false) AS schedule_locked
+		FROM billing.subscriptions s
+		JOIN billing.plans p ON p.id = s.plan
+		WHERE s.subject_id = $1
+	`, organizationID).Scan(&status, &currentPlan, &currentPlanActive, &scheduledFrom, &scheduleLocked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("no subscription found for organization %s", organizationID)
+	}
+	if err != nil {
+		return fmt.Errorf("query.SupportChangePlan: %w", err)
+	}
+	switch {
+	case !currentPlanActive:
+		return fmt.Errorf("the organization's current plan %q is not active; billing cannot price a change from it", currentPlan)
+	case status == "cancelled":
+		return fmt.Errorf("the subscription is cancelled; the owner resumes it before its plan can change")
+	case scheduleLocked && scheduledFrom != nil:
+		return fmt.Errorf("a scheduled change is already paid for and takes effect on %s; change the plan after that",
+			scheduledFrom.UTC().Format("2006-01-02"))
+	}
+
 	tag, err := pool.Exec(ctx, `
 		WITH target AS (
 			SELECT gen_random_uuid() AS id, s.subject_id
