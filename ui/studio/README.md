@@ -19,4 +19,4 @@ task build      # release build for the current OS
 task package    # signed + packaged build
 ```
 
-Requires Go 1.25+ and the `wails3` CLI. Studio stores its own project registry in local SQLite and needs only the target project's `/health` endpoint reachable (plus DB/MQ/Redis DSNs entered in the app).
+Requires Go 1.26+ and the `wails3` CLI. Studio stores its own project registry in local SQLite and needs only the target project's `/health` endpoint reachable (plus DB/MQ/Redis DSNs entered in the app).

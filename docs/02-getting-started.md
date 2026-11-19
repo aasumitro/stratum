@@ -22,7 +22,7 @@ make run-worker           # background worker (RabbitMQ consumers)
 
 Storage buckets are created automatically on API startup. Confirm the stack is healthy with `curl localhost:8000/health/ready` (expect `200`) and check the worker log shows its consumers registered. In `development` mode, browse the interactive API docs at `localhost:8000/swagger/index.html` (Swagger UI, not mounted in production).
 
-Other useful targets: `make build` (compiles `bin/api` + `bin/worker`), `make test` / `make test-integration`, `make lint` / `make fmt` / `make vet`, `make migrate-create name=<snake_case>`, `make swagger` (regenerates the OpenAPI spec after changing a handler's doc comments — see `08-api-reference.md`), `make infra-down` / `make infra-destroy`.
+Other useful targets: `make build` (compiles `bin/stratum-api` + `bin/stratum-worker`), `make test` / `make test-integration`, `make lint` / `make fmt` / `make vet`, `make migrate-create name=<snake_case>`, `make swagger` (regenerates the OpenAPI spec after changing a handler's doc comments — see `08-api-reference.md`), `make infra-down` / `make infra-destroy`.
 
 ## Web app
 

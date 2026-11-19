@@ -11,7 +11,7 @@ active ⇄ past_due
 
 When someone creates their **first** organization, it gets a 7-day trial with no invoice. Every **subsequent** organization they own goes straight to `active` with an invoice created on the spot. The creator must choose a plan and billing cycle at creation time (both validated against the live catalog), and can optionally add addons and a coupon code to the same request — all validated up front and, for a 2nd+ org, already priced into that first invoice. A plan with no price is arranged with sales and cannot be picked (`422 PLAN_NOT_SELF_SERVICE`). Joining an existing organization never involves a plan choice.
 
-Owners can **change plan** (with proration), **cancel** (with a required reason), **resume**, **extend** (buy 1–24 more months, capped at a 2-year total lifetime), and **activate** (skip the rest of a trial and invoice a full cycle now — the subscription becomes active immediately, but that invoice still has to be paid like any other).
+Owners can **change plan** (with proration), **cancel** (with a required reason), **resume**, **extend** (buy 1–24 more months, as long as `period_end` stays within 24 months of today), and **activate** (skip the rest of a trial and invoice a full cycle now — the subscription becomes active immediately, but that invoice still has to be paid like any other).
 
 While an organization's first invoice (a 2nd+ organization's, or activate-now's) is unpaid, the period in use was never paid for, so the API refuses writes for every member and every client with `403 ACTIVATION_UNPAID`. Reading stays open, and so do Billing, deleting the organization, and leaving it. Paying lifts it on the next request. Locally, with no payment provider configured, Studio's Mark paid settles the invoice.
 

@@ -35,14 +35,15 @@ export interface Subscription {
   trial_end?: string
   active_coupon?: string
   // How many more months this subscription can be extended by before
-  // hitting its 24-month lifetime cap — backend-computed (same arithmetic
-  // the extend endpoint itself enforces) so the frontend never re-derives
-  // it from period_end/created_at and risks disagreeing by a day.
+  // period_end would sit more than 24 months ahead of now — backend-computed
+  // (same arithmetic the extend endpoint itself enforces) so the frontend
+  // never re-derives it from period_end and risks disagreeing by a day.
   max_extendable_months: number
-  // A plan downgrade or cancellation on a non-trialing subscription defers
-  // to renewal instead of applying immediately — these three fields are set
-  // while an amendment is scheduled and clear once the renewal worker
-  // applies (or the owner undoes) it.
+  // A plan downgrade on a paid subscription, and a cancellation on any status,
+  // is scheduled instead of applied immediately. These fields are set while an
+  // amendment is scheduled: a downgrade applies at scheduled_effective_at (the
+  // period end it was scheduled against), a cancellation when the period or
+  // trial ends. They clear once it applies or the owner undoes it.
   scheduled_plan?: string
   scheduled_cycle?: BillingCycle
   scheduled_cancel_at?: string

@@ -232,8 +232,8 @@ func enqueueCheckoutExpiry(ctx context.Context, q db.Querier, orgID string, link
 // expireCheckout closes one hosted checkout at its provider (queued by
 // enqueueCheckoutExpiry). A provider with no API key configured cannot be
 // called, so there is nothing to do. A checkout the provider says is no
-// longer open is done — logged, not retried; a rate limit, server error or
-// transport failure is returned so the message is redelivered.
+// longer open is done — logged, not retried; a rejected key, rate limit,
+// server error or transport failure is returned so the message is redelivered.
 func (s *service) expireCheckout(ctx context.Context, provider, externalID string) error {
 	var err error
 	switch provider {

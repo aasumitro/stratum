@@ -14,7 +14,7 @@ Stratum is a **modular monolith**: a single Go codebase organized into independe
                     Organization Billing Notification │
                           │         │         │       ▼
                           ▼         ▼         ▼   Stripe / Xendit webhooks
-                        PostgreSQL (6 schemas)        │
+                        PostgreSQL (7 schemas)        │
                                               subscription/invoice state
                                                       │
                                           Notification + Audit
@@ -34,7 +34,7 @@ The backend has five domain modules — `organization`, `account`, `billing`, `n
 - **No cross-module imports.** A module never imports another. The only shared surface is `internal/contracts` — a small set of interfaces plus the event envelope.
 - **No cross-schema foreign keys.** A reference to another module's data is a plain UUID column, validated in application code, never enforced by a database constraint. This keeps migrations and deployments decoupled.
 
-Modules are wired together explicitly in `internal/app/api.go` (and `worker.go`) — each is constructed with a `New(...)` call, its dependencies resolved, and its routes or consumers registered. There is no magic `init()` wiring.
+Modules are wired together explicitly in `internal/app/bootstrap` (`api_modules.go` for the API, `worker_modules.go` for the worker) — each is constructed with a `New(...)` call, its dependencies resolved, and its routes or consumers registered. There is no magic `init()` wiring.
 
 ## How modules talk
 
@@ -43,11 +43,11 @@ Modules are wired together explicitly in `internal/app/api.go` (and `worker.go`)
 
 ## The request path
 
-Every API request passes through a middleware stack, in order: **auth** (validate the JWT against Supabase's JWKS), **organization** (resolve the active tenant), **RBAC** (owner/admin/member), **rate-limit** (per plan tier), **request-id**, **recovery**, **audit** (log every mutation automatically), **body-size**, and **CORS**. By the time a handler runs, identity, tenant, and permission are already established.
+Every API request passes through a middleware stack, in order: **tracing**, **request-id**, **recovery**, **CORS**, **security headers**, **body-size** (50 MB), then for `/api/v1` **audit** (log every mutation automatically), then per module **auth** (validate the JWT against Supabase's JWKS), **rate-limit** (per plan tier, keyed by the authenticated user), **organization** (resolve the active tenant and check membership), the **activation gate** on organization routes (refuse writes while the first invoice is unpaid), and per route **RBAC** (owner/admin/member), row-level-security scoping and **MFA** step-up. By the time a handler runs, identity, tenant, and permission are already established.
 
 ## The platform layer
 
-Cross-cutting infrastructure lives in `internal/platform/` — one package per concern: `audit`, `cache` (Redis), `config`, `db` (pgx pool), `httpserver`, `mailer`, `messaging` (RabbitMQ), `otel`, `pdf`, `storage`. There is deliberately no `util/` or `helper/` grab-bag — every helper has a named home.
+Cross-cutting infrastructure lives in `internal/platform/` — one package per concern: `apperr`, `audit`, `cache` (Redis), `config`, `db` (pgx pool), `geoip`, `httpclient`, `httpserver`, `logger`, `mailer`, `messaging` (RabbitMQ), `otel`, `outbox`, `pdf`, `storage`. There is deliberately no `util/` or `helper/` grab-bag — every helper has a named home.
 
 ## Design principles
 

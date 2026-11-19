@@ -170,10 +170,10 @@ func createXenditInvoice(
 	return &paymentLinkResult{ExternalID: out.ID, URL: out.InvoiceURL, ExpiresAt: out.ExpiryDate}, nil
 }
 
-// errCheckoutNotOpen marks an expire call the provider refused with a
-// client error other than rate limiting: the checkout is no longer open
-// (completed or already expired) or unknown to it, so there is nothing left
-// to close and retrying would get the same answer.
+// errCheckoutNotOpen marks an expire call the provider refused because of the
+// checkout itself: it is no longer open (completed or already expired) or
+// unknown to it, so there is nothing left to close and retrying would get the
+// same answer.
 var errCheckoutNotOpen = errors.New("checkout not open at the provider")
 
 // expireStripeCheckoutSession closes an open Checkout Session so it can no
@@ -200,9 +200,12 @@ func expireXenditInvoice(ctx context.Context, cfg ProviderConfig, invoiceID stri
 	return sendCheckoutExpiry(req, "billing.expireXenditInvoice")
 }
 
-// sendCheckoutExpiry sends a provider expire call. A rate limit, server
-// error or transport failure is returned as is, so the message is
-// redelivered; any other non-200 answer wraps errCheckoutNotOpen.
+// sendCheckoutExpiry sends a provider expire call. A rejected or
+// under-privileged API key (401, 403), a rate limit, a server error or a
+// transport failure is returned as is, so the message is redelivered and, if it
+// keeps failing, dead-lettered where an operator sees it: acknowledging a key
+// problem would leave every superseded checkout open with only a log line to
+// show for it. Any other non-200 answer wraps errCheckoutNotOpen.
 func sendCheckoutExpiry(req *http.Request, op string) error {
 	resp, err := httpclient.TrustedClient.Do(req)
 	if err != nil {
@@ -213,7 +216,8 @@ func sendCheckoutExpiry(req *http.Request, op string) error {
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		return nil
-	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError:
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden,
+		resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode >= http.StatusInternalServerError:
 		return fmt.Errorf("%s: status %d", op, resp.StatusCode)
 	default:
 		return fmt.Errorf("%s: status %d: %w", op, resp.StatusCode, errCheckoutNotOpen)

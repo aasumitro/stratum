@@ -6,6 +6,14 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
+SOC 2 readiness controls (an append-only audit trail, every Studio change attributed to a person,
+retention sweeps, security metrics with an alert catalog, backup tooling, a compliance guide), a
+billing lifecycle that schedules cancellations, downgrades and add-on decreases to the end of the
+paid period and enforces an unpaid activation in the API, and the billing exploits and payment
+edge cases found since 0.5.0 closed.
+
 ### Security
 
 - Runtime roles can no longer write an audit row naming an operator. Only the database functions
@@ -244,6 +252,10 @@ versioning follows [SemVer](https://semver.org/).
   link could still take money; every local link expiry now closes the checkout at the provider
   too, through the outbox and the billing worker. Once an invoice is paid — by webhook or by a
   Studio mark-paid — its other open checkouts are closed the same way, so it can't be paid twice.
+  A provider that rejects the API key (401/403) is retried and then dead-lettered, so a key
+  problem shows on `stratum.dlq.messages` instead of leaving checkouts open behind a log line.
+- The web app's webhook event picker left out `billing.subscription.expired`, which the worker
+  delivers; it can now be selected.
 - A paid reactivation lifted any suspension, including one set by a Studio operator; it now lifts
   only billing's own, and "organization reactivated" is only announced when it actually was.
 - Studio "Mark paid" only flipped the invoice; it is now applied by the billing worker like a real

@@ -106,7 +106,7 @@ var (
 	ErrPlanNotSelfServe            = errors.New("plan is not available to pick")
 	ErrSubscriptionNotExtendable   = errors.New("subscription is not in an extendable state")
 	ErrExtensionAlreadyPending     = errors.New("an invoice is already pending payment for this subscription")
-	ErrExtensionExceedsMaxDuration = errors.New("extension would exceed the maximum subscription duration")
+	ErrExtensionExceedsMaxDuration = errors.New("extension would push the period end more than 24 months ahead")
 	ErrAlreadyYearly               = errors.New("subscription is already on the yearly cycle")
 	ErrSubscriptionNotTrialing     = errors.New("subscription is not currently trialing")
 	ErrSubscriptionNotResumable    = errors.New("subscription is not in a resumable state")

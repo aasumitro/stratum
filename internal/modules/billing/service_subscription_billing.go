@@ -229,10 +229,9 @@ func (s *service) insertExtensionLineItems(
 // would run free for its length. Coupons still don't apply here: unlike
 // addons, skipping a coupon only reduces what's charged, it doesn't open a
 // free-access path, so there's no equivalent leak to close.
-// Capped so the subscription's total lifetime (from its original creation,
-// never extendable past 2 years) is never exceeded — rejected outright
-// rather than silently clamped, so the caller always knows exactly how much
-// time an extension bought.
+// Capped by maxRunwayMonths: period_end may never end up more than 24 months
+// ahead of now — rejected outright rather than silently clamped, so the
+// caller always knows exactly how much time an extension bought.
 //
 // switchToAnnual additionally converts the subscription's billing cycle to
 // yearly — but not synchronously here: this function only ever creates the

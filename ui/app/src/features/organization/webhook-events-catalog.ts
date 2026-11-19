@@ -1,7 +1,8 @@
 // Per-event subscriptions. This is the exhaustive list of event types
-// the outbound webhook worker actually fans out (internal/app/worker.go's
+// the outbound webhook worker actually fans out (the
 // "organization.webhook-organization" / "organization.webhook-billing"
-// consumer bindings) — deliberately not the full domain-event catalog,
+// consumer bindings in internal/modules/organization/consumers.go) —
+// deliberately not the full domain-event catalog,
 // since subscribing to an event that's never delivered would silently do
 // nothing. Frontend-only static map, same convention as
 // notification-categories.ts; the backend stores subscribed_events as a
@@ -19,6 +20,7 @@ export const WEBHOOK_EVENT_CATALOG: WebhookEventCatalogEntry[] = [
   { key: "billing.invoice.failed", group: "billing" },
   { key: "billing.subscription.activated", group: "billing" },
   { key: "billing.subscription.cancelled", group: "billing" },
+  { key: "billing.subscription.expired", group: "billing" },
   { key: "billing.subscription.resumed", group: "billing" },
 ]
 

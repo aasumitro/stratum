@@ -20,7 +20,9 @@ MFA enrolment happens against Supabase directly, never through this API.
 ## Organizations — `/organizations`
 `GET` · `POST` (`plan`/`cycle` required; optional `addons[]`/`coupon_code` cart, validated against the live catalog before the org is written) · `GET /join/preview` (invite code, read-only) · `POST /join` (invite code) · `GET/PATCH/DELETE /:id` · `DELETE /:id/leave` · `POST /:id/transfer` (MFA) · `PATCH /:id/settings` · `POST /:id/suspend` · `POST /:id/unsuspend` (both MFA) · `POST /:id/invite-code` · `PATCH /:id/invite-code` · `POST /:id/logo`.
 
-**Members** `/:id/members`: `GET` · `POST` · `POST /import` (bulk email invite, `dry_run`) · `DELETE /:authSub` · `PATCH /:authSub/role`.
+**Members** `/:id/members`: `GET` · `POST` · `POST /import` (bulk email invite, `dry_run`) · `DELETE /:authSub` · `PATCH /:authSub/role` · `POST /:authSub/suspend` · `POST /:authSub/reinstate`.
+
+While an organization's first invoice is unpaid, its routes refuse writes with `403 ACTIVATION_UNPAID`; reads, billing, `/unsuspend`, deleting the organization and leaving it stay open.
 
 **Invitations** `/:id/invitations`: `GET` · `POST` · `DELETE /:invId`. Plus (no org prefix): `GET /me/invitations`, `GET /invitations/preview?token=`, `POST /invitations/accept`, `POST /invitations/request-new`.
 
@@ -30,7 +32,7 @@ MFA enrolment happens against Supabase directly, never through this API.
 
 ## Billing — `/organizations/:id/billing`
 Every `GET` is member-visible; every mutation is owner-only.
-`GET /` · `PATCH /plan` (MFA) · `POST /downgrade` (MFA) · `POST /cancel` · `POST /resume` · `POST /extend` (MFA) · `POST /activate` (MFA) · `GET /history` · `GET /invoices` · `GET /invoices/:id/pdf?lang=` · `POST /invoices/:id/pay` · `POST /invoices/:id/pay/regenerate` · `GET /payment-links` · `GET /payments` · `GET /usage` · `POST /usage` · `GET /features` · `GET /preview?plan=&cycle=` · `GET /coupons` · `POST /coupons/redeem` · `GET /addons` · `POST /addons` (MFA) · `DELETE /addons/:id` (MFA).
+`GET /` · `GET /plans/catalog` · `GET /addons/catalog` · `PATCH /plan` (MFA) · `POST /downgrade` (MFA) · `POST /downgrade/undo` (MFA) · `POST /cancel` · `POST /cancel/undo` · `POST /resume` · `POST /extend` (MFA) · `POST /activate` (MFA) · `GET /history` · `GET /invoices` · `GET /invoices/:id/pdf?lang=` · `POST /invoices/:id/pay` · `GET /payment-links` · `GET /payments` · `GET /usage` · `POST /usage` · `GET /features` · `GET /preview?plan=&cycle=` · `GET /coupons` · `POST /coupons/redeem` · `GET /addons` · `POST /addons` (MFA) · `DELETE /addons/:id` (MFA) · `POST /addons/:id/undo` (MFA).
 
 `GET /billing/coupons/eligible` (no organization in the path) — same eligibility check as `GET /coupons`, for the create-organization cart before an org exists.
 

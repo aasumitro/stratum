@@ -496,6 +496,8 @@ func TestHandlePaymentLinkExpire_CallsTheProvider(t *testing.T) {
 		{"stripe session no longer open", cfg, "stripe", "cs_2", 400, "https://api.stripe.com/v1/checkout/sessions/cs_2/expire", stripeKey, false},
 		{"xendit invoice unknown", cfg, "xendit", "inv_2", 404, "https://api.xendit.co/invoices/inv_2/expire!", xenditKey, false},
 		{"stripe rate limited", cfg, "stripe", "cs_3", 429, "https://api.stripe.com/v1/checkout/sessions/cs_3/expire", stripeKey, true},
+		{"stripe key rejected", cfg, "stripe", "cs_5", 401, "https://api.stripe.com/v1/checkout/sessions/cs_5/expire", stripeKey, true},
+		{"xendit key lacks permission", cfg, "xendit", "inv_5", 403, "https://api.xendit.co/invoices/inv_5/expire!", xenditKey, true},
 		{"xendit server error", cfg, "xendit", "inv_3", 503, "https://api.xendit.co/invoices/inv_3/expire!", xenditKey, true},
 		{"stripe not configured", billing.ProviderConfig{}, "stripe", "cs_4", 200, "", "", false},
 		{"unknown provider", cfg, "paypal", "pp_1", 200, "", "", false},
