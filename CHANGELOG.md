@@ -16,6 +16,9 @@ edge cases found since 0.5.0 closed.
 
 ### Security
 
+- Studio moves from Wails `v3.0.0-beta.8` to the stable `v3.1.0`, which blocks reserved `wails:` messages from
+  cross-origin child frames on Linux (GHSA-2p5f-2gx8-mh8m), and builds with Go 1.27, which includes the
+  `crypto/x509` fix (GO-2026-6809).
 - Runtime roles can no longer write an audit row naming an operator. Only the database functions
   that record Studio's changes can (migration `000012`).
 - Deleting an account now also clears the IP address and user agent on its audit rows.
@@ -57,6 +60,12 @@ edge cases found since 0.5.0 closed.
 
 ### Changed
 
+- Studio: Go 1.27 (was 1.26) and Wails `v3.1.0`, with `@wailsio/runtime` pinned to `3.1.0` instead of `latest` so the
+  npm runtime always matches the Go module. Reinstall the CLI to match:
+  `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`. Its generated bindings were regenerated; they had
+  fallen behind the Go source (a missing `PaymentToReview` type export).
+- Backend Go dependencies updated to their latest releases, among them `pgx` 5.13, `amqp091-go` 1.17, `keyfunc`
+  3.9, `gopdf` 0.38.4, `grpc` 1.85 and `golang.org/x/crypto` 0.59.
 - **Breaking:** a scheduled downgrade or add-on decrease now applies at the end of the period it was
   scheduled for, once the renewal is paid, instead of when the renewal invoice is issued three days
   earlier. The renewal invoice is priced at the scheduled plan and quantities, and is reissued when

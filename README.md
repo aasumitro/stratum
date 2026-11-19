@@ -48,7 +48,7 @@ npm run dev          # :3000
 
 # Desktop admin (Stratum Studio)
 cd ui/studio
-task dev             # Wails v3 hot-reload (requires Go 1.26+ and wails3 CLI)
+task dev             # Wails v3 hot-reload (requires Go 1.27+ and the wails3 v3.1.0 CLI)
 ```
 
 ## Staging (Podman)

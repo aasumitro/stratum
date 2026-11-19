@@ -58,6 +58,7 @@ export type {
   MonitorLog,
   OperatorLogEntry,
   OrganizationSummary,
+  PaymentToReview,
   Plan,
   PlanCount,
   PlanFeature,

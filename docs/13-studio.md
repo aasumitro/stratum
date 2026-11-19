@@ -11,7 +11,7 @@ Each person connects with their own Postgres login role, a member of the `stratu
 Any other connection, such as the schema owner, can still read everything. So can a login in the group created without `BYPASSRLS`, as far as row-level security lets it, and it is refused too. Studio shows a persistent banner and refuses every change with `this connection is not an operator role; changes would not be audited`. A connection failure, such as an outage or an expired password, is refused too, but reported as itself. Local dev has a ready-made login: `postgres://stratum_operator_dev:stratum_operator_dev@localhost:5432/stratum?sslmode=disable`. Provisioning, the quarterly review and revocation are in [12-operations](12-operations.md). RabbitMQ and Redis credentials stay shared; queue actions are attributed through the database record, not by the broker.
 
 ## Stack
-Wails v3 with a Go 1.26+ backend and a React 19 / TypeScript / Vite frontend (Tailwind v4 + shadcn/ui, TanStack Router). Its own project registry is stored locally in SQLite (`modernc.org/sqlite`, pure Go). Frontend types come from Wails-generated bindings, **not** from `ui/app`.
+Wails v3 (`v3.1.0`) with a Go 1.27+ backend and a React 19 / TypeScript / Vite frontend (Tailwind v4 + shadcn/ui, TanStack Router). Its own project registry is stored locally in SQLite (`modernc.org/sqlite`, pure Go). Frontend types come from Wails-generated bindings, **not** from `ui/app`.
 
 > Two cautions if you touch the code: don't move Studio into `cmd/` (its Wails dependency chain is incompatible with the main module), and read https://v3.wails.io/ first — Wails 3 differs significantly from v2.
 

@@ -79,6 +79,10 @@ export function MarkInvoicePaid(
   return $Call.ByID(2414450307, projectID, invoiceID)
 }
 
+/**
+ * MarkPaymentRefunded records a refund the operator already made at the
+ * payment's provider; Studio never moves money itself.
+ */
 export function MarkPaymentRefunded(
   projectID: string,
   paymentID: string
