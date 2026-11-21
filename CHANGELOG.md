@@ -6,6 +6,17 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Web: `i18next` 27 and `react-i18next` 18 (major; the translate helpers take a shared `Translate` type, since
+  i18next 27's `TFunction` no longer fits a plain `(key, options?)` signature), `jsdom` 31, `@playwright/test`
+  1.65, `@tanstack/react-query` 5.108, `@tanstack/react-store` 0.11.2, `@tabler/icons-react` 3.52 and
+  `eslint-plugin-react-refresh` 0.5.8.
+- Studio frontend: `@base-ui/react` 1.9, `tailwindcss` and `@tailwindcss/vite` 4.3.5, `@vitejs/plugin-react` 6.3
+  and `@types/node` 26.6.
+- CI runs Node 26 (was 25, which `jsdom` 31 does not support) with `actions/setup-node` and `actions/setup-go` v7.
+  Local development needs Node 22.22+, 24.15+ or 26+.
+
 ## [0.6.0] - 2026-11-21
 
 SOC 2 readiness controls (an append-only audit trail, every Studio change attributed to a person,

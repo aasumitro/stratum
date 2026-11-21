@@ -12,6 +12,7 @@ import {
 import { parseAddonChangeMetadata } from "@/features/billing/utils"
 import { capitalize, formatMoney } from "@/lib/format"
 import type { SubscriptionHistory } from "@/types/billing"
+import type { Translate } from "@/lib/i18n"
 
 const PAGE_SIZE = 8
 
@@ -45,7 +46,7 @@ function ActorBadge({
 function logLine(
   h: SubscriptionHistory,
   addonNameById: Map<string, string>,
-  t: (key: string, opts?: Record<string, unknown>) => string
+  t: Translate
 ) {
   switch (h.action) {
     case "upgrade":
