@@ -39,7 +39,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10",
-    "@playwright/test": "^1.62.1",
+    "@playwright/test": "^1.65.1",
     "@tanstack/router-plugin": "^1.168.25",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^24",
