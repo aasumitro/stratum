@@ -6,7 +6,7 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-11-19
+## [0.6.0] - 2026-11-21
 
 SOC 2 readiness controls (an append-only audit trail, every Studio change attributed to a person,
 retention sweeps, security metrics with an alert catalog, backup tooling, a compliance guide), a
@@ -275,6 +275,8 @@ edge cases found since 0.5.0 closed.
 - An open notification stream held API shutdown for the full 15 s graceful timeout, which then
   logged "startup failed"; streams now end as shutdown starts, and the exit log says the process
   stopped with an error.
+- `OUTBOX_RETENTION_DAYS` of 0 or less made every hourly sweep delete all published outbox rows;
+  boot now refuses it, like the other retention settings.
 
 ### Removed
 

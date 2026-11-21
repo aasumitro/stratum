@@ -233,6 +233,7 @@ func Load() (*Config, error) {
 		env  string
 		days int
 	}{
+		{"OUTBOX_RETENTION_DAYS", cfg.OutboxRetentionDays},
 		{"LOGIN_EVENT_RETENTION_DAYS", cfg.LoginEventRetentionDays},
 		{"DATA_EXPORT_RETENTION_DAYS", cfg.DataExportRetentionDays},
 		{"NOTIFICATION_RETENTION_DAYS", cfg.NotificationRetentionDays},

@@ -286,6 +286,7 @@ func TestLoad_AuditRetentionFloor(t *testing.T) {
 
 func TestLoad_RetentionMustBePositive(t *testing.T) {
 	for _, env := range []string{
+		"OUTBOX_RETENTION_DAYS",
 		"LOGIN_EVENT_RETENTION_DAYS",
 		"DATA_EXPORT_RETENTION_DAYS",
 		"NOTIFICATION_RETENTION_DAYS",

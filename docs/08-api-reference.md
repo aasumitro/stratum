@@ -24,7 +24,7 @@ MFA enrolment happens against Supabase directly, never through this API.
 
 While an organization's first invoice is unpaid, its routes refuse writes with `403 ACTIVATION_UNPAID`; reads, billing, `/unsuspend`, deleting the organization and leaving it stay open.
 
-**Invitations** `/:id/invitations`: `GET` · `POST` · `DELETE /:invId`. Plus (no org prefix): `GET /me/invitations`, `GET /invitations/preview?token=`, `POST /invitations/accept`, `POST /invitations/request-new`.
+**Invitations** `/:id/invitations`: `GET` · `POST` · `DELETE /:invId`. Plus (no org prefix): `GET /me/invitations`, `GET /invitations/preview?token=`, `POST /invitations/accept`, `POST /invitations/decline` (deletes the invitation, notifies the inviter), `POST /invitations/request-new`.
 
 **Audit log** `/:id/audit-log`: `GET` (filters: `actor`/`action`/`resource`/`from`/`to`) · `GET /export` (CSV).
 

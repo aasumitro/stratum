@@ -69,10 +69,11 @@ func (s *service) downgradeSubscription(
 }
 
 // downgradeInTx is downgradeSubscription's database part, run inside its
-// transaction. A non-trialing subscription only schedules the downgrade:
-// nothing is resolved until renewal applies it. A trialing one changes plan
-// now, and memberLimit is the limit its members must then fit (-1 when the
-// new plan has none).
+// transaction. An active or past_due subscription only schedules the
+// downgrade: nothing is resolved until the period boundary applies it. A
+// trialing, expired or cancelled one has no paid period running, so it changes
+// plan now, and memberLimit is the limit its members must then fit (-1 when
+// the new plan has none).
 func (s *service) downgradeInTx(
 	ctx context.Context, subjectType, subjectID, plan, cycle, changedBy string,
 ) (sub *subscriptionRecord, historyID string, memberLimit int, err error) {

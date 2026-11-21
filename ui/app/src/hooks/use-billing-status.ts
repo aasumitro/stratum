@@ -1,5 +1,6 @@
 import { useActiveOrganization } from "@/hooks/use-active-organization"
 import { useInvoices } from "@/features/billing/hooks"
+import { isPeriodBackingInvoice } from "@/features/billing/utils"
 
 interface BillingStatus {
   isOwner: boolean
@@ -49,14 +50,7 @@ export function useBillingStatus(): BillingStatus {
   const pending = (invoicesData?.data ?? []).filter(
     (i) => i.status === "pending"
   )
-  // extension and addon_increase invoices both pay for something additional
-  // to the current period (more time, more capacity) — the plan and
-  // capacity you already have stay exactly as valid as before either is
-  // paid, so neither counts here. Only an invoice that backs a period itself
-  // (subscription/activation) does.
-  const hasPendingInvoice =
-    isOwner &&
-    pending.some((i) => i.kind !== "extension" && i.kind !== "addon_increase")
+  const hasPendingInvoice = isOwner && pending.some(isPeriodBackingInvoice)
   // Only an unpaid activation means the period in use right now was never
   // paid. A renewal invoice is issued 3 days before a paid period ends, so
   // it shows on the billing page but must not lock the owner out of the

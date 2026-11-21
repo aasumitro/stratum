@@ -27,7 +27,9 @@ export function BillingLayout() {
   const { role, isOwner, canViewBilling, hasPendingInvoice } = usePermissions()
 
   const { data: subData } = useBillingSubscription(organizationId)
-  const { data: invoicesData } = useInvoices(organizationId, isOwner)
+  // Every role that can view Billing gets the same state banner, so the
+  // invoices behind it load for every role (the API lets any member read them).
+  const { data: invoicesData } = useInvoices(organizationId)
   const sub = subData?.data
   const { mutate: resume, isPending: resuming } =
     useResumeSubscription(organizationId)
@@ -39,7 +41,6 @@ export function BillingLayout() {
   const dunningBanners = computeDunningBanners(
     sub ?? undefined,
     invoicesData?.data ?? [],
-    hasPendingInvoice,
     t
   ).map((b) => ({
     ...b,
