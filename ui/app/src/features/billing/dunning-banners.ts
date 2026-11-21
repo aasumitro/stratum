@@ -1,6 +1,7 @@
 import type { BannerItem, BannerSeverity } from "@/components/shared/banner"
 import type { Invoice, Subscription } from "@/types/billing"
 import { isPeriodBackingInvoice } from "@/features/billing/utils"
+import type { Translate } from "@/lib/i18n"
 
 // In-app twin of the backend's day-3/day-7 dunning email schedule.
 // The exact T-7d/T-3d/T+3d/T+7d cadence is only observable server-side (it's
@@ -15,7 +16,7 @@ import { isPeriodBackingInvoice } from "@/features/billing/utils"
 export function computeDunningBanners(
   sub: Subscription | undefined,
   invoices: Invoice[],
-  t: (key: string, opts?: Record<string, unknown>) => string
+  t: Translate
 ): BannerItem[] {
   if (!sub) return []
   const banners: BannerItem[] = []

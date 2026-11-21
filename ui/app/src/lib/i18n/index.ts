@@ -17,3 +17,12 @@ void i18n.use(initReactI18next).init({
 })
 
 export default i18n
+
+// The translate function the plain helpers take: what both i18next's TFunction
+// (from useTranslation or i18n.t) and a test's fake (key) => key satisfy.
+// TFunction itself cannot be faked, and since i18next 27 it no longer fits a
+// single (key, options?) signature.
+export type Translate = {
+  (key: string): string
+  (key: string, options: Record<string, unknown>): string
+}

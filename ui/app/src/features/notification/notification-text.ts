@@ -1,4 +1,5 @@
 import type { Notification } from "@/types/notification"
+import type { Translate } from "@/lib/i18n"
 
 // i18next leaves a placeholder in place when the payload has no value for it.
 const UNFILLED_PLACEHOLDER = /\{\{[^}]*\}\}/
@@ -13,7 +14,7 @@ const UNFILLED_PLACEHOLDER = /\{\{[^}]*\}\}/
 // either order.
 export function notificationDisplayText(
   n: Notification,
-  t: (key: string, options?: Record<string, unknown>) => string,
+  t: Translate,
   exists: (key: string) => boolean
 ): { subject: string; body: string } {
   const payload = n.payload ?? {}

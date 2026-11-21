@@ -4,7 +4,7 @@ This gets a full Stratum stack running locally: the API, the worker, the web app
 
 ## Prerequisites
 - Go 1.27+ (backend)
-- Node 20+ and npm
+- Node 22.22+, 24.15+ or 26+ and npm (CI runs 26)
 - Podman (or Docker) for Postgres 18, RabbitMQ 4, Redis 8
 - `migrate` CLI (or use the `make migrate-*` targets)
 - For Studio: Go 1.27+ and the `wails3` CLI at the same version as the Wails module (`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`), plus Task (`task`)
