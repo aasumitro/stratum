@@ -95,6 +95,28 @@ migrate-force: ## Force the migration version after a failed/dirty migration: ma
 	@if [ -z "$(version)" ]; then echo "usage: make migrate-force version=<N>"; exit 1; fi
 	migrate -path $(MIGRATIONS_PATH) -database "$(DATABASE_URL)" force $(version)
 
+## --- Backups ---
+
+BACKUP_DIR ?= backups
+
+.PHONY: db-backup
+db-backup: ## Dump the local database into BACKUP_DIR (default backups/)
+	@umask 077; \
+	mkdir -p $(BACKUP_DIR); \
+	file="$(BACKUP_DIR)/stratum-$$(date -u +%Y%m%dT%H%M%SZ).dump"; \
+	if $(COMPOSE) -f $(COMPOSE_FILE) exec -T postgres pg_dump --format=custom --no-owner -U stratum stratum > "$$file"; then \
+		echo "wrote $$file"; \
+	else \
+		rm -f "$$file"; \
+		echo "backup failed" >&2; \
+		exit 1; \
+	fi
+
+.PHONY: db-restore-verify
+db-restore-verify: ## Prove a dump restores: make db-restore-verify FILE=backups/stratum-....dump
+	@if [ -z "$(FILE)" ]; then echo "usage: make db-restore-verify FILE=<dump>"; exit 1; fi
+	@sh deploy/backup/restore-verify.sh "$(FILE)"
+
 ## --- Run ---
 
 .PHONY: run-api

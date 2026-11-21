@@ -14,7 +14,7 @@ import (
 
 func main() {
 	if err := app.RunWorker(); err != nil {
-		slog.Error("startup failed", "error", err)
+		slog.Error("worker stopped with error", "error", err)
 		os.Exit(1)
 	}
 }

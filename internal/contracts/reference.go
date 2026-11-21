@@ -97,6 +97,14 @@ func (p *PlanInfo) Price(currency, cycle string) int64 {
 	return int64(prices.Monthly)
 }
 
+// SelfServe reports whether an owner can pick this plan themselves: it has a price to
+// charge in that currency and cycle. A plan with no price is arranged with sales, so
+// picking one would hand out its entitlements for nothing. A plan no longer on sale
+// never gets this far: the catalog lookup does not find it.
+func (p *PlanInfo) SelfServe(currency, cycle string) bool {
+	return p.Price(currency, cycle) > 0
+}
+
 // CatalogReader is implemented by the billing module (the catalog's
 // schema owner) and consumed by modules that need plan/feature/addon data
 // without owning the billing schema.

@@ -93,6 +93,10 @@ func (s *ReferenceService) ListCurrencies(projectID string) ([]Currency, error) 
 }
 
 func (s *ReferenceService) CreateCountry(projectID string, input CountryInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.Code == "" {
 		return fmt.Errorf("ReferenceService.CreateCountry: code is required")
 	}
@@ -107,6 +111,10 @@ func (s *ReferenceService) CreateCountry(projectID string, input CountryInput) e
 }
 
 func (s *ReferenceService) UpdateCountry(projectID, code string, input CountryInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.Name == "" {
 		return fmt.Errorf("ReferenceService.UpdateCountry: name is required")
 	}
@@ -118,6 +126,10 @@ func (s *ReferenceService) UpdateCountry(projectID, code string, input CountryIn
 }
 
 func (s *ReferenceService) DeleteCountry(projectID, code string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "ReferenceService.DeleteCountry", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeleteRefCountry(ctx, db, code)
@@ -125,6 +137,10 @@ func (s *ReferenceService) DeleteCountry(projectID, code string) error {
 }
 
 func (s *ReferenceService) CreateCurrency(projectID string, input CurrencyInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.Code == "" {
 		return fmt.Errorf("ReferenceService.CreateCurrency: code is required")
 	}
@@ -139,6 +155,10 @@ func (s *ReferenceService) CreateCurrency(projectID string, input CurrencyInput)
 }
 
 func (s *ReferenceService) UpdateCurrency(projectID, code string, input CurrencyInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.Name == "" {
 		return fmt.Errorf("ReferenceService.UpdateCurrency: name is required")
 	}
@@ -150,6 +170,10 @@ func (s *ReferenceService) UpdateCurrency(projectID, code string, input Currency
 }
 
 func (s *ReferenceService) DeleteCurrency(projectID, code string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "ReferenceService.DeleteCurrency", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeleteRefCurrency(ctx, db, code)

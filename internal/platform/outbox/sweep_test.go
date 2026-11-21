@@ -6,6 +6,8 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/aasumitro/stratum/internal/platform/outbox"
 )
 
@@ -68,5 +70,58 @@ func TestSweep(t *testing.T) {
 	}
 	if count != 1 {
 		t.Error("expected row 3 to be kept")
+	}
+}
+
+// The snapshot makes the deltas exact: other packages write to this table
+// concurrently, but a REPEATABLE READ transaction sees only its own changes.
+func TestBacklog_ClassifiesEachRowState(t *testing.T) {
+	ctx := t.Context()
+	pool := testPool(t)
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	dueBefore, exhaustedBefore, err := outbox.Backlog(ctx, tx)
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+
+	seed := func(notBefore string, attempts int, publishedAt string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO messaging.outbox (id, exchange, routing_key, payload, not_before, attempts, published_at)
+			VALUES ($1, 'ex', 'rk', '{}', now() + $2::interval, $3, now() + $4::interval)`,
+			uuid.NewV7().String(), notBefore, attempts, publishedAt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	seedUnpublished := func(notBefore string, attempts int) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO messaging.outbox (id, exchange, routing_key, payload, not_before, attempts)
+			VALUES ($1, 'ex', 'rk', '{}', now() + $2::interval, $3)`,
+			uuid.NewV7().String(), notBefore, attempts); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	seedUnpublished("-1 minute", 0)   // due and never tried: counts as due
+	seedUnpublished("30 minutes", 5)  // failed, waiting out its backoff: still counts as due
+	seedUnpublished("1 month", 0)     // scheduled for later: not late, counts in neither
+	seedUnpublished("-1 minute", 20)  // abandoned at the retry ceiling: exhausted, not due
+	seed("-1 minute", 0, "-1 second") // already published: counts in neither
+
+	due, exhausted, err := outbox.Backlog(ctx, tx)
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if got := due - dueBefore; got != 2 {
+		t.Errorf("due grew by %d, want 2", got)
+	}
+	if got := exhausted - exhaustedBefore; got != 1 {
+		t.Errorf("exhausted grew by %d, want 1", got)
 	}
 }

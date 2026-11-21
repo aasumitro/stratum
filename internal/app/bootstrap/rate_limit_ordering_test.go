@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -193,5 +194,122 @@ func TestWebhookRateLimit_Ceiling(t *testing.T) {
 	// Request 1 from IP 2 should succeed (limit is per-IP)
 	if code := fire(ip2); code != 200 {
 		t.Errorf("request 1 from IP 2: got %d, want 200", code)
+	}
+}
+
+// TestUnpaidActivation_GateRunsAfterRateLimit wires the real organization routes, the
+// real billing read and the real limiter, in the order the API composes them. The
+// gate costs a transaction, so a refused write must still count against the limiter. A
+// non-member must learn nothing about the organization's billing, and paying must lift
+// the gate on the next request.
+func TestUnpaidActivation_GateRunsAfterRateLimit(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if dbURL == "" || redisURL == "" {
+		t.Skip("TEST_DATABASE_URL and TEST_REDIS_URL required")
+	}
+	pool, err := pgxpool.New(t.Context(), dbURL)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	redisClient, err := cache.NewClient(t.Context(), config.RedisConfig{URL: redisURL})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = redisClient.Close() })
+
+	const (
+		ownerSub   = "owner_activation_gate_test"
+		outsider   = "outsider_activation_gate_test"
+		encryption = "test-webhook-secret-encryption-key-0000"
+	)
+	orgMod := organization.New(pool, encryption, "", 1)
+	billingMod := billing.New(pool, billing.ProviderConfig{}, nil, nil, nil)
+
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	noop := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	orgMod.Register(api, httpserver.RouteDeps{
+		Auth: func(c *gin.Context) {
+			c.Set("auth.claims", middleware.Claims{Subject: c.GetHeader("X-Test-Subject")})
+			c.Next()
+		},
+		Org: middleware.NewOrganizationMiddleware(orgMod),
+		RateLimit: middleware.NewRateLimitMiddleware(
+			cache.NewRateLimiter(redisClient, "test-activation-gate"),
+			middleware.ByAuthenticatedSubject, cache.PerMinute(60),
+		),
+		ActivationGate: middleware.NewActivationGateMiddleware(billingMod),
+		RLS:            noop, Idempotency: noop, MFA: noop,
+	})
+
+	do := func(method, path, body, subject string) *httptest.ResponseRecorder {
+		req := httpserver.JSONTestRequest(method, path, body)
+		req.Header.Set("X-Test-Subject", subject)
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+		return w
+	}
+
+	created := do(http.MethodPost, "/api/organizations", `{"slug":"activation-gate-test","name":"Gate Test","plan":"solo","cycle":"monthly"}`, ownerSub)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d: %s", created.Code, created.Body)
+	}
+	var resp struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	orgID := resp.Data.ID
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `DELETE FROM billing.invoices WHERE subscription_id IN (
+			SELECT id FROM billing.subscriptions WHERE subject_id = $1)`, orgID)
+		_, _ = pool.Exec(ctx, `DELETE FROM billing.subscriptions WHERE subject_id = $1`, orgID)
+		_, _ = pool.Exec(ctx, `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+		_, _ = pool.Exec(ctx, `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+	})
+	var invoiceID string
+	if err := pool.QueryRow(t.Context(), `
+		WITH sub AS (
+			INSERT INTO billing.subscriptions (subject_type, subject_id, plan, status, currency, period_start, period_end)
+			VALUES ('organization', $1, 'solo', 'active', 'USD', now(), now() + interval '1 month')
+			RETURNING id
+		)
+		INSERT INTO billing.invoices (subscription_id, amount_cents, currency, kind)
+		SELECT id, 900, 'USD', 'activation' FROM sub RETURNING id`, orgID).Scan(&invoiceID); err != nil {
+		t.Fatalf("seed unpaid activation: %v", err)
+	}
+
+	path := "/api/organizations/" + orgID
+	patch := `{"name":"Renamed"}`
+
+	blocked := do(http.MethodPatch, path, patch, ownerSub)
+	if blocked.Code != http.StatusForbidden || !strings.Contains(blocked.Body.String(), "ACTIVATION_UNPAID") {
+		t.Fatalf("write while unpaid: want 403 ACTIVATION_UNPAID, got %d: %s", blocked.Code, blocked.Body)
+	}
+	if blocked.Header().Get("X-RateLimit-Limit") == "" {
+		t.Error("a refused write must count against the limiter, want X-RateLimit-Limit set")
+	}
+
+	nonMember := do(http.MethodPatch, path, patch, outsider)
+	if nonMember.Code != http.StatusForbidden || strings.Contains(nonMember.Body.String(), "ACTIVATION_UNPAID") {
+		t.Errorf("non-member: want a plain 403, got %d: %s", nonMember.Code, nonMember.Body)
+	}
+
+	if read := do(http.MethodGet, path, "", ownerSub); read.Code != http.StatusOK {
+		t.Errorf("read while unpaid: want 200, got %d: %s", read.Code, read.Body)
+	}
+
+	if _, err := pool.Exec(t.Context(), `UPDATE billing.invoices SET status = 'paid', paid_at = now() WHERE id = $1`, invoiceID); err != nil {
+		t.Fatalf("pay: %v", err)
+	}
+	if paid := do(http.MethodPatch, path, patch, ownerSub); paid.Code != http.StatusOK {
+		t.Errorf("write after paying: want 200, got %d: %s", paid.Code, paid.Body)
 	}
 }

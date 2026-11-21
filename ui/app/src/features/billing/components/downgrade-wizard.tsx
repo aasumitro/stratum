@@ -28,6 +28,7 @@ import type {
 } from "@/types/billing"
 import type { Member } from "@/types/organization"
 import { InvoicePreviewNote } from "./invoice-preview-note"
+import { downgradeAppliesNow } from "@/features/billing/scheduled-change"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -75,7 +76,7 @@ export function DowngradeWizard({
   // today), so this wizard skips the selection step and swaps the
   // destructive/proration copy for a plain scheduled-effective note
   // whenever this is false.
-  const isTrialing = subscriptionStatus === "trialing"
+  const appliesNow = downgradeAppliesNow(subscriptionStatus)
   const [step, setStep] = useState<Step>("preview")
   // Frozen at confirm time — see UpgradeWizard's identical field for why
   // (the preview query's enabled condition goes false once step flips to
@@ -161,7 +162,7 @@ export function DowngradeWizard({
   // Move forward from preview — the selection step only makes sense while
   // trialing (the only status where a downgrade removes anything today).
   function handleContinueFromPreview() {
-    if (isTrialing && hasOverage) {
+    if (appliesNow && hasOverage) {
       setStep("selection")
     } else {
       setStep("review")
@@ -218,12 +219,12 @@ export function DowngradeWizard({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {isTrialing
+              {appliesNow
                 ? t("billing.downgrade.successTitle")
                 : t("billing.downgrade.scheduledSuccessTitle")}
             </DialogTitle>
             <DialogDescription>
-              {isTrialing
+              {appliesNow
                 ? t("billing.downgrade.successDescription")
                 : t("billing.downgrade.scheduledSuccessDescription", {
                     plan: targetPlanInfo?.name ?? targetPlan,
@@ -249,7 +250,7 @@ export function DowngradeWizard({
                 {t(`billing.plans.${targetCycle}`)}
               </span>
             </div>
-            {isTrialing &&
+            {appliesNow &&
               (hadPendingInvoiceAtConfirm && confirmedPreview ? (
                 <p className="pt-1 text-xs text-muted-foreground">
                   {t("billing.downgrade.successNewInvoiceIssued", {
@@ -271,7 +272,7 @@ export function DowngradeWizard({
               ))}
           </div>
 
-          {isTrialing && (
+          {appliesNow && (
             <div className="py-4 text-sm text-muted-foreground">
               {result && result.removed_member_auth_subs.length > 0 ? (
                 <div className="flex flex-col gap-2">
@@ -342,7 +343,7 @@ export function DowngradeWizard({
             </div>
           </div>
 
-          {isTrialing ? (
+          {appliesNow ? (
             <InvoicePreviewNote
               preview={preview}
               loading={previewLoading}
@@ -361,7 +362,7 @@ export function DowngradeWizard({
             </p>
           )}
 
-          {isTrialing &&
+          {appliesNow &&
             (previewLoading ? (
               <div className="py-4">
                 <Skeleton className="h-20 w-full" />
@@ -406,7 +407,7 @@ export function DowngradeWizard({
             <Button
               variant="outline"
               onClick={() =>
-                isTrialing && hasOverage
+                appliesNow && hasOverage
                   ? setStep("selection")
                   : onBackToPlans()
               }
@@ -415,9 +416,9 @@ export function DowngradeWizard({
               {t("common.back")}
             </Button>
             <Button
-              variant={isTrialing ? "destructive" : "default"}
+              variant={appliesNow ? "destructive" : "default"}
               onClick={handleConfirm}
-              disabled={downgrading || (isTrialing && previewLoading)}
+              disabled={downgrading || (appliesNow && previewLoading)}
             >
               {downgrading && (
                 <IconLoader2
@@ -557,7 +558,7 @@ export function DowngradeWizard({
           </div>
         </div>
 
-        {isTrialing ? (
+        {appliesNow ? (
           <InvoicePreviewNote
             preview={preview}
             loading={previewLoading}
@@ -577,7 +578,7 @@ export function DowngradeWizard({
         )}
 
         <p className="text-sm text-muted-foreground">
-          {isTrialing
+          {appliesNow
             ? t("billing.downgrade.previewOverageWarning")
             : t("billing.downgrade.previewScheduledNote")}
         </p>

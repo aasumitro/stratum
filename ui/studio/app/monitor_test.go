@@ -14,7 +14,7 @@ import (
 // nil DB and panics — a panic raised inside pollCheck, which is what the
 // deferred recover in StartPoller has to catch.
 func TestStartPoller_RecoversPanicAndCleansUp(t *testing.T) {
-	s := NewMonitorService(nil, NewProjectService(nil))
+	s := NewMonitorService(nil, NewProjectService(nil, nil))
 
 	if err := s.StartPoller("proj-panic", 60); err != nil {
 		t.Fatalf("StartPoller: %v", err)

@@ -25,12 +25,12 @@ type Services struct {
 
 // Wire constructs every service and wires their dependencies.
 func Wire(db *sql.DB, pool *connect.PostgresPool) *Services {
-	projectSvc := NewProjectService(db)
+	projectSvc := NewProjectService(db, pool)
 	return &Services{
 		Project:         projectSvc,
 		Connection:      NewConnectionService(),
 		Dashboard:       NewDashboardService(projectSvc, pool),
-		DLQ:             NewDLQService(projectSvc),
+		DLQ:             NewDLQService(projectSvc, pool),
 		Reference:       NewReferenceService(projectSvc, pool),
 		Catalog:         NewCatalogService(projectSvc, pool),
 		Monitor:         NewMonitorService(db, projectSvc),

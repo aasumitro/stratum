@@ -44,7 +44,9 @@ export function useNotifications(
 
 // useNotificationStream opens a single SSE connection for the whole session.
 // The backend stream is per-user (not per-organization), so no organizationId needed.
-// Falls back to 60s polling after 3 connection failures.
+// Falls back to 60s polling after 3 consecutive connection failures — a
+// successful open resets the count, so occasional drops over a long session
+// keep reconnecting.
 // Call this once in ProtectedLayout — never inside page components.
 export function useNotificationStream() {
   const queryClient = useQueryClient()
@@ -75,6 +77,9 @@ export function useNotificationStream() {
       )
 
       es.addEventListener("notification", invalidate)
+      es.onopen = () => {
+        failureCount = 0
+      }
 
       es.onerror = () => {
         es?.close()

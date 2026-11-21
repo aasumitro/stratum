@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 )
@@ -137,6 +138,20 @@ func (m *Module) GetSubscriptionBySubject(
 	}, nil
 }
 
+// HasUnpaidActivation implements contracts.ActivationGate.
+func (m *Module) HasUnpaidActivation(ctx context.Context, organizationID string) (bool, error) {
+	var unpaid bool
+	err := m.svc.withOrgTx(ctx, subjectTypeOrganization, organizationID, func(tx db.Querier) error {
+		var err error
+		unpaid, err = m.svc.repo.hasPendingActivation(db.WithQuerier(ctx, tx), tx, organizationID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("billing.HasUnpaidActivation: %w", err)
+	}
+	return unpaid, nil
+}
+
 // CheckUsageLimit implements contracts.BillingReader.
 func (m *Module) CheckUsageLimit(ctx context.Context, organizationID, metric string) (int64, int, error) {
 	current, limit, err := m.svc.checkUsageLimit(ctx, organizationID, metric)
@@ -160,6 +175,13 @@ func (m *Module) RecordUsage(ctx context.Context, organizationID, metric string,
 // module's GDPR delete-account flow.
 func (m *Module) AnonymizeHistory(ctx context.Context, authSub string) error {
 	return m.svc.anonymizeHistory(ctx, authSub)
+}
+
+// SweepRetention removes inbound webhook replay markers past days and returns how
+// many it removed. Called only by the worker's ticker. Financial records are never
+// swept: invoices, payments and subscriptions outlive every retention setting.
+func (m *Module) SweepRetention(ctx context.Context, days int) (int64, error) {
+	return m.svc.repo.deleteExpiredWebhookEvents(ctx, m.svc.pool, days)
 }
 
 // Register mounts billing routes under /organizations/:organizationID/billing.
@@ -220,11 +242,9 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		billing.GET("/addons", h.listAddons)
 		billing.GET("/plans/catalog", h.listPlansCatalog)
 		billing.GET("/addons/catalog", h.listAddonsCatalog)
-		billing.GET("/preview", h.previewInvoice)
 		billing.GET("/coupons", h.listEligibleCoupons)
 
 		billing.PATCH("/plan", ownerOnly, deps.MFA, h.changePlan)
-		billing.POST("/downgrade", ownerOnly, deps.MFA, h.downgradeSubscription)
 		billing.POST("/downgrade/undo", ownerOnly, deps.MFA, h.undoDowngrade)
 		billing.POST("/cancel", ownerOnly, h.cancelSubscription)
 		billing.POST("/cancel/undo", ownerOnly, h.undoCancellation)
@@ -257,6 +277,13 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		// payment-link HTTP call every other route in this group makes —
 		// see attachAddon/requestAddonIncrease (service_addon.go).
 		billingPay.POST("/addons", ownerOnly, deps.MFA, h.attachAddon)
+		// preview and downgrade call the organization module's overage
+		// resolution, which takes its own connection from the same pool. Under
+		// the request-long transaction above, every such request would hold one
+		// connection while waiting for another, and enough of them at once
+		// deadlock the pool. Their service paths open short transactions instead.
+		billingPay.GET("/preview", h.previewInvoice)
+		billingPay.POST("/downgrade", ownerOnly, deps.MFA, h.downgradeSubscription)
 	}
 }
 

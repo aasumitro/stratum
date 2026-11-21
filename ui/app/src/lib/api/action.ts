@@ -3,10 +3,18 @@ import { api } from "./axios"
 import { catchHTTPError } from "./error"
 import type { HTTPResponse } from "./response"
 
+// Mutations whose server side makes a blocking payment-provider call
+// (Stripe/Xendit) or works through a bulk import can outlast the default
+// timeout while still succeeding on the server; an aborted request there
+// invites a retry that duplicates the work.
+export const PROVIDER_REQUEST_TIMEOUT_MS = 30_000
+
 type UseHTTPMutationParams<TData, TVariables> = {
   url: string | ((variables: TVariables) => string)
   headers?:
     Record<string, string> | ((variables: TVariables) => Record<string, string>)
+  /** Request timeout in ms, overriding the client-wide default. */
+  timeout?: number
   options?: UseMutationOptions<
     HTTPResponse<TData>,
     HTTPResponse<unknown>,
@@ -17,7 +25,9 @@ type UseHTTPMutationParams<TData, TVariables> = {
 function postFn<TData, TVariables>(
   url: string | ((variables: TVariables) => string),
   headers?:
-    Record<string, string> | ((variables: TVariables) => Record<string, string>)
+    | Record<string, string>
+    | ((variables: TVariables) => Record<string, string>),
+  timeout?: number
 ) {
   return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
     try {
@@ -27,30 +37,7 @@ function postFn<TData, TVariables>(
 
       const res = await api.post<HTTPResponse<TData>>(resolvedUrl, variables, {
         headers: resolvedHeaders,
-      })
-
-      return res.data
-    } catch (error) {
-      throw catchHTTPError(error)
-    }
-  }
-}
-
-function putFn<TData, TVariables extends { id?: number; data?: unknown }>(
-  url: string | ((variables: TVariables) => string),
-  headers?:
-    Record<string, string> | ((variables: TVariables) => Record<string, string>)
-) {
-  return async (variables: TVariables): Promise<HTTPResponse<TData>> => {
-    try {
-      const resolvedUrl = typeof url === "function" ? url(variables) : url
-      const resolvedHeaders =
-        typeof headers === "function" ? headers(variables) : headers
-
-      const body = "data" in variables ? variables.data : variables
-
-      const res = await api.put<HTTPResponse<TData>>(resolvedUrl, body, {
-        headers: resolvedHeaders,
+        timeout,
       })
 
       return res.data
@@ -63,23 +50,11 @@ function putFn<TData, TVariables extends { id?: number; data?: unknown }>(
 export function useHTTPActionPost<TData, TVariables = void>({
   url,
   headers,
+  timeout,
   options,
 }: UseHTTPMutationParams<TData, TVariables>) {
   return useMutation({
-    mutationFn: postFn<TData, TVariables>(url, headers),
-    ...options,
-  })
-}
-
-export function useHTTPActionPut<
-  TData,
-  TVariables extends { id?: number; data?: unknown } = {
-    id?: number
-    data?: unknown
-  },
->({ url, headers, options }: UseHTTPMutationParams<TData, TVariables>) {
-  return useMutation({
-    mutationFn: putFn<TData, TVariables>(url, headers),
+    mutationFn: postFn<TData, TVariables>(url, headers, timeout),
     ...options,
   })
 }

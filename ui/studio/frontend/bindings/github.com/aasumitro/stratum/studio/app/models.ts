@@ -282,6 +282,20 @@ export interface OrganizationSummary {
   billing_status: string
 }
 
+export interface PaymentToReview {
+  payment_id: string
+  invoice_id: string
+  invoice_status: string
+  organization_id: string
+  organization_name: string
+  organization_slug: string
+  amount_cents: number
+  currency: string
+  provider: string
+  external_id: string
+  paid_at: string
+}
+
 export interface Plan {
   id: string
   name: string

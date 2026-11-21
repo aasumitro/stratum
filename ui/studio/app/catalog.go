@@ -171,6 +171,10 @@ func (s *CatalogService) ListPlans(projectID string) ([]Plan, error) {
 }
 
 func (s *CatalogService) CreatePlan(projectID string, input PlanInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.ID == "" {
 		return fmt.Errorf("CatalogService.CreatePlan: id is required")
 	}
@@ -188,6 +192,10 @@ func (s *CatalogService) CreatePlan(projectID string, input PlanInput) error {
 }
 
 func (s *CatalogService) UpdatePlan(projectID, planID string, input PlanInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.Name == "" {
 		return fmt.Errorf("CatalogService.UpdatePlan: name is required")
 	}
@@ -202,6 +210,10 @@ func (s *CatalogService) UpdatePlan(projectID, planID string, input PlanInput) e
 }
 
 func (s *CatalogService) DeletePlan(projectID, planID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "CatalogService.DeletePlan", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeletePlan(ctx, db, planID)
@@ -252,6 +264,10 @@ func validateFeatureInput(input FeatureInput) error {
 }
 
 func (s *CatalogService) CreateFeature(projectID string, input FeatureInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.ID == "" {
 		return fmt.Errorf("CatalogService.CreateFeature: id is required")
 	}
@@ -270,6 +286,10 @@ func (s *CatalogService) CreateFeature(projectID string, input FeatureInput) err
 }
 
 func (s *CatalogService) UpdateFeature(projectID, featureID string, input FeatureInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if err := validateFeatureInput(input); err != nil {
 		return fmt.Errorf("CatalogService.UpdateFeature: %w", err)
 	}
@@ -285,6 +305,10 @@ func (s *CatalogService) UpdateFeature(projectID, featureID string, input Featur
 }
 
 func (s *CatalogService) DeleteFeature(projectID, featureID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "CatalogService.DeleteFeature", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeleteFeature(ctx, db, featureID)
@@ -315,6 +339,10 @@ func (s *CatalogService) ListPlanFeatures(projectID, planID string) ([]PlanFeatu
 }
 
 func (s *CatalogService) UpsertPlanFeature(projectID, planID string, input PlanFeatureInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.FeatureID == "" {
 		return fmt.Errorf("CatalogService.UpsertPlanFeature: feature_id is required")
 	}
@@ -333,6 +361,10 @@ func (s *CatalogService) UpsertPlanFeature(projectID, planID string, input PlanF
 }
 
 func (s *CatalogService) DeletePlanFeature(projectID, planID, featureID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "CatalogService.DeletePlanFeature", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeletePlanFeature(ctx, db, planID, featureID)
@@ -426,6 +458,10 @@ func parseOptionalTime(s string) (*time.Time, error) {
 }
 
 func (s *CatalogService) CreateCoupon(projectID string, input CouponInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.Code == "" {
 		return fmt.Errorf("CatalogService.CreateCoupon: code is required")
 	}
@@ -461,6 +497,10 @@ func (s *CatalogService) CreateCoupon(projectID string, input CouponInput) error
 }
 
 func (s *CatalogService) UpdateCoupon(projectID, code string, input CouponInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if err := validateCouponInput(input); err != nil {
 		return fmt.Errorf("CatalogService.UpdateCoupon: %w", err)
 	}
@@ -493,6 +533,10 @@ func (s *CatalogService) UpdateCoupon(projectID, code string, input CouponInput)
 }
 
 func (s *CatalogService) DeleteCoupon(projectID, code string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "CatalogService.DeleteCoupon", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeleteCoupon(ctx, db, code)
@@ -523,6 +567,10 @@ func (s *CatalogService) ListCouponTargets(projectID, couponID string) ([]Coupon
 }
 
 func (s *CatalogService) AddCouponTarget(projectID, couponID, subjectType, subjectID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if !validSubjectTypes[subjectType] {
 		return fmt.Errorf("CatalogService.AddCouponTarget: subject_type must be organization or user")
 	}
@@ -537,6 +585,10 @@ func (s *CatalogService) AddCouponTarget(projectID, couponID, subjectType, subje
 }
 
 func (s *CatalogService) RemoveCouponTarget(projectID, couponID, subjectType, subjectID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "CatalogService.RemoveCouponTarget", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.RemoveCouponTarget(ctx, db, couponID, subjectType, subjectID)
@@ -566,6 +618,10 @@ func (s *CatalogService) ListAddons(projectID string) ([]Addon, error) {
 }
 
 func (s *CatalogService) CreateAddon(projectID string, input AddonInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.ID == "" {
 		return fmt.Errorf("CatalogService.CreateAddon: id is required")
 	}
@@ -583,6 +639,10 @@ func (s *CatalogService) CreateAddon(projectID string, input AddonInput) error {
 }
 
 func (s *CatalogService) UpdateAddon(projectID, addonID string, input AddonInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.Name == "" {
 		return fmt.Errorf("CatalogService.UpdateAddon: name is required")
 	}
@@ -597,6 +657,10 @@ func (s *CatalogService) UpdateAddon(projectID, addonID string, input AddonInput
 }
 
 func (s *CatalogService) DeleteAddon(projectID, addonID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "CatalogService.DeleteAddon", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeleteAddon(ctx, db, addonID)
@@ -622,6 +686,10 @@ func (s *CatalogService) ListAddonFeatures(projectID, addonID string) ([]AddonFe
 }
 
 func (s *CatalogService) UpsertAddonFeature(projectID, addonID string, input AddonFeatureInput) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	if input.FeatureID == "" {
 		return fmt.Errorf("CatalogService.UpsertAddonFeature: feature_id is required")
 	}
@@ -633,6 +701,10 @@ func (s *CatalogService) UpsertAddonFeature(projectID, addonID string, input Add
 }
 
 func (s *CatalogService) DeleteAddonFeature(projectID, addonID, featureID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	return withProjectDBErr(s.projects, s.pool, projectID, "CatalogService.DeleteAddonFeature", 15*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.DeleteAddonFeature(ctx, db, addonID, featureID)

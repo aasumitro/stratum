@@ -36,6 +36,14 @@ type BillingReader interface {
 	CheckFeatureAccess(ctx context.Context, organizationID, feature string) error
 }
 
+// ActivationGate is implemented by the billing module and consumed by the
+// organization middleware. The same FORCE-RLS rule as BillingReader applies: its
+// caller holds no transaction, and a read with no organization context would find
+// nothing and report the organization as paid up.
+type ActivationGate interface {
+	HasUnpaidActivation(ctx context.Context, organizationID string) (bool, error)
+}
+
 // BillingWriter is implemented by the billing module. The organization module
 // calls RecordUsage after any billable operation succeeds to keep usage
 // counters in sync with the actual state of the database.

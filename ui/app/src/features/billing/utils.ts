@@ -1,4 +1,4 @@
-import type { AttachedAddon, BillingCycle } from "@/types/billing"
+import type { AttachedAddon, BillingCycle, Invoice } from "@/types/billing"
 
 // AddonChangeMetadata mirrors the backend's addonChangeMetadata
 // (service_addon.go) — the shape of subscription_history.metadata for every
@@ -112,4 +112,14 @@ export async function applyAmendmentDiff(
     )
   )
   return changes.filter((_, i) => results[i].status === "rejected")
+}
+
+// extension and addon_increase invoices both pay for something additional
+// to the current period (more time, more capacity) — the plan and capacity
+// already held stay exactly as valid as before either is paid. Only an
+// invoice that backs a period itself (subscription/activation) does.
+export function isPeriodBackingInvoice(
+  invoice: Pick<Invoice, "kind">
+): boolean {
+  return invoice.kind !== "extension" && invoice.kind !== "addon_increase"
 }

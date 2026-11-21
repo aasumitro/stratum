@@ -19,6 +19,8 @@ Anything unit-testable without a database is written as a **pure function** on p
 - Each module's `export_test.go` exposes test engines (`NewHandlerEngine`, `NewModuleForTest`, `NewModuleEngine`, …).
 - Integration tests skip when `TEST_DATABASE_URL` is unset, use fixed UUIDv7 data for isolation, and clean up with `t.Cleanup`.
 - Fixture email addresses use the reserved `example.com` domain, never a real one, so a fixture that reaches a real send can't land in anyone's inbox.
+- Tests of a role's privileges connect as that role through `POSTGRES_APP_URL`, `POSTGRES_WORKER_URL`, `POSTGRES_WEBHOOK_URL` and `POSTGRES_OPERATOR_URL`, with fixtures through `TEST_DATABASE_URL`. `TestQueueMessageCount` reads `RABBITMQ_URL`. `make test-integration` exports all of them from `.env`.
+- Retention sweep tests use cutoffs a century back, because a sweep touches every row past its cutoff and the suite shares the dev database.
 - **`TEST_DATABASE_URL` points at `stratum_test`, a test-only role** (`POSTGRES_TEST_URL` in `.env.example`; created by `deploy/postgres-init/02-test-role.sql`) — not the migration-owner superuser. It holds `BYPASSRLS` directly (needed to seed `billing.subscriptions`/`invoices`/`payments`/`payment_links`, which carry `FORCE ROW LEVEL SECURITY`, directly) and is a member of `stratum`, the schema owner — membership, not a pile of per-privilege `GRANT`s, because several billing integration tests create a throwaway trigger function to inject a mid-transaction failure and then `DROP` it in `t.Cleanup`, and `DROP TRIGGER`/`DROP FUNCTION` check table/object *ownership*, not `CREATE`/`TRIGGER` privilege — a role merely granted those privileges can create the trigger but not drop it, leaving it attached to break every later test on that table. `stratum_test` is never provisioned outside local dev/CI and never appears in `docs/12-operations.md`'s production runbook — it exists purely so the suite doesn't need a superuser.
 
 ## Running
@@ -28,7 +30,9 @@ make test               # unit + handler, -race -count=1
 make test-integration   # needs TEST_DATABASE_URL
 ```
 
-Stop any local `cmd/worker` before `make test-integration`. The suite writes outbox rows into the same database the worker relays from, so a running worker publishes them before `t.Cleanup` deletes them, and its consumers act on them — including sending email through the configured SMTP.
+Stop any local `cmd/worker` before `make test-integration`. The suite writes outbox rows into the same database the worker relays from, so a running worker publishes them before `t.Cleanup` deletes them, and its consumers act on them — including sending email through the configured SMTP. The outbox relay tests claim only their own rows: other due rows are locked for the length of each batch, so the relay's `SKIP LOCKED` passes over the dev data.
+
+Web's unit tests run with `npm test` in `ui/app`, which pins `LC_ALL=en_US.UTF-8` and `TZ=UTC`, so date assertions hold on any machine. Studio's Go tests (`go test ./...` in `ui/studio`) use an in-memory keychain; the operator smoke test runs only when `STUDIO_SMOKE_OWNER_URL`, `STUDIO_SMOKE_OPERATOR_URL` and `STUDIO_SMOKE_MQ_URL` point at a database and broker.
 
 Web's e2e suite runs separately, from `ui/app`:
 
@@ -37,6 +41,8 @@ npm run test:e2e   # Playwright — auth + onboarding, needs infra + API running
 ```
 
 It logs in with the owner-role test account (`TEST_ACCOUNT_OWNER_EMAIL`/`PASSWORD`, repo-root `.env.local`) against real Supabase and the real backend, then intercepts the profile/organization lookups so the onboarding wizard's steps render deterministically without touching that account's actual state. `TEST_ACCOUNT_ADMIN_EMAIL`/`PASSWORD` and `TEST_ACCOUNT_MEMBER_EMAIL`/`PASSWORD` (same org, different roles) also live in `.env.local` for manual cross-role checks — the automated e2e suite only uses the owner account.
+
+Every test signs in for real, so back-to-back full runs can trip Supabase's sign-in rate limit: tests then time out on the login page, which shows "Request rate limit reached". Wait a few minutes before rerunning. Billing specs mock the org-scoped catalogs (`/billing/plans/catalog`, `/billing/addons/catalog`) the billing page actually reads, and every attached add-on carries its catalog `prices`, as the API returns them.
 
 The full pre-merge sequence (what CI runs): `go vet ./...` → `gofmt -w .` → `golangci-lint run ./...` → `govulncheck ./...` → `go test ./... -race -count=1 -timeout 120s`.
 

@@ -166,24 +166,33 @@ async function mockBillingAPIs(page: Page, opts: MockOpts = {}) {
     }
   )
 
-  await page.route("**/v1/references/addons*", async (route) => {
-    if (route.request().method() !== "GET") return route.continue()
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: CATALOG, status: { error: false } }),
-    })
-  })
+  // The billing page reads the org-scoped catalog; onboarding reads /references.
+  await page.route(
+    /\/v1\/(references\/addons|organizations\/org-1\/billing\/addons\/catalog)/,
+    async (route) => {
+      if (route.request().method() !== "GET") return route.continue()
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: CATALOG, status: { error: false } }),
+      })
+    }
+  )
 
   let addons = opts.addons ?? []
   await page.route(
     "**/v1/organizations/org-1/billing/addons",
     async (route) => {
       if (route.request().method() === "GET") {
+        // The API returns each attached addon with its catalog prices.
+        const data = addons.map((a) => ({
+          ...a,
+          prices: CATALOG.find((c) => c.id === a.addon_id)?.prices,
+        }))
         return route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ data: addons, status: { error: false } }),
+          body: JSON.stringify({ data, status: { error: false } }),
         })
       }
       if (route.request().method() === "POST") {

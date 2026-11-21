@@ -111,20 +111,42 @@ func seedOutboxRowAtAttempts(t *testing.T, pool *pgxpool.Pool, routingKey string
 	})
 }
 
-// drainUntil calls relay.RelayBatch repeatedly until condition reports true
-// or 20 seconds elapse. messaging.outbox is one shared table with no
-// per-test filter — RelayBatch's claim query has no test-scoping mechanism —
-// and every other package's integration tests write real due rows to it
-// concurrently via events.Enqueue. A single RelayBatch call can therefore
-// legitimately claim a batch made up entirely of other packages' rows
-// before it ever reaches this test's own — draining repeatedly (each older
-// row gets exhausted eventually, since ORDER BY created_at always prefers
-// them) is what makes these tests deterministic instead of flaky.
-func drainUntil(t *testing.T, relay *outbox.Relay, condition func() bool) {
+// ownTestRows selects the rows this file's tests seed through seedOutboxRow
+// and seedOutboxRowAtAttempts.
+const ownTestRows = `exchange = 'test.exchange'`
+
+// relayBatchOf runs one RelayBatch that can claim only the rows own selects.
+// messaging.outbox is shared: other packages' tests write due rows to it
+// concurrently, and on the dev database it holds the dev data's own due rows,
+// which a fake publisher would mark published without ever delivering. A
+// second transaction locks every other unpublished row for the length of the
+// batch, and the claim's SKIP LOCKED passes over them. A row inserted between
+// that lock and the claim can still be taken.
+func relayBatchOf(t *testing.T, pool *pgxpool.Pool, relay *outbox.Relay, own string) {
+	t.Helper()
+	ctx := context.Background()
+	guard, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin guard transaction: %v", err)
+	}
+	defer func() { _ = guard.Rollback(ctx) }()
+	if _, err := guard.Exec(ctx, `
+		SELECT id FROM messaging.outbox
+		WHERE published_at IS NULL AND NOT (`+own+`)
+		FOR UPDATE SKIP LOCKED`); err != nil {
+		t.Fatalf("lock other rows: %v", err)
+	}
+	relay.RelayBatch(ctx)
+}
+
+// drainUntil runs relayBatchOf until condition reports true or 20 seconds
+// elapse. A row can need more than one batch: a failed publish is retried
+// only after its backoff.
+func drainUntil(t *testing.T, pool *pgxpool.Pool, relay *outbox.Relay, own string, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		relay.RelayBatch(context.Background())
+		relayBatchOf(t, pool, relay, own)
 		if condition() {
 			return
 		}
@@ -152,7 +174,7 @@ func TestIntegration_RelayBatch_PublishesOnlyTheOneDueRow(t *testing.T) {
 	relay := outbox.NewRelay(pool, pub)
 
 	var dueRowPublishedAt *time.Time
-	drainUntil(t, relay, func() bool {
+	drainUntil(t, pool, relay, ownTestRows, func() bool {
 		pool.QueryRow(context.Background(),
 			`SELECT published_at FROM messaging.outbox WHERE routing_key = 'test.due-now'`,
 		).Scan(&dueRowPublishedAt)
@@ -195,7 +217,7 @@ func TestIntegration_RelayBatch_PublishFailure_RecordsAttemptAndRetries(t *testi
 
 	var attempts int
 	var lastError *string
-	drainUntil(t, relay, func() bool {
+	drainUntil(t, pool, relay, ownTestRows, func() bool {
 		pool.QueryRow(context.Background(),
 			`SELECT attempts, last_error FROM messaging.outbox WHERE routing_key = 'test.will-fail'`,
 		).Scan(&attempts, &lastError)
@@ -236,7 +258,7 @@ func TestIntegration_RelayBatch_PoisonRowExhaustsAttempts_HealthyRowStillPublish
 
 	var poisonAttempts int
 	var poisonPublishedAt *time.Time
-	drainUntil(t, relay, func() bool {
+	drainUntil(t, pool, relay, ownTestRows, func() bool {
 		pool.QueryRow(context.Background(),
 			`SELECT attempts, published_at FROM messaging.outbox WHERE routing_key = 'test.poison'`,
 		).Scan(&poisonAttempts, &poisonPublishedAt)
@@ -250,7 +272,7 @@ func TestIntegration_RelayBatch_PoisonRowExhaustsAttempts_HealthyRowStillPublish
 		t.Errorf("attempts = %d, want exactly %d (attempts < maxAttempts excludes it from every claim past the cap, so it can never be incremented beyond it)", poisonAttempts, maxAttempts)
 	}
 
-	relay.RelayBatch(context.Background())
+	relayBatchOf(t, pool, relay, ownTestRows)
 	var poisonAttemptsAfter int
 	if err := pool.QueryRow(t.Context(),
 		`SELECT attempts FROM messaging.outbox WHERE routing_key = 'test.poison'`,
@@ -325,7 +347,7 @@ func TestIntegration_RelayBatch_ExhaustedRowLogsDistinctExhaustionMessage(t *tes
 	relay := outbox.NewRelay(pool, pub)
 
 	var attempts int
-	drainUntil(t, relay, func() bool {
+	drainUntil(t, pool, relay, ownTestRows, func() bool {
 		pool.QueryRow(context.Background(),
 			`SELECT attempts FROM messaging.outbox WHERE routing_key = 'test.exhaust-log'`,
 		).Scan(&attempts)
@@ -375,7 +397,7 @@ func TestIntegration_DelayedEvent_RelayDeliversToRealExchange(t *testing.T) {
 	relay := outbox.NewRelay(pool, pub)
 
 	want := events.ExchangeBilling + "/" + events.RoutingKeySubscriptionCheck
-	drainUntil(t, relay, func() bool { return pub.has(want) })
+	drainUntil(t, pool, relay, "payload->>'org_id' = '"+orgID+"'", func() bool { return pub.has(want) })
 
 	var publishedAt *time.Time
 	if err := pool.QueryRow(t.Context(),
@@ -385,5 +407,35 @@ func TestIntegration_DelayedEvent_RelayDeliversToRealExchange(t *testing.T) {
 	}
 	if publishedAt == nil {
 		t.Error("delayed row was handed to the publisher but never marked published")
+	}
+}
+
+// The relay tests share messaging.outbox with the dev data and with other
+// packages' tests. A due row that is not theirs must stay unpublished: a fake
+// publisher would mark it published and it would never reach the broker.
+func TestIntegration_RelayTests_LeaveOtherRowsUnpublished(t *testing.T) {
+	pool := testPool(t)
+	foreign := uuid.NewV7().String()
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload, not_before)
+		VALUES ($1, 'foreign.exchange', 'foreign.due', '{}', now() - interval '1 minute')`, foreign); err != nil {
+		t.Fatalf("seed foreign row: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM messaging.outbox WHERE id = $1`, foreign)
+	})
+	seedOutboxRow(t, pool, "test.own-due", time.Now().Add(-time.Minute), nil)
+
+	pub := &fakePublisher{}
+	relay := outbox.NewRelay(pool, pub)
+	drainUntil(t, pool, relay, ownTestRows, func() bool { return pub.has("test.exchange/test.own-due") })
+
+	var publishedAt *time.Time
+	if err := pool.QueryRow(t.Context(),
+		`SELECT published_at FROM messaging.outbox WHERE id = $1`, foreign).Scan(&publishedAt); err != nil {
+		t.Fatalf("read foreign row: %v", err)
+	}
+	if publishedAt != nil || pub.has("foreign.exchange/foreign.due") {
+		t.Error("a row that is not the test's own was claimed")
 	}
 }

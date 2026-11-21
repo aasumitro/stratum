@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -13,68 +14,6 @@ import (
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 )
-
-// --- BillingGate ---
-
-type stubBillingReader struct {
-	current int64
-	limit   int
-	err     error
-}
-
-func (s stubBillingReader) GetSubscriptionBySubject(_ context.Context, _, _ string) (*contracts.SubscriptionInfo, error) {
-	return nil, nil
-}
-func (s stubBillingReader) CheckUsageLimit(_ context.Context, _, _ string) (int64, int, error) {
-	return s.current, s.limit, s.err
-}
-func (s stubBillingReader) CheckFeatureAccess(_ context.Context, _, _ string) error { return nil }
-
-func makeBillingGateEngine(reader contracts.BillingReader) *gin.Engine {
-	gin.SetMode(gin.TestMode)
-	e := gin.New()
-	e.Use(func(c *gin.Context) {
-		c.Set("organization.organization", contracts.OrganizationInfo{ID: "ws-01", Status: "active"})
-		c.Next()
-	})
-	e.POST("/test", middleware.BillingGate(reader, "members"), func(c *gin.Context) {
-		c.Status(http.StatusOK)
-	})
-	return e
-}
-
-func TestBillingGate_LimitExceeded_Returns429WithHeaders(t *testing.T) {
-	e := makeBillingGateEngine(stubBillingReader{current: 5, limit: 5})
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/test", nil))
-	if w.Code != http.StatusTooManyRequests {
-		t.Errorf("want 429, got %d", w.Code)
-	}
-	if v := w.Header().Get("X-Usage-Current"); v != "5" {
-		t.Errorf("X-Usage-Current: want 5, got %q", v)
-	}
-	if v := w.Header().Get("X-Usage-Limit"); v != "5" {
-		t.Errorf("X-Usage-Limit: want 5, got %q", v)
-	}
-}
-
-func TestBillingGate_FailOpen_OnLookupError(t *testing.T) {
-	e := makeBillingGateEngine(stubBillingReader{err: errors.New("redis timeout")})
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/test", nil))
-	if w.Code != http.StatusOK {
-		t.Errorf("lookup error should fail open (200), got %d", w.Code)
-	}
-}
-
-func TestBillingGate_UnderLimit_Passes(t *testing.T) {
-	e := makeBillingGateEngine(stubBillingReader{current: 3, limit: 5})
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/test", nil))
-	if w.Code != http.StatusOK {
-		t.Errorf("under limit should pass (200), got %d", w.Code)
-	}
-}
 
 // --- RequireMFAIfEnabled ---
 
@@ -211,7 +150,6 @@ type stubWsReader struct {
 func (s stubWsReader) GetOrganizationByID(_ context.Context, _ string) (*contracts.OrganizationInfo, error) {
 	return s.ws, s.wsErr
 }
-func (s stubWsReader) IsMember(_ context.Context, _, _ string) (bool, error) { return true, nil }
 func (s stubWsReader) GetMemberRole(_ context.Context, _, _ string) (string, error) {
 	return s.role, s.roleErr
 }
@@ -323,5 +261,124 @@ func TestOrganizationMiddleware_HeaderFallback(t *testing.T) {
 	e.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("want 200, got %d", w.Code)
+	}
+}
+
+// --- NewOrganizationMiddlewareWithActivationGate ---
+
+type stubActivationGate struct {
+	unpaid bool
+	err    error
+	calls  int
+}
+
+func (s *stubActivationGate) HasUnpaidActivation(_ context.Context, _ string) (bool, error) {
+	s.calls++
+	return s.unpaid, s.err
+}
+
+func makeGatedOrganizationEngine(role string, gate contracts.ActivationGate) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: "sub_test"})
+		c.Next()
+	})
+	scoped := e.Group("/api/organizations/:organizationID")
+	scoped.Use(middleware.NewOrganizationMiddleware(stubWsReader{
+		ws:   &contracts.OrganizationInfo{ID: "ws-01", Status: "active"},
+		role: role,
+	}), middleware.NewActivationGateMiddleware(gate))
+	ok := func(c *gin.Context) { c.Status(http.StatusOK) }
+	scoped.GET("/members", ok)
+	scoped.POST("/members", ok)
+	scoped.PATCH("", ok)
+	scoped.DELETE("", ok)
+	scoped.DELETE("/members/:authSub", ok)
+	scoped.POST("/unsuspend", ok)
+	scoped.DELETE("/leave", ok)
+	return e
+}
+
+// An unpaid activation means the period in use was never paid for. What it blocks is
+// what a suspension blocks, so the owner can still read the organization, pay for it,
+// or delete it.
+func TestActivationGate_WhatAnUnpaidActivationBlocks(t *testing.T) {
+	cases := []struct {
+		name, method, path string
+		want               int
+	}{
+		{"adding a member", http.MethodPost, "/api/organizations/ws-01/members", http.StatusForbidden},
+		{"removing a member", http.MethodDelete, "/api/organizations/ws-01/members/sub_x", http.StatusForbidden},
+		{"editing the organization", http.MethodPatch, "/api/organizations/ws-01", http.StatusForbidden},
+		{"reading", http.MethodGet, "/api/organizations/ws-01/members", http.StatusOK},
+		{"lifting a suspension", http.MethodPost, "/api/organizations/ws-01/unsuspend", http.StatusOK},
+		{"leaving", http.MethodDelete, "/api/organizations/ws-01/leave", http.StatusOK},
+		{"deleting the organization", http.MethodDelete, "/api/organizations/ws-01", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			e := makeGatedOrganizationEngine("owner", &stubActivationGate{unpaid: true})
+			e.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+			if w.Code != tc.want {
+				t.Fatalf("want %d, got %d: %s", tc.want, w.Code, w.Body)
+			}
+			if tc.want == http.StatusForbidden && !strings.Contains(w.Body.String(), "ACTIVATION_UNPAID") {
+				t.Errorf("want code ACTIVATION_UNPAID, got %s", w.Body)
+			}
+		})
+	}
+}
+
+func TestActivationGate_Paid_LetsWritesThrough(t *testing.T) {
+	w := httptest.NewRecorder()
+	gate := &stubActivationGate{}
+	makeGatedOrganizationEngine("owner", gate).ServeHTTP(w,
+		httptest.NewRequest(http.MethodPost, "/api/organizations/ws-01/members", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if gate.calls != 1 {
+		t.Errorf("want one read, got %d", gate.calls)
+	}
+}
+
+// Money fails closed, and 503 rather than 403 because the caller has done nothing wrong.
+func TestActivationGate_ReadFails_FailsClosed(t *testing.T) {
+	w := httptest.NewRecorder()
+	makeGatedOrganizationEngine("owner", &stubActivationGate{err: errors.New("db down")}).ServeHTTP(w,
+		httptest.NewRequest(http.MethodPost, "/api/organizations/ws-01/members", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d: %s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "BILLING_STATUS_UNAVAILABLE") {
+		t.Errorf("want code BILLING_STATUS_UNAVAILABLE, got %s", w.Body)
+	}
+}
+
+// A non-member must not learn an organization's billing state, and a request the gate
+// could never refuse must not pay for a transaction.
+func TestActivationGate_ReadsOnlyWhenItCouldRefuse(t *testing.T) {
+	cases := []struct {
+		name, role, method, path string
+		want                     int
+	}{
+		{"non-member", "", http.MethodPost, "/api/organizations/ws-01/members", http.StatusForbidden},
+		{"a read", "owner", http.MethodGet, "/api/organizations/ws-01/members", http.StatusOK},
+		{"unsuspend", "owner", http.MethodPost, "/api/organizations/ws-01/unsuspend", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			gate := &stubActivationGate{unpaid: true}
+			makeGatedOrganizationEngine(tc.role, gate).ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+			if w.Code != tc.want {
+				t.Fatalf("want %d, got %d: %s", tc.want, w.Code, w.Body)
+			}
+			if gate.calls != 0 {
+				t.Errorf("want no read, got %d", gate.calls)
+			}
+		})
 	}
 }

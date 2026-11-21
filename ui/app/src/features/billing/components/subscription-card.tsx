@@ -162,7 +162,6 @@ export function SubscriptionCard({ organizationId }: Props) {
                   cycle={sub.cycle}
                   currency={sub.currency}
                   periodEnd={sub.period_end}
-                  status={sub.status}
                   canCancel={canCancel}
                 />
               </Suspense>

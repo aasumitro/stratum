@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { useHTTPQuery } from "@/lib/api/query"
 import {
+  PROVIDER_REQUEST_TIMEOUT_MS,
   useHTTPActionPost,
   useHTTPActionPatch,
   useHTTPActionDelete,
@@ -171,6 +172,7 @@ export function useImportMembers(organizationId: string) {
     { rows: ImportRow[]; dry_run: boolean }
   >({
     url: API.organizations(organizationId, "members", "import"),
+    timeout: PROVIDER_REQUEST_TIMEOUT_MS,
     options: {
       onSuccess: () => {
         void queryClient.invalidateQueries({

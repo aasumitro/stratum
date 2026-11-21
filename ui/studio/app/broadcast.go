@@ -54,6 +54,10 @@ const broadcastBatchSize = 200
 // project DB, and writes the broadcast to the local operator log.
 // Returns the number of recipients who received the notification.
 func (s *BroadcastService) Send(projectID string, input BroadcastInput) (int, error) {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return 0, err
+	}
+
 	pg, err := withProjectPool(s.projects, s.pool, projectID, "BroadcastService.Send")
 	if err != nil {
 		return 0, err
@@ -64,6 +68,23 @@ func (s *BroadcastService) Send(projectID string, input BroadcastInput) (int, er
 	cancel()
 	if err != nil {
 		return 0, fmt.Errorf("BroadcastService.Send: resolve: %w", err)
+	}
+
+	// Recorded once, before the first insert: if it cannot be written, nobody
+	// receives anything. "all" spans organizations, so it names none.
+	var organizationID any
+	if input.Target != "all" && len(recipients) > 0 {
+		organizationID = recipients[0].OrganizationID
+	}
+	recordCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err = query.RecordOperatorAction(recordCtx, pg, "studio.notification.broadcast", "notification.messages", map[string]any{
+		"subject":         input.Title,
+		"recipient_count": len(recipients),
+		"organization_id": organizationID,
+	})
+	cancel()
+	if err != nil {
+		return 0, fmt.Errorf("BroadcastService.Send: %w", err)
 	}
 
 	var sent int
@@ -79,6 +100,20 @@ func (s *BroadcastService) Send(projectID string, input BroadcastInput) (int, er
 			sent++
 		}
 		cancel()
+	}
+
+	// The record above says what was attempted, so a shortfall needs its own row.
+	if sent < len(recipients) {
+		failureCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := query.RecordOperatorAction(failureCtx, pg, "studio.notification.broadcast.failed", "notification.messages", map[string]any{
+			"subject":         input.Title,
+			"recipient_count": len(recipients),
+			"sent":            sent,
+		})
+		cancel()
+		if err != nil {
+			log.Printf("BroadcastService.Send: record shortfall: %v", err)
+		}
 	}
 
 	s.logBroadcast(projectID, input, sent)

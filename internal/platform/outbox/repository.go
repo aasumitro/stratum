@@ -123,6 +123,25 @@ func recordFailure(ctx context.Context, q db.Querier, id string, publishErr erro
 	return nil
 }
 
+// Backlog reports what the relay has not delivered. due counts rows it still owes:
+// past their not_before, or failed and waiting out a retry backoff, which pushes
+// not_before forward and would otherwise hide a broker outage. A row scheduled for
+// the future and not yet tried is not late, so it counts in neither. exhausted
+// counts rows the relay has abandoned at maxAttempts, which only an operator can
+// recover and which would otherwise hold due up forever.
+func Backlog(ctx context.Context, q db.Querier) (due, exhausted int64, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE attempts < $1 AND (not_before <= now() OR attempts > 0)),
+		       count(*) FILTER (WHERE attempts >= $1)
+		FROM messaging.outbox
+		WHERE published_at IS NULL`, maxAttempts,
+	).Scan(&due, &exhausted)
+	if err != nil {
+		return 0, 0, fmt.Errorf("outbox.Backlog: %w", err)
+	}
+	return due, exhausted, nil
+}
+
 // Sweep permanently deletes published messaging.outbox rows older than
 // retentionDays, computed as time.Now().AddDate(0, 0, -retentionDays) —
 // matching audit.Writer.cleanup's cutoff shape, not a SQL-side interval.

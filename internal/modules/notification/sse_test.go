@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,5 +180,98 @@ func TestIntegration_StreamNotifications_RefreshesTTLBeforeExpiry(t *testing.T) 
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not return after its context was cancelled")
+	}
+}
+
+// flushSignalRecorder closes flushed on the first Flush, so a test can wait
+// for the stream's first flush instead of polling a recorder the handler
+// goroutine is writing to.
+type flushSignalRecorder struct {
+	*closeNotifyRecorder
+	flushed chan struct{}
+	once    sync.Once
+}
+
+func (r *flushSignalRecorder) Flush() {
+	r.closeNotifyRecorder.Flush()
+	r.once.Do(func() { close(r.flushed) })
+}
+
+// TestIntegration_StreamNotifications_FlushesHeadersOnOpen: the stream sends
+// its status and headers as soon as it opens — the browser's EventSource
+// only reports the stream open (and resets its reconnect bookkeeping) when
+// they arrive, and nothing else is written until the first notification or
+// the refresh tick minutes later.
+func TestIntegration_StreamNotifications_FlushesHeadersOnOpen(t *testing.T) {
+	pool := testPoolNotif(t)
+	redis := testRedisNotif(t)
+
+	const subject = "integ_sse_flush_user"
+	key := "sse:open:" + subject
+	t.Cleanup(func() { redis.Del(context.Background(), key) })
+
+	e := notification.NewModuleEngineWithRedis(pool, subject, redis)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/me/notifications/stream", nil).WithContext(ctx)
+	rec := &flushSignalRecorder{closeNotifyRecorder: newCloseNotifyRecorder(), flushed: make(chan struct{})}
+
+	done := make(chan struct{})
+	go func() {
+		e.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-rec.flushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream flushed nothing after opening")
+	}
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" || !rec.Flushed {
+		t.Errorf("want 200 text/event-stream flushed at open, got code=%d content-type=%q flushed=%v",
+			rec.Code, rec.Header().Get("Content-Type"), rec.Flushed)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after its context was cancelled")
+	}
+}
+
+// TestIntegration_StreamNotifications_EndsOnCloseStreams: an open stream
+// returns as soon as the module's streams are closed (server shutdown),
+// while its own request context is still live — a graceful shutdown is not
+// held open by it.
+func TestIntegration_StreamNotifications_EndsOnCloseStreams(t *testing.T) {
+	pool := testPoolNotif(t)
+	redis := testRedisNotif(t)
+
+	const subject = "integ_sse_close_user"
+	key := "sse:open:" + subject
+	t.Cleanup(func() { redis.Del(context.Background(), key) })
+
+	e, mod := notification.NewStreamEngine(pool, subject, redis)
+	req := httptest.NewRequest(http.MethodGet, "/api/me/notifications/stream", nil).WithContext(t.Context())
+	rec := &flushSignalRecorder{closeNotifyRecorder: newCloseNotifyRecorder(), flushed: make(chan struct{})}
+
+	done := make(chan struct{})
+	go func() {
+		e.ServeHTTP(rec, req)
+		close(done)
+	}()
+	select {
+	case <-rec.flushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream never opened")
+	}
+
+	mod.CloseStreams()
+	mod.CloseStreams() // shutdown hooks may run more than once; must not panic
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream did not end after CloseStreams")
 	}
 }

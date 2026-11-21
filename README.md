@@ -13,7 +13,7 @@ A working B2B SaaS reference stack — multi-tenancy, billing, notifications, au
 - **File storage** — avatar upload, organization logo via Supabase Storage
 - **Notifications** — in-app messages + SMTP email (bilingual EN / ID templates), per-channel preferences, dunning and lifecycle emails
 - **GDPR / PDPC** — async account deletion and data export with task tracking
-- **Audit log** — auto-logged mutations and auth failures, configurable retention, CSV export
+- **Audit log** — auto-logged mutations and auth failures, append-only for the app's database roles, Studio changes attributed to each operator's own login, retention with a 365-day floor, CSV export
 - **Observability** — OpenTelemetry traces, metrics, and logs
 - **Web UI** — full React frontend
 
@@ -48,7 +48,7 @@ npm run dev          # :3000
 
 # Desktop admin (Stratum Studio)
 cd ui/studio
-task dev             # Wails v3 hot-reload (requires Go 1.25+ and wails3 CLI)
+task dev             # Wails v3 hot-reload (requires Go 1.27+ and the wails3 v3.1.0 CLI)
 ```
 
 ## Staging (Podman)
@@ -117,6 +117,7 @@ Details live in [`docs/`](docs/README.md):
 - `docs/11-file-storage.md` — avatar and organization logo upload
 - `docs/12-operations.md` — deployment topology, backups, secrets, RTO/RPO, health endpoints
 - `docs/13-studio.md` — Stratum Studio: what it is, how it connects, features
+- `docs/14-compliance.md` — SOC 2 control matrix, data retention schedule, production hardening checklist
 
 See also: [`ui/app/README.md`](ui/app/README.md) and [`ui/studio/README.md`](ui/studio/README.md) — short pointers into the docs above.
 

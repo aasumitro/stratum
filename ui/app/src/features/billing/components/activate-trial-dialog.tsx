@@ -89,7 +89,11 @@ export function ActivateTrialDialog({ organizationId }: Props) {
                 {t("billing.trial.activateSuccessTitle")}
               </DialogTitle>
               <DialogDescription>
-                {t("billing.trial.activateSuccessDescription")}
+                {t(
+                  result
+                    ? "billing.trial.activateSuccessDescription"
+                    : "billing.trial.activateCoveredDescription"
+                )}
               </DialogDescription>
             </DialogHeader>
 

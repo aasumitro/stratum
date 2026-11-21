@@ -386,7 +386,6 @@ type stubExportOrgReader struct{ err error }
 func (stubExportOrgReader) GetOrganizationByID(context.Context, string) (*contracts.OrganizationInfo, error) {
 	return nil, errors.New("not implemented")
 }
-func (stubExportOrgReader) IsMember(context.Context, string, string) (bool, error) { return false, nil }
 func (stubExportOrgReader) GetMemberRole(context.Context, string, string) (string, error) {
 	return "", nil
 }

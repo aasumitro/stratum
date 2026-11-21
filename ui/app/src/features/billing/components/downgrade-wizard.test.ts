@@ -218,7 +218,7 @@ describe("DowngradeWizard — active (deferred) subscription", () => {
 
     await screen.findByText("Downgrade to a lower plan")
     screen.getByText(
-      "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it anytime before that."
+      "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it until your renewal invoice is paid."
     )
     // The proration note ("new period end ...") only applies to an
     // immediate change and must not render alongside the scheduled-effective
@@ -237,7 +237,7 @@ describe("DowngradeWizard — active (deferred) subscription", () => {
     await screen.findByText("Review Downgrade")
     expect(screen.queryByText("Select items to remove")).toBeNull()
     screen.getByText(
-      "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it anytime before that."
+      "This takes effect at renewal on Sep 1, 2026 — your current plan and its limits stay active until then, and you can undo it until your renewal invoice is paid."
     )
     expect(screen.queryByText("This can't be undone")).toBeNull()
   })

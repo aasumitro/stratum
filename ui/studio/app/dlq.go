@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/aasumitro/stratum/studio/internal/connect"
+	"github.com/aasumitro/stratum/studio/internal/query"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DLQInfo struct {
@@ -88,13 +94,35 @@ func parseMQConfig(amqpDSN string) (mqConfig, error) {
 
 type DLQService struct {
 	projects *ProjectService
+	pool     *connect.PostgresPool
 	client   *http.Client
 }
 
-func NewDLQService(projects *ProjectService) *DLQService {
+func NewDLQService(projects *ProjectService, pool *connect.PostgresPool) *DLQService {
 	return &DLQService{
 		projects: projects,
+		pool:     pool,
 		client:   &http.Client{Timeout: 15 * time.Second},
+	}
+}
+
+// recordAction writes the audit row for a broker change. The broker cannot
+// attribute anything to a person, because its credentials are shared, so callers
+// run this first and do not touch the broker if it fails. The row therefore records
+// an attempt; recordFailure adds a second row when the attempt does not work out.
+func (s *DLQService) recordAction(projectID, action, queue string, metadata map[string]any) error {
+	return withProjectDBErr(s.projects, s.pool, projectID, "DLQService.recordAction", 10*time.Second,
+		func(ctx context.Context, db *pgxpool.Pool) error {
+			return query.RecordOperatorAction(ctx, db, action, queue, metadata)
+		})
+}
+
+// recordFailure lets the audit trail tell a failed attempt from one that worked.
+// The broker call has already happened by now, so a failure here can only be logged.
+func (s *DLQService) recordFailure(projectID, action, queue string, cause error) {
+	metadata := map[string]any{"error": connect.RedactDSN(cause.Error())}
+	if err := s.recordAction(projectID, action, queue, metadata); err != nil {
+		log.Printf("DLQService.recordFailure: %v", err)
 	}
 }
 
@@ -250,11 +278,26 @@ func (s *DLQService) GetMessages(projectID, queue string, limit int) ([]DLQMessa
 // returned RequeueResult carries the consumed message (Requeued: false, Lost: ...)
 // instead of losing it silently — the error return is reserved for failures
 // before anything was consumed, where there is nothing to recover.
-func (s *DLQService) RequeueMessage(projectID, queue string) (*RequeueResult, error) {
+func (s *DLQService) RequeueMessage(projectID, queue string) (result *RequeueResult, err error) {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return nil, err
+	}
+
 	cfg, err := s.getConfig(projectID)
 	if err != nil {
 		return nil, fmt.Errorf("DLQService.RequeueMessage: %w", err)
 	}
+
+	if err := s.recordAction(projectID, "studio.dlq.requeue", queue, map[string]any{"count": 1}); err != nil {
+		return nil, fmt.Errorf("DLQService.RequeueMessage: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			s.recordFailure(projectID, "studio.dlq.requeue.failed", queue, err)
+		} else if !result.Requeued {
+			s.recordFailure(projectID, "studio.dlq.requeue.failed", queue, errors.New(result.Error))
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -276,9 +319,10 @@ func (s *DLQService) RequeueMessage(projectID, queue string) (*RequeueResult, er
 		RoutingKey string `json:"routing_key"`
 		Exchange   string `json:"exchange"`
 		Payload    string `json:"payload"`
-		Properties struct {
-			Headers map[string]any `json:"headers"`
-		} `json:"properties"`
+		// The management API sends properties as [] for a message that has none,
+		// so it cannot decode straight into a struct. A failure here would come
+		// after the message already left the queue, and would lose it.
+		Properties json.RawMessage `json:"properties"`
 	}
 	if err := json.Unmarshal(data, &msgs); err != nil {
 		return nil, fmt.Errorf("DLQService.RequeueMessage: decode: %w", err)
@@ -291,8 +335,15 @@ func (s *DLQService) RequeueMessage(projectID, queue string) (*RequeueResult, er
 	targetExchange := msg.Exchange
 	targetRoutingKey := msg.RoutingKey
 
+	var properties struct {
+		Headers map[string]any `json:"headers"`
+	}
+	if len(msg.Properties) > 0 && msg.Properties[0] == '{' {
+		_ = json.Unmarshal(msg.Properties, &properties)
+	}
+
 	// Extract original destination from x-death headers if present
-	if xDeath, ok := msg.Properties.Headers["x-death"]; ok {
+	if xDeath, ok := properties.Headers["x-death"]; ok {
 		if deaths, ok := xDeath.([]any); ok && len(deaths) > 0 {
 			if death, ok := deaths[0].(map[string]any); ok {
 				if ex, ok := death["exchange"].(string); ok && ex != "" {
@@ -336,7 +387,11 @@ func (s *DLQService) RequeueMessage(projectID, queue string) (*RequeueResult, er
 	return &RequeueResult{Requeued: true}, nil
 }
 
-func (s *DLQService) PurgeQueue(projectID, queue string) (int, error) {
+func (s *DLQService) PurgeQueue(projectID, queue string) (purged int, err error) {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return 0, err
+	}
+
 	cfg, err := s.getConfig(projectID)
 	if err != nil {
 		return 0, fmt.Errorf("DLQService.PurgeQueue: %w", err)
@@ -356,9 +411,15 @@ func (s *DLQService) PurgeQueue(projectID, queue string) (int, error) {
 	}
 	_ = json.Unmarshal(qData, &qInfo)
 
+	if err := s.recordAction(projectID, "studio.dlq.purge", queue, map[string]any{"count": qInfo.Messages}); err != nil {
+		return 0, fmt.Errorf("DLQService.PurgeQueue: %w", err)
+	}
+
 	if _, err := s.request(ctx, cfg, http.MethodDelete,
 		fmt.Sprintf("/queues/%s/%s/contents", cfg.vhost, url.PathEscape(queue)), nil); err != nil {
-		return 0, fmt.Errorf("DLQService.PurgeQueue: %w", err)
+		wrapped := fmt.Errorf("DLQService.PurgeQueue: %w", err)
+		s.recordFailure(projectID, "studio.dlq.purge.failed", queue, wrapped)
+		return 0, wrapped
 	}
 
 	return qInfo.Messages, nil

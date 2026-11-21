@@ -537,6 +537,7 @@ func TestResolveChangedBy(t *testing.T) {
 		{"system sentinel", svcNoReader, "system", "System", "system"},
 		{"empty falls back to system", svcNoReader, "", "System", "system"},
 		{"webhook sentinel", svcNoReader, "webhook", "Webhook", "webhook"},
+		{"operator sentinel shows as support", svcWithReader, "operator", "Support", "system"},
 		{"unwired reader falls back to raw value", svcNoReader, "sub_known", "sub_known", "user"},
 		{"resolved user with name", svcWithReader, "sub_known", "Jane Cooper", "user"},
 		{"resolved user without name falls back to email", svcWithReader, "sub_no_name", "noname@example.com", "user"},
@@ -552,12 +553,78 @@ func TestResolveChangedBy(t *testing.T) {
 	}
 }
 
+// --- planChangePeriod ---
+
+func TestPlanChangePeriod(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	start := now.AddDate(0, 0, -10)
+	end := now.AddDate(0, 0, 20)
+	sub := func(status string) *subscriptionRecord {
+		return &subscriptionRecord{Status: status, Cycle: cycleMonthly, PeriodStart: &start, PeriodEnd: &end}
+	}
+	prorated := prorate(now, start, end, 900, 2900, cycleMonthly, cycleMonthly)
+	yearEnd := now.AddDate(0, 0, 300)
+	yearlyUnpaid := &subscriptionRecord{Status: statusActive, Cycle: cycleYearly, PeriodStart: &start, PeriodEnd: &yearEnd}
+	shortened := now.AddDate(0, 1, 0)
+
+	cases := []struct {
+		name             string
+		sub              *subscriptionRecord
+		unpaidActivation bool
+		planChanged      bool
+		newCycle         string
+		wantStart        *time.Time
+		wantEnd          *time.Time
+	}{
+		{"trialing keeps its trial window", sub(statusTrialing), false, true, cycleMonthly, nil, nil},
+		{"expired gets its period from Resume", sub(statusExpired), false, true, cycleMonthly, nil, nil},
+		{"cancelled gets its period from Resume", sub(statusCancelled), false, true, cycleMonthly, nil, nil},
+		{"active without a period", &subscriptionRecord{Status: statusActive, Cycle: cycleMonthly}, false, true, cycleMonthly, nil, nil},
+		{"active, unpaid activation: never lengthens", sub(statusActive), true, true, cycleMonthly, nil, nil},
+		{"active, unpaid activation, same plan and cycle: never lengthens", sub(statusActive), true, false, cycleMonthly, nil, nil},
+		{"past_due, unpaid activation, yearly: never lengthens", sub(statusPastDue), true, false, cycleYearly, nil, nil},
+		{"active, unpaid activation, shorter new cycle: shortens from now", yearlyUnpaid, true, false, cycleMonthly, &now, &shortened},
+		{"active, plan changed: prorate from the current start", sub(statusActive), false, true, cycleMonthly, &start, &prorated},
+		{"past_due, plan changed: prorate", sub(statusPastDue), false, true, cycleMonthly, &start, &prorated},
+		{"active, same-plan cycle switch: period untouched", sub(statusActive), false, false, cycleYearly, nil, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotStart, gotEnd := planChangePeriod(now, c.sub, c.unpaidActivation, c.planChanged, 900, 2900, c.newCycle)
+			if (gotEnd == nil) != (c.wantEnd == nil) || (gotEnd != nil && !gotEnd.Equal(*c.wantEnd)) {
+				t.Errorf("end: got %v, want %v", gotEnd, c.wantEnd)
+			}
+			if (gotStart == nil) != (c.wantStart == nil) || (gotStart != nil && !gotStart.Equal(*c.wantStart)) {
+				t.Errorf("start: got %v, want %v", gotStart, c.wantStart)
+			}
+		})
+	}
+}
+
+// A cheaper daily rate would prorate to a later end. A same-plan cycle switch is free
+// and moves that rate, so the period must stay where it is.
+func TestPlanChangePeriod_ProrationNeverLengthens(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	start := now.AddDate(0, 0, -10)
+	end := now.AddDate(0, 0, 20)
+	sub := &subscriptionRecord{Status: statusActive, Cycle: cycleMonthly, PeriodStart: &start, PeriodEnd: &end}
+
+	gotStart, gotEnd := planChangePeriod(now, sub, false, true, 2900, 900, cycleMonthly)
+	if gotStart != nil || gotEnd != nil {
+		t.Errorf("want the period untouched, got %v to %v", gotStart, gotEnd)
+	}
+}
+
 // --- staleSubscriptionCheck ---
 
 func TestStaleSubscriptionCheck(t *testing.T) {
 	periodEnd := time.Date(2027, 8, 23, 0, 0, 0, 0, time.UTC)
 	trialEnd := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	otherEnd := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// What Postgres hands back for an end computed from a nanosecond clock:
+	// the same instant, truncated to microseconds.
+	scheduledEnd := time.Date(2027, 8, 23, 10, 0, 0, 123456789, time.UTC)
+	storedEnd := scheduledEnd.Truncate(time.Microsecond)
 
 	cases := []struct {
 		name  string
@@ -599,6 +666,18 @@ func TestStaleSubscriptionCheck(t *testing.T) {
 			"not IsTrial but sub has no period_end (e.g. still trialing since scheduling): stale",
 			&subscriptionRecord{PeriodEnd: nil, TrialEnd: &trialEnd},
 			events.SubscriptionCheck{ExpectedEnd: periodEnd, IsTrial: false},
+			true,
+		},
+		{
+			"ExpectedEnd differs from the stored period_end only below a microsecond: not stale",
+			&subscriptionRecord{PeriodEnd: &storedEnd},
+			events.SubscriptionCheck{ExpectedEnd: scheduledEnd},
+			false,
+		},
+		{
+			"ExpectedEnd one microsecond away from the stored period_end: stale",
+			&subscriptionRecord{PeriodEnd: &storedEnd},
+			events.SubscriptionCheck{ExpectedEnd: storedEnd.Add(time.Microsecond)},
 			true,
 		},
 	}

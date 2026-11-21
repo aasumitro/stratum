@@ -8,15 +8,15 @@ Each module declares its own topic exchange — nothing is shared. Messages use 
 
 ## The worker
 
-`cmd/worker` registers 35 consumers, each bound to a module's queue. When a module publishes an event — an organization is created, an invoice is paid, a member's role changes — the bound consumer reacts: sending a welcome email, firing an in-app notification, fanning out a customer webhook, and so on.
+`cmd/worker` registers 45 consumers, each bound to a module's queue. When a module publishes an event — an organization is created, an invoice is paid, a member's role changes — the bound consumer reacts: sending a welcome email, firing an in-app notification, fanning out a customer webhook, and so on.
 
 ## Delayed messages, without a plugin
 
-Renewal reminders and dunning notices need to fire *in the future*. Rather than depend on a broker plugin or a scheduler, the delay lives entirely in the transactional outbox: `events.EnqueueDelayed` writes the row with a future `not_before`, and the relay only claims a row once `not_before <= now()`. When it comes due the relay publishes it to the real exchange under its final routing key, exactly like an immediate event, and the bound consumer picks it up. The dunning cadence is a day-3 reminder and a day-7 final notice; trials use a 2-day lead.
+Renewal reminders, dunning notices, the end-of-period expiry check, the renewal invoice and a scheduled downgrade's apply all need to fire *in the future*. Rather than depend on a broker plugin or a scheduler, the delay lives entirely in the transactional outbox: `events.EnqueueDelayed` writes the row with a future `not_before`, and the relay only claims a row once `not_before <= now()`. When it comes due the relay publishes it to the real exchange under its final routing key, exactly like an immediate event, and the bound consumer picks it up. The dunning cadence is a day-3 reminder and a day-7 final notice; trials use a 2-day lead.
 
 ## Retries and the dead-letter queue
 
-A consumer that fails NACKs the message, which dead-letters to a per-queue DLQ. Consumers are written to tolerate redelivery (idempotent) — for example, subscription provisioning checks for an existing subscription and pending invoice rather than blindly creating duplicates. Operators can inspect, requeue (FIFO), and purge dead-lettered messages from Stratum Studio's queue monitor.
+A consumer that fails rejects the message, which is redelivered after a backoff. Once it reaches its queue's delivery limit (five for most queues, three for the expensive ones: GDPR export and deletion, and customer webhook delivery) it dead-letters to its module's DLQ (`<module>.events.dlq`), and the worker's `stratum.dlq.messages` gauge reports it. Consumers are written to tolerate redelivery (idempotent) — for example, subscription provisioning checks for an existing subscription and pending invoice rather than blindly creating duplicates. Operators can inspect, requeue (FIFO), and purge dead-lettered messages from Stratum Studio's queue monitor.
 
 ## Outbound customer webhooks
 
@@ -25,4 +25,4 @@ Layered on top of the same event system, the worker also fans out a curated set 
 ## Adding an event
 1. Add the routing key to `internal/contracts/events`.
 2. Publish it from the owning module's service using the exchange constant — `events.Enqueue`, or `events.EnqueueDelayed` with a delay for a future fire.
-3. Bind a consumer in `internal/app/worker.go`.
+3. Declare its consumer in the owning module's `consumers.go`. `bootstrap.NewConsumers` collects every module's consumers, and `bootstrap/consumers_snapshot_test.go` pins the resulting topology, so update its golden entries too.

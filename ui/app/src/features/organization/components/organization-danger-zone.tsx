@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { useNavigate } from "@tanstack/react-router"
+import { Link, useNavigate } from "@tanstack/react-router"
 import { useTranslation, Trans } from "react-i18next"
 import { IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react"
 import {
@@ -39,11 +39,16 @@ import {
   useOrganizationMembers,
 } from "@/features/organization/hooks/use-members"
 import { useWebhooks } from "@/features/organization/hooks/use-webhooks"
+import {
+  isBillingSuspensionReason,
+  isSelfSuspensionReason,
+} from "@/hooks/use-billing-status"
 
 interface Props {
   organizationId: string
   slug: string
   status: string
+  suspendedReason?: string
 }
 
 // Danger zone card: transfer ownership (atomic, checkbox-gated),
@@ -53,6 +58,7 @@ export function OrganizationDangerZone({
   organizationId,
   slug,
   status,
+  suspendedReason,
 }: Props) {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -203,16 +209,33 @@ export function OrganizationDangerZone({
               {t("organization.danger.suspendDescription")}
             </p>
           </div>
+          {/* Only the owner's own pause lifts here: a billing suspension
+              lifts once the subscription is paid, and support lifts its
+              own — the API refuses both from this route. */}
           {isSuspended ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={unsuspending}
-              onClick={() => unsuspend()}
-            >
-              <IconPlayerPlay data-icon="inline-start" />
-              {t("organization.danger.unsuspendAction")}
-            </Button>
+            isSelfSuspensionReason(suspendedReason) ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={unsuspending}
+                onClick={() => unsuspend()}
+              >
+                <IconPlayerPlay data-icon="inline-start" />
+                {t("organization.danger.unsuspendAction")}
+              </Button>
+            ) : isBillingSuspensionReason(suspendedReason) ? (
+              <Link
+                to="/organization/$organizationId/billing"
+                params={{ organizationId }}
+                className="text-sm font-medium underline"
+              >
+                {t("organization.pendingInvoicePay")}
+              </Link>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t("organization.danger.unsuspendBySupport")}
+              </p>
+            )
           ) : (
             <ConfirmationDialog
               render={<Button variant="outline" size="sm" />}
@@ -221,7 +244,7 @@ export function OrganizationDangerZone({
               confirmLabel={t("organization.danger.suspendAction")}
               destructive={false}
               pending={suspending}
-              onConfirm={() => suspend({})}
+              onConfirm={() => suspend()}
             >
               <IconPlayerPause data-icon="inline-start" />
               {t("organization.danger.suspendAction")}

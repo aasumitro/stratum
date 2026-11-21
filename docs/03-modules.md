@@ -16,10 +16,10 @@ Reference depends on Billing (the catalog's schema owner) to serve its own plan/
 Represents a human user, independent of any organization. Profile (name, avatar, arbitrary JSON preferences), async account deletion and GDPR export (via RabbitMQ, tracked as tasks), session/login history with revoke-all, and MFA status sync. The only identity reference stored is `auth_sub`.
 
 ## Organization
-The tenant — a company/workspace that owns billing, membership, and most business data. Handles the organization profile (name, slug, country, logo, timezone, locale, IP allowlist), membership with a fixed `owner > admin > member` role model, invitations (by email or 8-character invite code, with bulk CSV import), ownership transfer, self-service suspend/unsuspend, and outbound customer webhooks. RBAC lives here, cached in Redis for 30 seconds.
+The tenant — a company/workspace that owns billing, membership, and most business data. Handles the organization profile (name, slug, country, logo, timezone, locale, IP allowlist), membership with a fixed `owner > admin > member` role model, invitations (by email or a 16-character invite code, with bulk CSV import), ownership transfer, self-service suspend/unsuspend, and outbound customer webhooks. RBAC lives here, cached in Redis for 30 seconds.
 
 ## Billing
-The subscription and license engine. A real catalog of plans, features, add-ons, and coupons drives entitlements; subscriptions move through `trialing → active → cancelled → expired` (with `active ⇄ past_due`). Supports plan changes with proration (downgrades below current usage resolve the overage — remove members — as part of the same request), cancel/resume, tiered-pricing extend (with an annual-cycle-conversion option), immediate trial activation, invoices with per-country tax and PDF rendering, usage metering with quota enforcement, and renewal/dunning reminders. See `04-billing.md`.
+The subscription and license engine. A real catalog of plans, features, add-ons, and coupons drives entitlements; subscriptions move through `trialing → active → cancelled → expired` (with `active ⇄ past_due`). Supports plan changes with proration, downgrades and add-on decreases scheduled for the end of the paid period (members over the new limit are resolved when it applies; on a trial or an ended subscription it applies at once), cancellation scheduled for the end of the period and resume through a paid invoice, tiered-pricing extend (with an annual-cycle-conversion option), immediate trial activation, invoices with per-country tax and PDF rendering, usage metering with quota enforcement, and renewal/dunning reminders. See `04-billing.md`.
 
 ## Payment Integration
 Deliberately minimal — collect money and tell Stratum it happened. Stripe (USD) and Xendit (IDR) generate hosted payment links; verified webhooks are the *only* thing that moves billing state. No card data is ever stored.
@@ -31,10 +31,10 @@ In-house delivery across email (bilingual EN/ID templates), in-app, outbound cus
 Static seed data read by everything: countries (full ISO 3166-1, only Indonesia active by default) and currencies (a curated set, only USD/IDR active). Activating a new market is a Studio toggle rather than a code change.
 
 ## Audit
-Not a module you call — middleware records every non-GET request (and every 4xx/5xx, including anonymous auth failures) into an append-only log, with sensitive fields redacted. Two read surfaces exist: a per-organization admin log and a personal cross-organization log.
+Not a module you call — middleware records every non-GET request (including anonymous auth failures) and any GET a handler flags, with sensitive fields redacted. Provider webhooks record failed calls only. A separate database trigger records every change an operator makes through their own login role. The log is append-only: runtime roles hold no UPDATE or DELETE on it, and the two legitimate rewrites, retention and GDPR anonymization, go through narrow database functions. Two read surfaces exist: a per-organization admin log and a personal cross-organization log.
 
 ## The platform layer
-`internal/platform/` holds the shared infrastructure — audit, cache, config, db, httpserver, mailer, messaging, otel, pdf, storage — one package per concern. Modules depend on the platform, never on each other.
+`internal/platform/` holds the shared infrastructure — apperr, audit, cache, config, db, geoip, httpclient, httpserver, logger, mailer, messaging, otel, outbox, pdf, storage — one package per concern. Modules depend on the platform, never on each other.
 
 ## Routes at a glance
 Organization: `/organizations/*` (members, invitations, webhooks, settings, suspend). Account: `/me/*`. Billing: `/organizations/:id/billing/*`. Notifications: `/me/notifications/*`. Reference: `/references/*`. Full detail in `08-api-reference.md`.

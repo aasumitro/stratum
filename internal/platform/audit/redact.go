@@ -32,7 +32,9 @@ var sensitiveFieldNames = map[string]bool{
 // redactSensitiveFields walks a JSON value at any nesting depth (objects and
 // arrays) and replaces the value of any key in sensitiveFieldNames with a
 // fixed marker. Returns the input unchanged if it isn't valid JSON — callers
-// already fall back to a safe default for invalid bodies elsewhere.
+// already fall back to a safe default for invalid bodies elsewhere. Valid JSON that
+// Go cannot decode, such as a number too large for a float, returns empty metadata:
+// Postgres refuses most of those too, and an unredacted body must not be stored.
 //
 // This only ever runs on the copy of the request body destined for the audit
 // log — the handler still receives and binds the original, unredacted body,
@@ -40,6 +42,9 @@ var sensitiveFieldNames = map[string]bool{
 func redactSensitiveFields(raw []byte) []byte {
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
+		if json.Valid(raw) {
+			return emptyMetadata
+		}
 		return raw
 	}
 	redactValue(v)

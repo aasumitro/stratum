@@ -226,7 +226,7 @@ func TestCachedOrganizationReader_CachesAndInvalidates(t *testing.T) {
 	}
 }
 
-func TestCachedOrganizationReader_MemberRoleCacheAndIsMember(t *testing.T) {
+func TestCachedOrganizationReader_MemberRoleCache(t *testing.T) {
 	client := testClient(t)
 	inner := &countingOrgReader{role: "member"}
 	c := cache.NewCachedOrganizationReader(inner, client)
@@ -243,12 +243,6 @@ func TestCachedOrganizationReader_MemberRoleCacheAndIsMember(t *testing.T) {
 	_, _ = c.GetMemberRole(ctx, orgID, sub)
 	if inner.roleCalls != 1 {
 		t.Errorf("role inner calls = %d, want 1", inner.roleCalls)
-	}
-
-	// IsMember is derived from the (now cached) role
-	ok, _ := c.IsMember(ctx, orgID, sub)
-	if !ok {
-		t.Error("IsMember should be true for a non-empty role")
 	}
 
 	c.InvalidateMemberRole(ctx, orgID, sub)

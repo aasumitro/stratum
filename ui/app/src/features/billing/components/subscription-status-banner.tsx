@@ -33,10 +33,11 @@ export function SubscriptionStatusBanner({
 }: Props) {
   const { t } = useTranslation()
 
-  // Deferred cancellation: status never left "active" (the renewal worker
-  // applies it later), so this is a distinct sub-state from the genuine
-  // "cancelled" banner below rather than something status alone captures.
-  if (sub.status === "active" && sub.scheduled_cancel_at) {
+  // Scheduled cancellation: status stays active/trialing/past_due until the
+  // cancellation takes effect at the end of the period (or trial), so this
+  // is a sub-state status alone doesn't capture. Once it applies, status is
+  // "cancelled" and the dunning banner (billing-layout.tsx) takes over.
+  if (sub.scheduled_cancel_at && sub.status !== "cancelled") {
     return (
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
         <div>

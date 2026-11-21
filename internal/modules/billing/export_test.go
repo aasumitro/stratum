@@ -1,6 +1,8 @@
 package billing
 
 import (
+	"context"
+
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -100,6 +102,12 @@ type referenceStub interface {
 	contracts.CountryTaxReader
 }
 
+// CreatePaymentLinkForTest opens a checkout for invoiceID the way the worker does.
+func (m *Module) CreatePaymentLinkForTest(ctx context.Context, invoiceID string) error {
+	_, err := m.svc.createPaymentLink(ctx, "", "", invoiceID)
+	return err
+}
+
 // NewModuleForTest creates a Module backed by a real pool. A nil ref leaves
 // the tax rate unwired — tax defaults to 0 (see service.go's
 // optional-dependency comments).
@@ -121,6 +129,16 @@ func NewWebhookModuleEngine(pool *pgxpool.Pool, authSub, organizationID string) 
 func NewWebhookModuleEngineWithSuspender(
 	pool *pgxpool.Pool, authSub, organizationID string, suspender contracts.OrganizationSuspender,
 ) *gin.Engine {
+	return NewWebhookModuleEngineWithOrgReader(pool, authSub, organizationID, suspender, nil)
+}
+
+// NewWebhookModuleEngineWithOrgReader is NewWebhookModuleEngineWithSuspender
+// with an organization reader wired (nil leaves it unwired), for paths that
+// look the organization up — a late payment for a deleted organization.
+func NewWebhookModuleEngineWithOrgReader(
+	pool *pgxpool.Pool, authSub, organizationID string,
+	suspender contracts.OrganizationSuspender, reader contracts.OrganizationReader,
+) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	// pool doubles as the webhook pool here — every caller of this helper
 	// connects via TEST_DATABASE_URL (stratum_test, BYPASSRLS by design —
@@ -129,6 +147,9 @@ func NewWebhookModuleEngineWithSuspender(
 	// exercises the real stratum_app/stratum_webhook split directly
 	// instead of through here.
 	mod := New(pool, ProviderConfig{}, nil, suspender, pool)
+	if reader != nil {
+		mod.SetOrganizationReader(reader)
+	}
 	e := gin.New()
 	authMW := func(c *gin.Context) {
 		c.Set("auth.claims", middleware.Claims{Subject: authSub})
@@ -176,7 +197,7 @@ func NewModuleEngine(pool *pgxpool.Pool, authSub, organizationID string, ref ...
 	}
 	noopMW := func(c *gin.Context) { c.Next() }
 	api := e.Group("/api")
-	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: noopMW, MFA: noopMW})
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopMW, Org: orgMW, Idempotency: noopMW, RLS: middleware.NewRLSTxMiddleware(pool), MFA: noopMW})
 	return e
 }
 

@@ -2,10 +2,23 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// The app's billing outbox vocabulary (contracts/events in the API repo):
+// rows Studio writes are relayed to the billing exchange and consumed by the
+// billing worker like any event the app enqueues itself.
+const (
+	outboxExchangeBilling   = "billing.events"
+	routingKeyMarkPaid      = "billing.invoice.mark-paid"
+	routingKeyCheckoutClose = "billing.payment-link.expire"
+	routingKeyTrialExtend   = "billing.subscription.operator-trial-extend"
+	routingKeyPlanChange    = "billing.subscription.operator-plan-change"
 )
 
 type SupportUser struct {
@@ -159,12 +172,26 @@ func ListSupportOrganizationInvoices(ctx context.Context, pool *pgxpool.Pool, or
 	return out, nil
 }
 
+// SupportExtendTrial asks the app's billing worker to move a trialing
+// subscription's trial end by days. Billing moves the period with it and
+// reschedules the conversion invoice, its reminder and the expiry check, which
+// all key on the end. The new end is computed here, so a redelivered request
+// extends nothing twice.
 func SupportExtendTrial(ctx context.Context, pool *pgxpool.Pool, organizationID string, days int) error {
 	tag, err := pool.Exec(ctx, `
-		UPDATE billing.subscriptions
-		SET trial_end = trial_end + ($1 || ' days')::INTERVAL
-		WHERE subject_id = $2 AND status = 'trialing'
-	`, days, organizationID)
+		WITH target AS (
+			SELECT gen_random_uuid() AS id, s.subject_id,
+			       s.trial_end + make_interval(days => $2) AS trial_end
+			FROM billing.subscriptions s
+			WHERE s.subject_id = $1 AND s.status = 'trialing' AND s.trial_end IS NOT NULL
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT t.id, $3::text, $4::text,
+		       jsonb_build_object('id', t.id, 'type', $4::text, 'source', 'studio', 'time', now(),
+		                          'org_id', t.subject_id,
+		                          'data', jsonb_build_object('org_id', t.subject_id, 'trial_end', t.trial_end))
+		FROM target t
+	`, organizationID, days, outboxExchangeBilling, routingKeyTrialExtend)
 	if err != nil {
 		return fmt.Errorf("query.SupportExtendTrial: %w", err)
 	}
@@ -174,11 +201,15 @@ func SupportExtendTrial(ctx context.Context, pool *pgxpool.Pool, organizationID 
 	return nil
 }
 
+// SupportActivateSubscription marks a trialing or past_due subscription
+// active for its current period. A cancelled one is left out: it only exists
+// once its period has ended and the organization is suspended, so it comes
+// back through the customer's own Resume and payment.
 func SupportActivateSubscription(ctx context.Context, pool *pgxpool.Pool, organizationID string) error {
 	tag, err := pool.Exec(ctx, `
 		UPDATE billing.subscriptions
 		SET status = 'active', trial_end = NULL
-		WHERE subject_id = $1 AND status IN ('trialing', 'cancelled', 'past_due')
+		WHERE subject_id = $1 AND status IN ('trialing', 'past_due')
 	`, organizationID)
 	if err != nil {
 		return fmt.Errorf("query.SupportActivateSubscription: %w", err)
@@ -189,30 +220,82 @@ func SupportActivateSubscription(ctx context.Context, pool *pgxpool.Pool, organi
 	return nil
 }
 
+// SupportChangePlan asks the app's billing worker to change an organization's
+// plan through the same path an owner's change takes, so pending invoices are
+// repriced and renewal follows a moved end. Billing applies it moments later.
+//
+// The worker cannot answer back: a change it refuses is only logged there. So
+// the refusals that depend on state Studio can read are checked here first,
+// with billing's own rules: both plans must be active (billing prices the
+// change from each), a cancelled subscription is resumed by its owner first,
+// and a scheduled downgrade whose renewal is already paid cannot be replaced
+// until it applies. A change of state between this read and the worker's
+// apply still ends in the worker's log.
 func SupportChangePlan(ctx context.Context, pool *pgxpool.Pool, organizationID, plan, cycle string) error {
-	tag, err := pool.Exec(ctx, `
-		UPDATE billing.subscriptions
-		SET plan = $2, cycle = $3
-		WHERE subject_id = $1
-		  AND EXISTS (SELECT 1 FROM billing.plans WHERE id = $2)
-	`, organizationID, plan, cycle)
+	var targetActive bool
+	err := pool.QueryRow(ctx, `SELECT active FROM billing.plans WHERE id = $1`, plan).Scan(&targetActive)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("plan %q does not exist", plan)
+	}
 	if err != nil {
 		return fmt.Errorf("query.SupportChangePlan: %w", err)
 	}
-	if tag.RowsAffected() > 0 {
-		return nil
+	if !targetActive {
+		return fmt.Errorf("plan %q is not active; billing only changes to an active plan", plan)
 	}
 
-	var planExists bool
-	if err := pool.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM billing.plans WHERE id = $1)
-	`, plan).Scan(&planExists); err != nil {
+	var (
+		status, currentPlan string
+		currentPlanActive   bool
+		scheduledFrom       *time.Time
+		scheduleLocked      bool
+	)
+	err = pool.QueryRow(ctx, `
+		SELECT s.status,
+		       s.plan,
+		       p.active,
+		       s.scheduled_effective_at,
+		       COALESCE(s.period_end > s.scheduled_effective_at, false) AS schedule_locked
+		FROM billing.subscriptions s
+		JOIN billing.plans p ON p.id = s.plan
+		WHERE s.subject_id = $1
+	`, organizationID).Scan(&status, &currentPlan, &currentPlanActive, &scheduledFrom, &scheduleLocked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("no subscription found for organization %s", organizationID)
+	}
+	if err != nil {
 		return fmt.Errorf("query.SupportChangePlan: %w", err)
 	}
-	if !planExists {
-		return fmt.Errorf("plan %q does not exist", plan)
+	switch {
+	case !currentPlanActive:
+		return fmt.Errorf("the organization's current plan %q is not active; billing cannot price a change from it", currentPlan)
+	case status == "cancelled":
+		return fmt.Errorf("the subscription is cancelled; the owner resumes it before its plan can change")
+	case scheduleLocked && scheduledFrom != nil:
+		return fmt.Errorf("a scheduled change is already paid for and takes effect on %s; change the plan after that",
+			scheduledFrom.UTC().Format("2006-01-02"))
 	}
-	return fmt.Errorf("no subscription found for organization %s", organizationID)
+
+	tag, err := pool.Exec(ctx, `
+		WITH target AS (
+			SELECT gen_random_uuid() AS id, s.subject_id
+			FROM billing.subscriptions s
+			WHERE s.subject_id = $1
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT t.id, $4::text, $5::text,
+		       jsonb_build_object('id', t.id, 'type', $5::text, 'source', 'studio', 'time', now(),
+		                          'org_id', t.subject_id,
+		                          'data', jsonb_build_object('org_id', t.subject_id, 'plan', $2::text, 'cycle', $3::text))
+		FROM target t
+	`, organizationID, plan, cycle, outboxExchangeBilling, routingKeyPlanChange)
+	if err != nil {
+		return fmt.Errorf("query.SupportChangePlan: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no subscription found for organization %s", organizationID)
+	}
+	return nil
 }
 
 type AtRiskInvoice struct {
@@ -262,12 +345,26 @@ func GetAtRiskInvoices(ctx context.Context, pool *pgxpool.Pool) ([]AtRiskInvoice
 	return out, nil
 }
 
+// SupportMarkInvoicePaid hands an operator's "mark paid" to the app's
+// billing worker, which applies it exactly like a confirmed payment: the
+// invoice turns paid, the subscription renews or reactivates, a billing
+// suspension lifts and the next renewal is scheduled. Studio only writes the
+// outbox row for a still-pending invoice; the invoice changes once the
+// worker has run.
 func SupportMarkInvoicePaid(ctx context.Context, pool *pgxpool.Pool, invoiceID string) error {
 	tag, err := pool.Exec(ctx, `
-		UPDATE billing.invoices
-		SET status = 'paid', paid_at = now()
-		WHERE id = $1 AND status = 'pending'
-	`, invoiceID)
+		WITH target AS (
+			SELECT gen_random_uuid() AS id, i.id AS invoice_id, s.subject_id
+			FROM billing.invoices i
+			JOIN billing.subscriptions s ON s.id = i.subscription_id
+			WHERE i.id = $1 AND i.status = 'pending'
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT t.id, $2::text, $3::text,
+		       jsonb_build_object('id', t.id, 'type', $3::text, 'source', 'studio', 'time', now(),
+		                          'org_id', t.subject_id, 'data', jsonb_build_object('invoice_id', t.invoice_id))
+		FROM target t
+	`, invoiceID, outboxExchangeBilling, routingKeyMarkPaid)
 	if err != nil {
 		return fmt.Errorf("query.SupportMarkInvoicePaid: %w", err)
 	}
@@ -277,17 +374,148 @@ func SupportMarkInvoicePaid(ctx context.Context, pool *pgxpool.Pool, invoiceID s
 	return nil
 }
 
+// SupportVoidInvoice voids a pending invoice, expires its open payment links
+// and queues closing each link's checkout at its provider (the app's billing
+// worker calls Stripe/Xendit), all in one transaction — a voided invoice must
+// not stay payable on a checkout the provider still has open.
 func SupportVoidInvoice(ctx context.Context, pool *pgxpool.Pool, invoiceID string) error {
-	tag, err := pool.Exec(ctx, `
-		UPDATE billing.invoices
-		SET status = 'void'
-		WHERE id = $1 AND status = 'pending'
-	`, invoiceID)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var orgID, subscriptionID string
+	err = tx.QueryRow(ctx, `
+		UPDATE billing.invoices i
+		SET status = 'void', updated_at = now()
+		FROM billing.subscriptions s
+		WHERE i.id = $1 AND i.status = 'pending' AND s.id = i.subscription_id
+		RETURNING s.subject_id, s.id::text
+	`, invoiceID).Scan(&orgID, &subscriptionID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("invoice %s not found or not in pending status", invoiceID)
+	}
+	if err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
+	}
+	// An add-on increase gated on this invoice no longer waits for anything, as
+	// when the app voids it.
+	if _, err := tx.Exec(ctx, `
+		UPDATE billing.subscription_addons
+		SET pending_quantity = NULL, pending_invoice_id = NULL
+		WHERE pending_invoice_id = $1
+	`, invoiceID); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: clear pending add-on: %w", err)
+	}
+	// A voided invoice used no coupon application, so its discount lines give
+	// theirs back, as the app's own void does. The app names a discount line
+	// "Discount: <coupon code>".
+	if _, err := tx.Exec(ctx, `
+		UPDATE billing.coupon_redemptions cr
+		SET applied_count = GREATEST(cr.applied_count - used.invoices, 0)
+		FROM (
+			SELECT li.description, COUNT(*) AS invoices
+			FROM billing.invoice_line_items li
+			WHERE li.invoice_id = $1 AND li.total_cents < 0
+			GROUP BY li.description
+		) used
+		WHERE cr.subscription_id = $2::uuid AND used.description = 'Discount: ' || cr.coupon_id
+	`, invoiceID, subscriptionID); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: release coupon application: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		WITH closed AS (
+			UPDATE billing.payment_links SET status = 'expired'
+			WHERE invoice_id = $1 AND status IN ('pending', 'failed')
+			RETURNING provider, external_id
+		), rows AS (
+			SELECT gen_random_uuid() AS id, provider, external_id
+			FROM closed
+			WHERE external_id IS NOT NULL AND external_id <> ''
+		)
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		SELECT r.id, $3::text, $4::text,
+		       jsonb_build_object('id', r.id, 'type', $4::text, 'source', 'studio', 'time', now(),
+		                          'org_id', $2::text,
+		                          'data', jsonb_build_object('provider', r.provider, 'external_id', r.external_id))
+		FROM rows r
+	`, invoiceID, orgID, outboxExchangeBilling, routingKeyCheckoutClose); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: close payment links: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("query.SupportVoidInvoice: %w", err)
+	}
+	return nil
+}
+
+// PaymentToReview is money a provider took that settled nothing: a payment on
+// an invoice already void, failed or paid. The app records it as unapplied and
+// applies nothing, since there is no refund path; an operator refunds it at
+// the provider and then marks it refunded.
+type PaymentToReview struct {
+	PaymentID        string
+	InvoiceID        string
+	InvoiceStatus    string
+	OrganizationID   string
+	OrganizationName string
+	OrganizationSlug string
+	AmountCents      int64
+	Currency         string
+	Provider         string
+	ExternalID       string
+	PaidAt           time.Time
+}
+
+func GetPaymentsToReview(ctx context.Context, pool *pgxpool.Pool) ([]PaymentToReview, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT p.id::text, i.id::text, i.status,
+		       s.subject_id, COALESCE(t.name, ''), COALESCE(t.slug, ''),
+		       p.amount_cents, p.currency, p.provider, COALESCE(p.external_id, ''), p.paid_at
+		FROM billing.payments p
+		JOIN billing.invoices i ON i.id = p.invoice_id
+		JOIN billing.subscriptions s ON s.id = i.subscription_id
+		LEFT JOIN organization.organizations t ON t.id::text = s.subject_id
+		WHERE p.status = 'completed' AND p.unapplied
+		ORDER BY p.paid_at DESC
+		LIMIT 200
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query.GetPaymentsToReview: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PaymentToReview
+	for rows.Next() {
+		var p PaymentToReview
+		if err := rows.Scan(
+			&p.PaymentID, &p.InvoiceID, &p.InvoiceStatus,
+			&p.OrganizationID, &p.OrganizationName, &p.OrganizationSlug,
+			&p.AmountCents, &p.Currency, &p.Provider, &p.ExternalID, &p.PaidAt,
+		); err != nil {
+			return nil, fmt.Errorf("query.GetPaymentsToReview: scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query.GetPaymentsToReview: %w", err)
+	}
+	return out, nil
+}
+
+// SupportMarkPaymentRefunded records that an operator returned a payment at
+// its provider. Only an unapplied payment still listed for review can be marked.
+func SupportMarkPaymentRefunded(ctx context.Context, pool *pgxpool.Pool, paymentID string) error {
+	tag, err := pool.Exec(ctx, `
+		UPDATE billing.payments
+		SET status = 'refunded'
+		WHERE id = $1 AND status = 'completed' AND unapplied
+	`, paymentID)
+	if err != nil {
+		return fmt.Errorf("query.SupportMarkPaymentRefunded: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("payment %s not found or not waiting for review", paymentID)
 	}
 	return nil
 }

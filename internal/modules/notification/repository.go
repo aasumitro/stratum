@@ -420,3 +420,19 @@ func (r *repository) listDisabledAuthSubs(
 	}
 	return disabled, nil
 }
+
+func (r *repository) deleteExpiredMessages(ctx context.Context, q db.Querier, days int) (int64, error) {
+	removed, err := db.SweepInBatches(ctx, q, `
+		DELETE FROM notification.messages
+		WHERE id IN (
+			SELECT id
+			FROM notification.messages
+			WHERE created_at < now() - make_interval(days => $1)
+			ORDER BY created_at
+			LIMIT $2
+		)`, days)
+	if err != nil {
+		return removed, fmt.Errorf("notification.deleteExpiredMessages: %w", err)
+	}
+	return removed, nil
+}

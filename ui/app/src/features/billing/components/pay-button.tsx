@@ -13,7 +13,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { useHTTPActionPost } from "@/lib/api/action"
+import {
+  PROVIDER_REQUEST_TIMEOUT_MS,
+  useHTTPActionPost,
+} from "@/lib/api/action"
 import { API } from "@/lib/api/path"
 import { capture } from "@/lib/analytics"
 import { formatMoney } from "@/lib/format"
@@ -62,6 +65,7 @@ export function PayButton({
     // Fresh key per click, not per mount — a stable key would make every
     // click after the first replay the server's 24h-cached first response.
     headers: () => ({ "Idempotency-Key": crypto.randomUUID() }),
+    timeout: PROVIDER_REQUEST_TIMEOUT_MS,
     options: {
       onMutate: () => {
         setOpening(true)

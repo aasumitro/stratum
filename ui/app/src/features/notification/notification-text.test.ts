@@ -77,6 +77,34 @@ describe("notificationDisplayText", () => {
     expect(result).toEqual({ subject: n.subject, body: n.body })
   })
 
+  it("translates a channel whose copy has no placeholders, even with an empty payload", async () => {
+    await i18n.changeLanguage("id")
+    const n = baseNotification({
+      channel: "subscription_expired",
+      payload: {},
+    })
+    const { subject, body } = notificationDisplayText(
+      n,
+      i18n.t.bind(i18n),
+      i18n.exists.bind(i18n)
+    )
+    expect(subject).toBe("Langganan berakhir")
+    expect(body).toContain("Lanjutkan langganan dari Billing")
+  })
+
+  it("falls back to raw subject/body when the payload lacks one of the copy's values", () => {
+    const n = baseNotification({
+      channel: "invoice_paid",
+      payload: { unrelated: "x" },
+    })
+    const result = notificationDisplayText(
+      n,
+      i18n.t.bind(i18n),
+      i18n.exists.bind(i18n)
+    )
+    expect(result).toEqual({ subject: n.subject, body: n.body })
+  })
+
   it("falls back to raw subject/body when the channel has no catalog entry", () => {
     const n = baseNotification({
       channel: "not_a_real_channel",

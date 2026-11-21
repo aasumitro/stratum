@@ -151,6 +151,14 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: "node",
       include: ["src/**/*.test.ts"],
+      // The Supabase client is created when its module loads, and throws without a
+      // URL. Set here so a developer's own .env cannot hide that from a run that
+      // has none, like CI. Nothing here reaches the network: tests mock the HTTP
+      // boundary and never sign in.
+      env: {
+        VITE_SUPABASE_URL: "http://localhost:54321",
+        VITE_SUPABASE_ANON_KEY: "test-anon-key",
+      },
     },
   }
 })

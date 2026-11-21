@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -43,6 +44,15 @@ func New(
 		maxAccessTokenTTL: maxAccessTokenTTL,
 	}
 	return &Module{svc: svc, Worker: &Worker{svc: svc}, webhookSecret: webhookSecret}
+}
+
+// SweepRetention removes login events past loginDays and clears export payloads
+// past exportDays, and returns how many rows it changed. Both always run, so one
+// table's failure does not hold up the other. Called only by the worker's ticker.
+func (m *Module) SweepRetention(ctx context.Context, loginDays, exportDays int) (int64, error) {
+	removed, loginErr := m.svc.repo.deleteExpiredLoginEvents(ctx, m.svc.pool, loginDays)
+	cleared, exportErr := m.svc.repo.clearExpiredExports(ctx, m.svc.pool, exportDays)
+	return removed + cleared, errors.Join(loginErr, exportErr)
 }
 
 // GetUserByAuthSub implements contracts.UserReader.

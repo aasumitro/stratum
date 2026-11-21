@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [dev]
 
 # Cancel in-flight runs on the same PR when a new push arrives.
 concurrency:
@@ -25,14 +27,48 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A pull request diffs against its base branch. A push diffs against the previous tip, unless
+      # that tip is all zeros (a new branch) or no longer reachable (a force-push): with nothing to
+      # compare to, every surface counts as changed.
       - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          git fetch origin ${{ github.base_ref }} --depth=1
-          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch origin "$BASE_REF" --depth=1
+            changed=$(git diff --name-only "origin/$BASE_REF...HEAD")
+          elif git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            changed=$(git diff --name-only "$BEFORE_SHA...$GITHUB_SHA")
+          else
+            changed=$(printf 'go.mod\nui/app/\nui/studio/\n')
+          fi
           echo "$changed"
-          echo "api=$(grep -qE '^(db/|internal/|cmd/|go\.(mod|sum))' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "api=$(grep -qE '^(db/|internal/|cmd/|deploy/postgres-init/|go\.(mod|sum))' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "web=$(grep -q '^ui/app/' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "studio=$(grep -q '^ui/studio/' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Secrets — runs on every event, because any file can carry a credential
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Scan git history
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          gitleaks git --redact --no-banner .
 
   # ---------------------------------------------------------------------------
   # API — Go backend
@@ -68,6 +104,11 @@ jobs:
 
       rabbitmq:
         image: rabbitmq:4.3-alpine
+        # The broker's default guest user only accepts loopback connections, which a mapped port
+        # is not.
+        env:
+          RABBITMQ_DEFAULT_USER: stratum
+          RABBITMQ_DEFAULT_PASS: stratum
         ports: ["5672:5672"]
         options: >-
           --health-cmd "rabbitmq-diagnostics -q ping"
@@ -96,19 +137,19 @@ jobs:
 
       - name: Lint
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
           golangci-lint run ./...
 
       - name: Vulnerability scan
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           govulncheck ./...
 
       - name: Install migrate
-        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+        run: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
 
-      # Migrations 000008/000009 do not create the stratum_app/stratum_worker/stratum_webhook/
-      # stratum_app_unscoped roles — they only grant privileges to them, assuming they already exist, so the
+      # Migrations 000008/000009/000011 do not create the stratum_app/stratum_worker/stratum_webhook/
+      # stratum_app_unscoped/stratum_operator roles — they only grant privileges to them, assuming they already exist, so the
       # migrator role never needs BYPASSRLS or CREATEROLE itself. Local dev gets this for
       # free via a Postgres init script mounted into its container;
       # CI's Postgres service has no equivalent mount, so this step reuses that same script
@@ -121,6 +162,7 @@ jobs:
         run: |
           psql "$DATABASE_URL" -f deploy/postgres-init/01-app-role.sql
           psql "$DATABASE_URL" -f deploy/postgres-init/02-test-role.sql
+          psql "$DATABASE_URL" -f deploy/postgres-init/03-operator-role.sql
 
       - name: Run migrations
         env:
@@ -134,6 +176,8 @@ jobs:
           POSTGRES_WORKER_URL: postgres://stratum_worker:stratum_worker@localhost:5432/stratum?sslmode=disable
           POSTGRES_WEBHOOK_URL: postgres://stratum_webhook:stratum_webhook@localhost:5432/stratum?sslmode=disable
           POSTGRES_UNSCOPED_URL: postgres://stratum_app_unscoped:stratum_app_unscoped@localhost:5432/stratum?sslmode=disable
+          POSTGRES_OPERATOR_URL: postgres://stratum_operator_dev:stratum_operator_dev@localhost:5432/stratum?sslmode=disable
+          RABBITMQ_URL: amqp://stratum:stratum@localhost:5672/
           TEST_REDIS_URL: redis://localhost:6379
         run: go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 
@@ -175,6 +219,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
 
   # ---------------------------------------------------------------------------
   # Studio — Desktop (Wails) Go backend & React frontend
@@ -220,6 +270,9 @@ jobs:
       - name: Build frontend
         run: cd frontend && npm run build
 
+      - name: Dependency audit
+        run: cd frontend && npm audit --audit-level=high
+
       - name: Verify modules
         run: |
           go mod tidy
@@ -233,3 +286,9 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      # The keychain is an in-memory fake in tests. The operator smoke test needs a live database
+      # and broker and skips without them; the operator guard only reads source, and is what stops
+      # a new mutating method from skipping operator attribution.
+      - name: Test
+        run: go test ./...

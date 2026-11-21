@@ -26,7 +26,11 @@ vi.mock("@/lib/api/axios", () => ({
 }))
 
 import { api } from "@/lib/api/axios"
-import { useBillingStatus } from "./use-billing-status"
+import {
+  isBillingSuspensionReason,
+  isSelfSuspensionReason,
+  useBillingStatus,
+} from "./use-billing-status"
 import type { Invoice } from "@/types/billing"
 
 const organizationId = "org-1"
@@ -75,10 +79,13 @@ function pendingInvoice(kind: Invoice["kind"]): Invoice {
   }
 }
 
-function setupApi(invoices: Invoice[]) {
+function setupApi(
+  invoices: Invoice[],
+  role: "owner" | "admin" | "member" = "owner"
+) {
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url === "/v1/organizations")
-      return Promise.resolve(httpResponse([orgListEntry]))
+      return Promise.resolve(httpResponse([{ ...orgListEntry, role }]))
     if (url === `/v1/organizations/${organizationId}/billing/invoices`)
       return Promise.resolve(httpResponse(invoices))
     return Promise.reject(new Error(`unexpected GET ${url}`))
@@ -145,7 +152,32 @@ describe("useBillingStatus", () => {
     setupApi([pendingInvoice("activation")])
     const getResult = renderInOrg()
     await waitFor(() => expect(getResult()?.hasPendingInvoice).toBe(true))
+    expect(getResult()?.activationUnpaid).toBe(true)
+    expect(getResult()?.hasBlockingInvoice).toBe(true)
     expect(getResult()?.isBillingBlocked).toBe(true)
+  })
+
+  it("shows a member the unpaid activation, without the owner's redirect", async () => {
+    // The API refuses every member's writes while the first invoice is unpaid,
+    // so the org-state signal is for every role. Only the owner can pay, so
+    // only the owner is sent to Billing (hasBlockingInvoice).
+    setupApi([pendingInvoice("activation")], "member")
+    const getResult = renderInOrg()
+    await waitFor(() => expect(getResult()?.activationUnpaid).toBe(true))
+    expect(getResult()?.isOwner).toBe(false)
+    expect(getResult()?.hasBlockingInvoice).toBe(false)
+    expect(getResult()?.hasPendingInvoice).toBe(false)
+    expect(getResult()?.isBillingBlocked).toBe(true)
+  })
+
+  it("does not block on a pending renewal invoice", async () => {
+    // A renewal invoice is issued 3 days before the paid period ends: the
+    // billing page shows it, but the period in use is still paid for.
+    setupApi([pendingInvoice("subscription")])
+    const getResult = renderInOrg()
+    await waitFor(() => expect(getResult()?.hasPendingInvoice).toBe(true))
+    expect(getResult()?.hasBlockingInvoice).toBe(false)
+    expect(getResult()?.isBillingBlocked).toBe(false)
   })
 
   it("does not block on a pending extension invoice", async () => {
@@ -166,5 +198,29 @@ describe("useBillingStatus", () => {
     await waitFor(() => expect(getResult()?.isOwner).toBe(true))
     expect(getResult()?.hasPendingInvoice).toBe(false)
     expect(getResult()?.isBillingBlocked).toBe(false)
+  })
+})
+
+describe("isBillingSuspensionReason", () => {
+  it.each([
+    ["subscription expired", true],
+    ["subscription cancelled", true],
+    ["Suspended by organization owner", false],
+    ["abuse report", false],
+    [undefined, false],
+  ] as const)("%s -> %s", (reason, want) => {
+    expect(isBillingSuspensionReason(reason)).toBe(want)
+  })
+})
+
+describe("isSelfSuspensionReason", () => {
+  it.each([
+    ["Suspended by organization owner", true],
+    ["subscription expired", false],
+    ["subscription cancelled", false],
+    ["abuse report", false],
+    [undefined, false],
+  ] as const)("%s -> %s", (reason, want) => {
+    expect(isSelfSuspensionReason(reason)).toBe(want)
   })
 })

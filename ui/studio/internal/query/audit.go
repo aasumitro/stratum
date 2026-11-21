@@ -2,11 +2,52 @@ package query
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// IsOperator reports whether this connection logged in as a working operator role.
+// It also requires BYPASSRLS, which does not arrive through group membership: a login
+// created without it sees no rows on the RLS tables, so a broadcast would reach nobody
+// and report success. A server that answers but cannot run the check has given a real
+// answer: no audit schema (3F000), no such function (42883), or a role with no access
+// to it (42501) all mean this connection is not an attributable operator. Anything
+// else, such as a dropped connection or an expired password, says nothing about the
+// role, so it comes back as an error for the operator to see.
+func IsOperator(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var isOperator bool
+	err := pool.QueryRow(ctx, `
+		SELECT audit.is_operator(session_user)
+		   AND (SELECT r.rolbypassrls FROM pg_catalog.pg_roles r WHERE r.rolname = session_user)
+	`).Scan(&isOperator)
+	if err == nil {
+		return isOperator, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && slices.Contains([]string{"3F000", "42883", "42501"}, pgErr.Code) {
+		return false, nil
+	}
+	return false, fmt.Errorf("query.IsOperator: %w", err)
+}
+
+// RecordOperatorAction writes an audit row for an operator action no row trigger
+// can see: broker calls, and a broadcast's single logical send.
+func RecordOperatorAction(ctx context.Context, pool *pgxpool.Pool, action, resource string, metadata map[string]any) error {
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("query.RecordOperatorAction: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `SELECT audit.record_operator_action($1, $2, $3::jsonb)`, action, resource, string(payload)); err != nil {
+		return fmt.Errorf("query.RecordOperatorAction: %w", err)
+	}
+	return nil
+}
 
 type AuditFilter struct {
 	Actor          string

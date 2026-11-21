@@ -12,6 +12,22 @@ export function WriteBanner() {
   )
 }
 
+export function NotOperatorBanner() {
+  return (
+    <div
+      role="status"
+      className="sticky top-0 z-10 flex items-start gap-2.5 border-b border-amber-500/30 bg-amber-100 px-6 py-3 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+    >
+      <IconAlertTriangle className="mt-0.5 size-4 shrink-0" />
+      <span>
+        This connection is not an operator role, so its changes would not be
+        audited. You can view everything, but every change is refused. Connect
+        this project with your own operator login to make changes.
+      </span>
+    </div>
+  )
+}
+
 export function TableSkeleton({ cols }: { cols: number }) {
   return (
     <div className="animate-pulse">

@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /ui/studio
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /ui/app
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /ui/studio/frontend
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

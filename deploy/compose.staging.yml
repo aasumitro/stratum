@@ -23,8 +23,8 @@ services:
       POSTGRES_DB: stratum
     volumes:
       - pgdata:/var/lib/postgresql
-      # Creates the stratum_app / stratum_worker / stratum_webhook login roles
-      # (db/migrations/000008 grants to them but does not create them). Only the
+      # Creates the stratum_app / stratum_worker / stratum_webhook login roles and the
+      # stratum_operator group (db/migrations grant to them but do not create them). Only the
       # app-role script — never 02-test-role.sql, which is local/CI only.
       - ./postgres-init/01-app-role.sql:/docker-entrypoint-initdb.d/01-app-role.sql:ro
     healthcheck:

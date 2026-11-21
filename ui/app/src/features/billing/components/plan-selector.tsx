@@ -16,6 +16,7 @@ import { formatPrice } from "@/features/billing/utils"
 import type { BillingCycle, SubscriptionStatus } from "@/types/billing"
 import { cn } from "@/lib/ui"
 import { InvoicePreviewNote } from "./invoice-preview-note"
+import { downgradeAppliesNow } from "@/features/billing/scheduled-change"
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -67,7 +68,7 @@ export function PlanSelector({
   const [cycle, setCycle] = useState<BillingCycle>(currentCycle)
   const [selectedPlan, setSelectedPlan] = useState(currentPlan)
 
-  const { hasPendingInvoice } = usePermissions()
+  const { hasPendingInvoice, hasBlockingInvoice } = usePermissions()
   const { data, isLoading } = useOrgPlansCatalog(organizationId)
 
   const plans = (data?.data ?? [])
@@ -162,7 +163,12 @@ export function PlanSelector({
         <DialogHeader>
           <DialogTitle>{t("billing.plans.changePlanTitle")}</DialogTitle>
           <DialogDescription>
-            {t("billing.plans.changePlanDescription")}
+            {/* With the current period still unpaid there is no paid time
+                to convert: the change restarts the period on the new plan
+                and reissues the unpaid invoice at its price. */}
+            {hasBlockingInvoice
+              ? t("billing.plans.changePlanDescriptionUnpaid")
+              : t("billing.plans.changePlanDescription")}
           </DialogDescription>
         </DialogHeader>
 
@@ -246,7 +252,7 @@ export function PlanSelector({
 
         {isChanging &&
           selectedPlan !== "custom" &&
-          (isDowngrade && subscriptionStatus !== "trialing" ? (
+          (isDowngrade && !downgradeAppliesNow(subscriptionStatus) ? (
             <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
               <b className="text-foreground">
                 {t("billing.plans.noChargeToday")}

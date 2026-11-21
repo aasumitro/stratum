@@ -21,6 +21,7 @@ Engineering documentation for Stratum — a production-ready multi-tenant B2B Sa
 | [11-file-storage](11-file-storage.md)       | Avatar and organization logo storage                       |
 | [12-operations](12-operations.md)           | Deployment, backups, secrets, health, runbooks            |
 | [13-studio](13-studio.md)                   | Stratum Studio — the Wails desktop operator console       |
+| [14-compliance](14-compliance.md)           | SOC 2 control matrix, data retention, hardening checklist |
 
 [specs/](specs) contains the generated OpenAPI (Swagger) specification. 
 

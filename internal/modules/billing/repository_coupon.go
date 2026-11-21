@@ -79,9 +79,10 @@ func (r *repository) isCouponRedeemableBySubject(
 
 // listEligibleCoupons returns every coupon this organization/user could
 // currently redeem — active, within its validity window, not exhausted
-// (max_redemptions), and either untargeted or explicitly targeted at this
-// org/user (same allow-list rule as isCouponRedeemableBySubject). Backs the
-// Pay dialog's coupon list — coupons are listed, never auto-applied.
+// (max_redemptions), not already redeemed by this org, and either untargeted or
+// explicitly targeted at this org/user (same allow-list rule as
+// isCouponRedeemableBySubject). Backs the Pay dialog's coupon list — coupons are
+// listed, never auto-applied.
 func (r *repository) listEligibleCoupons(
 	ctx context.Context, q db.Querier, organizationID, authSub string,
 ) ([]couponRecord, error) {
@@ -93,6 +94,11 @@ func (r *repository) listEligibleCoupons(
 		  AND (valid_from IS NULL OR valid_from <= now())
 		  AND (valid_until IS NULL OR valid_until >= now())
 		  AND (max_redemptions IS NULL OR redeemed_count < max_redemptions)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM billing.coupon_redemptions cr
+		    JOIN billing.subscriptions s ON s.id = cr.subscription_id
+		    WHERE cr.coupon_id = c.code AND s.subject_type = 'organization' AND s.subject_id = $1
+		  )
 		  AND (
 		    NOT EXISTS(SELECT 1 FROM billing.coupon_targets WHERE coupon_id = c.code)
 		    OR EXISTS(
@@ -185,6 +191,19 @@ func (r *repository) listCouponRedemptionsForSubscription(
 		return nil, fmt.Errorf("billing.listCouponRedemptionsForSubscription: %w", err)
 	}
 	return out, nil
+}
+
+// hasRedeemedCoupon reports whether the subscription has ever redeemed code, used up
+// or not.
+func (r *repository) hasRedeemedCoupon(ctx context.Context, q db.Querier, subscriptionID, code string) (bool, error) {
+	var redeemed bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM billing.coupon_redemptions WHERE subscription_id = $1 AND coupon_id = $2)`,
+		subscriptionID, code).Scan(&redeemed)
+	if err != nil {
+		return false, fmt.Errorf("billing.hasRedeemedCoupon: %w", err)
+	}
+	return redeemed, nil
 }
 
 func (r *repository) incrementCouponRedemptionApplied(ctx context.Context, q db.Querier, subscriptionID, couponCode string) error {

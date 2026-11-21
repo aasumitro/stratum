@@ -178,6 +178,23 @@ func (c *Connection) Ping() error {
 	return ch.Close()
 }
 
+// QueueMessageCount returns how many ready messages queue holds, by passive
+// declare. It uses its own short-lived channel because the broker closes a channel
+// that passive-declares a missing queue, and that must not disturb any other caller.
+func (c *Connection) QueueMessageCount(queue string) (int, error) {
+	ch, err := c.Channel()
+	if err != nil {
+		return 0, fmt.Errorf("messaging.QueueMessageCount: %w", err)
+	}
+	defer func() { _ = ch.Close() }()
+
+	q, err := ch.QueueDeclarePassive(queue, true, false, false, false, nil)
+	if err != nil {
+		return 0, fmt.Errorf("messaging.QueueMessageCount: %q: %w", queue, err)
+	}
+	return q.Messages, nil
+}
+
 // Close stops the reconnect loop and closes the underlying connection.
 func (c *Connection) Close() error {
 	c.mu.Lock()

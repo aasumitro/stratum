@@ -143,7 +143,7 @@ func (r *repository) listInvitationsByEmail(ctx context.Context, q db.Querier, e
 		SELECT i.id, i.organization_id, o.name, i.email, i.role, i.invited_by, i.token, i.expires_at, i.created_at
 		FROM organization.invitations i
 		JOIN organization.organizations o ON o.id = i.organization_id
-		WHERE i.email = $1 AND i.status = 'pending' AND i.expires_at > now()
+		WHERE lower(i.email) = lower($1) AND i.status = 'pending' AND i.expires_at > now()
 		ORDER BY i.created_at DESC`,
 		email,
 	)

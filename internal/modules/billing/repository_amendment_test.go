@@ -499,3 +499,92 @@ func TestIntegration_FutureAddonLimitDeltas_OverrideAppliesInPlaceOfLiveQuantity
 		t.Errorf("want non-overridden addon to still contribute its live quantity (2), got workspaces delta %d", future["workspaces"])
 	}
 }
+
+// TestIntegration_ListOverdueSubscriptions_IncludesPastDue: a past_due
+// subscription past its period end relies on the same single check as an
+// active one, so the reconciler must pick it up when that check is lost. It
+// calls listOverdueSubscriptions directly rather than
+// ReconcileOverdueSubscriptions, which would sweep the whole shared database.
+func TestIntegration_ListOverdueSubscriptions_IncludesPastDue(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	const orgID = "00000000-0000-0000-0000-000000000b34"
+	sub := seedAmendmentSubscription(t, pool, r, orgID)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET status = 'past_due', period_end = now() - interval '1 hour'
+		WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("force past_due past its end: %v", err)
+	}
+
+	overdue, err := r.listOverdueSubscriptions(t.Context(), pool)
+	if err != nil {
+		t.Fatalf("listOverdueSubscriptions: %v", err)
+	}
+	for _, o := range overdue {
+		if o.ID == sub.ID {
+			if o.IsTrial {
+				t.Errorf("a past_due subscription must not be reported as a trial")
+			}
+			return
+		}
+	}
+	t.Errorf("want past_due subscription %s among the overdue ones, got %d others", sub.ID, len(overdue))
+}
+
+// TestListDueSchedules_ReturnsOnlyAppliableSchedules: the hourly reconcile
+// re-sends the apply for exactly the schedules applyScheduledAtBoundary would
+// apply now (a paid-for schedule past its boundary, or one left on an expired
+// subscription), so a dead-lettered apply message does not leave it stuck until
+// the next renewal. It calls listDueSchedules directly rather than
+// ReconcileOverdueSubscriptions, which would sweep the whole shared database.
+func TestListDueSchedules_ReturnsOnlyAppliableSchedules(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	seed := func(orgID, status, effectiveIn, periodEndIn string) string {
+		t.Helper()
+		sub := seedAmendmentSubscription(t, pool, r, orgID)
+		if _, err := pool.Exec(t.Context(), `
+			UPDATE billing.subscriptions
+			SET status = $2,
+			    scheduled_plan = 'solo', scheduled_cycle = 'monthly',
+			    scheduled_requested_at = now() - interval '40 days',
+			    scheduled_effective_at = now() + $3::text::interval,
+			    period_end = now() + $4::text::interval
+			WHERE id = $1`, sub.ID, status, effectiveIn, periodEndIn); err != nil {
+			t.Fatalf("seed %s schedule: %v", status, err)
+		}
+		return sub.ID
+	}
+	want := map[string]bool{
+		// The renewal priced from the schedule is paid and its boundary has passed.
+		seed("00000000-0000-0000-0000-000000000b4c", "active", "-1 hour", "29 days"): true,
+		// The subscription expired at the boundary with the schedule still on it.
+		seed("00000000-0000-0000-0000-000000000b4d", "expired", "-1 hour", "-1 hour"): true,
+		// Paid for, but the boundary is still ahead.
+		seed("00000000-0000-0000-0000-000000000b4e", "active", "2 days", "32 days"): false,
+		// Unpaid at the boundary: the expiry check ends the subscription first.
+		seed("00000000-0000-0000-0000-000000000b4f", "active", "-1 hour", "-1 hour"): false,
+		// A cancelled subscription never takes a schedule.
+		seed("00000000-0000-0000-0000-000000000b50", "cancelled", "-1 hour", "-1 hour"): false,
+	}
+
+	due, err := r.listDueSchedules(t.Context(), pool)
+	if err != nil {
+		t.Fatalf("listDueSchedules: %v", err)
+	}
+	got := map[string]bool{}
+	for _, sub := range due {
+		if _, ours := want[sub.ID]; !ours {
+			continue
+		}
+		got[sub.ID] = true
+		if sub.SubjectType != "organization" || sub.SubjectID == "" || sub.ScheduledEffectiveAt == nil {
+			t.Errorf("due schedule %s: want subject and boundary filled, got %+v", sub.ID, sub)
+		}
+	}
+	for id, wantDue := range want {
+		if got[id] != wantDue {
+			t.Errorf("subscription %s: want due=%v, got %v", id, wantDue, got[id])
+		}
+	}
+}

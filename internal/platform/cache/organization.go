@@ -57,16 +57,6 @@ func (c *CachedOrganizationReader) GetOrganizationByID(
 	return ws, nil
 }
 
-func (c *CachedOrganizationReader) IsMember(
-	ctx context.Context, organizationID, authSub string,
-) (bool, error) {
-	role, err := c.GetMemberRole(ctx, organizationID, authSub)
-	if err != nil {
-		return false, nil
-	}
-	return role != "", nil
-}
-
 func (c *CachedOrganizationReader) GetMemberRole(
 	ctx context.Context, organizationID, authSub string,
 ) (string, error) {

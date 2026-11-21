@@ -93,7 +93,6 @@ export function OrganizationRow({
               </Button>
             )}
             {(organization.billing_status === "trialing" ||
-              organization.billing_status === "cancelled" ||
               organization.billing_status === "past_due") && (
               <Button
                 variant="ghost"

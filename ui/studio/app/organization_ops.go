@@ -74,6 +74,10 @@ func (s *OrganizationOpsService) CountOrganizations(projectID, status string) (i
 
 // SuspendOrganization suspends an active organization and records the reason.
 func (s *OrganizationOpsService) SuspendOrganization(projectID, organizationID, reason string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "OrganizationOpsService.SuspendOrganization", 10*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.SuspendOrganization(ctx, db, organizationID, reason)
@@ -88,6 +92,10 @@ func (s *OrganizationOpsService) SuspendOrganization(projectID, organizationID, 
 
 // UnsuspendOrganization restores a suspended organization to active status.
 func (s *OrganizationOpsService) UnsuspendOrganization(projectID, organizationID string) error {
+	if err := requireOperator(s.projects, s.pool, projectID); err != nil {
+		return err
+	}
+
 	err := withProjectDBErr(s.projects, s.pool, projectID, "OrganizationOpsService.UnsuspendOrganization", 10*time.Second,
 		func(ctx context.Context, db *pgxpool.Pool) error {
 			return query.UnsuspendOrganization(ctx, db, organizationID)
