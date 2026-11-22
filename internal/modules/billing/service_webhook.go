@@ -28,9 +28,9 @@ type webhookLinkRef struct {
 // webhookOutcome collects the events/scheduling a webhook triggers while its
 // DB effects run inside processWebhook's transaction. The events themselves
 // are enqueued inside that same transaction (enqueueWebhookOutcome, called
-// from within it) — outcome only still carries scheduleRenewal forward,
-// since scheduleRenewalSequence deliberately runs after commit (see its own
-// doc comment).
+// from within it) — outcome only still carries scheduleRenewal and
+// unsuspendOrgID forward, for afterOutcome to run once the transaction
+// commits.
 type webhookOutcome struct {
 	paid            *events.InvoicePaid
 	resumed         *events.SubscriptionResumed
@@ -482,7 +482,8 @@ func (s *service) applyActivationPayment(ctx context.Context, outcome *webhookOu
 // only positive amounts, so there is no invoice to pay: the coupon application is used
 // here, where applyInvoiceCharges would have used it, and the charge has the effect a
 // payment would. Runs in the caller's transaction, with sub read under its lock, and
-// returns the outcome so the caller can schedule the renewal after committing.
+// returns the outcome for the caller to finish: afterOutcome once it commits, or, for
+// a caller that cannot reach its commit, issuePeriodInvoice's in-transaction subset.
 func (s *service) settleCoveredCharge(
 	ctx context.Context, sub *subscriptionRecord, kind, couponCode, settledBy string,
 ) (*webhookOutcome, error) {

@@ -16,10 +16,12 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
-- Billing: a coupon-covered charge settled during a plan change, an add-on reprice or a scheduled renewal runs inside
-  the request's transaction. If it would reactivate an ended subscription there, it is now refused and rolled back.
-  Before, the subscription was reactivated, and the organization's suspension was lifted inside that same
-  transaction. No current path reaches it: an ended subscription holds no pending activation.
+- Billing: a coupon-covered charge settled while an invoice is reissued (a plan change, an add-on reprice, a renewal
+  reissued after a schedule change or a past-due cancel) runs inside its caller's transaction. If it would
+  reactivate an ended subscription and lift its organization's suspension there, it is now refused and rolled back.
+  Before, the suspension was lifted in a second transaction that committed on its own, even if the caller's then
+  rolled back, and that transaction held a second pool connection. No current path reaches it: expiry fails every
+  pending invoice, so an ended subscription holds no pending activation.
 - Web: `npm run typecheck` runs `tsc -b --force`. It used to run `tsc --noEmit` against the root `tsconfig.json`,
   which lists no files of its own, so it checked nothing.
 

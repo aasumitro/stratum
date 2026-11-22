@@ -727,9 +727,9 @@ func (s *service) enqueueAutoInvoice(ctx context.Context, sub *subscriptionRecor
 // function's existing "duplicate delayed messages are harmless" tolerance
 // for the class of loss this can still leave (a rare DB-level failure on the
 // outbox insert itself, not a broker outage — the outbox+relay already
-// covers that case durably). changePlanWithMetadata runs it inside the
-// request transaction instead, where a failed insert aborts that
-// transaction and the plan change fails as a whole.
+// covers that case durably). changePlanWithMetadata and issuePeriodInvoice
+// run it inside their caller's transaction instead, where a failed insert
+// aborts that transaction and the change fails as a whole.
 func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscriptionRecord) {
 	checkPayload, ok := renewalCheck(sub)
 	if !ok {

@@ -1036,6 +1036,10 @@ func TestIntegration_CoveredCharge_PlanChangeOnEndedActivation_Refused(t *testin
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("plan change: want 500, got %d: %s", w.Code, w.Body)
 	}
+	// The service's own failure, not the recovery or RLS middleware's 500.
+	if got := responseErrorCode(t, w); got != "PLAN_CHANGE_FAILED" {
+		t.Errorf("error code: want PLAN_CHANGE_FAILED, got %q", got)
+	}
 	if got := subscriptionStatus(t, pool, subID); got != "expired" {
 		t.Errorf("status: want expired, got %q", got)
 	}
