@@ -301,7 +301,18 @@ func (s *service) issuePeriodInvoice(
 		if err != nil {
 			return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
 		}
-		s.afterOutcome(ctx, outcome)
+		// This runs inside the caller's transaction, so only the part of a paid outcome
+		// that belongs in it runs here: the renewal sequence, outbox rows that commit
+		// with the change. Lifting a suspension cannot (see afterOutcome). No caller
+		// reaches it: an ended subscription holds no pending activation, and a covered
+		// renewal settles here only while past_due. One that does is refused, rather
+		// than reactivating the subscription with its organization still suspended.
+		if outcome.unsuspendOrgID != "" {
+			return nil, fmt.Errorf("billing.issuePeriodInvoice: covered %s charge reactivated subscription %s inside its caller's transaction", kind, sub.ID)
+		}
+		if outcome.scheduleRenewal != nil {
+			s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
+		}
 		return nil, nil
 	}
 	taxRate := 0

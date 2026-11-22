@@ -1010,6 +1010,43 @@ func TestIntegration_CoveredCharge_PlanChangeOnUnpaidActivation(t *testing.T) {
 	}
 }
 
+// An ended subscription never holds a pending activation: expiry fails every pending
+// invoice. Forced into that state, a covered reissue would reactivate it inside the
+// request's transaction, where the organization's suspension cannot be lifted, so the
+// plan change is refused and everything it did rolls back.
+func TestIntegration_CoveredCharge_PlanChangeOnEndedActivation_Refused(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_covered_plan_ended_activation"
+		orgID = "00000000-0000-0000-0000-00000000c569"
+		code  = "COVERED_C569"
+	)
+	subID, activation := seedUnpaidActivation(t, pool, orgID, user)
+	seedFullCoupon(t, pool, code, "once")
+	redeem(t, pool, user, orgID, code)
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET status = 'expired' WHERE id = $1`, subID); err != nil {
+		t.Fatalf("force expired: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{}).ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPatch, billingURL(orgID)+"/plan",
+			`{"plan":"solo","cycle":"yearly","terms_agreed":true}`))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("plan change: want 500, got %d: %s", w.Code, w.Body)
+	}
+	if got := subscriptionStatus(t, pool, subID); got != "expired" {
+		t.Errorf("status: want expired, got %q", got)
+	}
+	if got := invoiceStatus(t, pool, activation); got != "pending" {
+		t.Errorf("activation: want pending, got %q", got)
+	}
+	if got := couponApplied(t, pool, code, subID); got != 0 {
+		t.Errorf("coupon applications: want 0, got %d", got)
+	}
+}
+
 // The renewal voided by a plan change has nothing to charge. The auto-invoice rolls
 // the period when it comes due, and it is the one that uses the coupon.
 func TestIntegration_CoveredCharge_PlanChangeOnPendingRenewal(t *testing.T) {
