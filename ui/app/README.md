@@ -21,7 +21,7 @@ cp .env.example .env
 npm install
 npm run dev        # http://localhost:3000
 npm run build      # tsc -b && vite build
-npm run typecheck  # tsc --noEmit
+npm run typecheck  # tsc -b --force (checks every referenced tsconfig, emits no JS)
 npm run lint       # eslint
 npm run format     # prettier --write
 ```

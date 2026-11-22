@@ -8,6 +8,24 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Changed
 
+- Tooling: `make test-integration`, `make test-cover` and `make pre-push` run against a dedicated `stratum_test`
+  database, which the new `make test-db` creates and migrates. `make test-db` refuses any Postgres URL it cannot
+  move to that database. `make test` blanks the Postgres URLs, so its database tests skip. Neither writes into the
+  dev database any more: a running local worker never relays the suite's outbox rows, and the relay tests never
+  claim the dev data's due rows.
+
+### Fixed
+
+- Web: `npm run typecheck` runs `tsc -b --force`. It used to run `tsc --noEmit` against the root `tsconfig.json`,
+  which lists no files of its own, so it checked nothing.
+
+## [0.6.1] - 2026-11-21
+
+Dependency updates for the web app, the Studio frontend and CI, as Dependabot proposed them. No API, database or
+Go change.
+
+### Changed
+
 - Web: `i18next` 27 and `react-i18next` 18 (major; the translate helpers take a shared `Translate` type, since
   i18next 27's `TFunction` no longer fits a plain `(key, options?)` signature), `jsdom` 31, `@playwright/test`
   1.65, `@tanstack/react-query` 5.108, `@tanstack/react-store` 0.11.2, `@tabler/icons-react` 3.52 and

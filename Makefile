@@ -173,16 +173,43 @@ vet: ## go vet
 	go vet ./...
 
 .PHONY: test
-test: ## Run all tests
-	gotestsum --hide-summary=skipped ./... -race -count=1
+test: ## Run unit and handler tests; the Postgres URLs .env exports are blanked, so no test reaches a database
+	@$(foreach v,$(TEST_DB_URLS),$(v)=) gotestsum --hide-summary=skipped ./... -race -count=1
+
+# Integration tests run against their own database, so a running cmd/worker never
+# relays the outbox rows they write, and their relay runs never claim the dev data's
+# due rows. Every Postgres URL comes from .env with its database swapped for TEST_DB,
+# which expects the .env form .../stratum?... . test-db refuses a URL it cannot swap,
+# because a test pool or the migrate run on it would still reach the dev database.
+# TEST_DB is created in the compose postgres service, the server .env points at by
+# default. The roles are cluster-wide and the migrations grant them, so a migrated
+# TEST_DB needs nothing else.
+TEST_DB ?= stratum_test
+TEST_DB_URLS := POSTGRES_URL POSTGRES_APP_URL POSTGRES_WORKER_URL POSTGRES_WEBHOOK_URL POSTGRES_UNSCOPED_URL POSTGRES_OPERATOR_URL
+to_test_db = $(subst /stratum?,/$(TEST_DB)?,$(1))
+check_test_db = $(if $(findstring /$(TEST_DB)?,$(call to_test_db,$($(1)))),,$(error $(1) must name its database as /stratum?... so the tests can be moved to $(TEST_DB)))
+TEST_ENV = TEST_DATABASE_URL='$(call to_test_db,$(POSTGRES_TEST_URL))' \
+	$(foreach v,$(TEST_DB_URLS),$(v)='$(call to_test_db,$($(v)))') \
+	TEST_REDIS_URL='$(CACHE_URL)'
+# The bare export at the top would hand these DSN-bearing strings to every recipe.
+unexport TEST_ENV TEST_DB_URLS to_test_db check_test_db
+
+.PHONY: test-db
+test-db: ## Create the integration-test database (TEST_DB, default stratum_test) if missing and migrate it up
+	$(if $(filter stratum,$(TEST_DB)),$(error TEST_DB must not be stratum, the dev database))
+	$(call check_test_db,POSTGRES_TEST_URL)
+	$(foreach v,$(TEST_DB_URLS),$(if $($(v)),$(call check_test_db,$(v))))
+	@$(COMPOSE) -f $(COMPOSE_FILE) exec -T postgres psql -U stratum -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$(TEST_DB)'" | grep -qx 1 || \
+		$(COMPOSE) -f $(COMPOSE_FILE) exec -T postgres createdb -U stratum -O stratum $(TEST_DB)
+	@migrate -path $(MIGRATIONS_PATH) -database "$(call to_test_db,$(POSTGRES_URL))" up
 
 .PHONY: test-integration
-test-integration: ## Run all tests including integration (requires infra): make test-integration
-	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1
+test-integration: test-db ## Run all tests including integration (requires infra) against TEST_DB
+	@$(TEST_ENV) gotestsum -- ./... -race -count=1
 
 .PHONY: test-cover
-test-cover: ## Run all tests (incl. integration) with coverage and print the total %
-	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1 -coverprofile=coverage.out
+test-cover: test-db ## Run all tests (incl. integration) with coverage and print the total %
+	@$(TEST_ENV) gotestsum -- ./... -race -count=1 -coverprofile=coverage.out
 	go tool cover -func=coverage.out | tail -1
 
 .PHONY: test-cover-html
@@ -226,8 +253,8 @@ sync-studio-deps: ## Upgrade studio deps to latest
 	cd ui/studio/frontend && npx npm-check-updates -u && npm install
 
 .PHONY: pre-push
-pre-push: verify-modules vet fmt lint vuln ## Mirror the GitHub CI api+web+studio jobs locally
-	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
+pre-push: verify-modules vet fmt lint vuln test-db ## Mirror the GitHub CI api+web+studio jobs locally
+	@$(TEST_ENV) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 	go tool cover -func=coverage.out
 	cd ui/app && npm ci && npm run typecheck && npm run lint && npx prettier --write "**/*.{ts,tsx}" && npm run build
 	cd ui/studio && go vet ./... && gofmt -w . && go build ./...

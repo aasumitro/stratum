@@ -19,18 +19,29 @@ Anything unit-testable without a database is written as a **pure function** on p
 - Each module's `export_test.go` exposes test engines (`NewHandlerEngine`, `NewModuleForTest`, `NewModuleEngine`, …).
 - Integration tests skip when `TEST_DATABASE_URL` is unset, use fixed UUIDv7 data for isolation, and clean up with `t.Cleanup`.
 - Fixture email addresses use the reserved `example.com` domain, never a real one, so a fixture that reaches a real send can't land in anyone's inbox.
-- Tests of a role's privileges connect as that role through `POSTGRES_APP_URL`, `POSTGRES_WORKER_URL`, `POSTGRES_WEBHOOK_URL` and `POSTGRES_OPERATOR_URL`, with fixtures through `TEST_DATABASE_URL`. `TestQueueMessageCount` reads `RABBITMQ_URL`. `make test-integration` exports all of them from `.env`.
-- Retention sweep tests use cutoffs a century back, because a sweep touches every row past its cutoff and the suite shares the dev database.
+- Tests of a role's privileges connect as that role through `POSTGRES_APP_URL`, `POSTGRES_WORKER_URL`, `POSTGRES_WEBHOOK_URL` and `POSTGRES_OPERATOR_URL`, with fixtures through `TEST_DATABASE_URL`. `TestQueueMessageCount` reads `RABBITMQ_URL`. `make test-integration` takes all of them from `.env` and points every Postgres URL at the test database (below).
+- Retention sweep tests use cutoffs a century back, because a sweep touches every row past its cutoff and every package's tests share one database.
 - **`TEST_DATABASE_URL` points at `stratum_test`, a test-only role** (`POSTGRES_TEST_URL` in `.env.example`; created by `deploy/postgres-init/02-test-role.sql`) — not the migration-owner superuser. It holds `BYPASSRLS` directly (needed to seed `billing.subscriptions`/`invoices`/`payments`/`payment_links`, which carry `FORCE ROW LEVEL SECURITY`, directly) and is a member of `stratum`, the schema owner — membership, not a pile of per-privilege `GRANT`s, because several billing integration tests create a throwaway trigger function to inject a mid-transaction failure and then `DROP` it in `t.Cleanup`, and `DROP TRIGGER`/`DROP FUNCTION` check table/object *ownership*, not `CREATE`/`TRIGGER` privilege — a role merely granted those privileges can create the trigger but not drop it, leaving it attached to break every later test on that table. `stratum_test` is never provisioned outside local dev/CI and never appears in `docs/12-operations.md`'s production runbook — it exists purely so the suite doesn't need a superuser.
 
 ## Running
 
 ```bash
-make test               # unit + handler, -race -count=1
-make test-integration   # needs TEST_DATABASE_URL
+make test               # unit + handler, -race -count=1, no database
+make test-integration   # needs infra; runs against stratum_test, not the dev database
 ```
 
-Stop any local `cmd/worker` before `make test-integration`. The suite writes outbox rows into the same database the worker relays from, so a running worker publishes them before `t.Cleanup` deletes them, and its consumers act on them — including sending email through the configured SMTP. The outbox relay tests claim only their own rows: other due rows are locked for the length of each batch, so the relay's `SKIP LOCKED` passes over the dev data.
+`make test-integration` (also `make test-cover` and `make pre-push`) first runs `make test-db`. It creates the `stratum_test` database in the local Postgres if it is missing and migrates it up. The suite then runs with every `POSTGRES_*_URL` and `TEST_DATABASE_URL` taken from `.env`, with the database swapped for `stratum_test`. This works for URLs of the `.env.example` form `…/stratum?…`. `make test-db` stops with an error if any of these URLs is not in that form, or if `TEST_DB` is `stratum`: such a URL would still reach the dev database. The database is created in the compose `postgres` service, so `.env` must point at that server, as it does by default. The roles are cluster-wide and the migrations grant them, so the test database needs no other setup.
+
+`make test` runs the same packages with every `POSTGRES_*_URL` blanked, so its database tests skip and it never reaches a database.
+
+So a local `cmd/worker` can keep running during the suite. It relays from the dev database and never sees the suite's outbox rows. The relay tests in turn never claim the dev data's due rows. Redis is still shared (`TEST_REDIS_URL=$(CACHE_URL)`). `cmd/worker` does not use Redis.
+
+Use another database name with `make test-integration TEST_DB=<name>`. Drop the test database and run `make test-db` again in three cases:
+- a migration failed half-way and left it dirty;
+- `migrate` reports `no migration found for version N`, because the database was migrated on a branch with a newer migration;
+- an already-applied migration was edited, so `migrate up` reports no change on a stale schema.
+
+To drop it, run `podman exec stratum-postgres dropdb -U stratum stratum_test`, using your `TEST_DB` name if you override it.
 
 Web's unit tests run with `npm test` in `ui/app`, which pins `LC_ALL=en_US.UTF-8` and `TZ=UTC`, so date assertions hold on any machine. Studio's Go tests (`go test ./...` in `ui/studio`) use an in-memory keychain; the operator smoke test runs only when `STUDIO_SMOKE_OWNER_URL`, `STUDIO_SMOKE_OPERATOR_URL` and `STUDIO_SMOKE_MQ_URL` point at a database and broker.
 
