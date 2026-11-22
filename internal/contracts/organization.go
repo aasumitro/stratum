@@ -31,7 +31,12 @@ type OrganizationInfo struct {
 // OrganizationReader is implemented by the organization module and consumed by
 // any module that needs to resolve organization data without owning its schema.
 type OrganizationReader interface {
+	// GetOrganizationByID reports a missing organization, including an ID that
+	// is not a UUID, as an error wrapping pgx.ErrNoRows; any other error is a
+	// failed lookup.
 	GetOrganizationByID(ctx context.Context, organizationID string) (*OrganizationInfo, error)
+	// GetMemberRole reports a caller who is not an active member as an error
+	// wrapping pgx.ErrNoRows; any other error is a failed lookup.
 	GetMemberRole(ctx context.Context, organizationID, authSub string) (string, error)
 	ListMemberAuthSubs(ctx context.Context, organizationID string) ([]string, error)
 	// GetFirstOrganizationIDForMember returns the auth_sub's earliest-joined

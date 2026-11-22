@@ -304,3 +304,9 @@ func NewModuleEngineWithUserReader(pool *pgxpool.Pool, authSub string, ur contra
 	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
 	return e
 }
+
+// TransferOwnershipForTest calls transferOwnership directly, the way a request
+// whose owner check passed on a stale (cached) role reaches it.
+func TransferOwnershipForTest(ctx context.Context, m *Module, organizationID, currentOwner, target string) error {
+	return m.svc.transferOwnership(ctx, organizationID, currentOwner, target)
+}

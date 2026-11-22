@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	jwtgo "github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
@@ -196,7 +198,7 @@ func TestOrganizationMiddleware_MissingOrganizationID(t *testing.T) {
 }
 
 func TestOrganizationMiddleware_OrganizationNotFound(t *testing.T) {
-	e := makeOrganizationEngine(stubWsReader{wsErr: errors.New("not found")})
+	e := makeOrganizationEngine(stubWsReader{wsErr: fmt.Errorf("organization.GetOrganizationByID: %w", pgx.ErrNoRows)})
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/organizations/ws-01/test", nil))
 	if w.Code != http.StatusNotFound {
@@ -232,13 +234,50 @@ func TestOrganizationMiddleware_Suspended_UnsuspendStaysReachable(t *testing.T) 
 	}
 }
 
-func TestOrganizationMiddleware_NotMember(t *testing.T) {
+// The membership check fails closed: a not-found error is a 403 even if a
+// reader also hands back a role.
+func TestOrganizationMiddleware_NotMember_RoleWithNotFoundIsForbidden(t *testing.T) {
 	ws := &contracts.OrganizationInfo{ID: "ws-01", Status: "active"}
-	e := makeOrganizationEngine(stubWsReader{ws: ws, roleErr: errors.New("not a member")})
+	e := makeOrganizationEngine(stubWsReader{ws: ws, role: "admin", roleErr: fmt.Errorf("x: %w", pgx.ErrNoRows)})
 	w := httptest.NewRecorder()
 	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/organizations/ws-01/test", nil))
 	if w.Code != http.StatusForbidden {
 		t.Errorf("want 403, got %d", w.Code)
+	}
+}
+
+func TestOrganizationMiddleware_NotMember(t *testing.T) {
+	ws := &contracts.OrganizationInfo{ID: "ws-01", Status: "active"}
+	e := makeOrganizationEngine(stubWsReader{ws: ws, roleErr: fmt.Errorf("organization.getMemberRole: %w", pgx.ErrNoRows)})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/organizations/ws-01/test", nil))
+	if w.Code != http.StatusForbidden {
+		t.Errorf("want 403, got %d", w.Code)
+	}
+}
+
+// A lookup that fails for any reason other than a missing row is a retryable
+// 503, not a 404 or 403 that would tell the client the organization or its
+// membership does not exist.
+func TestOrganizationMiddleware_LookupFailureIsUnavailable(t *testing.T) {
+	active := &contracts.OrganizationInfo{ID: "ws-01", Status: "active"}
+	cases := map[string]struct {
+		reader   stubWsReader
+		wantCode string
+	}{
+		"organization lookup": {stubWsReader{wsErr: errors.New("connection refused")}, "ORGANIZATION_UNAVAILABLE"},
+		"membership lookup":   {stubWsReader{ws: active, roleErr: errors.New("connection refused")}, "MEMBERSHIP_UNAVAILABLE"},
+	}
+	for name, tc := range cases {
+		e := makeOrganizationEngine(tc.reader)
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/organizations/ws-01/test", nil))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s: want 503, got %d", name, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), tc.wantCode) {
+			t.Errorf("%s: body %q, want code %s", name, w.Body, tc.wantCode)
+		}
 	}
 }
 

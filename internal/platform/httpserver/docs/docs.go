@@ -1608,6 +1608,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
+                    },
+                    "500": {
+                        "description": "the lookup or the join failed (ORGANIZATION_FETCH_FAILED, ORGANIZATION_JOIN_FAILED)",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
                     }
                 }
             }
@@ -1663,6 +1669,12 @@ const docTemplate = `{
                     },
                     "422": {
                         "description": "missing code, invalid code, invite code disabled, or already a member",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "500": {
+                        "description": "the lookup failed (ORGANIZATION_FETCH_FAILED)",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -4007,6 +4019,24 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
+                    },
+                    "404": {
+                        "description": "no membership to remove (MEMBER_NOT_FOUND)",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "the owner cannot leave (OWNER_CANNOT_LEAVE)",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "500": {
+                        "description": "ORGANIZATION_LEAVE_FAILED",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
                     }
                 }
             }
@@ -4689,8 +4719,20 @@ const docTemplate = `{
                             "$ref": "#/definitions/Payload"
                         }
                     },
+                    "409": {
+                        "description": "the owner changed meanwhile (OWNERSHIP_CHANGED)",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
                     "422": {
-                        "description": "validation failed",
+                        "description": "missing auth_sub (VALIDATION_FAILED), malformed body (INVALID_REQUEST), target is not an active member (TRANSFER_TARGET_NOT_MEMBER) or already the owner (TRANSFER_TARGET_ALREADY_OWNER)",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "500": {
+                        "description": "OWNERSHIP_TRANSFER_FAILED",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }

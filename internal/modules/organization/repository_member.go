@@ -212,6 +212,23 @@ func (r *repository) getMemberRole(ctx context.Context, q db.Querier, organizati
 	return role, nil
 }
 
+// lockActiveMemberRole reads an active member's role and locks the membership
+// row, so the member cannot be suspended, removed or leave before the caller's
+// transaction commits. No row (not an active member) is pgx.ErrNoRows.
+func (r *repository) lockActiveMemberRole(ctx context.Context, q db.Querier, organizationID, authSub string) (string, error) {
+	db.RequireTx(q)
+	var role string
+	if err := q.QueryRow(ctx, `
+		SELECT role FROM organization.memberships
+		WHERE organization_id = $1 AND auth_sub = $2 AND status = 'active'
+		FOR UPDATE`,
+		organizationID, authSub,
+	).Scan(&role); err != nil {
+		return "", fmt.Errorf("organization.lockActiveMemberRole: %w", err)
+	}
+	return role, nil
+}
+
 func (r *repository) updateOrganizationOwner(ctx context.Context, q db.Querier, id, newOwnerAuthSub string) error {
 	_, err := q.Exec(ctx, `
 		UPDATE organization.organizations SET owner_id = $2, updated_at = now()

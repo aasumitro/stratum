@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
@@ -232,6 +231,12 @@ func (s *service) getOrganization(ctx context.Context, id string) (*organization
 // which runs before any organization scope exists — so it reads through the
 // unscoped pool, by id.
 func (s *service) lookupOrganization(ctx context.Context, id string) (*organizationRecord, error) {
+	// An ID that is not a UUID names no organization. Checking it here keeps
+	// malformed input (bad UTF-8 or a NUL byte fails in Postgres as 22021, not
+	// 22P02) from reaching the database and reading as a failed lookup.
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", fmt.Errorf("%w: %w", pgx.ErrNoRows, err))
+	}
 	t, err := s.repo.findOrganizationByID(ctx, s.unscoped(), id)
 	if err != nil {
 		return nil, classifyOrganizationFetch(err)
@@ -240,8 +245,14 @@ func (s *service) lookupOrganization(ctx context.Context, id string) (*organizat
 }
 
 func classifyOrganizationFetch(err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", err)
+	case isInvalidTextRepresentation(err):
+		// An ID that is not a UUID names no organization; Postgres rejects the
+		// cast before it can report no row. It wraps pgx.ErrNoRows so every
+		// caller's not-found check holds.
+		return apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", fmt.Errorf("%w: %w", pgx.ErrNoRows, err))
 	}
 	return apperr.Internal("ORGANIZATION_FETCH_FAILED", "failed to get organization", err)
 }

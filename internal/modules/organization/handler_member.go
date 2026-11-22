@@ -231,7 +231,10 @@ func (h *handler) reinstateMember(c *gin.Context) {
 // @Security     BearerAuth
 // @Param        organizationID  path  string  true  "Organization ID"
 // @Success      204             "no content"
+// @Failure      422             {object}  response.Payload  "the owner cannot leave (OWNER_CANNOT_LEAVE)"
+// @Failure      404             {object}  response.Payload  "no membership to remove (MEMBER_NOT_FOUND)"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Failure      500             {object}  response.Payload  "ORGANIZATION_LEAVE_FAILED"
 // @Router       /organizations/{organizationID}/leave [delete]
 func (h *handler) leaveOrganization(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
@@ -258,9 +261,11 @@ type transferOwnershipRequest struct {
 // @Param        organizationID  path  string                    true  "Organization ID"
 // @Param        body            body  transferOwnershipRequest  true  "New owner"
 // @Success      204             "no content"
-// @Failure      422             {object}  response.Payload  "validation failed"
+// @Failure      422             {object}  response.Payload  "missing auth_sub (VALIDATION_FAILED), malformed body (INVALID_REQUEST), target is not an active member (TRANSFER_TARGET_NOT_MEMBER) or already the owner (TRANSFER_TARGET_ALREADY_OWNER)"
+// @Failure      409             {object}  response.Payload  "the owner changed meanwhile (OWNERSHIP_CHANGED)"
 // @Failure      403             {object}  response.Payload  "owner role or MFA step-up required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
+// @Failure      500             {object}  response.Payload  "OWNERSHIP_TRANSFER_FAILED"
 // @Router       /organizations/{organizationID}/transfer [post]
 func (h *handler) transferOwnership(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)

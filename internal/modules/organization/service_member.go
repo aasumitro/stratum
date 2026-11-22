@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/platform/apperr"
@@ -330,29 +332,84 @@ func (s *service) syncMemberUsage(ctx context.Context, organizationID string) {
 	}()
 }
 
-// leaveOrganization and transferOwnership both map every failure to a 422
-// carrying the raw err.Error() text — matches the pre-migration handler,
-// which passed err.Error() straight through unconditionally for these two.
-// Their internal `return err` sites are deliberately NOT wrapped with
-// fmt.Errorf("organization.Op: %w", ...) like the rest of this module — a
-// wrap's prefix would leak into this user-facing message text via err.Error().
+// The refusals leaveOrganization and transferOwnership answer with. A membership
+// that is already gone is a 404; any other failure is internal, a 500 whose cause
+// is logged and never shown to the caller.
+var (
+	errOwnerCannotLeave        = errors.New("owner cannot leave — transfer ownership first")
+	errTransferTargetNotMember = errors.New("target user is not an active member")
+	errTransferTargetIsOwner   = errors.New("target is already the owner")
+	errOwnershipChanged        = errors.New("the organization's owner changed — reload and try again")
+)
+
+// classifyLeaveError maps a leaveOrganization failure to its response.
+func classifyLeaveError(err error) error {
+	if _, ok := errors.AsType[*apperr.Error](err); ok {
+		return err
+	}
+	switch {
+	case errors.Is(err, errOwnerCannotLeave):
+		return apperr.Validation("OWNER_CANNOT_LEAVE", errOwnerCannotLeave.Error())
+	case errors.Is(err, pgx.ErrNoRows):
+		// The caller stopped being a member after the organization middleware
+		// checked: there is no membership left to remove.
+		return apperr.NotFound("MEMBER_NOT_FOUND", "member not found", err)
+	default:
+		return apperr.Internal("ORGANIZATION_LEAVE_FAILED", "failed to leave the organization", err)
+	}
+}
+
+// classifyTransferError maps a transferOwnership failure to its response.
+func classifyTransferError(err error) error {
+	if _, ok := errors.AsType[*apperr.Error](err); ok {
+		return err
+	}
+	switch {
+	case errors.Is(err, errTransferTargetNotMember):
+		return apperr.Validation("TRANSFER_TARGET_NOT_MEMBER", errTransferTargetNotMember.Error())
+	case errors.Is(err, errTransferTargetIsOwner):
+		return apperr.Validation("TRANSFER_TARGET_ALREADY_OWNER", errTransferTargetIsOwner.Error())
+	case errors.Is(err, errOwnershipChanged):
+		return apperr.Conflict("OWNERSHIP_CHANGED", errOwnershipChanged.Error())
+	default:
+		return apperr.Internal("OWNERSHIP_TRANSFER_FAILED", "failed to transfer ownership", err)
+	}
+}
+
 func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub string) (err error) {
 	defer func() {
 		if err != nil {
-			err = apperr.Validation("UNPROCESSABLE", err.Error())
+			err = classifyLeaveError(err)
 		}
 	}()
 
 	err = db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
 		role, err := s.repo.getMemberRole(ctx, q, organizationID, authSub)
 		if err != nil {
-			return err
+			return fmt.Errorf("organization.leaveOrganization: %w", err)
 		}
 		if role == contracts.RoleOwner {
-			return errors.New("owner cannot leave — transfer ownership first")
+			return errOwnerCannotLeave
 		}
-		_, err = s.repo.deleteMembership(ctx, q, organizationID, authSub)
-		return err
+		deleted, err := s.repo.deleteMembership(ctx, q, organizationID, authSub)
+		if err != nil {
+			return fmt.Errorf("organization.leaveOrganization: %w", err)
+		}
+		if deleted {
+			return nil
+		}
+		// The membership changed between the read and the delete: a transfer
+		// made the caller the owner (the delete skips the owner), or they were
+		// removed. Report what it is now rather than a leave that did not happen.
+		role, err = s.repo.getMemberRole(ctx, q, organizationID, authSub)
+		switch {
+		case err != nil:
+			return fmt.Errorf("organization.leaveOrganization: %w", err)
+		case role == contracts.RoleOwner:
+			return errOwnerCannotLeave
+		default:
+			return fmt.Errorf("organization.leaveOrganization: membership of %s was not removed", authSub)
+		}
 	})
 	if err != nil {
 		return err
@@ -364,26 +421,52 @@ func (s *service) leaveOrganization(ctx context.Context, organizationID, authSub
 func (s *service) transferOwnership(ctx context.Context, organizationID, currentOwner, newOwnerAuthSub string) (err error) {
 	defer func() {
 		if err != nil {
-			err = apperr.Validation("UNPROCESSABLE", err.Error())
+			err = classifyTransferError(err)
 		}
 	}()
 
 	return db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
-		role, err := s.repo.getMemberRole(ctx, tx, organizationID, newOwnerAuthSub)
+		// The organization row lock serializes changes of ownership: two
+		// transfers at once would otherwise both commit and leave two owners.
+		// The caller's owner role was read before the lock (and may be cached),
+		// so the owner is checked again under it.
+		owner, err := s.repo.lockOrganizationOwner(ctx, tx, organizationID)
 		if err != nil {
-			return errors.New("target user is not a member")
+			return fmt.Errorf("organization.transferOwnership: %w", err)
+		}
+		if owner != currentOwner {
+			return errOwnershipChanged
+		}
+		// The target's membership is locked too, so it cannot be suspended or
+		// removed between this check and the promotion below.
+		role, err := s.repo.lockActiveMemberRole(ctx, tx, organizationID, newOwnerAuthSub)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errTransferTargetNotMember
+		}
+		if err != nil {
+			return fmt.Errorf("organization.transferOwnership: %w", err)
 		}
 		if role == contracts.RoleOwner {
-			return errors.New("target is already the owner")
+			return errTransferTargetIsOwner
 		}
 		if err := s.repo.updateOrganizationOwner(ctx, tx, organizationID, newOwnerAuthSub); err != nil {
-			return err
+			return fmt.Errorf("organization.transferOwnership: %w", err)
 		}
-		if _, err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin); err != nil {
-			return err
+		demoted, err := s.repo.updateMemberRole(ctx, tx, organizationID, currentOwner, contracts.RoleAdmin)
+		if err != nil {
+			return fmt.Errorf("organization.transferOwnership: %w", err)
 		}
-		if _, err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner); err != nil {
-			return err
+		if !demoted {
+			return fmt.Errorf("organization.transferOwnership: owner %s has no membership row", currentOwner)
+		}
+		// The target's row is locked above, so this always updates it; refusing
+		// otherwise keeps a non-member from ever being named owner.
+		promoted, err := s.repo.updateMemberRole(ctx, tx, organizationID, newOwnerAuthSub, contracts.RoleOwner)
+		if err != nil {
+			return fmt.Errorf("organization.transferOwnership: %w", err)
+		}
+		if !promoted {
+			return errTransferTargetNotMember
 		}
 		return events.Enqueue(ctx, tx, events.ExchangeOrganization, events.RoutingKeyOwnershipTransferred, "organization", organizationID,
 			events.OwnershipTransferred{OrganizationID: organizationID, PreviousOwner: currentOwner, NewOwner: newOwnerAuthSub})

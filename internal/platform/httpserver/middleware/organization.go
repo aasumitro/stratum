@@ -1,11 +1,13 @@
 package middleware
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -59,9 +61,19 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 			return
 		}
 
+		// Only a missing organization is a 404. Any other failure (the database
+		// unreachable) is a retryable 503 with its cause logged, not a "not
+		// found" that would send the client away from an organization that exists.
 		ws, err := reader.GetOrganizationByID(c.Request.Context(), organizationID)
-		if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "organization not found"})
+			return
+		}
+		if err != nil {
+			response.LogInternal(c, "ORGANIZATION_UNAVAILABLE", err)
+			response.Error("ORGANIZATION_UNAVAILABLE", "could not load this organization, try again").
+				JSON(c, http.StatusServiceUnavailable)
+			c.Abort()
 			return
 		}
 
@@ -77,6 +89,13 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 		}
 
 		role, err := reader.GetMemberRole(c.Request.Context(), organizationID, claims.Subject)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			response.LogInternal(c, "MEMBERSHIP_UNAVAILABLE", err)
+			response.Error("MEMBERSHIP_UNAVAILABLE", "could not verify your membership of this organization, try again").
+				JSON(c, http.StatusServiceUnavailable)
+			c.Abort()
+			return
+		}
 		if err != nil || role == "" {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this organization"})
 			return

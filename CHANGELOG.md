@@ -16,6 +16,29 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
+- Organization (API): leaving an organization and transferring ownership no longer send raw internal errors to
+  the client.
+  - Their refusals have their own codes: 422 `OWNER_CANNOT_LEAVE`, `TRANSFER_TARGET_NOT_MEMBER`,
+    `TRANSFER_TARGET_ALREADY_OWNER` (all were 422 `UNPROCESSABLE`), 404 `MEMBER_NOT_FOUND`, and the new 409
+    `OWNERSHIP_CHANGED`.
+  - Any other failure is a 500 `ORGANIZATION_LEAVE_FAILED` / `OWNERSHIP_TRANSFER_FAILED` with its cause logged.
+  - Before, repository text such as `organization.getMemberRole: no rows in result set` reached the client as a 422,
+    unlogged, and a transfer whose target lookup failed for any reason answered "target user is not a member".
+- Organization: a transfer now locks the organization row and checks that the caller is still the owner, so two
+  transfers at once can no longer leave two owners (`OWNERSHIP_CHANGED`). It also locks the target's active
+  membership, so the target cannot be suspended, removed or leave before it commits, and a non-member or suspended
+  member is never made owner. A leave that removes no row (a transfer made the caller the
+  owner) answers `OWNER_CANNOT_LEAVE` instead of a false 204.
+- Organization (API): for a lookup error, the organization middleware answers 404 only for a missing organization
+  and 403 only for a non-member. It still answers 403 for an inactive organization or an IP outside the allowlist.
+  - An ID that is not a UUID, including one with invalid UTF-8 or a NUL byte, is a 404.
+  - A failed lookup (database unreachable) is now a retryable 503 `ORGANIZATION_UNAVAILABLE` /
+    `MEMBERSHIP_UNAVAILABLE` with its cause logged. Before, any lookup error answered 404 "organization not found" or
+    403 "not a member", unlogged.
+  - Invite-code preview and join likewise answer a failed lookup with a logged 500 `ORGANIZATION_FETCH_FAILED`,
+    and a failed join a logged 500 `ORGANIZATION_JOIN_FAILED`, instead of 422 `INVITE_CODE_INVALID` or treating the
+    caller as not a member. A code with invalid bytes is still `INVITE_CODE_INVALID`.
+  - Billing reads a non-UUID organization subject as a deleted organization.
 - Billing: on an ended subscription whose Resume invoice is pending, a plan change, an add-on decrease or removal, or
   undoing a scheduled downgrade that a coupon now covers in full no longer drops the Resume. The reissue queues
   `billing.subscription.resume-covered`, and the worker finishes the Resume after it commits: the subscription

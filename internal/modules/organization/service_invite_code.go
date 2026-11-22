@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -72,24 +73,39 @@ type inviteCodePreview struct {
 	OwnerAvatarURL   string `json:"owner_avatar_url,omitempty"`
 }
 
-// previewInviteCode looks up the code without joining. A lookup failure
-// still maps to the fixed INVITE_CODE_INVALID error — a preview shouldn't
-// reveal more about *why* a code failed than the join itself would — but
-// the caller already being a member of the resolved organization is
-// reported distinctly (ErrJoinAlreadyMember) so the join dialog can show
-// that state and hide the confirm button.
+// classifyInviteCodeLookup maps a failed invite-code lookup. No organization
+// with that enabled code, or a code Postgres cannot even read (a data
+// exception, class 22: invalid UTF-8, a NUL byte), is an invalid code; anything
+// else is a failed lookup, logged at the sink rather than told to the user as a
+// bad code.
+func classifyInviteCodeLookup(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) || isDataException(err) {
+		return apperr.Validation("INVITE_CODE_INVALID", "invalid or disabled invite code")
+	}
+	return apperr.Internal("ORGANIZATION_FETCH_FAILED", "failed to get organization", err)
+}
+
+// previewInviteCode looks up the code without joining. A code that matches no
+// enabled organization is the fixed INVITE_CODE_INVALID error — a preview
+// shouldn't reveal more about *why* a code failed than the join itself would —
+// and the caller already being a member of the resolved organization is
+// reported distinctly (ErrJoinAlreadyMember) so the join dialog can show that
+// state and hide the confirm button. A failed lookup is a 500.
 // The caller is not a member yet, so this and joinByCode have no
 // organization scope to run under: they read and write through the unscoped
 // pool, matched by the invite code.
 func (s *service) previewInviteCode(ctx context.Context, code, authSub string) (inviteCodePreview, error) {
 	t, err := s.repo.findOrganizationByInviteCode(ctx, s.unscoped(), code)
 	if err != nil {
-		return inviteCodePreview{}, apperr.Validation("INVITE_CODE_INVALID", "invalid or disabled invite code")
+		return inviteCodePreview{}, classifyInviteCodeLookup(err)
 	}
 
 	preview := inviteCodePreview{OrganizationID: t.ID, OrganizationName: t.Name}
-	if _, err := s.repo.getMemberRole(ctx, s.unscoped(), t.ID, authSub); err == nil {
+	switch _, err := s.repo.getMemberRole(ctx, s.unscoped(), t.ID, authSub); {
+	case err == nil:
 		return preview, ErrJoinAlreadyMember
+	case !errors.Is(err, pgx.ErrNoRows):
+		return inviteCodePreview{}, apperr.Internal("ORGANIZATION_FETCH_FAILED", "failed to get organization", err)
 	}
 
 	if s.userReader != nil {
@@ -102,18 +118,22 @@ func (s *service) previewInviteCode(ctx context.Context, code, authSub string) (
 	return preview, nil
 }
 
-// joinByCode. A code lookup failure or a unique-violation on the
-// membership insert (the already-a-member race between preview and here)
-// both fold into the same generic invalid-code error except for
-// ErrPlanLimitReached and ErrJoinAlreadyMember, which the handler needs to
-// distinguish to render the right message.
+// joinByCode joins the caller to the organization the code names. A code that
+// matches no enabled organization is INVITE_CODE_INVALID; a unique-violation on
+// the membership insert (the already-a-member race between preview and here)
+// is ErrJoinAlreadyMember, and a full seat count ErrPlanLimitReached, which the
+// handler needs to distinguish to render the right message. Any other failure
+// is a 500.
 func (s *service) joinByCode(ctx context.Context, code, authSub string) (*organizationRecord, error) {
 	t, err := s.repo.findOrganizationByInviteCode(ctx, s.unscoped(), code)
 	if err != nil {
-		return nil, apperr.Validation("INVITE_CODE_INVALID", "invalid or disabled invite code")
+		return nil, classifyInviteCodeLookup(err)
 	}
-	if _, err := s.repo.getMemberRole(ctx, s.unscoped(), t.ID, authSub); err == nil {
+	switch _, err := s.repo.getMemberRole(ctx, s.unscoped(), t.ID, authSub); {
+	case err == nil:
 		return nil, ErrJoinAlreadyMember
+	case !errors.Is(err, pgx.ErrNoRows):
+		return nil, apperr.Internal("ORGANIZATION_FETCH_FAILED", "failed to get organization", err)
 	}
 
 	// Locked (and the limit re-checked against a live count) before the
@@ -139,7 +159,7 @@ func (s *service) joinByCode(ctx context.Context, code, authSub string) (*organi
 		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == "23505" {
 			return nil, ErrJoinAlreadyMember
 		}
-		return nil, apperr.Validation("INVITE_CODE_INVALID", "invalid or disabled invite code")
+		return nil, apperr.Internal("ORGANIZATION_JOIN_FAILED", "failed to join the organization", err)
 	}
 	s.syncMemberUsage(ctx, t.ID)
 	return t, nil
