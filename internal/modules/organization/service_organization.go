@@ -19,7 +19,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/logger"
 )
 
 var ErrUnknownPlan = errors.New("unknown plan")
@@ -85,8 +84,8 @@ func (s *service) createOrganization(
 		case isUniqueViolation(err):
 			err = apperr.Conflict("SLUG_TAKEN", "slug already taken")
 		default:
-			logger.FromContext(ctx).Error("createOrganization failed", "slug", slug, "owner", ownerID, "error", err)
-			err = apperr.Internal("ORGANIZATION_CREATE_FAILED", "failed to create organization", err)
+			err = apperr.Internal("ORGANIZATION_CREATE_FAILED", "failed to create organization",
+				fmt.Errorf("slug %q, owner %s: %w", slug, ownerID, err))
 		}
 	}()
 

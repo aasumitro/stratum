@@ -62,6 +62,13 @@ const RoutingKeyInvoiceMarkPaid = "billing.invoice.mark-paid"
 // checked on delivery; only billing consumes it.
 const RoutingKeySubscriptionApplyScheduled = "billing.subscription.apply-scheduled"
 
+// RoutingKeySubscriptionResumeCovered finishes a Resume whose reissued invoice
+// a coupon now covers in full (payload SubscriptionCheck). It reactivates the
+// subscription outside the transaction that reissued it, so the organization's
+// suspension can be lifted once that reactivation commits. Only billing
+// consumes it.
+const RoutingKeySubscriptionResumeCovered = "billing.subscription.resume-covered"
+
 // RoutingKeyOperatorTrialExtend and RoutingKeyOperatorPlanChange carry a
 // Studio operator's trial extension and plan change to billing, which applies
 // them through its own path: a trial extension moves the trial's end and

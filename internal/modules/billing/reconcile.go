@@ -24,9 +24,13 @@ import (
 // the schedule stays locked: the owner keeps the higher plan at the lower price
 // and cannot change, extend or undo anything. This re-enqueues the apply for
 // every schedule that is due (listDueSchedules); applyScheduledAtBoundary
-// re-checks it under the row lock, so a duplicate does nothing. A schedule that
-// fails on every attempt dead-letters again once per hour, which the
-// dead-letter queue gauge surfaces.
+// re-checks it under the row lock, so a duplicate does nothing. Each re-send
+// doubles the wait before the next (markScheduleResent: 1h, 2h, ... at most a
+// day), so a schedule that fails on every attempt dead-letters at most once a
+// day after its first day rather than every hour, and still applies on its own
+// within about a day of the cause being fixed. Writing, clearing, applying or
+// moving the schedule resets the wait. The dead-letter queue gauge surfaces it
+// either way.
 //
 // It does not backfill a missed renewal reminder or auto-invoice: a missed
 // reminder is cosmetic, and a missed auto-invoice resolves to "the
@@ -67,6 +71,12 @@ func (s *service) reconcileOverdueSubscriptions(ctx context.Context) {
 	for _, sub := range due {
 		if err := s.enqueueApplyScheduled(ctx, &sub); err != nil {
 			slog.Error("billing.reconcileOverdueSubscriptions: enqueue apply-scheduled failed",
+				"subscription_id", sub.ID, "error", err)
+			continue
+		}
+		// Unrecorded, the next tick re-sends one hour later as before.
+		if err := s.repo.markScheduleResent(ctx, s.pool, sub.ID, *sub.ScheduledEffectiveAt); err != nil {
+			slog.Error("billing.reconcileOverdueSubscriptions: record apply-scheduled re-send failed",
 				"subscription_id", sub.ID, "error", err)
 		}
 	}

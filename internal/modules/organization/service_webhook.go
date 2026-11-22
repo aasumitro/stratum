@@ -13,7 +13,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
-	"github.com/aasumitro/stratum/internal/platform/logger"
 )
 
 // ── Webhook endpoints ──────────────────────────────────────────────────────
@@ -72,7 +71,6 @@ func (s *service) createWebhookEndpoint(
 		case errors.Is(err, ErrWebhookURLNotAllowed):
 			err = apperr.Validation("WEBHOOK_URL_NOT_ALLOWED", "webhook url must be https and resolve to a public address")
 		default:
-			logger.FromContext(ctx).Error("createWebhook failed", "error", err)
 			err = apperr.Internal("WEBHOOK_CREATE_FAILED", "failed to create webhook", err)
 		}
 	}()
@@ -236,7 +234,6 @@ func (s *service) listWebhookDeliveries(
 func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webhookID, deliveryID string) (err error) {
 	defer func() {
 		if err != nil {
-			logger.FromContext(ctx).Error("retryWebhookDelivery failed", "error", err)
 			switch {
 			case errors.Is(err, pgx.ErrNoRows), errors.Is(err, ErrWebhookDeliveryMismatch):
 				err = apperr.NotFound("WEBHOOK_NOT_FOUND", "webhook not found", err)
@@ -282,7 +279,6 @@ func (s *service) retryAllFailedWebhookDeliveries(
 ) (n int, err error) {
 	defer func() {
 		if err != nil {
-			logger.FromContext(ctx).Error("retryAllFailedWebhookDeliveries failed", "error", err)
 			n = 0
 			if errors.Is(err, pgx.ErrNoRows) {
 				err = apperr.NotFound("WEBHOOK_NOT_FOUND", "webhook not found", err)

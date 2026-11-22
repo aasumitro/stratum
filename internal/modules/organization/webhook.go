@@ -7,10 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -82,7 +84,7 @@ func (w *WebhookWorker) HandleOutboundEvent(ctx context.Context, body []byte) er
 			continue
 		}
 		if err := deliver(ctx, w.repo, w.pool, &ep, del, body); err != nil {
-			w.log.Warn("webhook: delivery failed", "delivery_id", del.ID, "url", ep.URL, "error", err)
+			w.log.Warn("webhook: delivery failed", "delivery_id", del.ID, "endpoint_id", ep.ID, "error", err)
 		}
 		w.checkHealth(ctx, &ep)
 	}
@@ -117,7 +119,7 @@ func (w *WebhookWorker) HandleWebhookRetry(ctx context.Context, body []byte) err
 		return fmt.Errorf("webhook retry: payload: %w", err)
 	}
 	if err := deliver(ctx, w.repo, w.pool, ep, del, payload); err != nil {
-		w.log.Warn("webhook retry: delivery failed", "delivery_id", del.ID, "url", ep.URL, "error", err)
+		w.log.Warn("webhook retry: delivery failed", "delivery_id", del.ID, "endpoint_id", ep.ID, "error", err)
 	}
 	w.checkHealth(ctx, ep)
 	return nil
@@ -183,7 +185,7 @@ func deliver(
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, ep.URL, bytes.NewReader(payload))
 	if err != nil {
-		return recordFailedAttempt(ctx, repo, q, del, attemptedAt, err.Error(), nil, nil)
+		return recordFailedAttempt(ctx, repo, q, del, attemptedAt, deliveryError(err), nil, nil)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Stratum-Signature", sig)
@@ -198,7 +200,7 @@ func deliver(
 	resp, err := webhookHTTPClient.Do(req)
 	latency := int(time.Since(start).Milliseconds())
 	if err != nil {
-		return recordFailedAttempt(ctx, repo, q, del, attemptedAt, err.Error(), nil, &latency)
+		return recordFailedAttempt(ctx, repo, q, del, attemptedAt, deliveryError(err), nil, &latency)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, webhookResponseBodyMaxLen))
@@ -218,6 +220,16 @@ func deliver(
 	_ = repo.recordWebhookAttempt(ctx, q, del.ID, "failed",
 		attempts, &errMsg, &statusCode, &bodyStr, &latency, nil, entry)
 	return fmt.Errorf("webhook: endpoint returned %d", statusCode)
+}
+
+// deliveryError describes a failed request without the endpoint URL a *url.Error
+// carries. A webhook URL can hold a token in its path or query, and this text is
+// stored on the delivery and logged by every caller that returns it.
+func deliveryError(err error) string {
+	if ue, ok := errors.AsType[*url.Error](err); ok {
+		return ue.Op + ": " + ue.Err.Error()
+	}
+	return err.Error()
 }
 
 func recordFailedAttempt(

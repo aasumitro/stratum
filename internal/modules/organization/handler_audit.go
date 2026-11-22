@@ -64,6 +64,7 @@ func (h *handler) auditLog(c *gin.Context) {
 	if cursor, hasCursor := c.GetQuery("cursor"); hasCursor {
 		events, nextCursor, err := audit.ListByOrganizationCursor(c.Request.Context(), h.pool, ws.ID, limit, cursor, filter)
 		if err != nil {
+			response.LogInternal(c, "AUDIT_LOG_FETCH_FAILED", err)
 			response.Error("AUDIT_LOG_FETCH_FAILED", "failed to list audit log").JSON(c, http.StatusInternalServerError)
 			return
 		}
@@ -79,6 +80,7 @@ func (h *handler) auditLog(c *gin.Context) {
 
 	events, total, err := audit.ListByOrganization(c.Request.Context(), h.pool, ws.ID, limit, offset, filter)
 	if err != nil {
+		response.LogInternal(c, "AUDIT_LOG_FETCH_FAILED", err)
 		response.Error("AUDIT_LOG_FETCH_FAILED", "failed to list audit log").JSON(c, http.StatusInternalServerError)
 		return
 	}
@@ -110,6 +112,7 @@ func (h *handler) exportAuditLog(c *gin.Context) {
 	c.Header("Content-Disposition", "attachment; filename=audit-log.csv")
 
 	if err := audit.ExportByOrganization(c.Request.Context(), h.pool, ws.ID, filter, c.Writer); err != nil {
+		response.LogInternal(c, "AUDIT_LOG_EXPORT_FAILED", err)
 		c.Status(http.StatusInternalServerError)
 	}
 }

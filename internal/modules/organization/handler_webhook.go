@@ -284,6 +284,7 @@ func (h *handler) listWebhookDeliveries(c *gin.Context) {
 			response.Error("WEBHOOK_NOT_FOUND", "webhook not found").JSON(c, http.StatusNotFound)
 			return
 		}
+		response.LogInternal(c, "WEBHOOK_FETCH_FAILED", err)
 		response.Error("WEBHOOK_FETCH_FAILED", "failed to fetch webhook").JSON(c, http.StatusInternalServerError)
 		return
 	}
@@ -303,6 +304,7 @@ func (h *handler) listWebhookDeliveries(c *gin.Context) {
 
 	recs, nextCursor, err := h.svc.listWebhookDeliveries(c.Request.Context(), ws.ID, webhookID, filter, cursor, limit)
 	if err != nil {
+		response.LogInternal(c, "DELIVERY_LIST_FAILED", err)
 		response.Error("DELIVERY_LIST_FAILED", "failed to list deliveries").JSON(c, http.StatusInternalServerError)
 		return
 	}

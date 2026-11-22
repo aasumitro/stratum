@@ -4,7 +4,10 @@
 // the invariant) instead of being re-derived per handler.
 package apperr
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+)
 
 type Kind int
 
@@ -59,6 +62,22 @@ func (e *Error) Error() string { return e.Message }
 // Unwrap preserves errors.Is/As against the original cause (e.g. pgx.ErrNoRows)
 // for any caller other than the HTTP handler that still inspects it.
 func (e *Error) Unwrap() error { return e.cause }
+
+// Cause returns the innermost error an *Error in err's chain wraps, descending
+// through nested *Errors, or nil when there is none. Error() deliberately leaves
+// it out: Message is what a client may be shown, and some callers persist
+// err.Error() where a user reads it. A log line needs it: for an Internal error
+// it is the only record of what actually failed.
+func Cause(err error) error {
+	var cause error
+	for {
+		ae, ok := errors.AsType[*Error](err)
+		if !ok || ae.cause == nil {
+			return cause
+		}
+		cause, err = ae.cause, ae.cause
+	}
+}
 
 func newErr(kind Kind, code, message string, cause error, details []any) *Error {
 	e := &Error{Kind: kind, Code: code, Message: message, cause: cause}

@@ -588,3 +588,145 @@ func TestListDueSchedules_ReturnsOnlyAppliableSchedules(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegration_ScheduleResendBackoff: a due schedule whose apply keeps failing
+// is re-sent at a doubling interval, at most a day apart, not every hour, and the
+// wait starts over whenever the schedule changes. It calls the repository directly
+// rather than ReconcileOverdueSubscriptions, which would sweep the whole database.
+func TestIntegration_ScheduleResendBackoff(t *testing.T) {
+	pool := testPoolAmendment(t)
+	r := &repository{}
+	sub := seedAmendmentSubscription(t, pool, r, "00000000-0000-0000-0000-000000000b51")
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'active', scheduled_plan = 'solo', scheduled_cycle = 'monthly',
+		    scheduled_requested_at = now() - interval '40 days',
+		    scheduled_effective_at = now() - interval '1 hour', period_end = now() + interval '29 days'
+		WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("seed a due schedule: %v", err)
+	}
+	isDue := func() bool {
+		t.Helper()
+		due, err := r.listDueSchedules(t.Context(), pool)
+		if err != nil {
+			t.Fatalf("listDueSchedules: %v", err)
+		}
+		for _, d := range due {
+			if d.ID == sub.ID {
+				return true
+			}
+		}
+		return false
+	}
+	effective := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := pool.QueryRow(t.Context(),
+			`SELECT scheduled_effective_at FROM billing.subscriptions WHERE id = $1`, sub.ID).Scan(&at); err != nil {
+			t.Fatalf("read boundary: %v", err)
+		}
+		return at
+	}
+	// resend marks one re-send against the live boundary and reports the count
+	// and the wait it set.
+	resend := func() (int, time.Duration) {
+		t.Helper()
+		if err := r.markScheduleResent(t.Context(), pool, sub.ID, effective()); err != nil {
+			t.Fatalf("markScheduleResent: %v", err)
+		}
+		var n int
+		var wait time.Duration
+		if err := pool.QueryRow(t.Context(), `
+			SELECT schedule_resend_count, schedule_resend_at - now() FROM billing.subscriptions WHERE id = $1`,
+			sub.ID).Scan(&n, &wait); err != nil {
+			t.Fatalf("read backoff: %v", err)
+		}
+		return n, wait
+	}
+	near := func(got, want time.Duration) bool { return got > want-time.Minute && got <= want }
+
+	if !isDue() {
+		t.Fatal("a due schedule with no re-send yet must be listed")
+	}
+	if n, wait := resend(); n != 1 || !near(wait, time.Hour) {
+		t.Errorf("first re-send: want 1 and a 1h wait, got %d and %s", n, wait)
+	}
+	if isDue() {
+		t.Error("listed again inside its backoff")
+	}
+	for _, want := range []time.Duration{2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour, 24 * time.Hour, 24 * time.Hour} {
+		if _, wait := resend(); !near(wait, want) {
+			t.Errorf("want a %s wait, got %s", want, wait)
+		}
+	}
+	// However long a schedule stays stuck, the wait stays a day: the shift is
+	// capped, so it cannot overflow into a negative interval.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE billing.subscriptions SET schedule_resend_count = 40 WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("set a long-stuck count: %v", err)
+	}
+	if _, wait := resend(); !near(wait, 24*time.Hour) {
+		t.Errorf("after 40 re-sends: want a 24h wait, got %s", wait)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET schedule_resend_at = now() - interval '1 minute' WHERE id = $1`, sub.ID); err != nil {
+		t.Fatalf("pass the backoff: %v", err)
+	}
+	if !isDue() {
+		t.Error("not listed once its backoff passed")
+	}
+	// The slack lets an hourly tick land on an hour-long backoff.
+	for wait, want := range map[string]bool{"4 minutes": true, "6 minutes": false} {
+		if _, err := pool.Exec(t.Context(), `
+			UPDATE billing.subscriptions SET schedule_resend_at = now() + $2::text::interval WHERE id = $1`,
+			sub.ID, wait); err != nil {
+			t.Fatalf("set the backoff: %v", err)
+		}
+		if got := isDue(); got != want {
+			t.Errorf("backoff ending in %s: want listed=%v, got %v", wait, want, got)
+		}
+	}
+	// A mark against a boundary that moved since it was listed changes nothing.
+	var before int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT schedule_resend_count FROM billing.subscriptions WHERE id = $1`, sub.ID).Scan(&before); err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if err := r.markScheduleResent(t.Context(), pool, sub.ID, effective().Add(-time.Hour)); err != nil {
+		t.Fatalf("stale mark: %v", err)
+	}
+	var after int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT schedule_resend_count FROM billing.subscriptions WHERE id = $1`, sub.ID).Scan(&after); err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if after != before {
+		t.Errorf("a stale mark moved the count from %d to %d", before, after)
+	}
+
+	resetBy := map[string]func() error{
+		"syncScheduledEffectiveAt": func() error {
+			_, err := r.syncScheduledEffectiveAt(t.Context(), pool, sub.ID)
+			return err
+		},
+		"moveScheduledEffectiveAt": func() error {
+			return r.moveScheduledEffectiveAt(t.Context(), pool, sub.ID, time.Now().Add(-time.Hour))
+		},
+	}
+	for name, reset := range resetBy {
+		resend()
+		if err := reset(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var n int
+		var after *time.Time
+		if err := pool.QueryRow(t.Context(), `
+			SELECT schedule_resend_count, schedule_resend_at FROM billing.subscriptions WHERE id = $1`,
+			sub.ID).Scan(&n, &after); err != nil {
+			t.Fatalf("read backoff: %v", err)
+		}
+		if n != 0 || after != nil {
+			t.Errorf("%s: want the backoff reset, got %d re-sends, next after %v", name, n, after)
+		}
+	}
+}

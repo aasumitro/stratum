@@ -174,6 +174,22 @@ func (m *Module) Consumers(mqConn *messaging.Connection, log *slog.Logger) []*me
 			PrefetchCount: 10,
 		}, m.Worker.HandleApplyScheduled, log),
 
+		// billing: finish a Resume whose reissued invoice a coupon now covers
+		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
+			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},
+			Queue: messaging.QueueSpec{
+				Name:                 "billing.subscription-resume-covered",
+				BindingKeys:          []string{events.RoutingKeySubscriptionResumeCovered},
+				MaxDeliveries:        5,
+				RetryMinDelay:        2 * time.Second,
+				RetryMaxDelay:        60 * time.Second,
+				DeadLetterExchange:   exchangeBillingDLX,
+				DeadLetterRoutingKey: "billing.subscription-resume-covered",
+			},
+			DLX:           messaging.DLXSpec{ExchangeName: exchangeBillingDLX, QueueName: exchangeBillingDLQ},
+			PrefetchCount: 10,
+		}, m.Worker.HandleCoveredResume, log),
+
 		// billing: a Studio operator's trial extension and plan change
 		messaging.NewConsumer(mqConn, messaging.ConsumerSpec{
 			Exchange: messaging.ExchangeSpec{Name: events.ExchangeBilling},

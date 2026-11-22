@@ -7977,6 +7977,45 @@ func TestIntegration_ReconcileOverdueSubscriptions_EnqueuesForOverdueOnly(t *tes
 	}
 }
 
+// TestIntegration_ReconcileOverdueSubscriptions_BacksOffScheduleResends: the
+// hourly reconcile re-sends a due schedule's apply once, records it, and does not
+// re-send it on the next tick, which falls inside the backoff.
+func TestIntegration_ReconcileOverdueSubscriptions_BacksOffScheduleResends(t *testing.T) {
+	pool := testPoolBilling(t)
+	orgID := uuid.New().String()
+	setupBillingTest(t, pool, orgID)
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(),
+		encodeOrganizationCreatedEventFor(orgID, "reconcile_backoff_"+orgID[:8])); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions
+		SET status = 'active', trial_end = NULL, scheduled_plan = 'solo', scheduled_cycle = 'monthly',
+		    scheduled_requested_at = now() - interval '40 days',
+		    scheduled_effective_at = now() - interval '1 hour', period_end = now() + interval '29 days'
+		WHERE id = $1`, subID); err != nil {
+		t.Fatalf("seed a due schedule: %v", err)
+	}
+	pool.Exec(t.Context(), `DELETE FROM messaging.outbox WHERE payload->>'org_id' = $1`, orgID)
+
+	mod.ReconcileOverdueSubscriptions(t.Context())
+	mod.ReconcileOverdueSubscriptions(t.Context())
+
+	if got := len(queuedPayloads(t, pool, events.RoutingKeySubscriptionApplyScheduled, orgID)); got != 1 {
+		t.Errorf("want one apply-scheduled re-send across two ticks, got %d", got)
+	}
+	var resends int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT schedule_resend_count FROM billing.subscriptions WHERE id = $1`, subID).Scan(&resends); err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if resends != 1 {
+		t.Errorf("schedule_resend_count: want 1, got %d", resends)
+	}
+}
+
 // scheduleDueAtBoundary makes subID's schedule due, as when its renewal was paid
 // and the boundary it was scheduled for has passed, and returns the
 // apply-scheduled message for that boundary.

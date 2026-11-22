@@ -121,6 +121,7 @@ func (h *handler) handleStripeWebhook(c *gin.Context) {
 			c.Status(http.StatusOK) // unknown link — ACK to stop retries
 			return
 		}
+		response.LogInternal(c, "WEBHOOK_FAILED", err)
 		response.Error(
 			"WEBHOOK_FAILED",
 			"webhook processing failed",
@@ -181,6 +182,7 @@ func (h *handler) handleXenditWebhook(c *gin.Context) {
 			c.Status(http.StatusOK)
 			return
 		}
+		response.LogInternal(c, "WEBHOOK_FAILED", err)
 		response.Error(
 			"WEBHOOK_FAILED",
 			"webhook processing failed",

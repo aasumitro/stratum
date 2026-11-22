@@ -34,6 +34,7 @@ func RequireMFAIfEnabled(userReader contracts.UserReader) gin.HandlerFunc {
 
 		enabled, err := userReader.IsMFAEnabled(c.Request.Context(), claims.Subject)
 		if err != nil {
+			response.LogInternal(c, "MFA_STATUS_UNAVAILABLE", err)
 			response.Error("MFA_STATUS_UNAVAILABLE",
 				"could not verify your account's MFA status, try again").
 				JSON(c, http.StatusServiceUnavailable)

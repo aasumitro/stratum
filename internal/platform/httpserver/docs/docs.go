@@ -3561,7 +3561,7 @@ const docTemplate = `{
                         }
                     },
                     "422": {
-                        "description": "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE), or the plan has no price (PLAN_NOT_SELF_SERVICE)",
+                        "description": "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE), the plan has no price (PLAN_NOT_SELF_SERVICE), or the plan is retired (UNKNOWN_PLAN)",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }

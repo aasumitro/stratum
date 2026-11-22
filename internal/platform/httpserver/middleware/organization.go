@@ -119,6 +119,7 @@ func NewActivationGateMiddleware(gate contracts.ActivationGate) gin.HandlerFunc 
 		}
 		unpaid, err := gate.HasUnpaidActivation(c.Request.Context(), ws.ID)
 		if err != nil {
+			response.LogInternal(c, "BILLING_STATUS_UNAVAILABLE", err)
 			response.Error("BILLING_STATUS_UNAVAILABLE", "could not verify this organization's billing status, try again").
 				JSON(c, http.StatusServiceUnavailable)
 			c.Abort()

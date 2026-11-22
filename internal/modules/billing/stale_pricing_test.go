@@ -3,6 +3,7 @@ package billing_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1047,6 +1048,186 @@ func TestIntegration_CoveredCharge_PlanChangeOnEndedActivation_Refused(t *testin
 		t.Errorf("activation: want pending, got %q", got)
 	}
 	if got := couponApplied(t, pool, code, subID); got != 0 {
+		t.Errorf("coupon applications: want 0, got %d", got)
+	}
+}
+
+// coveredResumeReissue ends orgID's subscription with status, has its owner press
+// Resume (an invoice to pay), redeems a 100% coupon, then changes the plan, so the
+// reissued Resume invoice is covered in full. It returns the subscription and the one
+// covered-resume message the change queued.
+func coveredResumeReissue(t *testing.T, pool *pgxpool.Pool, orgID, user, code, status string) (string, []byte) {
+	t.Helper()
+	setupBillingTest(t, pool, orgID)
+	subID := provisionActive(t, pool, orgID, user, "2 days")
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE billing.subscriptions SET status = $2, period_end = now() - interval '1 hour' WHERE id = $1`,
+		subID, status); err != nil {
+		t.Fatalf("end the subscription: %v", err)
+	}
+	w := httptest.NewRecorder()
+	billing.NewModuleEngineWithRealRLS(pool, user, orgID, stubRefReader{}).ServeHTTP(w,
+		httpserver.JSONTestRequest(http.MethodPost, billingURL(orgID)+"/resume", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("resume: want 200, got %d: %s", w.Code, w.Body)
+	}
+	if got := pendingInvoiceIDs(t, pool, subID, "subscription"); len(got) != 1 {
+		t.Fatalf("want the Resume invoice pending, got %v", got)
+	}
+	seedFullCoupon(t, pool, code, "once")
+	redeem(t, pool, user, orgID, code)
+	if status == "cancelled" {
+		// A cancelled subscription refuses a plan change; a schedule change
+		// reissues its Resume invoice instead.
+		mod := billing.NewModuleForTest(pool, stubRefReader{})
+		if err := billing.ReissuePendingRenewalForTest(t.Context(), mod, pool, subID); err != nil {
+			t.Fatalf("reissue: %v", err)
+		}
+	} else {
+		changePlanTo(t, pool, user, orgID, "solo", "yearly")
+	}
+	if got := pendingInvoiceIDs(t, pool, subID, "subscription"); len(got) != 0 {
+		t.Errorf("want nothing left to pay, got %v", got)
+	}
+	if got := subscriptionStatus(t, pool, subID); got != status {
+		t.Errorf("status before the worker runs: want %s, got %q", status, got)
+	}
+	queued := queuedPayloads(t, pool, events.RoutingKeySubscriptionResumeCovered, orgID)
+	if len(queued) != 1 {
+		t.Fatalf("want one covered-resume message queued, got %d", len(queued))
+	}
+	return subID, queued[0]
+}
+
+// An ended subscription's pending Resume invoice, reissued by a change that a coupon
+// now covers in full, is not dropped: the Resume is finished after the change
+// commits, reactivating once and lifting billing's suspension outside any
+// transaction. A redelivery changes nothing.
+func TestIntegration_CoveredCharge_ResumeReissuedOnEnded_FinishesAfterCommit(t *testing.T) {
+	cases := []struct{ status, orgID string }{
+		{"expired", "00000000-0000-0000-0000-00000000c56a"},
+		{"cancelled", "00000000-0000-0000-0000-00000000c56b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			user, code := "integ_covered_resume_"+tc.status, "COVERED_"+strings.ToUpper(tc.orgID[len(tc.orgID)-4:])
+			subID, payload := coveredResumeReissue(t, pool, tc.orgID, user, code, tc.status)
+
+			suspender := &stubOrgSuspender{}
+			mod := billing.NewModuleForTestWithSuspender(pool, suspender)
+			for range 2 { // the second delivery is a redelivery
+				if err := mod.Worker.HandleCoveredResume(t.Context(), payload); err != nil {
+					t.Fatalf("covered resume: %v", err)
+				}
+			}
+			if got := subscriptionStatus(t, pool, subID); got != "active" {
+				t.Errorf("status: want active, got %q", got)
+			}
+			if got := couponApplied(t, pool, code, subID); got != 1 {
+				t.Errorf("coupon applications: want 1, got %d", got)
+			}
+			if len(suspender.unsuspended) != 1 || slices.Contains(suspender.unsuspendInTx, true) {
+				t.Errorf("want billing's suspension lifted once, after commit: unsuspended %v, in tx %v",
+					suspender.unsuspended, suspender.unsuspendInTx)
+			}
+		})
+	}
+}
+
+// A covered-resume message is dropped, changing nothing, when the organization was
+// deleted meanwhile (its subscription stays ended, as for a late payment) or when
+// the subscription's end moved since the message was written, as any reactivation
+// moves it.
+func TestIntegration_CoveredCharge_ResumeReissued_DroppedWhenDeletedOrStale(t *testing.T) {
+	cases := []struct {
+		name, orgID string
+		setup       func(t *testing.T, pool *pgxpool.Pool, subID string, mod *billing.Module)
+	}{
+		{"deleted organization", "00000000-0000-0000-0000-00000000c56c",
+			func(_ *testing.T, _ *pgxpool.Pool, _ string, mod *billing.Module) {
+				mod.SetOrganizationReader(orgStatusReader{status: "deleted"})
+			}},
+		{"end moved since", "00000000-0000-0000-0000-00000000c56d",
+			func(t *testing.T, pool *pgxpool.Pool, subID string, _ *billing.Module) {
+				if _, err := pool.Exec(t.Context(), `
+					UPDATE billing.subscriptions SET status = 'expired', period_end = now() - interval '2 hours' WHERE id = $1`,
+					subID); err != nil {
+					t.Fatalf("move the end: %v", err)
+				}
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			code := "COVERED_" + strings.ToUpper(tc.orgID[len(tc.orgID)-4:])
+			subID, payload := coveredResumeReissue(t, pool, tc.orgID, "integ_covered_resume_drop_"+tc.orgID[len(tc.orgID)-1:], code, "expired")
+			suspender := &stubOrgSuspender{}
+			mod := billing.NewModuleForTestWithSuspender(pool, suspender)
+			tc.setup(t, pool, subID, mod)
+
+			if err := mod.Worker.HandleCoveredResume(t.Context(), payload); err != nil {
+				t.Fatalf("covered resume: want it dropped, got %v", err)
+			}
+			if got := subscriptionStatus(t, pool, subID); got != "expired" {
+				t.Errorf("status: want expired, got %q", got)
+			}
+			if got := couponApplied(t, pool, code, subID); got != 0 {
+				t.Errorf("coupon applications: want 0, got %d", got)
+			}
+			if len(suspender.unsuspended) != 0 {
+				t.Errorf("want no unsuspend, got %v", suspender.unsuspended)
+			}
+		})
+	}
+}
+
+// A coupon that stopped covering the Resume by the time the message is delivered
+// leaves an invoice to pay instead, and the owner is told about it exactly once,
+// however often the message is delivered.
+func TestIntegration_CoveredCharge_ResumeReissued_FallsBackToAnInvoice(t *testing.T) {
+	pool := testPoolBilling(t)
+	const orgID = "00000000-0000-0000-0000-00000000c56e"
+	subID, payload := coveredResumeReissue(t, pool, orgID, "integ_covered_resume_fallback", "COVERED_C56E", "expired")
+	if _, err := pool.Exec(t.Context(),
+		`DELETE FROM billing.coupon_redemptions WHERE subscription_id = $1`, subID); err != nil {
+		t.Fatalf("drop the coupon: %v", err)
+	}
+	created := func() int { return len(queuedPayloads(t, pool, events.RoutingKeyInvoiceCreated, orgID)) }
+	before := created()
+
+	mod := billing.NewModuleForTestWithSuspender(pool, &stubOrgSuspender{})
+	for range 2 { // the second delivery is a redelivery
+		if err := mod.Worker.HandleCoveredResume(t.Context(), payload); err != nil {
+			t.Fatalf("covered resume: %v", err)
+		}
+	}
+	if got := subscriptionStatus(t, pool, subID); got != "expired" {
+		t.Errorf("status: want expired until the invoice is paid, got %q", got)
+	}
+	if got := pendingInvoiceIDs(t, pool, subID, "subscription"); len(got) != 1 {
+		t.Errorf("want one Resume invoice to pay, got %v", got)
+	}
+	if got := created() - before; got != 1 {
+		t.Errorf("want the owner told once, got %d invoice.created", got)
+	}
+}
+
+// A failed organization lookup is retried, not taken as "not deleted" or dropped.
+func TestIntegration_CoveredCharge_ResumeReissued_OrgLookupFailureRetries(t *testing.T) {
+	pool := testPoolBilling(t)
+	const orgID = "00000000-0000-0000-0000-00000000c56f"
+	subID, payload := coveredResumeReissue(t, pool, orgID, "integ_covered_resume_lookup", "COVERED_C56F", "expired")
+	mod := billing.NewModuleForTestWithSuspender(pool, &stubOrgSuspender{})
+	mod.SetOrganizationReader(orgStatusReader{err: errors.New("organization lookup unavailable")})
+
+	if err := mod.Worker.HandleCoveredResume(t.Context(), payload); err == nil {
+		t.Fatal("want the lookup failure returned for a retry, got nil")
+	}
+	if got := subscriptionStatus(t, pool, subID); got != "expired" {
+		t.Errorf("status: want expired, got %q", got)
+	}
+	if got := couponApplied(t, pool, "COVERED_C56F", subID); got != 0 {
 		t.Errorf("coupon applications: want 0, got %d", got)
 	}
 }

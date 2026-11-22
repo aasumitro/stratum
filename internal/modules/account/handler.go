@@ -368,6 +368,7 @@ func (h *handler) exportAuditLog(c *gin.Context) {
 	c.Header("Content-Disposition", "attachment; filename=audit-log.csv")
 
 	if err := h.svc.exportAuditLog(c.Request.Context(), reqctx.Subject(c), from, to, c.Writer); err != nil {
+		response.LogInternal(c, "AUDIT_LOG_EXPORT_FAILED", err)
 		c.Status(http.StatusInternalServerError)
 	}
 }

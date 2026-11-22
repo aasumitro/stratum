@@ -1,14 +1,19 @@
 package messaging
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/aasumitro/stratum/internal/platform/apperr"
 )
 
 // fakeAcknowledger records which of Ack/Nack/Reject was called, standing in
@@ -104,5 +109,22 @@ func TestHandleDelivery_SuccessAcked(t *testing.T) {
 	}
 	if ack.rejected {
 		t.Fatal("a successful handler must not result in a Reject")
+	}
+}
+
+// An *apperr.Error's Error() is only its client-facing message, so the retry log
+// must carry the cause it wraps, or the reason a delivery failed is lost.
+func TestHandleDelivery_LogsTheCauseOfAnInternalError(t *testing.T) {
+	c, ack := newTestConsumer(func(_ context.Context, _ []byte) error {
+		return fmt.Errorf("billing.Handle: %w",
+			apperr.Internal("OP_FAILED", "failed to do the thing", errors.New("connection reset by peer")))
+	})
+	var logs bytes.Buffer
+	c.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	c.handleDelivery(t.Context(), amqp.Delivery{Acknowledger: ack, Body: []byte(`{}`)})
+
+	if got := logs.String(); !strings.Contains(got, "connection reset by peer") {
+		t.Errorf("retry log %q: want the wrapped cause", got)
 	}
 }

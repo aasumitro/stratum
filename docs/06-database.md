@@ -32,8 +32,9 @@ Migrations live in `db/migrations/` as numbered up/down pairs: one per schema th
 | 000012 | `billing`, `audit` | operator column grants on `billing.coupon_redemptions.applied_count` and `billing.payments.status`, with the attribution trigger on both; refuses `operator:` audit rows from any role without the table owner's privileges; anonymization also clears IP and user agent |
 | 000013 | `billing` | `payments.unapplied` marks a payment that settled nothing (backfilled); operator column grant on `subscription_addons(pending_quantity, pending_invoice_id)` with the attribution trigger |
 | 000014 | `billing` | `subscriptions.scheduled_effective_at`, the boundary a scheduled downgrade or add-on decrease applies at (backfilled from `period_end`) |
+| 000015 | `billing` | `subscriptions.schedule_resend_count` and `schedule_resend_at`: the hourly reconcile's backoff for re-sending a due schedule's apply (doubling, at most daily; reset when the schedule changes) |
 
-`000011`–`000014` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000015`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
+`000011`–`000015` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000016`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 
 ## The billing catalog
 

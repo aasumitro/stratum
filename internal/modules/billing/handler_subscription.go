@@ -372,7 +372,7 @@ func (h *handler) activateTrialNow(c *gin.Context) {
 // @Security     BearerAuth
 // @Param        organizationID  path      string  true  "Organization ID"
 // @Success      200             {object}  response.Payload{data=subscriptionRecord}
-// @Failure      422             {object}  response.Payload  "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE), or the plan has no price (PLAN_NOT_SELF_SERVICE)"
+// @Failure      422             {object}  response.Payload  "not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE), the plan has no price (PLAN_NOT_SELF_SERVICE), or the plan is retired (UNKNOWN_PLAN)"
 // @Failure      403             {object}  response.Payload  "owner role required"
 // @Failure      401             {object}  response.Payload  "missing/invalid auth token"
 // @Router       /organizations/{organizationID}/billing/resume [post]

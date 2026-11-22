@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/platform/db"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
 const (
@@ -82,12 +83,14 @@ func NewRLSTxMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 		ctx := c.Request.Context()
 		tx, err := pool.Begin(ctx)
 		if err != nil {
+			response.LogInternal(c, "RLS_BEGIN_FAILED", err)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 			return
 		}
 
 		if _, err := tx.Exec(ctx, `SELECT set_config('app.organization_id', $1, true)`, ws.ID); err != nil {
 			_ = tx.Rollback(ctx)
+			response.LogInternal(c, "RLS_SET_CONFIG_FAILED", err)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 			return
 		}
@@ -117,7 +120,7 @@ func NewRLSTxMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 
 		if bw.overCap {
 			_ = tx.Rollback(ctx)
-			slog.ErrorContext(ctx, "rls: response exceeded buffer cap, rolling back", "cap", responseBufferCap)
+			response.LogInternal(c, "RLS_RESPONSE_TOO_LARGE", errResponseBufferCapExceeded)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "response too large"})
 			return
 		}
@@ -134,7 +137,7 @@ func NewRLSTxMiddleware(pool *pgxpool.Pool) gin.HandlerFunc {
 		}
 
 		if err := tx.Commit(ctx); err != nil {
-			slog.ErrorContext(ctx, "rls: commit failed, discarding buffered response", "error", err)
+			response.LogInternal(c, "RLS_COMMIT_FAILED", err)
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 			return
 		}

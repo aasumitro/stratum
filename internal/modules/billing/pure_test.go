@@ -9,8 +9,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -943,5 +945,15 @@ func TestScopeCatalogPrices(t *testing.T) {
 				t.Errorf("scopeCatalogPrices(%q) = %v, want key %q", c.currency, got, c.wantCurrency)
 			}
 		})
+	}
+}
+
+func TestErrorBody_BoundsAndKeepsUTF8Valid(t *testing.T) {
+	if got := errorBody([]byte(`{"error":"bad"}`)); got != `{"error":"bad"}` {
+		t.Errorf("short body: got %q", got)
+	}
+	got := errorBody([]byte(strings.Repeat("a", 511) + "é" + strings.Repeat("b", 2000)))
+	if len(got) > 512+len("…") || !utf8.ValidString(got) {
+		t.Errorf("long body: %d bytes, valid UTF-8 %v", len(got), utf8.ValidString(got))
 	}
 }

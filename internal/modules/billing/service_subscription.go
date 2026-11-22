@@ -269,8 +269,11 @@ func (s *service) composeAndInsertActivationInvoice(
 // nothing to charge. A coupon covering an activation settles it here. A covered
 // renewal is left to the auto-invoice, which rolls the period when it comes due and
 // is the one to use the coupon, unless the subscription is past due: the auto-invoice
-// ignores that status, and the renewal is already due, so it settles here as well. A
-// plan with no price and no coupon owes nothing.
+// ignores that status, and the renewal is already due, so it settles here as well. On
+// an ended subscription the renewal is the Resume invoice the owner asked for. The
+// auto-invoice ignores that status too, and settling here would reactivate inside the
+// caller's transaction, so the Resume is finished after it commits
+// (enqueueCoveredResume). A plan with no price and no coupon owes nothing.
 func (s *service) issuePeriodInvoice(
 	ctx context.Context, sub *subscriptionRecord, planInfo *contracts.PlanInfo, kind string,
 ) (*invoiceRecord, error) {
@@ -294,6 +297,8 @@ func (s *service) issuePeriodInvoice(
 		switch {
 		case couponCode == "":
 			return nil, nil
+		case kind == invoiceKindSubscription && (sub.Status == statusExpired || sub.Status == statusCancelled):
+			return nil, s.enqueueCoveredResume(ctx, sub)
 		case kind == invoiceKindSubscription && sub.Status != statusPastDue:
 			return nil, s.enqueueAutoInvoice(ctx, sub)
 		}

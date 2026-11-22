@@ -16,6 +16,29 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
+- Billing: on an ended subscription whose Resume invoice is pending, a plan change, an add-on decrease or removal, or
+  undoing a scheduled downgrade that a coupon now covers in full no longer drops the Resume. The reissue queues
+  `billing.subscription.resume-covered`, and the worker finishes the Resume after it commits: the subscription
+  reactivates and the organization's suspension lifts. The worker drops the message if the subscription's end moved
+  since, its organization was deleted, or Resume refuses it, and retries a failed organization lookup. If the coupon
+  stopped covering it, the worker issues the Resume invoice and announces it with `billing.invoice.created` (an owner's
+  own Resume still sends none). Before, the Resume invoice was voided and nothing replaced it, so the subscription
+  stayed ended until the owner pressed Resume again.
+- Billing (API): `POST /billing/resume` on a retired plan answers 422 `UNKNOWN_PLAN` (was 404
+  `SUBSCRIPTION_NOT_FOUND`), and a database error while pricing it answers 500 and is retried by the worker (was 422
+  `UNKNOWN_PLAN`).
+- Billing: the hourly reconcile backs off per schedule when re-sending a due schedule's apply (1h, 2h, 4h, 8h, 16h,
+  then daily; reset whenever the schedule changes) instead of re-sending every hour. A schedule whose apply always
+  fails no longer dead-letters again every hour. Migration `000015` adds `schedule_resend_count` and
+  `schedule_resend_at` to `billing.subscriptions`. **Upgrade:** run `make migrate-up` before starting the API or
+  worker; the schedule paths write the new columns.
+- Platform: every 5xx a handler or middleware writes now logs its cause, once, on the request logger with its
+  `request_id`. `response.LogInternal` (used by `FromError` and by every handler and middleware that writes its own
+  5xx) logs the code, route and the wrapped cause of an `apperr.Internal`. The client still sees only the code and
+  message. A request the client abandoned is a warning. The worker consumer adds the cause to its retry log.
+  Services no longer log an error they also return. Webhook delivery logs and errors no longer carry the endpoint
+  URL, which can hold a token, and provider and storage error bodies are capped at 512 bytes. Before,
+  `apperr.Error.Error()` returned only the client message, so the cause of any internal error was lost.
 - Billing: a coupon-covered charge settled while an invoice is reissued (a plan change, an add-on reprice, a renewal
   reissued after a schedule change or a past-due cancel) runs inside its caller's transaction. If it would
   reactivate an ended subscription and lift its organization's suspension there, it is now refused and rolled back.

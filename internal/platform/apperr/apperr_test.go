@@ -117,3 +117,28 @@ func TestError_AsTarget(t *testing.T) {
 		t.Errorf("extracted wrong error: %+v", target)
 	}
 }
+
+func TestCause(t *testing.T) {
+	root := errors.New("connection refused")
+	internal := apperr.Internal("OP_FAILED", "failed to do the thing", root)
+
+	if got := apperr.Cause(internal); got != root {
+		t.Errorf("Cause(Internal) = %v, want the wrapped cause", got)
+	}
+	if got := apperr.Cause(fmt.Errorf("worker.Handle: %w", internal)); got != root {
+		t.Errorf("Cause through a wrap = %v, want the wrapped cause", got)
+	}
+	if got := apperr.Cause(apperr.Validation("V", "bad input")); got != nil {
+		t.Errorf("Cause(Validation) = %v, want nil", got)
+	}
+	if got := apperr.Cause(root); got != nil {
+		t.Errorf("Cause(plain error) = %v, want nil", got)
+	}
+	nested := apperr.Internal("OUTER", "outer", fmt.Errorf("invoice 42: %w", apperr.Internal("INNER", "inner", root)))
+	if got := apperr.Cause(nested); got != root {
+		t.Errorf("Cause(nested) = %v, want the innermost cause", got)
+	}
+	if internal.Error() != "failed to do the thing" {
+		t.Errorf("Error() = %q, must stay the client-facing message", internal.Error())
+	}
+}
