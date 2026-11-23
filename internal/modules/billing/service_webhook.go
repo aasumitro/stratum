@@ -241,12 +241,14 @@ func (s *service) handleWebhook(ctx context.Context, ref webhookLinkRef, normali
 		return nil, nil
 	}
 
-	// Closing a checkout ourselves marks its link expired, and the provider then
-	// reports the closing the way it reports an abandoned checkout. Nothing failed:
-	// the invoice was settled, voided, or has a newer checkout, so past_due and a
-	// dunning notice here would be false. A failure reported after the link's own
-	// payment does not undo that payment either.
-	if (normalizedStatus == statusFailed || normalizedStatus == statusExpired) && link.status == statusExpired {
+	// An expired link only ever moves to paid. Closing a checkout ourselves marks its
+	// link expired, and the provider then reports the closing the way it reports an
+	// abandoned checkout, or reports an async payment method still pending (Stripe's
+	// completed-but-unpaid). Nothing failed: the invoice was settled, voided, or has
+	// a newer checkout, so past_due and a dunning notice would be false, and making
+	// the closed checkout payable again would be wrong. A paid report still applies
+	// below, so no payment is ever lost.
+	if link.status == statusExpired && normalizedStatus != statusPaid {
 		return nil, nil
 	}
 

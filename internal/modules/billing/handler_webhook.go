@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -171,12 +172,27 @@ func (h *handler) handleXenditWebhook(c *gin.Context) {
 	}
 
 	status := normalizeXenditStatus(payload.Status)
+	// Only a terminal outcome moves billing state. A PENDING or unrecognized status
+	// would otherwise write "pending" onto the link and make an expired or failed
+	// checkout look payable again, so it is acknowledged and changes nothing.
+	if status == statusPending {
+		// A status this code does not know is logged, so a new one Xendit
+		// starts sending is noticed rather than silently dropped.
+		if payload.Status != "PENDING" {
+			slog.WarnContext(c.Request.Context(), "billing.handleXenditWebhook: unrecognized invoice status ignored",
+				"invoice_id", payload.ID, "status", payload.Status)
+		}
+		c.Status(http.StatusOK)
+		return
+	}
 
-	// Idempotency key includes the raw status so PAID and EXPIRED deliveries for the
-	// same invoice ID are each processed once (terminal states never overlap).
+	// The idempotency key carries the status so PAID and EXPIRED deliveries for the
+	// same invoice are each processed once (terminal states never overlap). SETTLED
+	// is keyed as PAID: it is the same payment, so after a PAID it is a duplicate,
+	// and on its own (a PAID that never arrived) it still applies the payment.
 	if err := h.svc.processWebhook(
 		c.Request.Context(), "xendit",
-		payload.ID+"_"+payload.Status, webhookLinkRef{externalID: payload.ID}, status,
+		payload.ID+"_"+xenditEventStatus(payload.Status), webhookLinkRef{externalID: payload.ID}, status,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.Status(http.StatusOK)
@@ -254,9 +270,11 @@ func normalizeStripeStatus(s string) string {
 	}
 }
 
+// normalizeXenditStatus maps a Xendit invoice status to billing's. SETTLED follows
+// PAID once the funds reach the Xendit balance; either means the invoice was paid.
 func normalizeXenditStatus(s string) string {
 	switch s {
-	case "PAID":
+	case "PAID", "SETTLED":
 		return statusPaid
 	case "EXPIRED":
 		return statusExpired
@@ -265,6 +283,15 @@ func normalizeXenditStatus(s string) string {
 	default:
 		return statusPending
 	}
+}
+
+// xenditEventStatus is the status a Xendit callback is deduplicated under:
+// SETTLED shares PAID's key, since both report the same payment.
+func xenditEventStatus(s string) string {
+	if s == "SETTLED" {
+		return "PAID"
+	}
+	return s
 }
 
 func abs(n int64) int64 {

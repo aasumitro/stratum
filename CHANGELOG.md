@@ -16,6 +16,18 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
+- Billing: a Xendit invoice callback with status `SETTLED` now counts as the payment. It used to read as pending,
+  so an invoice whose `PAID` callback never arrived stayed unpaid. `SETTLED` is deduplicated under the same key as
+  `PAID`, so receiving both pays the invoice once, and keys already stored stay valid. Not retroactive: an invoice
+  whose `SETTLED` was acknowledged before this change still needs marking paid by hand.
+- Billing: a `PENDING` or unrecognized Xendit callback is acknowledged without changing anything, and an unrecognized
+  one is logged. Before, it was written onto the payment link and could reopen an expired or failed checkout.
+- Billing: an expired payment link now only ever moves to paid, for every provider. A later pending or failure report
+  (such as Stripe's completed-but-unpaid for an async payment method finishing after the checkout was closed) no
+  longer reopens it as payable, or marks the subscription `past_due` and sends dunning for an invoice that was
+  already settled or voided. A paid report still applies.
+- Web: `vite.config.ts` loads Vitest's config types (`///` instead of `//` on the reference), so the `test` block
+  is type-checked, and `tsconfig.node.json` turns on `strict` like the app and e2e configs.
 - Organization (API): leaving an organization and transferring ownership no longer send raw internal errors to
   the client.
   - Their refusals have their own codes: 422 `OWNER_CANNOT_LEAVE`, `TRANSFER_TARGET_NOT_MEMBER`,

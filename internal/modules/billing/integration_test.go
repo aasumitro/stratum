@@ -2347,6 +2347,179 @@ func TestIntegration_XenditWebhook_MarksInvoicePaid(t *testing.T) {
 	}
 }
 
+// A SETTLED callback is the same payment as PAID: on its own it pays the invoice,
+// and after a PAID it is a duplicate that records nothing twice.
+func TestIntegration_XenditWebhook_SettledIsThePayment(t *testing.T) {
+	cases := []struct {
+		name, orgID, extID string
+		statuses           []string
+	}{
+		{"settled alone", "00000000-0000-0000-0000-000000000fb1", "xendit_inv_fb1", []string{"SETTLED"}},
+		{"paid then settled", "00000000-0000-0000-0000-000000000fb2", "xendit_inv_fb2", []string{"PAID", "SETTLED"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testPoolBilling(t)
+			user := "integ_billing_wh_xendit_settled_" + tc.orgID[len(tc.orgID)-3:]
+			setupBillingTest(t, pool, tc.orgID)
+			mod := billing.NewModuleForTest(pool, nil)
+			if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(tc.orgID, user)); err != nil {
+				t.Fatalf("provision: %v", err)
+			}
+			subID := getSubscriptionID(pool, tc.orgID)
+			invID := seedInvoice(pool, subID, "IDR", 13500)
+			seedPaymentLink(pool, invID, tc.extID, "xendit", "IDR", 13500)
+
+			e := billing.NewWebhookModuleEngine(pool, user, tc.orgID)
+			for _, status := range tc.statuses {
+				w := httptest.NewRecorder()
+				e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/xendit",
+					`{"id":"`+tc.extID+`","status":"`+status+`"}`))
+				if w.Code != http.StatusOK {
+					t.Fatalf("%s webhook: want 200, got %d: %s", status, w.Code, w.Body)
+				}
+			}
+
+			var invStatus string
+			var payments int
+			pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus)
+			pool.QueryRow(t.Context(), `SELECT count(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments)
+			if invStatus != "paid" || payments != 1 {
+				t.Errorf("want the invoice paid once, got status %q and %d payments", invStatus, payments)
+			}
+			// Both statuses share one dedup key: a single marker, keyed as PAID.
+			var markers []string
+			rows, err := pool.Query(t.Context(),
+				`SELECT event_id FROM billing.webhook_events WHERE provider = 'xendit' AND event_id LIKE $1 || '%'`, tc.extID)
+			if err != nil {
+				t.Fatalf("read markers: %v", err)
+			}
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					t.Fatalf("scan marker: %v", err)
+				}
+				markers = append(markers, id)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("read markers: %v", err)
+			}
+			rows.Close()
+			if len(markers) != 1 || markers[0] != tc.extID+"_PAID" {
+				t.Errorf("want one marker %s_PAID, got %v", tc.extID, markers)
+			}
+		})
+	}
+}
+
+// A PENDING or unrecognized Xendit status never reopens a closed checkout: an
+// expired link stays expired and its invoice is left alone.
+func TestIntegration_XenditWebhook_NonTerminalStatusChangesNothing(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_xendit_nonterminal"
+		orgID = "00000000-0000-0000-0000-000000000fc1"
+		extID = "xendit_inv_fc1"
+	)
+	setupBillingTest(t, pool, orgID)
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	invID := seedInvoice(pool, subID, "IDR", 13500)
+	seedPaymentLink(pool, invID, extID, "xendit", "IDR", 13500)
+
+	e := billing.NewWebhookModuleEngine(pool, user, orgID)
+	for _, status := range []string{"EXPIRED", "PENDING", "SOMETHING_NEW"} {
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/xendit", `{"id":"`+extID+`","status":"`+status+`"}`))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s webhook: want 200, got %d: %s", status, w.Code, w.Body)
+		}
+	}
+	var linkStatus, invStatus string
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE external_id = $1`, extID).Scan(&linkStatus); err != nil {
+		t.Fatalf("read link: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus); err != nil {
+		t.Fatalf("read invoice: %v", err)
+	}
+	if linkStatus != "expired" || invStatus != "pending" {
+		t.Errorf("want the link to stay expired and the invoice pending, got link %q, invoice %q", linkStatus, invStatus)
+	}
+	// The handler drops a non-terminal status before processing it, so it leaves
+	// no idempotency marker (only EXPIRED was processed).
+	var markers int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM billing.webhook_events WHERE provider = 'xendit' AND event_id LIKE $1 || '%'`,
+		extID).Scan(&markers); err != nil {
+		t.Fatalf("read markers: %v", err)
+	}
+	if markers != 1 {
+		t.Errorf("want only the EXPIRED marker, got %d markers", markers)
+	}
+}
+
+// A closed Stripe checkout is not reopened by a later "completed but unpaid"
+// report (an async payment method finishing after the link was expired here).
+func TestIntegration_StripeWebhook_PendingNeverReopensAnExpiredLink(t *testing.T) {
+	pool := testPoolBilling(t)
+	const (
+		user  = "integ_billing_wh_stripe_reopen"
+		orgID = "00000000-0000-0000-0000-000000000fc2"
+		extID = "cs_test_fc2"
+	)
+	setupBillingTest(t, pool, orgID)
+	mod := billing.NewModuleForTest(pool, nil)
+	if err := mod.Worker.HandleOrganizationCreated(t.Context(), encodeOrganizationCreatedEventFor(orgID, user)); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	subID := getSubscriptionID(pool, orgID)
+	invID := seedInvoice(pool, subID, "USD", 1500)
+	seedPaymentLink(pool, invID, extID, "stripe", "USD", 1500)
+	if _, err := pool.Exec(t.Context(), `UPDATE billing.payment_links SET status = 'expired' WHERE external_id = $1`, extID); err != nil {
+		t.Fatalf("expire link: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	billing.NewWebhookModuleEngine(pool, user, orgID).ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
+		`{"type":"checkout.session.completed","data":{"object":{"id":"`+extID+`","payment_status":"unpaid"}}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var linkStatus string
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE external_id = $1`, extID).Scan(&linkStatus); err != nil {
+		t.Fatalf("read link: %v", err)
+	}
+	if linkStatus != "expired" {
+		t.Errorf("link: want it to stay expired, got %q", linkStatus)
+	}
+
+	// The async payment then succeeds: the money still applies to the expired link.
+	w = httptest.NewRecorder()
+	billing.NewWebhookModuleEngine(pool, user, orgID).ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/webhooks/stripe",
+		`{"type":"checkout.session.async_payment_succeeded","data":{"object":{"id":"`+extID+`","payment_status":"paid"}}}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("succeeded webhook: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var invStatus string
+	var payments int
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.payment_links WHERE external_id = $1`, extID).Scan(&linkStatus); err != nil {
+		t.Fatalf("read link: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM billing.invoices WHERE id = $1`, invID).Scan(&invStatus); err != nil {
+		t.Fatalf("read invoice: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM billing.payments WHERE invoice_id = $1`, invID).Scan(&payments); err != nil {
+		t.Fatalf("read payments: %v", err)
+	}
+	if linkStatus != "paid" || invStatus != "paid" || payments != 1 {
+		t.Errorf("after the async success: want link paid, invoice paid, one payment; got link %q, invoice %q, %d payments",
+			linkStatus, invStatus, payments)
+	}
+}
+
 func TestIntegration_Webhook_UnknownExternalID_ACKs(t *testing.T) {
 	pool := testPoolBilling(t)
 	const (

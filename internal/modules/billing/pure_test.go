@@ -266,6 +266,7 @@ func TestNormalizeStripeStatus(t *testing.T) {
 func TestNormalizeXenditStatus(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"PAID", "paid"},
+		{"SETTLED", "paid"},
 		{"EXPIRED", "expired"},
 		{"FAILED", "failed"},
 		{"PENDING", "pending"}, // default
@@ -275,6 +276,15 @@ func TestNormalizeXenditStatus(t *testing.T) {
 	for _, c := range cases {
 		if got := normalizeXenditStatus(c.in); got != c.want {
 			t.Errorf("normalizeXenditStatus(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// SETTLED is deduplicated under PAID's key; every other status keeps its own.
+func TestXenditEventStatus(t *testing.T) {
+	for in, want := range map[string]string{"PAID": "PAID", "SETTLED": "PAID", "EXPIRED": "EXPIRED", "FAILED": "FAILED"} {
+		if got := xenditEventStatus(in); got != want {
+			t.Errorf("xenditEventStatus(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
