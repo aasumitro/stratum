@@ -946,6 +946,30 @@
       "member": "Member",
       "memberDesc": "Can view and create resources"
     },
+    "permissions": {
+      "open": "Roles & permissions",
+      "title": "Roles and permissions",
+      "description": "What each role can do in this organization. An owner can do everything an admin can, and an admin everything a member can.",
+      "capability": "Capability",
+      "allowed": "Allowed",
+      "notAllowed": "Not allowed",
+      "features": {
+        "members": "Members",
+        "invitations": "Invitations",
+        "webhooks": "Webhooks",
+        "auditLog": "Audit log",
+        "billing": "Billing",
+        "settingsGeneral": "General settings",
+        "settingsSecurity": "Security settings",
+        "settingsDanger": "Danger zone"
+      },
+      "actions": {
+        "view": "View",
+        "manage": "Manage",
+        "edit": "Edit",
+        "delete": "Delete"
+      }
+    },
     "auditLog": {
       "actorCol": "Actor",
       "methodCol": "Method",

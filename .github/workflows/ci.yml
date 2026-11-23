@@ -22,6 +22,7 @@ jobs:
       api: ${{ steps.filter.outputs.api }}
       web: ${{ steps.filter.outputs.web }}
       studio: ${{ steps.filter.outputs.studio }}
+      images: ${{ steps.filter.outputs.images }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +49,7 @@ jobs:
           echo "api=$(grep -qE '^(db/|internal/|cmd/|deploy/postgres-init/|go\.(mod|sum))' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "web=$(grep -q '^ui/app/' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "studio=$(grep -q '^ui/studio/' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "images=$(grep -qE '^(Dockerfile|\.dockerignore|db/|internal/|cmd/|go\.(mod|sum))' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   # Secrets — runs on every event, because any file can carry a credential
@@ -183,6 +185,56 @@ jobs:
 
       - name: Coverage
         run: go tool cover -func=coverage.out
+
+  # ---------------------------------------------------------------------------
+  # Images — build both backend images, scan them, and record what they contain
+  # ---------------------------------------------------------------------------
+  images:
+    name: Images (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
+    runs-on: ubuntu-latest
+    # The job token reaches two third-party actions; they only need to read.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [api, worker]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          tags: stratum-${{ matrix.target }}:ci
+          load: true
+          push: false
+
+      # Third-party actions are pinned to a commit, not a movable tag. The SBOM
+      # comes first, so a failing scan still leaves a record of what was scanned.
+      - name: SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: stratum-${{ matrix.target }}:ci
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.target }}.spdx.json
+
+      # Fails on a HIGH or CRITICAL vulnerability that has a fix; one with no fix
+      # yet cannot be acted on here.
+      - name: Vulnerability scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: stratum-${{ matrix.target }}:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
 
   # ---------------------------------------------------------------------------
   # Web — React frontend

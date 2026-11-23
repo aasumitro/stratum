@@ -62,11 +62,22 @@ func (s *service) listMembers(ctx context.Context, organizationID string) ([]mem
 	return out, nil
 }
 
-// removeAllMemberships spans every organization the user belongs to, so it
-// is scoped to the user (app.auth_sub), not to one organization.
+// removeAllMemberships removes all of a user's memberships, or none: if the
+// user still owns an organization that is not deleted (made owner after the
+// account-deletion request was checked), the transaction rolls back with
+// contracts.ErrOwnsActiveOrganization. It spans every organization the user
+// belongs to, so it is scoped to the user (app.auth_sub), not to one
+// organization.
 func (s *service) removeAllMemberships(ctx context.Context, authSub string) error {
 	return db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
-		return s.repo.removeAllMemberships(ctx, q, authSub)
+		kept, err := s.repo.removeAllMemberships(ctx, q, authSub)
+		if err != nil {
+			return err
+		}
+		if kept > 0 {
+			return contracts.ErrOwnsActiveOrganization
+		}
+		return nil
 	})
 }
 
@@ -151,14 +162,18 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 	if role != contracts.RoleAdmin && role != contracts.RoleMember {
 		return apperr.Validation("INVALID_ROLE", "role must be admin or member")
 	}
-	if ownerSub, err := s.organizationOwner(ctx, organizationID); err == nil && ownerSub == authSub {
-		return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
-	}
-
 	var updated bool
 	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
-		var err error
-		updated, err = s.repo.updateMemberRole(ctx, tx, organizationID, authSub, role)
+		// The owner is checked under the organization lock a transfer takes, so a
+		// transfer cannot make this member the owner between the check and the change.
+		owner, err := s.repo.lockOrganizationOwner(ctx, tx, organizationID)
+		if err != nil {
+			return err
+		}
+		if owner == authSub {
+			return apperr.Validation("CANNOT_MODIFY_OWNER", "cannot change the owner's role")
+		}
+		updated, err = s.repo.updateNonOwnerRole(ctx, tx, organizationID, authSub, role)
 		if err != nil || !updated {
 			return err
 		}
@@ -166,6 +181,9 @@ func (s *service) updateMemberRole(ctx context.Context, organizationID, authSub,
 			events.MemberRoleChanged{OrganizationID: organizationID, AuthSub: authSub, Role: role})
 	})
 	if err != nil {
+		if _, ok := errors.AsType[*apperr.Error](err); ok {
+			return err
+		}
 		return apperr.Internal("MEMBER_ROLE_UPDATE_FAILED", "failed to update member role", err)
 	}
 	if !updated {
@@ -188,11 +206,16 @@ func (s *service) getMemberRole(ctx context.Context, organizationID, authSub str
 // syncMemberUsage reports the lower count to billing. The owner can never be
 // the target.
 func (s *service) suspendMember(ctx context.Context, organizationID, authSub string) error {
-	if ownerSub, err := s.organizationOwner(ctx, organizationID); err == nil && ownerSub == authSub {
-		return apperr.Forbidden("CANNOT_SUSPEND_OWNER", "cannot suspend the organization owner")
-	}
-
 	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, tx db.Querier) error {
+		// Checked under the organization lock a transfer takes, so a transfer
+		// cannot make this member the owner between the check and the suspension.
+		owner, err := s.repo.lockOrganizationOwner(ctx, tx, organizationID)
+		if err != nil {
+			return err
+		}
+		if owner == authSub {
+			return apperr.Forbidden("CANNOT_SUSPEND_OWNER", "cannot suspend the organization owner")
+		}
 		updated, err := s.repo.setMemberStatus(ctx, tx, organizationID, authSub, "suspended", "active")
 		if err != nil {
 			return err

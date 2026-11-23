@@ -13,8 +13,8 @@ SOC 2 is a CPA firm's attestation that an organization's controls meet the AICPA
 | Retention sweeps for personal data | Choosing retention periods that match its own legal obligations |
 | Security metrics, and an alert catalog ([12-operations](12-operations.md)) | An OpenTelemetry backend that evaluates those alerts, and someone who answers them |
 | Backup and restore tooling, and a restore check | Scheduling backups, off-host copies, and quarterly restore tests |
-| CI with tests, dependency audits, vulnerability and secret scanning | GitHub settings: branch protection, required checks, required review, 2FA |
-| Incident, access-review and secret-rotation runbooks | Running them, recording the results, and a `SECURITY.md` with a real reporting channel |
+| CI with tests, dependency audits, vulnerability and secret scanning, and an image scan (Trivy) with an SBOM (syft) for each backend image | GitHub settings: branch protection, required checks, required review, 2FA |
+| Incident, access-review and secret-rotation runbooks, and a `SECURITY.md` policy (placeholder contact) | Running them, recording the results, and replacing the `SECURITY.md` contact with a real channel someone watches |
 | — | Production infrastructure: cloud IAM, disk encryption, network, central log storage |
 | — | Supabase project settings: password policy, leaked-password protection, session timeouts, MFA |
 | — | Vendor management, including collecting each subprocessor's SOC report |
@@ -26,7 +26,7 @@ Owner **T** means the template implements the mechanism; **A** means the adopter
 | Criteria | Mechanism | Evidence source | Owner |
 |---|---|---|---|
 | CC1 Control environment | Policies, org structure, accountability | The adopter's own records | A |
-| CC2 Communication | This document, [12-operations](12-operations.md), a `SECURITY.md` with a reporting channel | These files | T+A |
+| CC2 Communication | This document, [12-operations](12-operations.md), a `SECURITY.md` policy whose placeholder contact the adopter replaces with a watched channel | These files | T+A |
 | CC3 Risk assessment | Risk register and its reviews | The adopter's own records | A |
 | CC4 Monitoring of controls | CI on every pull request and `dev` push; the alert catalog | CI run history; alert history in the adopter's backend | T+A |
 | CC5 Control activities | Controls below are defined in code and migrations, so they are reviewable | Git history, `db/migrations/` | T+A |
@@ -56,7 +56,7 @@ Every period below is the default and can be changed through its environment var
 | `notification.messages` | Message content | `NOTIFICATION_RETENTION_DAYS`, 180 days | Worker sweep; also account deletion |
 | `organization.invitations` | Email | Until expiry | Hourly expired-invitation cleanup; also organization purge |
 | `organization.memberships` | The member's `auth_sub` | Life of the membership | Account deletion, member removal, organization purge |
-| `organization.webhook_deliveries` | Customer response bodies | `WEBHOOK_DELIVERY_RETENTION_DAYS`, 30 days | Worker sweep; also organization purge |
+| `organization.webhook_deliveries` | Customer response bodies; the delivered event body (`payload`), which for `organization.member.invited` holds the invitee email and invitation token (the token alone cannot accept: the invitee's verified email must match) | `WEBHOOK_DELIVERY_RETENTION_DAYS`, 30 days | Worker sweep; also organization purge. Account deletion does not scrub payloads, as with the outbox |
 | `organization.organizations` with `status = 'deleted'` | Organization name, owner `auth_sub` | `DELETED_ORGANIZATION_RETENTION_DAYS`, 30 days after deletion | Worker sweep, which cascades to memberships, invitations, webhook endpoints and deliveries |
 | `billing.webhook_events` | None; replay markers | `WEBHOOK_EVENT_RETENTION_DAYS`, 90 days | Worker sweep |
 | `messaging.outbox` | Event payloads | `OUTBOX_RETENTION_DAYS`, 30 days once published | Worker sweep |
@@ -93,7 +93,7 @@ MaxMind GeoLite2 is a local database file; no data leaves the host for a lookup.
 **GitHub**
 - [ ] Branch protection on `main` and `dev`: required checks, required review, no force-push.
 - [ ] 2FA required for the organization.
-- [ ] `SECURITY.md` added, with a reporting channel someone watches.
+- [ ] `SECURITY.md`'s placeholder contact replaced with a reporting channel someone watches.
 
 **Postgres**
 - [ ] `ALTER ROLE <owner> SET log_statement = 'mod'`, so everything the owner role changes is logged. Owner sessions are not captured in `audit.events`.

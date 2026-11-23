@@ -55,7 +55,7 @@ It logs in with the owner-role test account (`TEST_ACCOUNT_OWNER_EMAIL`/`PASSWOR
 
 Every test signs in for real, so back-to-back full runs can trip Supabase's sign-in rate limit: tests then time out on the login page, which shows "Request rate limit reached". Wait a few minutes before rerunning. Billing specs mock the org-scoped catalogs (`/billing/plans/catalog`, `/billing/addons/catalog`) the billing page actually reads, and every attached add-on carries its catalog `prices`, as the API returns them.
 
-The full pre-merge sequence (what CI runs): `go vet ./...` → `gofmt -w .` → `golangci-lint run ./...` → `govulncheck ./...` → `go test ./... -race -count=1 -timeout 120s`.
+The full pre-merge sequence (what CI runs for the API): `go vet ./...` → `gofmt -w .` → `golangci-lint run ./...` → `govulncheck ./...` → `go test ./... -race -count=1 -timeout 120s`. CI also scans the git history for secrets (gitleaks) on every event, and when the images' inputs change builds the API and worker images, records an SPDX SBOM for each (syft) and scans them (Trivy, failing on a fixable HIGH/CRITICAL).
 
 ## Coverage
 

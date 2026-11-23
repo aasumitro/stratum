@@ -33,8 +33,10 @@ Migrations live in `db/migrations/` as numbered up/down pairs: one per schema th
 | 000013 | `billing` | `payments.unapplied` marks a payment that settled nothing (backfilled); operator column grant on `subscription_addons(pending_quantity, pending_invoice_id)` with the attribution trigger |
 | 000014 | `billing` | `subscriptions.scheduled_effective_at`, the boundary a scheduled downgrade or add-on decrease applies at (backfilled from `period_end`) |
 | 000015 | `billing` | `subscriptions.schedule_resend_count` and `schedule_resend_at`: the hourly reconcile's backoff for re-sending a due schedule's apply (doubling, at most daily; reset when the schedule changes) |
+| 000016 | `organization` | `memberships_one_owner_per_organization`: a partial unique index, at most one `owner` membership per organization. Existing rows are reconciled to `organizations.owner_id` first (the `owner_id` member becomes the one active owner) |
+| 000017 | `organization` | `webhook_deliveries.payload bytea`: the exact body first delivered, which a retry resends |
 
-`000011`–`000015` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000016`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
+`000011`–`000017` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000018`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 
 ## The billing catalog
 

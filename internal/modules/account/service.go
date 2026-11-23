@@ -204,12 +204,12 @@ func (s *service) requestExportData(ctx context.Context, authSub string) (*taskR
 // these blocks the deletion: executeDeleteAccount returns an error before
 // the user row is removed, so the delete-account consumer redelivers (its
 // MaxDeliveries cap, then a monitored dead-letter queue) and the whole
-// idempotent handler runs again. Steps not listed here (login_events,
+// idempotent handler runs again. Memberships are not a step: they run
+// before every step, in executeDeleteAccount. Steps not listed here (login_events,
 // avatar) are best-effort — their failure is only recorded in the task
 // result's failed_steps so a partial cleanup is visible rather than silent.
 var criticalCleanupSteps = map[string]bool{
 	"notifications":   true,
-	"memberships":     true,
 	"audit_log":       true,
 	"billing_history": true,
 }
@@ -227,13 +227,40 @@ var criticalCleanupSteps = map[string]bool{
 func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub string) error {
 	_ = s.repo.markTaskProcessing(ctx, s.pool, taskID)
 
+	// The request was refused while the user owned an organization, but a
+	// transfer can have made them an owner since. Deleting now would leave that
+	// organization without its owner, and retrying cannot help until ownership
+	// moves, so the task fails for good.
+	if s.orgReader != nil {
+		owned, err := s.orgReader.CountActiveOwnedOrganizations(ctx, authSub)
+		if err != nil {
+			return fmt.Errorf("account.executeDeleteAccount: %w", err)
+		}
+		if owned > 0 {
+			return s.repo.failTask(ctx, s.pool, taskID, taskFailedOwner)
+		}
+	}
+
+	// Memberships go first and alone: a transfer that makes the user an owner
+	// after the check above is refused here, before any other personal data is
+	// erased for an account that will not be deleted.
+	if s.orgWriter == nil {
+		return errors.New("account.executeDeleteAccount: organization writer not wired")
+	}
+	if err := s.orgWriter.RemoveAllMemberships(ctx, authSub); err != nil {
+		if errors.Is(err, contracts.ErrOwnsActiveOrganization) {
+			return s.repo.failTask(ctx, s.pool, taskID, taskFailedOwner)
+		}
+		return fmt.Errorf("account.executeDeleteAccount: memberships: %w", err)
+	}
+
 	failedCritical, failedBestEffort := s.runDeleteAccountCleanupSteps(ctx, authSub)
 	if len(failedCritical) > 0 {
 		return fmt.Errorf("account.executeDeleteAccount: critical cleanup steps failed, will retry: %v", failedCritical)
 	}
 
 	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
-		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
+		_ = s.repo.failTask(ctx, s.pool, taskID, taskFailedDelete)
 		return fmt.Errorf("account.executeDeleteAccount: %w", err)
 	}
 
@@ -242,8 +269,8 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 	return s.completeDeleteAccountTask(ctx, taskID, failedBestEffort)
 }
 
-// runDeleteAccountCleanupSteps runs every cross-schema cleanup step (plus
-// wiping the avatar blob) and returns the names of the ones that failed,
+// runDeleteAccountCleanupSteps runs every cross-schema cleanup step after the
+// memberships (plus wiping the avatar blob) and returns the names of the ones that failed,
 // split into critical (personal-data erasure/anonymization in another
 // schema — see criticalCleanupSteps) and best-effort. Each failure is
 // logged here rather than silently discarded — see the executeDeleteAccount
@@ -259,12 +286,6 @@ func (s *service) runDeleteAccountCleanupSteps(ctx context.Context, authSub stri
 				return errors.New("notification writer not wired")
 			}
 			return s.notifWriter.DeleteAllForUser(ctx, authSub)
-		}},
-		{"memberships", func() error {
-			if s.orgWriter == nil {
-				return errors.New("organization writer not wired")
-			}
-			return s.orgWriter.RemoveAllMemberships(ctx, authSub)
 		}},
 		{"audit_log", func() error {
 			return audit.AnonymizeActor(ctx, s.pool, authSub)
@@ -402,13 +423,22 @@ func (s *service) buildExportData(ctx context.Context, authSub string) (*exportD
 	}, nil
 }
 
+// The failure a task records is what GET /me/tasks shows its owner, so it is a
+// fixed message per task type. The cause goes back to the worker, which logs it
+// and retries the delivery; it is never stored where the client can read it.
+const (
+	taskFailedExport = "the data export failed; request a new export"
+	taskFailedDelete = "the account deletion failed; request it again if it does not complete"
+	taskFailedOwner  = "the account owns an organization; transfer or delete it, then request deletion again"
+)
+
 // executeExportData is called by the worker, not by HTTP handlers.
 func (s *service) executeExportData(ctx context.Context, taskID, authSub string) error {
 	_ = s.repo.markTaskProcessing(ctx, s.pool, taskID)
 
 	data, err := s.buildExportData(ctx, authSub)
 	if err != nil {
-		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
+		_ = s.repo.failTask(ctx, s.pool, taskID, taskFailedExport)
 		return fmt.Errorf("account.executeExportData: %w", err)
 	}
 

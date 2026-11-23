@@ -22,9 +22,9 @@ import (
 // first call site wiring it up.
 const webhookFeatureID = "webhooks"
 
-// Shared JSON keys for the synthetic payloads webhook retries/test-events
-// re-send — a real published event envelope isn't retained, so these are
-// reconstructed from the stored delivery row instead.
+// Shared JSON keys for the synthetic payloads test events send, and for the
+// payload a retry rebuilds for a delivery recorded before its exact body was
+// kept.
 const (
 	eventPayloadIDKey         = "id"
 	eventPayloadTypeKey       = "type"
@@ -309,10 +309,13 @@ func (s *service) retryAllFailedWebhookDeliveries(
 	return len(dels), nil
 }
 
-// retryPayload re-sends a minimal envelope built from the stored event
-// metadata — the original event payload isn't retained, a known limitation
-// carried forward unchanged from before this milestone.
+// retryPayload returns the exact body first delivered. A delivery recorded
+// before bodies were kept has none, so it gets a minimal envelope rebuilt from
+// the stored event metadata: {id, type, endpoint_id}.
 func retryPayload(del *webhookDeliveryRecord, endpointID string) ([]byte, error) {
+	if len(del.Payload) > 0 {
+		return del.Payload, nil
+	}
 	payload, err := json.Marshal(map[string]string{
 		eventPayloadIDKey:         del.EventID,
 		eventPayloadTypeKey:       del.EventType,
@@ -356,7 +359,7 @@ func (s *service) sendTestEvent(
 		"org":               organizationID,
 		"message":           "This is a test event from Stratum.",
 	})
-	del, err = s.repo.insertWebhookDelivery(ctx, pool, ep.ID, "test-event", "test.ping")
+	del, err = s.repo.insertWebhookDelivery(ctx, pool, ep.ID, "test-event", "test.ping", payload)
 	if err != nil {
 		return nil, false, fmt.Errorf("organization.sendTestEvent: %w", err)
 	}

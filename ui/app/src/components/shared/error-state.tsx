@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button"
 interface ErrorStateProps {
   message?: string
   onRetry?: () => void
+  retrying?: boolean
 }
 
-export function ErrorState({ message, onRetry }: ErrorStateProps) {
+export function ErrorState({ message, onRetry, retrying }: ErrorStateProps) {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-16 text-center">
@@ -18,7 +19,12 @@ export function ErrorState({ message, onRetry }: ErrorStateProps) {
         {message ?? t("errors.stateDefaultMessage")}
       </p>
       {onRetry && (
-        <Button variant="outline" size="sm" onClick={onRetry}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onRetry}
+          disabled={retrying}
+        >
           {t("errors.tryAgain")}
         </Button>
       )}

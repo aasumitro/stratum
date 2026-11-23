@@ -78,7 +78,7 @@ func (w *WebhookWorker) HandleOutboundEvent(ctx context.Context, body []byte) er
 	}
 
 	for _, ep := range endpoints {
-		del, err := w.repo.insertWebhookDelivery(ctx, w.pool, ep.ID, env.ID, env.Type)
+		del, err := w.repo.insertWebhookDelivery(ctx, w.pool, ep.ID, env.ID, env.Type, body)
 		if err != nil {
 			w.log.Error("webhook: insert delivery record", "endpoint_id", ep.ID, "error", err)
 			continue

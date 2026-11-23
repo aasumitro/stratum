@@ -2,7 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 import { getFn } from "@/lib/api/query"
 import { API } from "@/lib/api/path"
 import { queryKeys } from "@/lib/api/keys"
-import { isConnectionError } from "@/lib/api/error"
+import { isRefusal } from "@/lib/api/error"
 import type { HTTPResponse } from "@/lib/api/response"
 import type { UserProfile } from "@/types/account"
 import type { OrganizationView } from "@/types/organization"
@@ -27,10 +27,9 @@ export const Route = createFileRoute("/onboarding")({
       })
       profile = res.data
     } catch (err) {
-      // Can't reach the API at all — don't show a profile form that will
-      // just fail to submit. Anything else (no profile yet, etc.) means
-      // step 1 is genuinely the right place to start.
-      if (isConnectionError(err)) throw err
+      // Only a refusal (no profile yet) means step 1. An outage or a server
+      // error would just fail the form again, so show the real problem.
+      if (!isRefusal(err)) throw err
     }
 
     if (profile?.preferences?.onboarding_completed === true) {
@@ -50,7 +49,7 @@ export const Route = createFileRoute("/onboarding")({
       })
       return { initialStep: (wsRes.data?.length ?? 0) > 0 ? 3 : 2 }
     } catch (err) {
-      if (isConnectionError(err)) throw err
+      if (!isRefusal(err)) throw err
       return { initialStep: 2 }
     }
   },

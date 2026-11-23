@@ -946,6 +946,30 @@
       "member": "Anggota",
       "memberDesc": "Dapat melihat dan membuat sumber daya"
     },
+    "permissions": {
+      "open": "Peran & izin",
+      "title": "Peran dan izin",
+      "description": "Apa yang bisa dilakukan setiap peran di organisasi ini. Pemilik bisa melakukan semua yang bisa dilakukan admin, dan admin semua yang bisa dilakukan anggota.",
+      "capability": "Kemampuan",
+      "allowed": "Diizinkan",
+      "notAllowed": "Tidak diizinkan",
+      "features": {
+        "members": "Anggota",
+        "invitations": "Undangan",
+        "webhooks": "Webhook",
+        "auditLog": "Log audit",
+        "billing": "Tagihan",
+        "settingsGeneral": "Pengaturan umum",
+        "settingsSecurity": "Pengaturan keamanan",
+        "settingsDanger": "Zona berbahaya"
+      },
+      "actions": {
+        "view": "Lihat",
+        "manage": "Kelola",
+        "edit": "Ubah",
+        "delete": "Hapus"
+      }
+    },
     "auditLog": {
       "actorCol": "Aktor",
       "methodCol": "Metode",

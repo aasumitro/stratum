@@ -60,5 +60,10 @@
     "typescript-eslint": "^8",
     "vite": "^8",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "@ts-morph/common": {
+      "minimatch": "^11.0.9"
+    }
   }
 }

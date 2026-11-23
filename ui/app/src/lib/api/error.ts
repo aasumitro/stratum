@@ -15,14 +15,18 @@ export class ApiError extends Error {
   readonly status?: ResponseStatus
   readonly pagination?: ResponsePagination
   readonly next_cursor?: string
+  // The HTTP status of the response, so callers can tell an outage (502/503/504)
+  // from a refusal (4xx) even when the body carries no status object.
+  readonly httpStatus?: number
 
-  constructor(response: Partial<HTTPResponse<unknown>>) {
+  constructor(response: Partial<HTTPResponse<unknown>>, httpStatus?: number) {
     super(response.status?.message ?? "Request failed with server response")
     this.name = "ApiError"
     this.data = response.data
     this.status = response.status
     this.pagination = response.pagination
     this.next_cursor = response.next_cursor
+    this.httpStatus = httpStatus
   }
 }
 
@@ -54,9 +58,14 @@ export const catchHTTPError = (error: unknown) => {
     const data = error.response.data
     // If backend returns your HTTPResponse shape
     if (data && typeof data === "object") {
-      throw new ApiError(data as Partial<HTTPResponse<unknown>>)
+      throw new ApiError(
+        data as Partial<HTTPResponse<unknown>>,
+        error.response.status
+      )
     }
-    throw new Error("Request failed with server response")
+    // No JSON body (a proxy's HTML page, an empty 502): keep the status, so
+    // an outage is still told apart from a refusal.
+    throw new ApiError({}, error.response.status)
   }
 
   // Axios error without response (network / CORS / timeout)
@@ -84,4 +93,35 @@ export function handleHttpError(error: unknown): void {
 // down" for "resource doesn't exist yet".
 export function isConnectionError(err: unknown): boolean {
   return err instanceof Error && err.message === SERVER_ERROR.CONNECTION
+}
+
+// Gateway and unavailable statuses: the server, or something in front of it,
+// could not answer this time.
+const TRANSIENT_STATUSES = new Set([502, 503, 504])
+
+// True for a failure that may clear on its own and is worth retrying: no
+// response at all, or a gateway/unavailable status. A refusal (4xx) or a server
+// bug (500) answers the same way every time.
+export function isTransientError(err: unknown): boolean {
+  if (isConnectionError(err)) return true
+  return (
+    err instanceof ApiError &&
+    err.httpStatus !== undefined &&
+    TRANSIENT_STATUSES.has(err.httpStatus)
+  )
+}
+
+// Statuses that answer "no" about this caller or this resource: not signed in,
+// not allowed, or not there. They mean the same on every retry.
+const REFUSAL_STATUSES = new Set([401, 403, 404])
+
+// True only when the server answered and refused (401/403/404). Anything else,
+// an outage, a rate limit or a server error, says nothing about access or
+// existence, so callers must not act on it as if it did.
+export function isRefusal(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.httpStatus !== undefined &&
+    REFUSAL_STATUSES.has(err.httpStatus)
+  )
 }

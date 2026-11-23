@@ -26,28 +26,33 @@ type webhookDeliveryRecord struct {
 	AttemptsLog        json.RawMessage `json:"attempts_log"`
 	DeliveredAt        *time.Time      `json:"delivered_at,omitempty"`
 	CreatedAt          time.Time       `json:"created_at"`
+	// Payload is the exact body first delivered, so a retry sends the same
+	// bytes. Empty for deliveries recorded before it was kept.
+	Payload []byte `json:"-"`
 }
 
+// webhookDeliveryColumns leaves out payload: only findWebhookDelivery, which a
+// retry reads, selects it, so listing deliveries does not load every body.
 const webhookDeliveryColumns = `id, endpoint_id, event_id, event_type, status, attempts, last_error,
 	response_status_code, response_body, latency_ms, attempts_log, delivered_at, created_at`
 
-func scanWebhookDelivery(row interface{ Scan(dest ...any) error }, rec *webhookDeliveryRecord) error {
-	return row.Scan(
+func scanWebhookDelivery(row interface{ Scan(dest ...any) error }, rec *webhookDeliveryRecord, extra ...any) error {
+	return row.Scan(append([]any{
 		&rec.ID, &rec.EndpointID, &rec.EventID, &rec.EventType, &rec.Status, &rec.Attempts, &rec.LastError,
 		&rec.ResponseStatusCode, &rec.ResponseBody, &rec.LatencyMS, &rec.AttemptsLog, &rec.DeliveredAt, &rec.CreatedAt,
-	)
+	}, extra...)...)
 }
 
 func (r *repository) insertWebhookDelivery(
 	ctx context.Context, q db.Querier,
-	endpointID, eventID, eventType string,
+	endpointID, eventID, eventType string, payload []byte,
 ) (*webhookDeliveryRecord, error) {
 	rec := new(webhookDeliveryRecord)
 	err := scanWebhookDelivery(q.QueryRow(ctx, `
-		INSERT INTO organization.webhook_deliveries (endpoint_id, event_id, event_type)
-		VALUES ($1, $2, $3)
+		INSERT INTO organization.webhook_deliveries (endpoint_id, event_id, event_type, payload)
+		VALUES ($1, $2, $3, $4)
 		RETURNING `+webhookDeliveryColumns,
-		endpointID, eventID, eventType,
+		endpointID, eventID, eventType, payload,
 	), rec)
 	if err != nil {
 		return nil, fmt.Errorf("organization.insertWebhookDelivery: %w", err)
@@ -185,11 +190,11 @@ func (r *repository) findWebhookDelivery(
 ) (*webhookDeliveryRecord, error) {
 	rec := new(webhookDeliveryRecord)
 	err := scanWebhookDelivery(q.QueryRow(ctx, `
-		SELECT `+webhookDeliveryColumns+`
+		SELECT `+webhookDeliveryColumns+`, payload
 		FROM organization.webhook_deliveries
 		WHERE id = $1`,
 		deliveryID,
-	), rec)
+	), rec, &rec.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("organization.findWebhookDelivery: %w", err)
 	}

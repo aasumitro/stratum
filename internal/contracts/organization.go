@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -95,12 +96,19 @@ type OrganizationCacheInvalidator interface {
 	InvalidateMemberRole(ctx context.Context, organizationID, authSub string)
 }
 
+// ErrOwnsActiveOrganization is RemoveAllMemberships' refusal while the user
+// still owns an organization that is not deleted. Retrying cannot help until
+// ownership moves.
+var ErrOwnsActiveOrganization = errors.New("organization: the user still owns an organization")
+
 // OrganizationWriter is implemented by the organization module and consumed
 // by modules that need to mutate organization-owned data across a schema
 // boundary — currently only the GDPR account-deletion flow.
 type OrganizationWriter interface {
 	// RemoveAllMemberships deletes every membership row for a user across
-	// all organizations.
+	// all organizations. It removes nothing and fails with
+	// ErrOwnsActiveOrganization while the user still owns an organization that
+	// is not deleted, so none is left without its owner.
 	RemoveAllMemberships(ctx context.Context, authSub string) error
 }
 

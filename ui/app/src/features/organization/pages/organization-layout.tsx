@@ -19,6 +19,8 @@ import {
   isSelfSuspensionReason,
 } from "@/hooks/use-billing-status"
 import { Banner, type BannerItem } from "@/components/shared/banner"
+import { ErrorState } from "@/components/shared/error-state"
+import { isRefusal, parseApiError } from "@/lib/api/error"
 import { Button } from "@/components/ui/button"
 
 // Routes accessible even when billing is blocked by a pending invoice.
@@ -45,13 +47,19 @@ export function OrganizationLayout() {
     localStorage.setItem("active_organization_id", organizationId)
   }, [organizationId, session])
 
+  // Only a refusal (401/403/404) means access is gone. Any other failure, an
+  // outage, a rate limit or a server error, says nothing about access: with no
+  // organization loaded yet the page offers a retry, and a failed background
+  // refetch keeps the page it already shows.
   const {
     data: wsData,
     isError,
     error,
-  } = useOrganization(organizationId, {
-    retry: false,
-  })
+    isFetching,
+    refetch,
+  } = useOrganization(organizationId)
+  const refused = isError && isRefusal(error)
+  const unavailable = isError && !refused && !wsData
 
   useEffect(() => {
     // Signing out clears the session cookie and then queryClient.clear()s
@@ -60,13 +68,11 @@ export function OrganizationLayout() {
     // navigation actually unmounts this page. That 401 is an artifact of
     // logging out on purpose, not a real "access denied", so it's only
     // worth surfacing while a session still exists.
-    if (!isError || !session) return
-    const msg =
-      (error as { error?: string })?.error ?? t("organization.accessDenied")
+    if (!refused || !session) return
     localStorage.removeItem("active_organization_id")
-    toast.error(msg)
+    toast.error(parseApiError(error, t("organization.accessDenied")))
     void navigate({ to: "/organizations" })
-  }, [isError, error, navigate, t, session])
+  }, [refused, error, navigate, t, session])
 
   const {
     isOwner,
@@ -238,17 +244,27 @@ export function OrganizationLayout() {
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      {/* Suspended lockout: shell stays, banner names who can help
-          (member/admin) or the reason + fix (owner). Every page below
-          stays reachable; UI-only mutation gating happens per-page. */}
-      <Banner banners={banners} />
+      {unavailable ? (
+        <ErrorState
+          message={parseApiError(error, t("errors.stateDefaultMessage"))}
+          onRetry={() => void refetch({ cancelRefetch: false })}
+          retrying={isFetching}
+        />
+      ) : (
+        <>
+          {/* Suspended lockout: shell stays, banner names who can help
+              (member/admin) or the reason + fix (owner). Every page below
+              stays reachable; UI-only mutation gating happens per-page. */}
+          <Banner banners={banners} />
 
-      {/* Keyed by organizationId: switching organizations — including
-          editing the URL directly — only changes this param, it doesn't
-          remount the route. Without a key, any local state in a page below
-          here (an open dialog, a pending mutation, a selected id) survives
-          the switch and can end up acting against the new organization. */}
-      <Outlet key={organizationId} />
+          {/* Keyed by organizationId: switching organizations — including
+              editing the URL directly — only changes this param, it doesn't
+              remount the route. Without a key, any local state in a page below
+              here (an open dialog, a pending mutation, a selected id) survives
+              the switch and can end up acting against the new organization. */}
+          <Outlet key={organizationId} />
+        </>
+      )}
     </div>
   )
 }

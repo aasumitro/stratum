@@ -6,6 +6,19 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+**Upgrade:** run `make migrate-up` (migrations `000016`, `000017`) before starting the API or worker. `000016` first
+reconciles owner memberships to `organizations.owner_id` (the `owner_id` member becomes the one active owner, any other
+owner membership becomes admin; an organization whose `owner_id` has no membership is left as it is), then adds the index.
+
+### Added
+
+- Organization: a "Roles & permissions" reference, opened from the Members section for every role, built from the same
+  permission matrix the app enforces.
+- CI: an `Images` job builds the API and worker images, scans each with Trivy (fails on a fixable HIGH/CRITICAL) and
+  records an SPDX SBOM per image (syft). Third-party actions are pinned to a commit.
+- `SECURITY.md`: a vulnerability reporting policy with a placeholder contact (`security@your-domain.example`) for the
+  adopting project to replace.
+
 ### Changed
 
 - Tooling: `make test-integration`, `make test-cover` and `make pre-push` run against a dedicated `stratum_test`
@@ -16,6 +29,23 @@ versioning follows [SemVer](https://semver.org/).
 
 ### Fixed
 
+- Organization: an organization can no longer end up with two owner memberships (migration `000016`). Suspend and role
+  change re-check the owner under the organization lock a transfer takes, and never move an owner membership. Account
+  deletion removes memberships first and never the owner membership of an organization that is not deleted: a user made
+  an owner after asking to be deleted has the deletion task fail with a message, before any of their data is erased.
+- Organization: retrying a webhook delivery resends the exact body it was first delivered with (migration `000017`
+  keeps it), instead of a `{id, type, endpoint_id}` payload rebuilt from the delivery row. Deliveries recorded before keep the
+  rebuilt retry.
+- Account: a failed export or deletion task records a fixed message for `GET /me/tasks` instead of the raw internal
+  error; the cause is logged by the worker.
+- Web: only a refusal (401/403/404) now counts as lost access or a missing profile. An organization page that fails
+  any other way (an outage, a rate limit, a 500, a proxy error page) shows a retry instead of leaving the organization,
+  and a failed background refresh keeps the page. The sign-in, landing and onboarding guards no longer send a user with
+  a profile back to onboarding when `/me` fails that way. Queries retry only transient failures (no response,
+  502/503/504; up to three times); the old retry rule never matched, so every failure was retried.
+- Web and Studio: the moderate npm advisories (all from `minimatch` < 11.0.1, GHSA-g3hv-75wg-m249) are cleared:
+  eslint 10.15 and typescript-eslint 8.73, plus an `overrides` entry giving the `shadcn` CLI's `ts-morph` `minimatch`
+  11. `npm audit` reports 0 vulnerabilities in both.
 - Billing: a Xendit invoice callback with status `SETTLED` now counts as the payment. It used to read as pending,
   so an invoice whose `PAID` callback never arrived stayed unpaid. `SETTLED` is deduplicated under the same key as
   `PAID`, so receiving both pays the invoice once, and keys already stored stay valid. Not retroactive: an invoice

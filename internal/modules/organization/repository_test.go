@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
@@ -721,6 +722,61 @@ func TestIntegration_TransferOwnership_StaleOwnerIsRefused(t *testing.T) {
 	}
 	if owner != testAuthSub || owners != 1 {
 		t.Errorf("want the owner unchanged and exactly one owner membership, got owner %q and %d owners", owner, owners)
+	}
+}
+
+// Account deletion never strips an organization of its owner: while the user
+// still owns one that is not deleted, RemoveAllMemberships removes nothing and
+// fails; once those are deleted, it removes every membership. At most one owner
+// membership per organization is enforced by the database itself.
+func TestIntegration_RemoveAllMemberships_KeepsAnActiveOwnersMembership(t *testing.T) {
+	pool := testPool(t)
+	const owner = "sub_gdpr_owner_keep"
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+	w := httptest.NewRecorder()
+	organization.NewModuleEngine(pool, owner).ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations",
+		`{"slug":"integ-ws-gdpr-keep","name":"GDPR Keep WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO organization.memberships (organization_id, auth_sub, role) VALUES ($1, 'sub_second_owner', 'owner')`, orgID); err == nil {
+		t.Error("a second owner membership was accepted")
+	} else if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != "23505" {
+		t.Errorf("a second owner membership: want a unique violation, got %v", err)
+	}
+
+	mod := organization.NewModuleForTest(pool)
+	err := mod.RemoveAllMemberships(t.Context(), owner)
+	if !errors.Is(err, contracts.ErrOwnsActiveOrganization) {
+		t.Fatalf("active owner: want ErrOwnsActiveOrganization, got %v", err)
+	}
+	count := func() int {
+		var n int
+		pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE auth_sub = $1`, owner).Scan(&n)
+		return n
+	}
+	if n := count(); n != 1 {
+		t.Errorf("active owner: want the owner membership kept, got %d", n)
+	}
+
+	if _, err := pool.Exec(t.Context(), `UPDATE organization.organizations SET status = 'deleted' WHERE id = $1`, orgID); err != nil {
+		t.Fatalf("delete organization: %v", err)
+	}
+	if err := mod.RemoveAllMemberships(t.Context(), owner); err != nil {
+		t.Fatalf("deleted organization: want every membership removed, got %v", err)
+	}
+	if n := count(); n != 0 {
+		t.Errorf("deleted organization: want no memberships left, got %d", n)
 	}
 }
 

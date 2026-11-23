@@ -378,6 +378,105 @@ func TestIntegration_RecordLoginEvent_FailsClosedOnRedisError(t *testing.T) {
 	}
 }
 
+// stubOwnerOrgReader reports the user as still owning organizations.
+type stubOwnerOrgReader struct {
+	stubExportOrgReader
+	owned int
+}
+
+func (s stubOwnerOrgReader) CountActiveOwnedOrganizations(context.Context, string) (int, error) {
+	return s.owned, nil
+}
+
+// A user who became an owner after asking to be deleted is not deleted: the task
+// fails for good with a message telling them why, and nothing is removed.
+func TestIntegration_DeleteAccount_OwnerSinceTheRequest_FailsWithoutDeleting(t *testing.T) {
+	const authSub = "integ_delete_account_owner_since"
+	pool := testPool(t)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+	})
+	e := account.NewModuleEngine(pool, authSub)
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-owner-since@example.com"}`))
+	var taskID string
+	if err := pool.QueryRow(t.Context(),
+		`INSERT INTO account.tasks (auth_sub, kind) VALUES ($1, 'delete_account') RETURNING id`, authSub).Scan(&taskID); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	mod := account.NewModuleForTest(pool)
+	mod.SetOrganizationReader(stubOwnerOrgReader{owned: 1})
+	if err := mod.Worker.HandleDeleteAccount(t.Context(), encodeUserTaskEvent(events.RoutingKeyUserDeleteRequest, taskID, authSub)); err != nil {
+		t.Fatalf("HandleDeleteAccount: want the task failed without a retry, got %v", err)
+	}
+	var status, taskErr string
+	pool.QueryRow(t.Context(), `SELECT status, error FROM account.tasks WHERE id = $1`, taskID).Scan(&status, &taskErr)
+	if status != "failed" || !strings.Contains(taskErr, "owns an organization") {
+		t.Errorf("task: want failed with the ownership message, got %q %q", status, taskErr)
+	}
+	var users int
+	pool.QueryRow(t.Context(), `SELECT count(*) FROM account.users WHERE auth_sub = $1`, authSub).Scan(&users)
+	if users != 1 {
+		t.Errorf("want the user kept, got %d rows", users)
+	}
+}
+
+// ownerRaceWriter refuses the memberships as a transfer landing after the
+// ownership check would, and counts every other cleanup it is asked to do.
+type ownerRaceWriter struct {
+	okWriter
+	calls *int
+}
+
+func (w ownerRaceWriter) RemoveAllMemberships(context.Context, string) error {
+	return fmt.Errorf("organization: %w", contracts.ErrOwnsActiveOrganization)
+}
+func (w ownerRaceWriter) DeleteAllForUser(context.Context, string) error { *w.calls++; return nil }
+func (w ownerRaceWriter) AnonymizeHistory(context.Context, string) error { *w.calls++; return nil }
+
+// A transfer that makes the user an owner between the ownership check and the
+// memberships step fails the task for good before any other data is erased.
+func TestIntegration_DeleteAccount_OwnerRace_FailsBeforeAnyCleanup(t *testing.T) {
+	const authSub = "integ_delete_account_owner_race"
+	pool := testPool(t)
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM account.tasks WHERE auth_sub = $1`, authSub)
+		pool.Exec(context.Background(), `DELETE FROM account.users WHERE auth_sub = $1`, authSub)
+	})
+	e := account.NewModuleEngine(pool, authSub)
+	e.ServeHTTP(httptest.NewRecorder(), httpserver.JSONTestRequest(http.MethodPost, "/api/me", `{"email":"delete-owner-race@example.com"}`))
+	var taskID string
+	if err := pool.QueryRow(t.Context(),
+		`INSERT INTO account.tasks (auth_sub, kind) VALUES ($1, 'delete_account') RETURNING id`, authSub).Scan(&taskID); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	calls := 0
+	w := ownerRaceWriter{calls: &calls}
+	mod := account.NewModuleForTest(pool)
+	mod.SetOrganizationReader(stubOwnerOrgReader{owned: 0})
+	mod.SetOrganizationWriter(w)
+	mod.SetNotificationWriter(w)
+	mod.SetBillingWriter(w)
+	if err := mod.Worker.HandleDeleteAccount(t.Context(), encodeUserTaskEvent(events.RoutingKeyUserDeleteRequest, taskID, authSub)); err != nil {
+		t.Fatalf("HandleDeleteAccount: want the task failed without a retry, got %v", err)
+	}
+	var status, taskErr string
+	pool.QueryRow(t.Context(), `SELECT status, error FROM account.tasks WHERE id = $1`, taskID).Scan(&status, &taskErr)
+	if status != "failed" || !strings.Contains(taskErr, "owns an organization") {
+		t.Errorf("task: want failed with the ownership message, got %q %q", status, taskErr)
+	}
+	if calls != 0 {
+		t.Errorf("want no other cleanup before the memberships, got %d calls", calls)
+	}
+	var users int
+	pool.QueryRow(t.Context(), `SELECT count(*) FROM account.users WHERE auth_sub = $1`, authSub).Scan(&users)
+	if users != 1 {
+		t.Errorf("want the user kept, got %d rows", users)
+	}
+}
+
 // stubExportOrgReader satisfies contracts.OrganizationReader with a single
 // known membership — enough to exercise buildExportData's organizations
 // section without a cross-module import into the organization package.
@@ -512,8 +611,10 @@ func TestIntegration_ExportData_Worker_SectionFailure_FailsWholeExport(t *testin
 	if status != "failed" {
 		t.Errorf("task status: want failed (whole export fails on any section error), got %q", status)
 	}
-	if taskErr == "" {
-		t.Error("task error: want a non-empty error message explaining which section failed")
+	// The owner reads this through GET /me/tasks: a fixed message, never the
+	// internal cause.
+	if taskErr == "" || strings.Contains(taskErr, "boom") || strings.Contains(taskErr, "account.") {
+		t.Errorf("task error: want a fixed client-safe message, got %q", taskErr)
 	}
 }
 

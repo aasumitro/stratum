@@ -103,6 +103,17 @@ func (m *Module) RemoveMemberForTest(ctx context.Context, organizationID, authSu
 	return m.svc.removeMember(ctx, organizationID, authSub)
 }
 
+// SuspendMemberForTest and UpdateMemberRoleForTest call the service directly,
+// past the handler's owner check, to reach the owner check made under the
+// organization lock.
+func (m *Module) SuspendMemberForTest(ctx context.Context, organizationID, authSub string) error {
+	return m.svc.suspendMember(ctx, organizationID, authSub)
+}
+
+func (m *Module) UpdateMemberRoleForTest(ctx context.Context, organizationID, authSub, role string) error {
+	return m.svc.updateMemberRole(ctx, organizationID, authSub, role)
+}
+
 // NewModuleEngine creates a full gin.Engine backed by a real DB module.
 func NewModuleEngine(pool *pgxpool.Pool, authSub string) *gin.Engine {
 	e, _ := NewModuleEngineAndModule(pool, authSub)

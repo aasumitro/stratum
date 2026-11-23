@@ -1,21 +1,23 @@
 import { QueryClient } from "@tanstack/react-query"
-import { AxiosError } from "axios"
-import { HTTP_STATUS_CODE } from "@/lib/api"
+import { isTransientError } from "@/lib/api/error"
 
 const DEV_MODE = import.meta.env.VITE_DEV_MODE
+
+// shouldRetryQuery retries a failed query up to three times, and only when the
+// failure may clear on its own (isTransientError). Errors reach queries as
+// ApiError / connection errors from catchHTTPError, never as a raw AxiosError.
+export function shouldRetryQuery(
+  failureCount: number,
+  error: unknown
+): boolean {
+  return failureCount < 3 && isTransientError(error)
+}
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: (failureCount, error) => {
-        if (DEV_MODE) return false
-        if (failureCount > 3) return false
-
-        return !(
-          error instanceof AxiosError &&
-          error.response?.status === HTTP_STATUS_CODE.INTERNAL_SERVER_ERROR
-        )
-      },
+      retry: (failureCount, error) =>
+        !DEV_MODE && shouldRetryQuery(failureCount, error),
       refetchOnWindowFocus: !DEV_MODE,
       staleTime: 2 * 60 * 1000,
     },
