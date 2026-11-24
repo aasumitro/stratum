@@ -35,8 +35,12 @@ Migrations live in `db/migrations/` as numbered up/down pairs: one per schema th
 | 000015 | `billing` | `subscriptions.schedule_resend_count` and `schedule_resend_at`: the hourly reconcile's backoff for re-sending a due schedule's apply (doubling, at most daily; reset when the schedule changes) |
 | 000016 | `organization` | `memberships_one_owner_per_organization`: a partial unique index, at most one `owner` membership per organization. Existing rows are reconciled to `organizations.owner_id` first (the `owner_id` member becomes the one active owner) |
 | 000017 | `organization` | `webhook_deliveries.payload bytea`: the exact body first delivered, which a retry resends |
+| 000018 | `audit`, `billing` | `audit.capture_operator_change()` records an operator change with the organization it belongs to; read-only `operator_audit_lookup` policies for the migrator on `billing.subscriptions` and `billing.invoices`, so its lookups work under FORCE RLS |
+| 000019 | `account` | `consents`: each acceptance of a legal document version (terms, privacy), append-only for the runtime roles, removed with the account |
+| 000020 | *(extension)* | `pg_trgm` (trusted, ships with PostgreSQL). No index on `notification.messages`: under FORCE RLS a non-leakproof ILIKE can never be an index condition for the runtime role |
+| 000021 | `audit` | `idx_audit_search`, a trigram GIN index on `resource || ' ' || metadata::text`, built `CONCURRENTLY` (its own one-statement file) |
 
-`000011`–`000017` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000018`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
+`000011`–`000021` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000022`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 
 ## The billing catalog
 

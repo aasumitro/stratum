@@ -9,6 +9,7 @@ export interface AuditLogFilter {
   actor?: string
   action?: string
   resource?: string
+  q?: string
   from?: string
   to?: string
 }
@@ -18,6 +19,7 @@ function auditLogParams(filter: AuditLogFilter, extra: Record<string, string>) {
   if (filter.actor) params.set("actor", filter.actor)
   if (filter.action) params.set("action", filter.action)
   if (filter.resource) params.set("resource", filter.resource)
+  if (filter.q) params.set("q", filter.q)
   if (filter.from) params.set("from", filter.from)
   if (filter.to) params.set("to", filter.to)
   return params

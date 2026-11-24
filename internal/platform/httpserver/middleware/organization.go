@@ -106,6 +106,15 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 			return
 		}
 
+		// An organization that requires MFA admits only a session with a verified
+		// second factor. Leaving stays open, so a member who will not enroll can go.
+		if ws.RequireMFA && !SessionIsAAL2(c) && !strings.HasSuffix(c.FullPath(), "/leave") {
+			response.Error("ORGANIZATION_MFA_REQUIRED", "this organization requires two-factor authentication").
+				JSON(c, http.StatusForbidden)
+			c.Abort()
+			return
+		}
+
 		c.Set(organizationContextKey, *ws)
 		c.Set(memberRoleContextKey, role)
 		// Bind the request's database scope to this authorization decision:

@@ -1,5 +1,8 @@
 import { useSearch } from "@tanstack/react-router"
 import { useMemo, useState } from "react"
+import { SearchBar } from "@/components/shared/search-bar"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { searchTerm } from "@/lib/search"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -34,6 +37,8 @@ export function NotificationPage() {
     initialOrganizationId ?? ""
   )
   const [tab, setTab] = useState<"all" | NotificationCategory>("all")
+  const [searchText, setSearchText] = useState("")
+  const search = searchTerm(useDebouncedValue(searchText))
   const [view, setView] = useState<"feed" | "prefs">("feed")
 
   const { data: organizationsData } = useOrganizations()
@@ -108,7 +113,13 @@ export function NotificationPage() {
               </TabsList>
             </Tabs>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <SearchBar
+                value={searchText}
+                onChange={setSearchText}
+                placeholder={t("notifications.searchPlaceholder")}
+                className="w-full sm:w-56"
+              />
               <Select
                 items={organizationSelectItems}
                 value={organizationId || "all"}
@@ -158,10 +169,11 @@ export function NotificationPage() {
         // fetched timeline, not a query param, so remounting per tab would
         // just discard already-loaded pages for no reason.
         <NotificationList
-          key={organizationId || "all"}
+          key={`${organizationId || "all"}|${search}`}
           organizationId={organizationId || undefined}
           organizationNames={organizationNames}
           category={tab === "all" ? undefined : tab}
+          search={search}
         />
       ) : (
         <NotificationPreferencesPanel />

@@ -27,6 +27,7 @@ type OrganizationInfo struct {
 	Locale            string
 	CountryCode       string
 	AllowedIPs        []string // CIDR blocks; empty = allow all
+	RequireMFA        bool     // every member must use a session with a verified second factor (aal2)
 }
 
 // OrganizationReader is implemented by the organization module and consumed by

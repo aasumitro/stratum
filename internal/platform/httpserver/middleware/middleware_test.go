@@ -421,3 +421,46 @@ func TestActivationGate_ReadsOnlyWhenItCouldRefuse(t *testing.T) {
 		})
 	}
 }
+
+// --- require MFA ---
+
+func makeRequireMFAEngine(aal string) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: "sub_test", Raw: jwtgo.MapClaims{"aal": aal}})
+		c.Next()
+	})
+	orgMW := middleware.NewOrganizationMiddleware(stubWsReader{
+		ws:   &contracts.OrganizationInfo{ID: "ws-01", Status: "active", RequireMFA: true},
+		role: "member",
+	})
+	ok := func(c *gin.Context) { c.Status(http.StatusOK) }
+	e.GET("/api/organizations/:organizationID/test", orgMW, ok)
+	e.POST("/api/organizations/:organizationID/leave", orgMW, ok)
+	return e
+}
+
+// An organization that requires MFA refuses an aal1 session on every route
+// except leave, and admits an aal2 session.
+func TestOrganizationMiddleware_RequireMFA(t *testing.T) {
+	cases := []struct {
+		aal, method, path string
+		want              int
+	}{
+		{"aal1", http.MethodGet, "/api/organizations/ws-01/test", http.StatusForbidden},
+		{"", http.MethodGet, "/api/organizations/ws-01/test", http.StatusForbidden},
+		{"aal2", http.MethodGet, "/api/organizations/ws-01/test", http.StatusOK},
+		{"aal1", http.MethodPost, "/api/organizations/ws-01/leave", http.StatusOK},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		makeRequireMFAEngine(tc.aal).ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+		if w.Code != tc.want {
+			t.Errorf("%s %s with aal %q: want %d, got %d", tc.method, tc.path, tc.aal, tc.want, w.Code)
+		}
+		if tc.want == http.StatusForbidden && !strings.Contains(w.Body.String(), "ORGANIZATION_MFA_REQUIRED") {
+			t.Errorf("%s with aal %q: want code ORGANIZATION_MFA_REQUIRED, got %s", tc.path, tc.aal, w.Body)
+		}
+	}
+}

@@ -9,10 +9,53 @@ import {
 import { queryKeys } from "@/lib/api/keys"
 import { API } from "@/lib/api/path"
 import { supabase } from "@/lib/auth/supabase"
-import type { UserProfile, UserTask, LoginEvent } from "@/types/account"
+import type {
+  ConsentStatus,
+  UserProfile,
+  UserTask,
+  LoginEvent,
+} from "@/types/account"
 import type { AuditEvent } from "@/types/organization"
 
 // ── Queries ────────────────────────────────────────────────────────────────
+
+// The legal documents to accept; works before the profile exists.
+export function useConsents() {
+  return useHTTPQuery<ConsentStatus[]>({
+    queryKey: queryKeys.account.consents(),
+    url: API.me("consents"),
+  })
+}
+
+// Documents whose current version the user has not accepted yet.
+export function pendingConsents(
+  items?: ConsentStatus[] | null
+): ConsentStatus[] {
+  return (items ?? []).filter((c) => c.accepted_version !== c.version)
+}
+
+// Records acceptance of each given document's current version, then refreshes
+// the list. A version that changed meanwhile fails with 409, and the refreshed
+// list shows the new one.
+export function useAcceptConsents() {
+  const queryClient = useQueryClient()
+  const { mutateAsync, isPending } = useHTTPActionPost<
+    void,
+    { document: string; version: string }
+  >({ url: API.me("consents") })
+  async function accept(items: ConsentStatus[]) {
+    try {
+      for (const c of items) {
+        await mutateAsync({ document: c.document, version: c.version })
+      }
+    } finally {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.account.consents(),
+      })
+    }
+  }
+  return { accept, isPending }
+}
 
 export function useProfile() {
   return useHTTPQuery<UserProfile>({
@@ -29,14 +72,23 @@ export function useAuditLog(
   cursor?: string,
   limit = 20,
   from?: string,
-  to?: string
+  to?: string,
+  search?: string
 ) {
   const params = new URLSearchParams({ limit: String(limit) })
   if (cursor !== undefined) params.set("cursor", cursor)
   if (from) params.set("from", from)
   if (to) params.set("to", to)
+  if (search) params.set("q", search)
   return useHTTPQuery<AuditEvent[]>({
-    queryKey: [...queryKeys.account.auditLog(), cursor, limit, from, to],
+    queryKey: [
+      ...queryKeys.account.auditLog(),
+      cursor,
+      limit,
+      from,
+      to,
+      search,
+    ],
     url: `${API.me("audit-log")}?${params.toString()}`,
   })
 }

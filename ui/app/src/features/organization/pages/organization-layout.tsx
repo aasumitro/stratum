@@ -20,7 +20,9 @@ import {
 } from "@/hooks/use-billing-status"
 import { Banner, type BannerItem } from "@/components/shared/banner"
 import { ErrorState } from "@/components/shared/error-state"
-import { isRefusal, parseApiError } from "@/lib/api/error"
+import { OrganizationMfaGate } from "@/features/organization/components/organization-mfa-gate"
+import { parseApiError } from "@/lib/api/error"
+import { organizationLoadState } from "@/features/organization/utils/organization-load-state"
 import { Button } from "@/components/ui/button"
 
 // Routes accessible even when billing is blocked by a pending invoice.
@@ -47,10 +49,8 @@ export function OrganizationLayout() {
     localStorage.setItem("active_organization_id", organizationId)
   }, [organizationId, session])
 
-  // Only a refusal (401/403/404) means access is gone. Any other failure, an
-  // outage, a rate limit or a server error, says nothing about access: with no
-  // organization loaded yet the page offers a retry, and a failed background
-  // refetch keeps the page it already shows.
+  // Only a refusal (401/403/404) means access is gone; see
+  // organizationLoadState for every outcome.
   const {
     data: wsData,
     isError,
@@ -58,8 +58,10 @@ export function OrganizationLayout() {
     isFetching,
     refetch,
   } = useOrganization(organizationId)
-  const refused = isError && isRefusal(error)
-  const unavailable = isError && !refused && !wsData
+  const loadState = organizationLoadState(isError, error, !!wsData)
+  const mfaRequired = loadState === "mfa"
+  const refused = loadState === "refused"
+  const unavailable = loadState === "unavailable"
 
   useEffect(() => {
     // Signing out clears the session cookie and then queryClient.clear()s
@@ -244,7 +246,9 @@ export function OrganizationLayout() {
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      {unavailable ? (
+      {mfaRequired ? (
+        <OrganizationMfaGate organizationId={organizationId} />
+      ) : unavailable ? (
         <ErrorState
           message={parseApiError(error, t("errors.stateDefaultMessage"))}
           onRetry={() => void refetch({ cancelRefetch: false })}

@@ -316,6 +316,26 @@ func NewModuleEngineWithUserReader(pool *pgxpool.Pool, authSub string, ur contra
 	return e
 }
 
+// NewModuleEngineWithSession is NewModuleEngineWithUserReader with the
+// token's assurance level ("aal1"/"aal2") set, for the require-MFA policy.
+func NewModuleEngineWithSession(pool *pgxpool.Pool, authSub, aal string, ur contracts.UserReader) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	mod := New(pool, testSecretEncryptionKey, "", 1)
+	if ur != nil {
+		mod.SetUserReader(ur)
+	}
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"aal": aal}})
+		c.Next()
+	}
+	orgMW := middleware.NewOrganizationMiddleware(mod)
+	noopGate := func(c *gin.Context) { c.Next() }
+	api := e.Group("/api")
+	mod.Register(api, httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, Org: orgMW, MFA: noopGate})
+	return e
+}
+
 // TransferOwnershipForTest calls transferOwnership directly, the way a request
 // whose owner check passed on a stale (cached) role reaches it.
 func TransferOwnershipForTest(ctx context.Context, m *Module, organizationID, currentOwner, target string) error {

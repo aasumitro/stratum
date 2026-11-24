@@ -22,6 +22,7 @@ export interface Organization {
 
 export interface OrganizationSettings {
   allowed_ips?: string[]
+  require_mfa?: boolean
   logo_url?: string
 }
 
@@ -47,6 +48,8 @@ export interface Member {
   email?: string
   full_name?: string
   avatar_url?: string
+  // Sent only to owners and admins.
+  mfa_enabled?: boolean
 }
 
 export interface Invitation {

@@ -50,3 +50,18 @@ func TestArgs_Values_ReturnsInPlaceholderOrder(t *testing.T) {
 		t.Errorf("Values() = %#v, want %#v", got, want)
 	}
 }
+
+// A search term matches literally: LIKE's own characters lose their meaning.
+func TestContainsPattern(t *testing.T) {
+	cases := map[string]string{
+		"invoice": "%invoice%",
+		"50%":     `%50\%%`,
+		"a_b":     `%a\_b%`,
+		`c:\d`:    `%c:\\d%`,
+	}
+	for in, want := range cases {
+		if got := db.ContainsPattern(in); got != want {
+			t.Errorf("ContainsPattern(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

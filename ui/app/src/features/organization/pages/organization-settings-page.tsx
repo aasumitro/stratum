@@ -12,6 +12,7 @@ import { DocumentationLinks } from "@/features/organization/components/documenta
 import { OrganizationDetailsCard } from "@/features/organization/components/organization-details-card"
 import { OrganizationLogoForm } from "@/features/organization/components/organization-logo-form"
 import { OrganizationIPAllowlistForm } from "@/features/organization/components/organization-ip-allowlist-form"
+import { OrganizationRequireMfaForm } from "@/features/organization/components/organization-require-mfa-form"
 import { OrganizationDangerZone } from "@/features/organization/components/organization-danger-zone"
 import { MembersTable } from "@/features/organization/components/members-table"
 import { RolesPermissionsDialog } from "@/features/organization/components/roles-permissions-dialog"
@@ -296,10 +297,16 @@ export function OrganizationSettingsPage() {
               />
             }
           >
-            <OrganizationIPAllowlistForm
-              organizationId={organizationId}
-              isOwner={isOwner}
-            />
+            <div className="flex flex-col gap-4">
+              <OrganizationIPAllowlistForm
+                organizationId={organizationId}
+                isOwner={isOwner}
+              />
+              <OrganizationRequireMfaForm
+                organizationId={organizationId}
+                isOwner={isOwner}
+              />
+            </div>
           </SettingsSection>
         )}
 

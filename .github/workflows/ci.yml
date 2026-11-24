@@ -3,8 +3,6 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [dev]
 
 # Cancel in-flight runs on the same PR when a new push arrives.
 concurrency:
@@ -28,23 +26,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      # A pull request diffs against its base branch. A push diffs against the previous tip, unless
-      # that tip is all zeros (a new branch) or no longer reachable (a force-push): with nothing to
-      # compare to, every surface counts as changed.
+      # CI runs only on pull requests to main, so the changes are the pull request's against its base.
       - id: filter
         env:
-          EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
-          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            git fetch origin "$BASE_REF" --depth=1
-            changed=$(git diff --name-only "origin/$BASE_REF...HEAD")
-          elif git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            changed=$(git diff --name-only "$BEFORE_SHA...$GITHUB_SHA")
-          else
-            changed=$(printf 'go.mod\nui/app/\nui/studio/\n')
-          fi
+          git fetch origin "$BASE_REF" --depth=1
+          changed=$(git diff --name-only "origin/$BASE_REF...HEAD")
           echo "$changed"
           echo "api=$(grep -qE '^(db/|internal/|cmd/|deploy/postgres-init/|go\.(mod|sum))' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "web=$(grep -q '^ui/app/' <<<"$changed" && echo true || echo false)" >> "$GITHUB_OUTPUT"

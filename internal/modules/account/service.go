@@ -45,6 +45,10 @@ type service struct {
 	// (see buildExportData).
 	orgReader   contracts.OrganizationReader
 	notifReader contracts.NotificationReader
+
+	// legal lists the documents a user must accept (config LEGAL_*); empty
+	// means none is required.
+	legal []LegalDocument
 }
 
 func (s *service) upsertProfile(ctx context.Context, authSub, email, fullName, avatarURL string) (*userRecord, error) {
@@ -362,6 +366,7 @@ type exportData struct {
 	Organizations []contracts.OrgMembershipInfo `json:"organizations"`
 	Notifications []contracts.MessageInfo       `json:"notifications"`
 	AuditEvents   []exportAuditEvent            `json:"audit_events"`
+	Consents      []consentRecord               `json:"consents"`
 }
 
 // exportAuditEvent is the audit.events projection this export has always
@@ -403,7 +408,7 @@ func (s *service) buildExportData(ctx context.Context, authSub string) (*exportD
 		return nil, fmt.Errorf("account.buildExportData: notifications: %w", err)
 	}
 
-	records, _, err := audit.ListByActorCursor(ctx, s.pool, authSub, exportEventLimit, "", nil, nil)
+	records, _, err := audit.ListByActorCursor(ctx, s.pool, authSub, exportEventLimit, "", nil, nil, "")
 	if err != nil {
 		return nil, fmt.Errorf("account.buildExportData: audit events: %w", err)
 	}
@@ -415,11 +420,17 @@ func (s *service) buildExportData(ctx context.Context, authSub string) (*exportD
 		}
 	}
 
+	consents, err := s.repo.listConsents(ctx, s.pool, authSub)
+	if err != nil {
+		return nil, fmt.Errorf("account.buildExportData: consents: %w", err)
+	}
+
 	return &exportData{
 		Profile:       profile,
 		Organizations: orgs,
 		Notifications: notifs,
 		AuditEvents:   auditEvents,
+		Consents:      consents,
 	}, nil
 }
 
@@ -614,8 +625,8 @@ func (s *service) listSessions(ctx context.Context, authSub, cursor string, limi
 
 // listAuditLog returns the caller's own audit trail across every organization
 // they've acted in, newest first. Optional from/to bound created_at.
-func (s *service) listAuditLog(ctx context.Context, authSub string, limit int, cursor string, from, to *time.Time) ([]audit.EventRecord, string, error) {
-	records, next, err := audit.ListByActorCursor(ctx, s.pool, authSub, limit, cursor, from, to)
+func (s *service) listAuditLog(ctx context.Context, authSub string, limit int, cursor string, from, to *time.Time, search string) ([]audit.EventRecord, string, error) {
+	records, next, err := audit.ListByActorCursor(ctx, s.pool, authSub, limit, cursor, from, to, search)
 	if err != nil {
 		return nil, "", apperr.Internal("AUDIT_LOG_FETCH_FAILED", "failed to list audit log", err)
 	}
@@ -623,8 +634,8 @@ func (s *service) listAuditLog(ctx context.Context, authSub string, limit int, c
 }
 
 // exportAuditLog streams the caller's own audit trail as CSV.
-func (s *service) exportAuditLog(ctx context.Context, authSub string, from, to *time.Time, w io.Writer) error {
-	return audit.ExportByActor(ctx, s.pool, authSub, from, to, w)
+func (s *service) exportAuditLog(ctx context.Context, authSub string, from, to *time.Time, search string, w io.Writer) error {
+	return audit.ExportByActor(ctx, s.pool, authSub, from, to, search, w)
 }
 
 // recordLoginEvent inserts a login event, rate-gated to once per 30 minutes

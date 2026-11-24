@@ -24,18 +24,21 @@ export function useNotifications(
   organizationId?: string,
   cursor?: string,
   limit = 20,
-  channel?: string
+  channel?: string,
+  search?: string
 ) {
   const params = new URLSearchParams({ limit: String(limit) })
   if (organizationId) params.set("organization_id", organizationId)
   if (cursor !== undefined) params.set("cursor", cursor)
   if (channel) params.set("channel", channel)
+  if (search) params.set("q", search)
   return useHTTPQuery<Notification[]>({
     queryKey: [
       ...queryKeys.account.notifications(organizationId),
       cursor,
       limit,
       channel,
+      search,
     ],
     url: `${API.me("notifications")}?${params.toString()}`,
     options: { retry: false },

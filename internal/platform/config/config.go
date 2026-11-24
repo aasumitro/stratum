@@ -90,6 +90,7 @@ type Config struct {
 	WebhookSecretEncryptionKeyVersion int `env:"WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION" envDefault:"1"`
 
 	Postgres PostgresConfig
+	Legal    LegalConfig
 	Redis    RedisConfig
 	RabbitMQ RabbitMQConfig
 	Auth     AuthConfig
@@ -99,6 +100,16 @@ type Config struct {
 	Xendit   XenditConfig
 	SMTP     SMTPConfig
 	Storage  StorageConfig
+}
+
+// LegalConfig names the legal documents a user must accept: an opaque version
+// (e.g. a date) and the URL of the text, for each. A document with no version
+// is not required, so acceptance is off until the adopting project sets them.
+type LegalConfig struct {
+	TermsVersion   string `env:"LEGAL_TERMS_VERSION"`
+	TermsURL       string `env:"LEGAL_TERMS_URL"`
+	PrivacyVersion string `env:"LEGAL_PRIVACY_VERSION"`
+	PrivacyURL     string `env:"LEGAL_PRIVACY_URL"`
 }
 
 type PostgresConfig struct {
@@ -243,6 +254,19 @@ func Load() (*Config, error) {
 	} {
 		if retention.days <= 0 {
 			return nil, fmt.Errorf("config: %s must be > 0, got %d", retention.env, retention.days)
+		}
+	}
+
+	// A required document needs a page the user can read before accepting it.
+	for _, doc := range []struct{ env, version, url string }{
+		{"LEGAL_TERMS", cfg.Legal.TermsVersion, cfg.Legal.TermsURL},
+		{"LEGAL_PRIVACY", cfg.Legal.PrivacyVersion, cfg.Legal.PrivacyURL},
+	} {
+		if doc.version == "" {
+			continue
+		}
+		if u, err := url.Parse(doc.url); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return nil, fmt.Errorf("config: %s_URL must be an http(s) URL when %s_VERSION is set", doc.env, doc.env)
 		}
 	}
 

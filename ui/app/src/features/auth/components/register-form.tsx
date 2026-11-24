@@ -17,6 +17,19 @@ import {
   createPasswordSchema,
   fieldValidator,
 } from "@/lib/validation/schemas"
+import { ConsentLinks } from "@/features/account/components/consent-links"
+import type { ConsentStatus } from "@/types/account"
+
+// Links to the legal documents before sign-up, from the build's environment.
+// Acceptance itself is recorded at onboarding, against the API's versions.
+const registerLegalLinks: Pick<ConsentStatus, "document" | "url">[] = (
+  [
+    ["terms", import.meta.env.VITE_LEGAL_TERMS_URL],
+    ["privacy", import.meta.env.VITE_LEGAL_PRIVACY_URL],
+  ] as const
+)
+  .filter(([, url]) => typeof url === "string" && url !== "")
+  .map(([document, url]) => ({ document, url: url as string }))
 
 export function RegisterForm() {
   const { t } = useTranslation()
@@ -203,7 +216,14 @@ export function RegisterForm() {
         </form.Subscribe>
 
         <p className="text-center text-xs text-muted-foreground">
-          {t("auth.register.terms")}
+          {registerLegalLinks.length > 0 ? (
+            <>
+              {t("auth.register.termsWithLinks")}{" "}
+              <ConsentLinks items={registerLegalLinks} />
+            </>
+          ) : (
+            t("auth.register.terms")
+          )}
         </p>
       </form>
 

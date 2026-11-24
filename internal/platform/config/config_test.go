@@ -380,3 +380,32 @@ func TestWarnPlaintextTransport(t *testing.T) {
 		})
 	}
 }
+
+// A legal document is required only when its version is set, and then needs an
+// http(s) URL the user can read.
+func TestLoad_LegalDocuments(t *testing.T) {
+	cases := []struct {
+		name, version, url string
+		wantErr            bool
+	}{
+		{"off", "", "", false},
+		{"set with URL", "2026-11-01", "https://example.com/terms", false},
+		{"version without URL", "2026-11-01", "", true},
+		{"relative URL", "2026-11-01", "/terms", true},
+		{"other scheme", "2026-11-01", "ftp://example.com/terms", true},
+		{"no host", "2026-11-01", "https://", true},
+	}
+	for _, doc := range []string{"TERMS", "PRIVACY"} {
+		for _, tc := range cases {
+			t.Run(doc+" "+tc.name, func(t *testing.T) {
+				setRequiredEnv(t)
+				t.Setenv("LEGAL_"+doc+"_VERSION", tc.version)
+				t.Setenv("LEGAL_"+doc+"_URL", tc.url)
+				_, err := config.Load()
+				if tc.wantErr != (err != nil) {
+					t.Fatalf("wantErr %v, got %v", tc.wantErr, err)
+				}
+			})
+		}
+	}
+}

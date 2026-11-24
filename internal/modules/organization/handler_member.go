@@ -29,8 +29,9 @@ import (
 // @Router       /organizations/{organizationID}/members [get]
 func (h *handler) listMembers(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
+	role, _ := middleware.MemberRoleFromContext(c)
 
-	members, err := h.svc.listMembers(c.Request.Context(), ws.ID)
+	members, err := h.svc.listMembers(c.Request.Context(), ws.ID, role == contracts.RoleOwner || role == contracts.RoleAdmin)
 	if err != nil {
 		response.FromError(c, err)
 		return

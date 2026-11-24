@@ -292,7 +292,7 @@ func (r *repository) lockOrganizationOwner(ctx context.Context, q db.Querier, id
 	return owner, nil
 }
 
-func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs *[]string) error {
+func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs *[]string, requireMFA *bool) error {
 	// Only include allowed_ips in the patch when the caller actually sent
 	// it — jsonb's `||` operator leaves keys absent from the right-hand
 	// operand untouched, so an omitted field never overwrites the existing
@@ -300,6 +300,9 @@ func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timez
 	patch := map[string]any{}
 	if allowedIPs != nil {
 		patch[settingAllowedIPs] = *allowedIPs
+	}
+	if requireMFA != nil {
+		patch[settingRequireMFA] = *requireMFA
 	}
 	settingsJSON, _ := json.Marshal(patch)
 	_, err := q.Exec(ctx, `

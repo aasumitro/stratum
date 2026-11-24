@@ -27,3 +27,12 @@ export interface UserTask {
   created_at: string
   updated_at: string
 }
+
+// A legal document the user must accept (GET /me/consents).
+export interface ConsentStatus {
+  document: "terms" | "privacy"
+  version: string
+  url: string
+  accepted_version?: string
+  accepted_at?: string
+}

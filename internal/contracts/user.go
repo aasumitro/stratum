@@ -11,6 +11,8 @@ type UserInfo struct {
 	Name      string
 	AvatarURL string
 	Lang      string // from account.users.preferences.lang; empty if unset
+	// MFAEnabled is account.users.mfa_enabled: the user has a verified factor.
+	MFAEnabled bool
 }
 
 // UserReader is implemented by the user module and consumed by modules

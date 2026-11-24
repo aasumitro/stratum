@@ -20,7 +20,7 @@ import (
 // failure) fails open — members are returned with profile fields omitted
 // rather than the whole list erroring out, same nil-safe convention as
 // every other optional cross-module dependency in this codebase.
-func (s *service) listMembers(ctx context.Context, organizationID string) ([]memberView, error) {
+func (s *service) listMembers(ctx context.Context, organizationID string, withMFA bool) ([]memberView, error) {
 	var rows []membershipRecord
 	err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
 		var err error
@@ -55,6 +55,9 @@ func (s *service) listMembers(ctx context.Context, organizationID string) ([]mem
 			}
 			if p.AvatarURL != "" {
 				mv.AvatarURL = &p.AvatarURL
+			}
+			if withMFA {
+				mv.MFAEnabled = &p.MFAEnabled
 			}
 		}
 		out[i] = mv

@@ -6,12 +6,32 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-**Upgrade:** run `make migrate-up` (migrations `000016`, `000017`) before starting the API or worker. `000016` first
+**Upgrade:** run `make migrate-up` (migrations `000016`–`000021`) before starting the API or worker. `000016` first
 reconciles owner memberships to `organizations.owner_id` (the `owner_id` member becomes the one active owner, any other
 owner membership becomes admin; an organization whose `owner_id` has no membership is left as it is), then adds the index.
 
 ### Added
 
+- Organization: an owner can require two-factor authentication for every member (Settings → Security). The policy is
+  stored in `settings.require_mfa`; while it is on, a session without a verified second factor gets 403
+  `ORGANIZATION_MFA_REQUIRED` on every organization route except leaving, and the web app shows how to set up MFA
+  instead of leaving the organization. Turning it on needs the owner's own session to be MFA-verified (422
+  `MFA_ENROLLMENT_REQUIRED`). Owners and admins see which members have no MFA (`mfa_enabled` on the members list).
+- Organization: a change the provider's operators make in Studio to an organization's data (the organization, its
+  subscription, invoices, payment links, payments, add-ons, coupon redemptions, queued actions) now shows in that
+  organization's audit log as "Provider support", filterable as its own actor. The log hides the operator's login role
+  and IP address. Migration `000018`; operator changes recorded before it stay out of organization logs.
+- Account: acceptance of the terms of service and privacy policy is recorded, per version, with IP address and user
+  agent (`account.consents`, migration `000019`). Set `LEGAL_TERMS_VERSION`/`_URL` and `LEGAL_PRIVACY_VERSION`/`_URL`
+  to turn it on (off by default). `GET /me/consents` lists what to accept; `POST /me/consents` accepts only the current
+  version (409 `CONSENT_VERSION_OUTDATED`). The web app asks at onboarding and, when a version changes, blocks the app
+  until the user accepts or signs out. `VITE_LEGAL_TERMS_URL`/`VITE_LEGAL_PRIVACY_URL` link the documents on sign-up.
+  The records are in the data export and are deleted with the account.
+- Search: the organization audit log, the personal audit log (and both CSV exports) and the notifications feed take
+  a `q` search parameter that matches anywhere in the route and before/after values (audit) or the subject and body
+  (notifications), with a search box in each. The audit log is backed by a `pg_trgm` trigram index (migrations
+  `000020`, `000021`, built `CONCURRENTLY`; recovery from a failed build in `docs/12-operations.md`). A term under
+  three characters is 422 `SEARCH_TOO_SHORT`. The audit `resource` filter now matches `%`, `_` and `\` literally.
 - Organization: a "Roles & permissions" reference, opened from the Members section for every role, built from the same
   permission matrix the app enforces.
 - CI: an `Images` job builds the API and worker images, scans each with Trivy (fails on a fixable HIGH/CRITICAL) and
@@ -29,6 +49,8 @@ owner membership becomes admin; an organization whose `owner_id` has no membersh
 
 ### Fixed
 
+- CI: runs only on pull requests to `main`. A push to `dev` with the release pull request open no longer starts a
+  second, identical run.
 - Organization: an organization can no longer end up with two owner memberships (migration `000016`). Suspend and role
   change re-check the owner under the organization lock a transfer takes, and never move an owner membership. Account
   deletion removes memberships first and never the owner membership of an organization that is not deleted: a user made

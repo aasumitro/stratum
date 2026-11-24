@@ -310,6 +310,7 @@ func (h *handler) listSessions(c *gin.Context) {
 // @Param        cursor  query     string  false  "pagination cursor from a previous response"
 // @Param        from    query     string  false  "RFC3339 start timestamp"
 // @Param        to      query     string  false  "RFC3339 end timestamp"
+// @Param        q       query     string  false  "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)"
 // @Success      200     {object}  response.Payload{data=[]audit.EventRecord}
 // @Failure      401     {object}  response.Payload  "missing/invalid auth token"
 // @Router       /me/audit-log [get]
@@ -331,7 +332,12 @@ func (h *handler) auditLog(c *gin.Context) {
 		}
 	}
 
-	events, nextCursor, err := h.svc.listAuditLog(c.Request.Context(), reqctx.Subject(c), limit, c.Query("cursor"), from, to)
+	q, ok := request.SearchTerm(c)
+	if !ok {
+		return
+	}
+
+	events, nextCursor, err := h.svc.listAuditLog(c.Request.Context(), reqctx.Subject(c), limit, c.Query("cursor"), from, to, q)
 	if err != nil {
 		response.FromError(c, err)
 		return
@@ -347,6 +353,7 @@ func (h *handler) auditLog(c *gin.Context) {
 // @Security     BearerAuth
 // @Param        from  query     string  false  "RFC3339 start timestamp"
 // @Param        to    query     string  false  "RFC3339 end timestamp"
+// @Param        q     query     string  false  "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)"
 // @Success      200   {file}    file
 // @Failure      401   {object}  response.Payload  "missing/invalid auth token"
 // @Router       /me/audit-log/export [get]
@@ -363,11 +370,16 @@ func (h *handler) exportAuditLog(c *gin.Context) {
 		}
 	}
 
+	q, ok := request.SearchTerm(c)
+	if !ok {
+		return
+	}
+
 	c.Set("audit.action", "audit_log.export")
 	c.Header("Content-Type", "text/csv")
 	c.Header("Content-Disposition", "attachment; filename=audit-log.csv")
 
-	if err := h.svc.exportAuditLog(c.Request.Context(), reqctx.Subject(c), from, to, c.Writer); err != nil {
+	if err := h.svc.exportAuditLog(c.Request.Context(), reqctx.Subject(c), from, to, q, c.Writer); err != nil {
 		response.LogInternal(c, "AUDIT_LOG_EXPORT_FAILED", err)
 		c.Status(http.StatusInternalServerError)
 	}
@@ -493,4 +505,53 @@ func verifyWebhookSecret(headerSecret, configSecret string) bool {
 		return true
 	}
 	return middleware.SecureCompare(headerSecret, configSecret)
+}
+
+// listConsents godoc
+// @Summary      Legal documents to accept
+// @Description  Each required document (terms, privacy) with its current version and URL, and the version the
+// @Description  caller last accepted. Works before the profile exists. Empty when none is required.
+// @Tags         account
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  response.Payload{data=[]consentStatus}
+// @Failure      401  {object}  response.Payload  "missing/invalid auth token"
+// @Router       /me/consents [get]
+func (h *handler) listConsents(c *gin.Context) {
+	items, err := h.svc.consentStatus(c.Request.Context(), reqctx.Subject(c))
+	if err != nil {
+		response.FromError(c, err)
+		return
+	}
+	response.List(items, int64(len(items))).JSON(c, http.StatusOK)
+}
+
+type acceptConsentRequest struct {
+	Document string `json:"document" binding:"required,max=32"`
+	Version  string `json:"version" binding:"required,max=100"`
+}
+
+// acceptConsent godoc
+// @Summary      Accept a legal document
+// @Description  Records that the caller accepted the current version of a required document, with IP and user agent.
+// @Tags         account
+// @Accept       json
+// @Security     BearerAuth
+// @Param        body  body  acceptConsentRequest  true  "Document and version"
+// @Success      204   "no content"
+// @Failure      409   {object}  response.Payload  "CONSENT_VERSION_OUTDATED"
+// @Failure      422   {object}  response.Payload  "CONSENT_DOCUMENT_UNKNOWN or validation failed"
+// @Failure      401   {object}  response.Payload  "missing/invalid auth token"
+// @Router       /me/consents [post]
+func (h *handler) acceptConsent(c *gin.Context) {
+	var req acceptConsentRequest
+	if !request.Bind(c, &req) {
+		return
+	}
+	if err := h.svc.acceptConsent(c.Request.Context(), reqctx.Subject(c), req.Document, req.Version,
+		c.ClientIP(), c.Request.UserAgent()); err != nil {
+		response.FromError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

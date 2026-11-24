@@ -221,7 +221,14 @@
       "PDF_GENERATION_FAILED": "Gagal membuat PDF tagihan.",
       "WEBHOOK_FAILED": "Pemrosesan webhook gagal.",
       "ADDON_ATTACH_FAILED": "Gagal menambahkan add-on.",
-      "ADDON_DETACH_FAILED": "Gagal melepas add-on."
+      "ADDON_DETACH_FAILED": "Gagal melepas add-on.",
+      "ORGANIZATION_MFA_REQUIRED": "Organisasi ini mewajibkan autentikasi dua faktor.",
+      "MFA_ENROLLMENT_REQUIRED": "Masuk dengan autentikasi dua faktor sebelum mewajibkannya untuk organisasi.",
+      "CONSENT_VERSION_OUTDATED": "Ada versi terbaru dokumen ini. Tinjau lalu setujui kembali.",
+      "CONSENT_DOCUMENT_UNKNOWN": "Dokumen ini tidak perlu disetujui.",
+      "CONSENT_RECORD_FAILED": "Persetujuan Anda tidak dapat dicatat. Coba lagi.",
+      "CONSENT_STATUS_FAILED": "Dokumen yang perlu disetujui tidak dapat dimuat. Coba lagi.",
+      "SEARCH_TOO_SHORT": "Ketik minimal 3 karakter untuk mencari."
     },
     "validation": {
       "required": "Kolom {{field}} wajib diisi.",
@@ -428,7 +435,8 @@
         "title": "Mendekati batas penggunaan",
         "body": "Penggunaan {{metric}} berada di {{current}} / {{limit}}."
       }
-    }
+    },
+    "searchPlaceholder": "Cari notifikasi…"
   },
   "breadcrumb": {
     "dashboard": "Dasbor",
@@ -496,7 +504,8 @@
       "failed": "Gagal membuat akun",
       "emailAlreadyRegistered": "Akun dengan email ini sudah terdaftar. Silakan masuk sebagai gantinya.",
       "checkEmailTitle": "Periksa email Anda",
-      "checkEmailDesc": "Kami telah mengirimkan tautan konfirmasi ke {{email}}. Klik tautan tersebut untuk mengaktifkan akun Anda, lalu masuk."
+      "checkEmailDesc": "Kami telah mengirimkan tautan konfirmasi ke {{email}}. Klik tautan tersebut untuk mengaktifkan akun Anda, lalu masuk.",
+      "termsWithLinks": "Dengan membuat akun, Anda menyetujui:"
     },
     "forgotPassword": {
       "title": "Atur ulang kata sandi",
@@ -761,7 +770,8 @@
       "importRowError": "baris {{row}}: {{reason}}",
       "importMoreErrors": "+{{count}} lainnya",
       "downloadErrorRows": "Unduh baris bermasalah",
-      "actions": "Aksi"
+      "actions": "Aksi",
+      "noMfaBadge": "Tanpa MFA"
     },
     "invitations": {
       "count": "{{count}} undangan tertunda",
@@ -899,7 +909,15 @@
       "removeIp": "Hapus {{entry}}",
       "slugChangeConfirm": "Simpan dan perbarui slug",
       "slugChangeDescription": "Mengubah slug merusak tautan undangan, URL webhook, atau bookmark yang ada yang merujuk ke slug lama.",
-      "slugChangeTitle": "Mengubah slug merusak tautan yang ada"
+      "slugChangeTitle": "Mengubah slug merusak tautan yang ada",
+      "requireMfaTitle": "Wajibkan autentikasi dua faktor",
+      "requireMfaDescription": "Setiap anggota harus masuk dengan faktor kedua untuk membuka organisasi ini. Anggota yang belum punya tetap menjadi anggota dan diminta menyiapkannya.",
+      "requireMfaLabel": "Wajibkan autentikasi dua faktor untuk semua anggota",
+      "requireMfaNeedsAal2": "Siapkan autentikasi dua faktor di akun Anda sendiri dan masuk dengannya sebelum mengaktifkan ini.",
+      "requireMfaConfirmTitle": "Wajibkan autentikasi dua faktor?",
+      "requireMfaConfirmDescription_one": "{{count}} anggota aktif belum memakai autentikasi dua faktor dan akan diblokir sampai menyiapkannya.",
+      "requireMfaConfirmDescription_other": "{{count}} anggota aktif belum memakai autentikasi dua faktor dan akan diblokir sampai menyiapkannya.",
+      "requireMfaConfirm": "Wajibkan"
     },
     "danger": {
       "title": "Zona berbahaya",
@@ -994,6 +1012,7 @@
       "retentionNote": "Peristiwa audit disimpan sesuai jendela retensi paket Anda.",
       "copiedJson": "JSON peristiwa disalin",
       "systemActor": "Sistem",
+      "operatorActor": "Dukungan penyedia",
       "clearFiltersHint": "Tidak ada peristiwa yang cocok — hapus filter",
       "eventDetail": "Detail peristiwa",
       "copyJson": "Salin JSON peristiwa",
@@ -1001,7 +1020,8 @@
       "deviceLabel": "Perangkat",
       "noPayload": "Tidak ada data tambahan yang tercatat untuk event ini.",
       "pageDescription": "Catatan setiap tindakan yang dilakukan di organisasi ini.",
-      "viewFullLog": "Lihat Log Lengkap"
+      "viewFullLog": "Lihat Log Lengkap",
+      "searchPlaceholder": "Cari di log…"
     },
     "suspendedBanner": "Organisasi ini telah ditangguhkan. Hubungi dukungan untuk mengaktifkannya kembali.",
     "accessDenied": "Anda tidak lagi memiliki akses ke organisasi ini.",
@@ -1111,7 +1131,12 @@
     "suspendedOwnerBillingBanner": "Faktur belum dibayar — bayar untuk mengaktifkan kembali secara instan.",
     "suspendedOwnerExpiredBanner": "Langganan berakhir — lanjutkan untuk mengaktifkan kembali.",
     "suspendedOwnerSelfBanner": "Anda menjeda organisasi ini — aktifkan kembali untuk memulihkan akses.",
-    "suspendedOwnerSupportBanner": "Ditangguhkan oleh tim dukungan: {{reason}}. Hubungi dukungan untuk mencabutnya."
+    "suspendedOwnerSupportBanner": "Ditangguhkan oleh tim dukungan: {{reason}}. Hubungi dukungan untuk mencabutnya.",
+    "mfaGate": {
+      "title": "Organisasi ini mewajibkan autentikasi dua faktor",
+      "description": "Siapkan autentikasi dua faktor di akun Anda untuk melanjutkan. Anda juga bisa keluar dari organisasi.",
+      "setUp": "Siapkan autentikasi dua faktor"
+    }
   },
   "settings": {
     "title": "Pengaturan",
@@ -1672,7 +1697,8 @@
       "empty": "Belum ada aktivitas.",
       "fromDate": "Dari",
       "toDate": "Sampai",
-      "exportCsv": "Ekspor CSV"
+      "exportCsv": "Ekspor CSV",
+      "searchPlaceholder": "Cari aktivitas Anda…"
     },
     "preferencesSaved": "Preferensi disimpan",
     "timezone": "Zona waktu",
@@ -1688,5 +1714,16 @@
       "comingSoon": "Segera hadir",
       "comingSoonDescription": "Token API untuk akses terprogram belum tersedia."
     }
+  },
+  "legal": {
+    "documents": {
+      "terms": "Ketentuan Layanan",
+      "privacy": "Kebijakan Privasi"
+    },
+    "agree": "Saya telah membaca dan menyetujui:",
+    "gateTitle": "Setujui ketentuan untuk melanjutkan",
+    "gateDescription": "Baca dan setujui dokumen di bawah untuk tetap memakai aplikasi. Dokumen ini mungkin berubah sejak terakhir Anda setujui.",
+    "accept": "Setujui dan lanjutkan",
+    "acceptFailed": "Persetujuan Anda tidak dapat dicatat. Coba lagi."
   }
 }

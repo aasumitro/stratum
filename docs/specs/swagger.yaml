@@ -158,6 +158,18 @@ definitions:
       request_id:
         type: string
     type: object
+  acceptConsentRequest:
+    properties:
+      document:
+        maxLength: 32
+        type: string
+      version:
+        maxLength: 100
+        type: string
+    required:
+    - document
+    - version
+    type: object
   acceptInvitationRequest:
     properties:
       token:
@@ -254,6 +266,19 @@ definitions:
     - cycle
     - plan
     - terms_agreed
+    type: object
+  consentStatus:
+    properties:
+      accepted_at:
+        type: string
+      accepted_version:
+        type: string
+      document:
+        type: string
+      url:
+        type: string
+      version:
+        type: string
     type: object
   countryRecord:
     properties:
@@ -701,6 +726,11 @@ definitions:
         type: string
       joined_at:
         type: string
+      mfa_enabled:
+        description: |-
+          MFAEnabled is set only for an owner or admin caller, so they can see who
+          a require-MFA policy would shut out; members never see it.
+        type: boolean
       organization_id:
         type: string
       role:
@@ -1157,6 +1187,12 @@ definitions:
         type: array
       locale:
         type: string
+      require_mfa:
+        description: |-
+          RequireMFA follows the same rule: nil keeps the current policy. Turning it
+          on needs a session with a verified second factor, so the owner cannot
+          lock themselves out.
+        type: boolean
       timezone:
         type: string
     required:
@@ -1581,6 +1617,11 @@ paths:
         in: query
         name: to
         type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
+        type: string
       produces:
       - application/json
       responses:
@@ -1616,6 +1657,11 @@ paths:
       - description: RFC3339 end timestamp
         in: query
         name: to
+        type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
         type: string
       produces:
       - text/csv
@@ -1697,6 +1743,66 @@ paths:
       security:
       - BearerAuth: []
       summary: Upload an avatar
+      tags:
+      - account
+  /me/consents:
+    get:
+      description: |-
+        Each required document (terms, privacy) with its current version and URL, and the version the
+        caller last accepted. Works before the profile exists. Empty when none is required.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/consentStatus'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Legal documents to accept
+      tags:
+      - account
+    post:
+      consumes:
+      - application/json
+      description: Records that the caller accepted the current version of a required
+        document, with IP and user agent.
+      parameters:
+      - description: Document and version
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/acceptConsentRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "409":
+          description: CONSENT_VERSION_OUTDATED
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: CONSENT_DOCUMENT_UNKNOWN or validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Accept a legal document
       tags:
       - account
   /me/export:
@@ -1793,6 +1899,10 @@ paths:
       - description: filter by channel
         in: query
         name: channel
+        type: string
+      - description: search subject and body (at least 3 characters; 422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
         type: string
       - description: max results (default 20, max 100)
         in: query
@@ -2361,6 +2471,11 @@ paths:
         in: query
         name: resource
         type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
+        type: string
       - description: RFC3339 lower bound on created_at
         in: query
         name: from
@@ -2417,6 +2532,11 @@ paths:
       - description: filter by resource
         in: query
         name: resource
+        type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
         type: string
       - description: RFC3339 lower bound on created_at
         in: query
@@ -4025,7 +4145,9 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Updates timezone, locale, and the IP allowlist. Owner only.
+      description: |-
+        Updates timezone, locale, the IP allowlist and the require-MFA policy. Owner only.
+        Turning require_mfa on needs an aal2 session (422 MFA_ENROLLMENT_REQUIRED).
       parameters:
       - description: Organization ID
         in: path

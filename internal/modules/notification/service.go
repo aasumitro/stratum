@@ -292,7 +292,7 @@ func (s *service) resolveFirstOrganizationID(ctx context.Context, authSub string
 //     showing up on that first response to know there's more to load.
 func (s *service) listForUser(
 	ctx context.Context,
-	authSub, organizationID, channel, cursor string,
+	authSub, organizationID, channel, search, cursor string,
 	limit, offset int,
 	pageRequested bool,
 ) (*listResult, error) {
@@ -304,7 +304,7 @@ func (s *service) listForUser(
 	nextCursor := ""
 	err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
 		var err error
-		messages, err = s.repo.listMessages(ctx, q, authSub, organizationID, channel, cursor, limit, offset)
+		messages, err = s.repo.listMessages(ctx, q, authSub, organizationID, channel, search, cursor, limit, offset)
 		if err != nil {
 			return err
 		}
@@ -317,7 +317,7 @@ func (s *service) listForUser(
 			cursorMode = true
 			return nil
 		}
-		total, err = s.repo.countTotal(ctx, q, authSub, organizationID, channel)
+		total, err = s.repo.countTotal(ctx, q, authSub, organizationID, channel, search)
 		return err
 	})
 	if err != nil {

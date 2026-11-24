@@ -2,6 +2,7 @@ export const queryKeys = {
   account: {
     me: () => ["account", "me"] as const,
     tasks: () => ["account", "tasks"] as const,
+    consents: () => ["account", "consents"] as const,
     task: (id: string) => ["account", "task", id] as const,
     sessions: (cursor?: string) => ["account", "sessions", cursor] as const,
     notifications: (organizationId?: string) =>

@@ -369,6 +369,7 @@ func (s *service) updateSettings(
 	ctx context.Context,
 	organizationID, timezone, locale, callerIP string,
 	allowedIPs *[]string,
+	requireMFA *bool, callerAAL2 bool,
 ) error {
 	if err := validateSettings(timezone, locale); err != nil {
 		return err
@@ -378,8 +379,13 @@ func (s *service) updateSettings(
 	if allowedIPs != nil && ipLocksOutCaller(callerIP, *allowedIPs) {
 		return apperr.Validation("IP_ALLOWLIST_LOCKS_OUT_CALLER", ErrIPAllowlistLocksOutCaller.Error())
 	}
+	// Same reasoning for MFA: requiring it from a session without a second
+	// factor would shut the caller out on their next request.
+	if requireMFA != nil && *requireMFA && !callerAAL2 {
+		return apperr.Validation("MFA_ENROLLMENT_REQUIRED", "verify a second factor in this session before requiring MFA for the organization")
+	}
 	if err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
-		return s.repo.updateSettings(ctx, q, organizationID, timezone, locale, allowedIPs)
+		return s.repo.updateSettings(ctx, q, organizationID, timezone, locale, allowedIPs, requireMFA)
 	}); err != nil {
 		return apperr.Internal("SETTINGS_UPDATE_FAILED", "failed to update settings", err)
 	}

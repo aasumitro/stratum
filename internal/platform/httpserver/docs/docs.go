@@ -505,6 +505,12 @@ const docTemplate = `{
                         "description": "RFC3339 end timestamp",
                         "name": "to",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)",
+                        "name": "q",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -564,6 +570,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "RFC3339 end timestamp",
                         "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)",
+                        "name": "q",
                         "in": "query"
                     }
                 ],
@@ -688,6 +700,101 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            }
+        },
+        "/me/consents": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Each required document (terms, privacy) with its current version and URL, and the version the\ncaller last accepted. Works before the profile exists. Empty when none is required.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "account"
+                ],
+                "summary": "Legal documents to accept",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/Payload"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/consentStatus"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Records that the caller accepted the current version of a required document, with IP and user agent.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "account"
+                ],
+                "summary": "Accept a legal document",
+                "parameters": [
+                    {
+                        "description": "Document and version",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/acceptConsentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "no content"
+                    },
+                    "401": {
+                        "description": "missing/invalid auth token",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "409": {
+                        "description": "CONSENT_VERSION_OUTDATED",
+                        "schema": {
+                            "$ref": "#/definitions/Payload"
+                        }
+                    },
+                    "422": {
+                        "description": "CONSENT_DOCUMENT_UNKNOWN or validation failed",
                         "schema": {
                             "$ref": "#/definitions/Payload"
                         }
@@ -858,6 +965,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "filter by channel",
                         "name": "channel",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "search subject and body (at least 3 characters; 422 SEARCH_TOO_SHORT)",
+                        "name": "q",
                         "in": "query"
                     },
                     {
@@ -1912,6 +2025,12 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
+                        "description": "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
                         "description": "RFC3339 lower bound on created_at",
                         "name": "from",
                         "in": "query"
@@ -1999,6 +2118,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "filter by resource",
                         "name": "resource",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)",
+                        "name": "q",
                         "in": "query"
                     },
                     {
@@ -4579,7 +4704,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates timezone, locale, and the IP allowlist. Owner only.",
+                "description": "Updates timezone, locale, the IP allowlist and the require-MFA policy. Owner only.\nTurning require_mfa on needs an aal2 session (422 MFA_ENROLLMENT_REQUIRED).",
                 "consumes": [
                     "application/json"
                 ],
@@ -6060,6 +6185,23 @@ const docTemplate = `{
                 }
             }
         },
+        "acceptConsentRequest": {
+            "type": "object",
+            "required": [
+                "document",
+                "version"
+            ],
+            "properties": {
+                "document": {
+                    "type": "string",
+                    "maxLength": 32
+                },
+                "version": {
+                    "type": "string",
+                    "maxLength": 100
+                }
+            }
+        },
         "acceptInvitationRequest": {
             "type": "object",
             "required": [
@@ -6183,6 +6325,26 @@ const docTemplate = `{
                 "terms_agreed": {
                     "description": "TermsAgreed must be true — binding:\"required\" on a bool rejects both a\nmissing field and an explicit false, since the validator treats false\nas the zero value.",
                     "type": "boolean"
+                }
+            }
+        },
+        "consentStatus": {
+            "type": "object",
+            "properties": {
+                "accepted_at": {
+                    "type": "string"
+                },
+                "accepted_version": {
+                    "type": "string"
+                },
+                "document": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
                 }
             }
         },
@@ -6813,6 +6975,10 @@ const docTemplate = `{
                 },
                 "joined_at": {
                     "type": "string"
+                },
+                "mfa_enabled": {
+                    "description": "MFAEnabled is set only for an owner or admin caller, so they can see who\na require-MFA policy would shut out; members never see it.",
+                    "type": "boolean"
                 },
                 "organization_id": {
                     "type": "string"
@@ -7477,6 +7643,10 @@ const docTemplate = `{
                 },
                 "locale": {
                     "type": "string"
+                },
+                "require_mfa": {
+                    "description": "RequireMFA follows the same rule: nil keeps the current policy. Turning it\non needs a session with a verified second factor, so the owner cannot\nlock themselves out.",
+                    "type": "boolean"
                 },
                 "timezone": {
                     "type": "string"

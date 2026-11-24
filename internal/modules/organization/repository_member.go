@@ -28,6 +28,9 @@ type memberView struct {
 	Email          *string   `json:"email,omitempty"`
 	FullName       *string   `json:"full_name,omitempty"`
 	AvatarURL      *string   `json:"avatar_url,omitempty"`
+	// MFAEnabled is set only for an owner or admin caller, so they can see who
+	// a require-MFA policy would shut out; members never see it.
+	MFAEnabled *bool `json:"mfa_enabled,omitempty"`
 }
 
 // findFirstOrganizationIDByMember returns the earliest-joined organization for

@@ -101,6 +101,10 @@ func NewAPIModules(
 	organizationMod.SetCountryResolver(countryResolver)
 	refMod.SetCountryResolver(countryResolver)
 	accountMod.SetOrganizationWriter(organizationMod)
+	accountMod.SetLegalDocuments([]account.LegalDocument{
+		{Name: "terms", Version: cfg.Legal.TermsVersion, URL: cfg.Legal.TermsURL},
+		{Name: "privacy", Version: cfg.Legal.PrivacyVersion, URL: cfg.Legal.PrivacyURL},
+	})
 	accountMod.SetNotificationWriter(notifMod)
 	accountMod.SetBillingWriter(billingMod)
 	accountMod.SetOrganizationReader(organizationMod)

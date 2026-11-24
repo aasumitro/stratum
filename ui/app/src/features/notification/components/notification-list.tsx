@@ -85,12 +85,15 @@ interface Props {
   organizationId?: string
   organizationNames: Record<string, string>
   category?: NotificationCategory
+  // Server-side search over subject and body; "" means none.
+  search?: string
 }
 
 export function NotificationList({
   organizationId,
   organizationNames,
   category,
+  search,
 }: Props) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -101,7 +104,9 @@ export function NotificationList({
   const { data, isLoading, isFetching } = useNotifications(
     organizationId,
     cursor,
-    20
+    20,
+    undefined,
+    search || undefined
   )
   const { items: allItems, nextCursor } = useCursorAccumulator<Notification>(
     data,

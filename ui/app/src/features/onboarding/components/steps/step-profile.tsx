@@ -19,7 +19,15 @@ import { API } from "@/lib/api/path"
 import { parseApiError } from "@/lib/api/error"
 import { useAuth } from "@/components/auth-provider"
 import { useTheme } from "@/components/theme-provider"
-import { useUpdatePreferences, useUploadAvatar } from "@/features/account/hooks"
+import {
+  pendingConsents,
+  useAcceptConsents,
+  useConsents,
+  useUpdatePreferences,
+  useUploadAvatar,
+} from "@/features/account/hooks"
+import { ConsentLinks } from "@/features/account/components/consent-links"
+import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/ui"
 import i18n from "@/lib/i18n"
 import type { UserProfile } from "@/types/account"
@@ -82,7 +90,14 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
     },
   })
 
-  const isPending = savingProfile || savingPreferences
+  // Required legal documents are accepted here, before the profile exists. If
+  // the list cannot be read, the app's consent gate asks again later.
+  const { data: consentsData } = useConsents()
+  const pending = pendingConsents(consentsData?.data)
+  const { accept, isPending: accepting } = useAcceptConsents()
+  const [agreed, setAgreed] = useState(false)
+
+  const isPending = savingProfile || savingPreferences || accepting
 
   const form = useForm({
     defaultValues: {
@@ -90,8 +105,19 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
       display_name: "",
       language: i18n.language === "id" ? "id" : "en",
     },
-    onSubmit: ({ value }) => {
+    onSubmit: async ({ value }) => {
       setServerError(null)
+      if (pending.length > 0) {
+        try {
+          await accept(pending)
+        } catch (err) {
+          // After any failure (a 409 means a newer version is in force) the
+          // user agrees again to what the refreshed list shows.
+          setAgreed(false)
+          setServerError(parseApiError(err, t("legal.acceptFailed")))
+          return
+        }
+      }
       mutate({
         email: user?.email ?? "",
         full_name: value.full_name.trim(),
@@ -292,6 +318,23 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
           </p>
         )}
 
+        {pending.length > 0 && (
+          <div className="flex items-start gap-2">
+            <Checkbox
+              id="onboarding-consent"
+              checked={agreed}
+              onCheckedChange={(checked) => setAgreed(checked === true)}
+            />
+            <Label
+              htmlFor="onboarding-consent"
+              className="flex flex-col items-start gap-1 text-sm font-normal"
+            >
+              {t("legal.agree")}
+              <ConsentLinks items={pending} />
+            </Label>
+          </div>
+        )}
+
         <form.Subscribe
           selector={(s) =>
             s.values.full_name.trim().length > 0 &&
@@ -301,7 +344,7 @@ export function StepProfile({ onNext }: { onNext: () => void }) {
           {(valid) => (
             <Button
               type="submit"
-              disabled={!valid || isPending}
+              disabled={!valid || isPending || (pending.length > 0 && !agreed)}
               className="mt-2 w-full"
             >
               {isPending && (

@@ -17,7 +17,12 @@ export function useUpdateOrganizationSettings(organizationId: string) {
   const { t } = useTranslation()
   return useHTTPActionPatch<
     Organization,
-    { timezone: string; locale: string; allowed_ips?: string[] }
+    {
+      timezone: string
+      locale: string
+      allowed_ips?: string[]
+      require_mfa?: boolean
+    }
   >({
     url: API.organizations(organizationId, "settings"),
     options: {
@@ -27,8 +32,10 @@ export function useUpdateOrganizationSettings(organizationId: string) {
           queryKey: queryKeys.organizations.detail(organizationId),
         })
       },
-      onError: () =>
-        toast.error(t("organization.settings.settingsUpdateFailed")),
+      onError: (err) =>
+        toast.error(
+          parseApiError(err, t("organization.settings.settingsUpdateFailed"))
+        ),
     },
   })
 }

@@ -91,6 +91,7 @@ func ConcurrentSSELimitMiddleware(redisClient *goredis.Client, maxStreams int) g
 // @Security     BearerAuth
 // @Param        organization_id  query     string  false  "filter by organization"
 // @Param        channel          query     string  false  "filter by channel"
+// @Param        q                query     string  false  "search subject and body (at least 3 characters; 422 SEARCH_TOO_SHORT)"
 // @Param        limit            query     int     false  "max results (default 20, max 100)"
 // @Param        page             query     int     false  "page number; sending this forces page-based pagination (default 1)"
 // @Param        cursor           query     string  false  "pagination cursor from a previous response; switches to cursor mode"
@@ -98,6 +99,10 @@ func ConcurrentSSELimitMiddleware(redisClient *goredis.Client, maxStreams int) g
 // @Failure      401              {object}  response.Payload  "missing/invalid auth token"
 // @Router       /me/notifications [get]
 func (h *handler) listNotifications(c *gin.Context) {
+	search, ok := request.SearchTerm(c)
+	if !ok {
+		return
+	}
 	limit := queryIntClamped(c, "limit", 20, 100)
 	cursor := c.Query("cursor")
 	pageRequested := c.Query("page") != ""
@@ -113,6 +118,7 @@ func (h *handler) listNotifications(c *gin.Context) {
 		reqctx.Subject(c),
 		c.Query("organization_id"),
 		c.Query("channel"),
+		search,
 		cursor,
 		limit,
 		offset,

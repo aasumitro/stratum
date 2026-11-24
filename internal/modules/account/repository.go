@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/aasumitro/stratum/internal/platform/audit"
 	"github.com/aasumitro/stratum/internal/platform/db"
 )
@@ -19,6 +21,8 @@ type userRecord struct {
 	Preferences json.RawMessage `json:"preferences"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
+	// MFAEnabled is read only by findUsersByAuthSubs, for other modules.
+	MFAEnabled bool `json:"-"`
 }
 
 type repository struct{}
@@ -117,7 +121,7 @@ func (r *repository) findUserByEmail(ctx context.Context, q db.Querier, email st
 // with profile data without an N+1 lookup per row.
 func (r *repository) findUsersByAuthSubs(ctx context.Context, q db.Querier, authSubs []string) ([]userRecord, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, auth_sub, email, full_name, avatar_url, preferences, created_at, updated_at
+		SELECT id, auth_sub, email, full_name, avatar_url, preferences, created_at, updated_at, mfa_enabled
 		FROM account.users WHERE auth_sub = ANY($1)`,
 		authSubs,
 	)
@@ -129,7 +133,7 @@ func (r *repository) findUsersByAuthSubs(ctx context.Context, q db.Querier, auth
 	var out []userRecord
 	for rows.Next() {
 		var u userRecord
-		if err := rows.Scan(&u.ID, &u.AuthSub, &u.Email, &u.FullName, &u.AvatarURL, &u.Preferences, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.AuthSub, &u.Email, &u.FullName, &u.AvatarURL, &u.Preferences, &u.CreatedAt, &u.UpdatedAt, &u.MFAEnabled); err != nil {
 			return nil, fmt.Errorf("account.findUsersByAuthSubs: scan: %w", err)
 		}
 		out = append(out, u)
@@ -230,11 +234,18 @@ func (r *repository) updateAvatarURL(ctx context.Context, q db.Querier, authSub,
 	return u, nil
 }
 
-func (r *repository) deleteUser(ctx context.Context, q db.Querier, authSub string) error {
-	if _, err := q.Exec(ctx, `DELETE FROM account.users WHERE auth_sub = $1`, authSub); err != nil {
-		return fmt.Errorf("account.deleteUser: %w", err)
-	}
-	return nil
+// deleteUser removes the user's row and their consent history in one
+// transaction, so a failure keeps both for the retry.
+func (r *repository) deleteUser(ctx context.Context, pool *pgxpool.Pool, authSub string) error {
+	return db.WithTx(ctx, pool, func(tx db.Querier) error {
+		if err := r.deleteConsents(ctx, tx, authSub); err != nil {
+			return fmt.Errorf("account.deleteUser: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM account.users WHERE auth_sub = $1`, authSub); err != nil {
+			return fmt.Errorf("account.deleteUser: %w", err)
+		}
+		return nil
+	})
 }
 
 func (r *repository) deleteLoginEvents(ctx context.Context, q db.Querier, authSub string) error {
