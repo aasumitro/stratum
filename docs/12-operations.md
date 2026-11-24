@@ -153,11 +153,14 @@ make db-restore-verify FILE=backups/<file>    # restores into a scratch database
 
 **Payment reconciliation** — Billing state only advances on a verified gateway webhook. If a customer paid but nothing changed, check that the webhook was received (and its signing secret), then use Studio's support tools to mark the invoice paid as a manual override (which is logged).
 
-**Failed concurrent index build (migration `000021`)** — `idx_audit_search` is built with `CREATE INDEX
-CONCURRENTLY`. If that build fails (a lock timeout, a cancelled session), Postgres leaves an INVALID index behind and
-`migrate` marks version 21 dirty. Recover with `DROP INDEX CONCURRENTLY IF EXISTS audit.idx_audit_search;`, then
-`make migrate-force version=20`, then `make migrate-up`. Check with `SELECT indisvalid FROM pg_index WHERE indexrelid =
-'audit.idx_audit_search'::regclass;`.
+**Failed concurrent index build (migrations `000021`, `000023`)** — two indexes are built with `CREATE INDEX
+CONCURRENTLY`. If a build fails (a lock timeout, a cancelled session), Postgres leaves an INVALID index behind and
+`migrate` marks that version dirty. Drop the index, force the version before it, and migrate again:
+
+| Migration | Recover | Check |
+|---|---|---|
+| `000021` | `DROP INDEX CONCURRENTLY IF EXISTS audit.idx_audit_search;` then `make migrate-force version=20`, then `make migrate-up` | `SELECT indisvalid FROM pg_index WHERE indexrelid = 'audit.idx_audit_search'::regclass;` |
+| `000023` | `DROP INDEX CONCURRENTLY IF EXISTS notification.idx_messages_held;` then `make migrate-force version=22`, then `make migrate-up` | `SELECT indisvalid FROM pg_index WHERE indexrelid = 'notification.idx_messages_held'::regclass;` |
 
 **Degraded readiness** — A 503 from `/health/ready` means a dependency check failed; `/health/stats` shows pool and GC pressure. Check Postgres, Redis, and RabbitMQ reachability. Don't restart infrastructure from inside an automated session — surface it to a human.
 

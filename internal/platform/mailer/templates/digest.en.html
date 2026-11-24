@@ -1,0 +1,13 @@
+<!-- subject: Your daily summary -->
+<h2>Your daily summary</h2>
+<p>Hi, here is what happened since your last summary.</p>
+<table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+  {{range .DigestItems}}
+  <tr>
+    <td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb;"><strong>{{.Subject}}</strong>{{if .Summary}}<br>{{.Summary}}{{end}}{{if .OrganizationName}}<br><span style="color: #6b7280;">{{.OrganizationName}}</span>{{end}}</td>
+    <td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280; text-align: right; white-space: nowrap;">{{.Date}}</td>
+  </tr>
+  {{end}}
+</table>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Open notifications</a></p>
+<p style="color: #6b7280; font-size: 13px;">You get these in one email a day because you turned on the daily digest. You can turn it off in your notification settings.</p>

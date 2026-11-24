@@ -13,6 +13,8 @@ type UserInfo struct {
 	Lang      string // from account.users.preferences.lang; empty if unset
 	// MFAEnabled is account.users.mfa_enabled: the user has a verified factor.
 	MFAEnabled bool
+	// Timezone is account.users.preferences.timezone (IANA); empty if unset.
+	Timezone string
 }
 
 // UserReader is implemented by the user module and consumed by modules

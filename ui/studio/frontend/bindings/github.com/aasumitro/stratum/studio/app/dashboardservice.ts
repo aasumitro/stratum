@@ -12,6 +12,17 @@ import {
 // @ts-ignore: Unused imports
 import * as $models from "./models.js"
 
+/**
+ * GetCancellationReasons reports the reasons owners gave when cancelling in
+ * the last days (clamped to 1..365), read-only.
+ */
+export function GetCancellationReasons(
+  projectID: string,
+  days: number
+): $CancellablePromise<$models.CancellationReport> {
+  return $Call.ByID(643879056, projectID, days)
+}
+
 export function GetMetrics(
   projectID: string
 ): $CancellablePromise<$models.ProjectMetrics> {

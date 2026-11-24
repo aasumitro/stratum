@@ -16,8 +16,15 @@ import { Card } from "@/components/ui/card"
 import { formatBytes } from "../components/table-utils"
 import { formatMoney, STATUS_COLORS } from "./utils"
 import { MetricCard } from "./metric-card"
+import { CancellationReasonsCard } from "./cancellation-reasons-card"
 
-export function DashboardContent({ metrics }: { metrics: ProjectMetrics }) {
+export function DashboardContent({
+  metrics,
+  projectId,
+}: {
+  metrics: ProjectMetrics
+  projectId: string
+}) {
   const activeSubscriptions =
     metrics.subscriptions_by_status
       ?.filter(
@@ -116,6 +123,9 @@ export function DashboardContent({ metrics }: { metrics: ProjectMetrics }) {
           </div>
         </Card>
       ) : null}
+
+      {/* Row 4 — why owners cancel */}
+      <CancellationReasonsCard projectId={projectId} />
     </div>
   )
 }

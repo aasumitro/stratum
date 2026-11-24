@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { lazy, Suspense, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Link } from "@tanstack/react-router"
 import { IconLoader2 } from "@tabler/icons-react"
@@ -21,7 +21,29 @@ import {
 } from "@/features/billing/hooks"
 import { usePermissions } from "@/hooks/use-permissions"
 import { formatPrice } from "@/features/billing/utils"
-import type { BillingCycle, CancelReason } from "@/types/billing"
+import type {
+  BillingCycle,
+  CancelReason,
+  SubscriptionStatus,
+} from "@/types/billing"
+import {
+  retentionOffers,
+  type RetentionOffer,
+} from "@/features/billing/retention-offer"
+
+// The offer's own wizards, loaded only when an offer is taken.
+const DowngradeWizard = lazy(() =>
+  import("./downgrade-wizard").then((m) => ({ default: m.DowngradeWizard }))
+)
+const UpgradeWizard = lazy(() =>
+  import("./upgrade-wizard").then((m) => ({ default: m.UpgradeWizard }))
+)
+
+// Shown for these reasons when the build sets VITE_CONTACT_URL.
+const CONTACT_REASONS: CancelReason[] = [
+  "missing_features",
+  "switching_provider",
+]
 
 function formatDate(s?: string) {
   if (!s) return "—"
@@ -47,6 +69,11 @@ interface Props {
   currency: string
   periodEnd?: string
   canCancel: boolean
+  subscriptionStatus: SubscriptionStatus
+  // False while a trial runs (nothing is paid to save on) or any change is
+  // already scheduled (a plan change, a cancellation, an add-on decrease):
+  // an offer would replace it or be refused.
+  offersAllowed: boolean
 }
 
 type Step = "reason" | "review" | "success"
@@ -58,12 +85,15 @@ export function SubscriptionCancelDialog({
   currency,
   periodEnd,
   canCancel,
+  subscriptionStatus,
+  offersAllowed,
 }: Props) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [step, setStep] = useState<Step>("reason")
   const [reason, setReason] = useState<CancelReason | "">("")
   const [details, setDetails] = useState("")
+  const [takenOffer, setTakenOffer] = useState<RetentionOffer | null>(null)
 
   // A cancel never ends access early, on any status (trialing included): it
   // is scheduled for the end of the paid period or trial, so the success
@@ -91,6 +121,57 @@ export function SubscriptionCancelDialog({
         t
       )
     : undefined
+
+  const contactURL = import.meta.env.VITE_CONTACT_URL as string | undefined
+  // A web page opens in a new tab; a mailto: link must not leave an empty one.
+  const contactNewTab = /^https?:/i.test(contactURL ?? "")
+
+  const offers = offersAllowed
+    ? retentionOffers(plansData?.data ?? [], plan, cycle, displayCurrency)
+    : []
+
+  // Taking an offer swaps this dialog for that change's own wizard.
+  if (takenOffer) {
+    const wizardProps = {
+      organizationId,
+      open: true,
+      // Closing the wizard ends the whole flow; Back returns to the reasons.
+      onOpenChange: (v: boolean) => {
+        if (v) return
+        setTakenOffer(null)
+        setReason("")
+        setDetails("")
+      },
+      targetPlan: takenOffer.plan.id,
+      targetCycle: takenOffer.cycle,
+      currentPlan: plan,
+      currentCycle: cycle,
+      currentPeriodEnd: periodEnd,
+      currency,
+      onBackToPlans: () => {
+        setTakenOffer(null)
+        setOpen(true)
+      },
+    }
+    return (
+      <Suspense fallback={null}>
+        {takenOffer.kind === "downgrade" ? (
+          <DowngradeWizard
+            {...wizardProps}
+            subscriptionStatus={subscriptionStatus}
+          />
+        ) : (
+          <UpgradeWizard {...wizardProps} />
+        )}
+      </Suspense>
+    )
+  }
+
+  function takeOffer(offer: RetentionOffer) {
+    setOpen(false)
+    setStep("reason")
+    setTakenOffer(offer)
+  }
 
   // The subscription refetches after a cancel, and canCancel can turn false
   // underneath an open dialog (the period ending meanwhile). Unmounting then
@@ -281,19 +362,72 @@ export function SubscriptionCancelDialog({
             onValueChange={(v) => setReason((v as CancelReason) ?? "")}
           >
             {REASONS.map((r) => (
-              <label key={r} className="flex flex-col gap-1">
-                <div className="flex items-center gap-2">
+              <div key={r} className="flex flex-col gap-1">
+                <label className="flex items-center gap-2">
                   <RadioGroupItem value={r} />
                   <span className="text-sm font-medium">
                     {t(`billing.cancel.reasons.${r}`)}
                   </span>
-                </div>
+                </label>
                 {reason === r && r !== "other" && (
                   <p className="ml-6 text-xs text-muted-foreground">
                     {t(`billing.cancel.hints.${r}`)}
                   </p>
                 )}
-              </label>
+                {reason === r && r === "too_expensive" && offers.length > 0 && (
+                  <div className="ml-6 flex flex-col gap-2">
+                    {offers.map((o) => (
+                      <div
+                        key={o.kind}
+                        className="flex items-center justify-between gap-3 rounded-lg border p-2.5"
+                      >
+                        <p className="text-xs">
+                          {t(`billing.cancel.offers.${o.kind}`, {
+                            plan: o.plan.name,
+                            price: formatPrice(
+                              o.price,
+                              displayCurrency,
+                              o.cycle,
+                              t
+                            ),
+                            instead: formatPrice(
+                              o.instead,
+                              displayCurrency,
+                              o.cycle,
+                              t
+                            ),
+                            saving: formatPrice(
+                              o.saving,
+                              displayCurrency,
+                              o.cycle,
+                              t
+                            ),
+                          })}
+                        </p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          onClick={() => takeOffer(o)}
+                        >
+                          {t(`billing.cancel.offers.${o.kind}Action`)}
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {reason === r && CONTACT_REASONS.includes(r) && contactURL && (
+                  <a
+                    href={contactURL}
+                    target={contactNewTab ? "_blank" : undefined}
+                    rel="noopener noreferrer"
+                    className="ml-6 text-xs font-medium underline underline-offset-4"
+                  >
+                    {t("billing.cancel.offers.contact")}
+                  </a>
+                )}
+              </div>
             ))}
           </RadioGroup>
 

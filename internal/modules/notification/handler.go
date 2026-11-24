@@ -227,6 +227,33 @@ func (h *handler) markRead(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+type markManyReadRequest struct {
+	IDs []string `json:"ids" binding:"required,min=1,max=100,dive,uuid"`
+}
+
+// markManyRead godoc
+// @Summary      Mark several notifications as read
+// @Description  Marks the caller's notifications among ids (1-100) read, e.g. a folded run in the feed.
+// @Tags         notification
+// @Accept       json
+// @Security     BearerAuth
+// @Param        body  body  markManyReadRequest  true  "Notification ids"
+// @Success      204   "no content"
+// @Failure      422   {object}  response.Payload  "validation failed"
+// @Failure      401   {object}  response.Payload  "missing/invalid auth token"
+// @Router       /me/notifications/read [patch]
+func (h *handler) markManyRead(c *gin.Context) {
+	var req markManyReadRequest
+	if !request.Bind(c, &req) {
+		return
+	}
+	if err := h.svc.markManyRead(c.Request.Context(), reqctx.Subject(c), req.IDs); err != nil {
+		response.FromError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 // markAllRead godoc
 // @Summary      Mark all notifications as read
 // @Tags         notification

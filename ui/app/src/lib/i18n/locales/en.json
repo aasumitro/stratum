@@ -436,7 +436,12 @@
         "body": "{{metric}} usage is at {{current}} / {{limit}}."
       }
     },
-    "searchPlaceholder": "Search notifications…"
+    "searchPlaceholder": "Search notifications…",
+    "moreLikeThis_one": "+{{count}} more like this",
+    "moreLikeThis_other": "+{{count}} more like this",
+    "showLess": "Show less",
+    "digestTitle": "Daily email digest",
+    "digestDescription": "Get payment receipts, usage warnings and webhook health warnings in one email a day, at 08:00 your time, instead of one by one. Anything that needs action still arrives at once."
   },
   "breadcrumb": {
     "dashboard": "Dashboard",
@@ -1363,7 +1368,14 @@
       "exportOrganizationData": "Export organization data (Audit log)",
       "confirmCancel": "Confirm cancellation",
       "scheduledSuccessTitle": "Cancellation scheduled",
-      "scheduledSuccessDescription": "Your subscription remains active until {{date}} and will not renew. You can undo this anytime before then."
+      "scheduledSuccessDescription": "Your subscription remains active until {{date}} and will not renew. You can undo this anytime before then.",
+      "offers": {
+        "downgrade": "Switch to {{plan}}: {{price}} instead of {{instead}} (save {{saving}}).",
+        "downgradeAction": "Downgrade instead",
+        "yearly": "Pay yearly: {{price}} instead of {{instead}} (save {{saving}}).",
+        "yearlyAction": "Switch to yearly",
+        "contact": "Tell us what you need"
+      }
     },
     "upgrade": {
       "changesTitle": "What changes",

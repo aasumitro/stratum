@@ -111,6 +111,21 @@ func RunWorker() error {
 		}
 	})
 
+	// Hourly daily-digest sender: each user who takes the email digest gets the
+	// emails held for it once their local time passes 08:00.
+	wg.Go(func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mods.Notification.SendDueDigests(ctx)
+			}
+		}
+	})
+
 	// Outbox relay: delivers messaging.outbox rows (written transactionally
 	// by events.Enqueue/EnqueueDelayed) to the broker. A 2-second poll, not
 	// LISTEN/NOTIFY — this codebase has no such infrastructure, and a few

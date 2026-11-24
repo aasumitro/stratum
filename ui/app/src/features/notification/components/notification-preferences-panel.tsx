@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 import { IconChevronDown, IconChevronUp, IconLock } from "@tabler/icons-react"
 import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Card,
@@ -98,134 +99,161 @@ export function NotificationPreferencesPanel() {
     )
   }
 
+  // The digest is opt-in: no row means off, unlike the per-event toggles.
+  const digestOn =
+    prefs.find((p) => p.channel === "email" && p.event_type === "digest")
+      ?.enabled === true
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("notifications.preferences.title")}</CardTitle>
-        <CardDescription>
-          {t("notifications.preferences.description")}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-0 p-0">
-        <div className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 border-b bg-muted/40 px-4 py-2.5 text-xs font-medium text-muted-foreground">
-          <span>{t("notifications.preferences.category")}</span>
-          <span className="text-center">
-            {t("notifications.preferences.channelInApp")}
-          </span>
-          <span className="text-center">
-            {t("notifications.preferences.channelEmail")}
-          </span>
-        </div>
-        {CATEGORIES.map((category) => {
-          const events = eventTypesInCategory(category)
-          const hasEvents = events.length > 0
-          const isOpen = expanded === category
-          const Icon = CATEGORY_ICON[category]
-          return (
-            <div key={category} className="border-b last:border-b-0">
-              <div className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 px-4 py-3">
-                <button
-                  type="button"
-                  disabled={!hasEvents}
-                  onClick={() => setExpanded(isOpen ? null : category)}
-                  className="flex items-center gap-2.5 text-left text-sm font-medium disabled:cursor-default disabled:text-muted-foreground"
-                >
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                    <Icon className="size-4 text-muted-foreground" />
-                  </span>
-                  {t(`notifications.tabs.${category}`)}
-                  {hasEvents &&
-                    (isOpen ? (
-                      <IconChevronUp className="size-3.5 text-muted-foreground" />
-                    ) : (
-                      <IconChevronDown className="size-3.5 text-muted-foreground" />
-                    ))}
-                </button>
-                <div className="flex justify-center">
-                  <Switch
-                    checked={categoryEnabled(category, "in_app")}
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("notifications.preferences.title")}</CardTitle>
+          <CardDescription>
+            {t("notifications.preferences.description")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-0 p-0">
+          <div className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 border-b bg-muted/40 px-4 py-2.5 text-xs font-medium text-muted-foreground">
+            <span>{t("notifications.preferences.category")}</span>
+            <span className="text-center">
+              {t("notifications.preferences.channelInApp")}
+            </span>
+            <span className="text-center">
+              {t("notifications.preferences.channelEmail")}
+            </span>
+          </div>
+          {CATEGORIES.map((category) => {
+            const events = eventTypesInCategory(category)
+            const hasEvents = events.length > 0
+            const isOpen = expanded === category
+            const Icon = CATEGORY_ICON[category]
+            return (
+              <div key={category} className="border-b last:border-b-0">
+                <div className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 px-4 py-3">
+                  <button
+                    type="button"
                     disabled={!hasEvents}
-                    onCheckedChange={(v) =>
-                      toggleCategory(category, "in_app", v)
-                    }
-                    aria-label={`${category} in-app`}
-                  />
+                    onClick={() => setExpanded(isOpen ? null : category)}
+                    className="flex items-center gap-2.5 text-left text-sm font-medium disabled:cursor-default disabled:text-muted-foreground"
+                  >
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                      <Icon className="size-4 text-muted-foreground" />
+                    </span>
+                    {t(`notifications.tabs.${category}`)}
+                    {hasEvents &&
+                      (isOpen ? (
+                        <IconChevronUp className="size-3.5 text-muted-foreground" />
+                      ) : (
+                        <IconChevronDown className="size-3.5 text-muted-foreground" />
+                      ))}
+                  </button>
+                  <div className="flex justify-center">
+                    <Switch
+                      checked={categoryEnabled(category, "in_app")}
+                      disabled={!hasEvents}
+                      onCheckedChange={(v) =>
+                        toggleCategory(category, "in_app", v)
+                      }
+                      aria-label={`${category} in-app`}
+                    />
+                  </div>
+                  <div className="flex justify-center">
+                    <Switch
+                      checked={categoryEnabled(category, "email")}
+                      disabled={!hasEvents}
+                      onCheckedChange={(v) =>
+                        toggleCategory(category, "email", v)
+                      }
+                      aria-label={`${category} email`}
+                    />
+                  </div>
                 </div>
-                <div className="flex justify-center">
-                  <Switch
-                    checked={categoryEnabled(category, "email")}
-                    disabled={!hasEvents}
-                    onCheckedChange={(v) =>
-                      toggleCategory(category, "email", v)
-                    }
-                    aria-label={`${category} email`}
-                  />
-                </div>
-              </div>
 
-              {!hasEvents && (
-                <p className="px-4 pb-3 text-xs text-muted-foreground">
-                  {t("notifications.preferences.noConfigurableEvents")}
-                </p>
-              )}
+                {!hasEvents && (
+                  <p className="px-4 pb-3 text-xs text-muted-foreground">
+                    {t("notifications.preferences.noConfigurableEvents")}
+                  </p>
+                )}
 
-              {isOpen && hasEvents && (
-                <div className="flex flex-col gap-2 bg-muted/20 px-4 pb-3">
-                  {events.map((eventType) => {
-                    const locked = isLocked("email", eventType)
-                    return (
-                      <div
-                        key={eventType}
-                        className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 py-1"
-                      >
-                        {/* pl matches the category row's icon (size-8) + gap-2.5 above, so nested event labels visually align under the category text instead of the icon */}
-                        <span className="pl-[2.625rem] text-xs text-muted-foreground">
-                          {label(eventType)}
-                        </span>
-                        <div className="flex justify-center">
-                          <Switch
-                            checked={isEnabled("in_app", eventType)}
-                            onCheckedChange={(v) =>
-                              toggle("in_app", eventType, v)
-                            }
-                            aria-label={`${label(eventType)} in-app`}
-                          />
-                        </div>
-                        <div className="flex justify-center">
-                          {locked ? (
-                            <IconLock
-                              className="size-3.5 text-muted-foreground"
-                              aria-label={t(
-                                "notifications.preferences.ownerLocked"
-                              )}
-                            />
-                          ) : (
+                {isOpen && hasEvents && (
+                  <div className="flex flex-col gap-2 bg-muted/20 px-4 pb-3">
+                    {events.map((eventType) => {
+                      const locked = isLocked("email", eventType)
+                      return (
+                        <div
+                          key={eventType}
+                          className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 py-1"
+                        >
+                          {/* pl matches the category row's icon (size-8) + gap-2.5 above, so nested event labels visually align under the category text instead of the icon */}
+                          <span className="pl-10.5 text-xs text-muted-foreground">
+                            {label(eventType)}
+                          </span>
+                          <div className="flex justify-center">
                             <Switch
-                              checked={isEnabled("email", eventType)}
+                              checked={isEnabled("in_app", eventType)}
                               onCheckedChange={(v) =>
-                                toggle("email", eventType, v)
+                                toggle("in_app", eventType, v)
                               }
-                              aria-label={`${label(eventType)} email`}
+                              aria-label={`${label(eventType)} in-app`}
                             />
-                          )}
+                          </div>
+                          <div className="flex justify-center">
+                            {locked ? (
+                              <IconLock
+                                className="size-3.5 text-muted-foreground"
+                                aria-label={t(
+                                  "notifications.preferences.ownerLocked"
+                                )}
+                              />
+                            ) : (
+                              <Switch
+                                checked={isEnabled("email", eventType)}
+                                onCheckedChange={(v) =>
+                                  toggle("email", eventType, v)
+                                }
+                                aria-label={`${label(eventType)} email`}
+                              />
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    )
-                  })}
-                  {events.includes(LOCKED_OWNER_EVENT_TYPE) &&
-                    isOwnerAnywhere && (
-                      <p className="pt-1 text-xs text-muted-foreground">
-                        {t(
-                          "notifications.preferences.paymentFailureLockedNote"
-                        )}
-                      </p>
-                    )}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </CardContent>
-    </Card>
+                      )
+                    })}
+                    {events.includes(LOCKED_OWNER_EVENT_TYPE) &&
+                      isOwnerAnywhere && (
+                        <p className="pt-1 text-xs text-muted-foreground">
+                          {t(
+                            "notifications.preferences.paymentFailureLockedNote"
+                          )}
+                        </p>
+                      )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="flex items-start justify-between gap-4 pt-6">
+          <div className="flex flex-col gap-1">
+            <Label
+              htmlFor="notification-digest"
+              className="text-sm font-medium"
+            >
+              {t("notifications.digestTitle")}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              {t("notifications.digestDescription")}
+            </p>
+          </div>
+          <Switch
+            id="notification-digest"
+            checked={digestOn}
+            onCheckedChange={(checked) => toggle("email", "digest", checked)}
+          />
+        </CardContent>
+      </Card>
+    </div>
   )
 }

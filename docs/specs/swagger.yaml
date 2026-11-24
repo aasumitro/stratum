@@ -712,6 +712,17 @@ definitions:
       user_agent:
         type: string
     type: object
+  markManyReadRequest:
+    properties:
+      ids:
+        items:
+          type: string
+        maxItems: 100
+        minItems: 1
+        type: array
+    required:
+    - ids
+    type: object
   memberView:
     properties:
       auth_sub:
@@ -2026,6 +2037,35 @@ paths:
       security:
       - BearerAuth: []
       summary: Set a notification preference
+      tags:
+      - notification
+  /me/notifications/read:
+    patch:
+      consumes:
+      - application/json
+      description: Marks the caller's notifications among ids (1-100) read, e.g. a
+        folded run in the feed.
+      parameters:
+      - description: Notification ids
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/markManyReadRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Mark several notifications as read
       tags:
       - notification
   /me/notifications/read-all:

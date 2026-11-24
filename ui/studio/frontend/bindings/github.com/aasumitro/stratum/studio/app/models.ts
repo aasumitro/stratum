@@ -98,6 +98,18 @@ export interface BroadcastLog {
   sent_at: string
 }
 
+export interface CancellationDetail {
+  reason: string
+  details: string
+  plan: string
+  at: string
+}
+
+export interface CancellationReport {
+  counts: ReasonCount[] | null
+  latest: CancellationDetail[] | null
+}
+
 export interface ComponentStatus {
   postgres: string
   redis: string
@@ -367,6 +379,11 @@ export interface ProjectMetrics {
   new_organizations_last_30d: number
   storage_bytes_total: number
   top_plans_by_organization: PlanCount[] | null
+}
+
+export interface ReasonCount {
+  reason: string
+  count: number
 }
 
 export interface RedisPoolStats {

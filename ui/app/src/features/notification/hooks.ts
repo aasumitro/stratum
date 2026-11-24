@@ -153,6 +153,24 @@ export function useMarkNotificationRead(organizationId?: string) {
   })
 }
 
+// Marks several notifications read in one request (a folded run in the feed).
+export function useMarkNotificationsRead(organizationId?: string) {
+  const queryClient = useQueryClient()
+  return useHTTPActionPatch<void, { ids: string[] }>({
+    url: API.me("notifications", "read"),
+    options: {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.account.notifications(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.account.notificationCount(),
+        })
+      },
+    },
+  })
+}
+
 export function useMarkAllNotificationsRead(organizationId?: string) {
   const queryClient = useQueryClient()
   const url = organizationId

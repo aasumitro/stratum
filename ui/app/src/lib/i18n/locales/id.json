@@ -436,7 +436,12 @@
         "body": "Penggunaan {{metric}} berada di {{current}} / {{limit}}."
       }
     },
-    "searchPlaceholder": "Cari notifikasi…"
+    "searchPlaceholder": "Cari notifikasi…",
+    "moreLikeThis_one": "+{{count}} lainnya yang serupa",
+    "moreLikeThis_other": "+{{count}} lainnya yang serupa",
+    "showLess": "Tampilkan lebih sedikit",
+    "digestTitle": "Ringkasan email harian",
+    "digestDescription": "Terima tanda terima pembayaran, peringatan penggunaan, dan peringatan kesehatan webhook dalam satu email per hari pukul 08.00 waktu Anda, bukan satu per satu. Yang perlu tindakan tetap dikirim langsung."
   },
   "breadcrumb": {
     "dashboard": "Dasbor",
@@ -1363,7 +1368,14 @@
       "exportOrganizationData": "Ekspor data organisasi (Log audit)",
       "confirmCancel": "Konfirmasi pembatalan",
       "scheduledSuccessTitle": "Pembatalan dijadwalkan",
-      "scheduledSuccessDescription": "Langganan Anda tetap aktif hingga {{date}} dan tidak akan diperpanjang. Anda dapat membatalkan penjadwalan ini kapan saja sebelum itu."
+      "scheduledSuccessDescription": "Langganan Anda tetap aktif hingga {{date}} dan tidak akan diperpanjang. Anda dapat membatalkan penjadwalan ini kapan saja sebelum itu.",
+      "offers": {
+        "downgrade": "Pindah ke {{plan}}: {{price}}, bukan {{instead}} (hemat {{saving}}).",
+        "downgradeAction": "Turunkan paket saja",
+        "yearly": "Bayar tahunan: {{price}}, bukan {{instead}} (hemat {{saving}}).",
+        "yearlyAction": "Pindah ke tahunan",
+        "contact": "Beri tahu kami kebutuhan Anda"
+      }
     },
     "upgrade": {
       "changesTitle": "Apa yang berubah",

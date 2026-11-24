@@ -163,6 +163,13 @@ export function SubscriptionCard({ organizationId }: Props) {
                   currency={sub.currency}
                   periodEnd={sub.period_end}
                   canCancel={canCancel}
+                  subscriptionStatus={sub.status}
+                  offersAllowed={
+                    sub.status !== "trialing" &&
+                    !sub.scheduled_plan &&
+                    !sub.scheduled_cancel_at &&
+                    !sub.scheduled_effective_at
+                  }
                 />
               </Suspense>
             </div>

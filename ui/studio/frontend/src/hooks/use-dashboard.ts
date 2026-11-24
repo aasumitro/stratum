@@ -20,3 +20,14 @@ export function useCardMetrics(projectId: string) {
     enabled: !!projectId,
   })
 }
+
+// What owners said when they cancelled, over the last `days` days.
+export function useCancellationReasons(projectId: string, days: number) {
+  return useQuery({
+    queryKey: ["cancellation-reasons", projectId, days],
+    queryFn: () => DashboardService.GetCancellationReasons(projectId, days),
+    staleTime: 60_000,
+    retry: 1,
+    enabled: !!projectId,
+  })
+}

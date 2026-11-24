@@ -103,6 +103,7 @@ func (m *Module) GetUsersByAuthSubs(ctx context.Context, authSubs []string) (map
 			AvatarURL:  u.AvatarURL,
 			Lang:       preferredLang(u.Preferences),
 			MFAEnabled: u.MFAEnabled,
+			Timezone:   preferredTimezone(u.Preferences),
 		}
 	}
 	return out, nil
@@ -116,6 +117,16 @@ func preferredLang(prefs json.RawMessage) string {
 	}
 	_ = json.Unmarshal(prefs, &v)
 	return v.Lang
+}
+
+// preferredTimezone extracts the "timezone" key (set at onboarding) from a
+// user's preferences JSON. Empty if unset or unparseable.
+func preferredTimezone(prefs json.RawMessage) string {
+	var v struct {
+		Timezone string `json:"timezone"`
+	}
+	_ = json.Unmarshal(prefs, &v)
+	return v.Timezone
 }
 
 // IsMFAEnabled implements contracts.UserReader.

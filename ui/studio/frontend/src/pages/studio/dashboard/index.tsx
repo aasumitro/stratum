@@ -1,4 +1,5 @@
 import { useParams } from "@tanstack/react-router"
+import { useQueryClient } from "@tanstack/react-query"
 import { IconRefresh } from "@tabler/icons-react"
 import { useProjectMetrics } from "@/hooks/use-dashboard"
 import { Button } from "@/components/ui/button"
@@ -14,6 +15,7 @@ export function DashboardPage() {
     refetch,
     isFetching,
   } = useProjectMetrics(projectId)
+  const queryClient = useQueryClient()
 
   return (
     <div className="flex min-h-full flex-col">
@@ -28,7 +30,12 @@ export function DashboardPage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => refetch()}
+          onClick={() => {
+            void refetch()
+            void queryClient.invalidateQueries({
+              queryKey: ["cancellation-reasons", projectId],
+            })
+          }}
           disabled={isFetching}
         >
           <IconRefresh
@@ -53,7 +60,7 @@ export function DashboardPage() {
           </Button>
         </div>
       ) : metrics ? (
-        <DashboardContent metrics={metrics} />
+        <DashboardContent metrics={metrics} projectId={projectId} />
       ) : null}
     </div>
   )

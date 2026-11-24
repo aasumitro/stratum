@@ -105,6 +105,9 @@ services:
       args:
         SERVICE_VERSION: ${SERVICE_VERSION:-staging}
     restart: unless-stopped
+    # Longer than one email's whole send (20s): a stopping worker finishes the
+    # email in flight instead of being killed mid-send.
+    stop_grace_period: 30s
     env_file: [.env.staging]
     environment:
       APP_ENV: staging

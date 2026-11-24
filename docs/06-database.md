@@ -39,8 +39,11 @@ Migrations live in `db/migrations/` as numbered up/down pairs: one per schema th
 | 000019 | `account` | `consents`: each acceptance of a legal document version (terms, privacy), append-only for the runtime roles, removed with the account |
 | 000020 | *(extension)* | `pg_trgm` (trusted, ships with PostgreSQL). No index on `notification.messages`: under FORCE RLS a non-leakproof ILIKE can never be an index condition for the runtime role |
 | 000021 | `audit` | `idx_audit_search`, a trigram GIN index on `resource || ' ' || metadata::text`, built `CONCURRENTLY` (its own one-statement file) |
+| 000022 | `notification` | `messages.status` gains `held` (an email waiting for its recipient's daily digest); down marks held rows `failed` |
+| 000023 | `notification` | `idx_messages_held` partial index, built `CONCURRENTLY` in its own file |
+| 000024 | `notification` | Validates the 000022 status check (`VALIDATE CONSTRAINT`, writes continue during the scan) |
 
-`000011`–`000021` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000022`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
+`000011`–`000024` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000025`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 
 ## The billing catalog
 

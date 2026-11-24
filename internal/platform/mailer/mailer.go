@@ -8,6 +8,7 @@ import (
 	"net/smtp"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/aasumitro/stratum/internal/platform/config"
 )
@@ -116,6 +117,10 @@ func (m *Mailer) Send(ctx context.Context, msg Message) error {
 			return fmt.Errorf("mailer.Send: set deadline: %w", err)
 		}
 	}
+	// A cancellation (a shutting-down worker) carries no deadline: expire the
+	// conn at once so the conversation stops instead of running to its timeout.
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	defer stop()
 
 	return deliver(conn, addr, auth, m.fromAddr, msg.To, []byte(body.String()))
 }
@@ -167,9 +172,10 @@ func deliver(conn net.Conn, addr string, auth smtp.Auth, from, to string, body [
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("mailer.deliver: close writer: %w", err)
 	}
-	if err := client.Quit(); err != nil {
-		return fmt.Errorf("mailer.deliver: quit: %w", err)
-	}
+	// The server accepted the message when DATA closed; a QUIT that fails
+	// after that (a cut connection) must not read as a failed send, or a
+	// caller retrying it would deliver the email twice.
+	_ = client.Quit()
 	return nil
 }
 

@@ -6,7 +6,7 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-**Upgrade:** run `make migrate-up` (migrations `000016`–`000021`) before starting the API or worker. `000016` first
+**Upgrade:** run `make migrate-up` (migrations `000016`–`000024`) before starting the API or worker. `000016` first
 reconciles owner memberships to `organizations.owner_id` (the `owner_id` member becomes the one active owner, any other
 owner membership becomes admin; an organization whose `owner_id` has no membership is left as it is), then adds the index.
 
@@ -32,6 +32,22 @@ owner membership becomes admin; an organization whose `owner_id` has no membersh
   (notifications), with a search box in each. The audit log is backed by a `pg_trgm` trigram index (migrations
   `000020`, `000021`, built `CONCURRENTLY`; recovery from a failed build in `docs/12-operations.md`). A term under
   three characters is 422 `SEARCH_TOO_SHORT`. The audit `resource` filter now matches `%`, `_` and `\` literally.
+- Notifications: a daily email digest, opt-in under Notifications → preferences. With it on, payment receipts, usage
+  warnings and webhook health warnings arrive in one email a day after 08:00 in the user's timezone instead of one by
+  one, each with a one-line summary; anything that needs action is still sent at once. Held emails use a new message
+  status `held` (migrations `000022`–`000024`); the worker checks hourly and gives up on items that have failed for a
+  full day. Sent email rows now name their recipient, so they are part of the data export and are deleted with the
+  account. Email subjects no longer show HTML escapes (`R&amp;D`). A worker that is shutting down finishes the email
+  it is sending instead of cutting it off, and an email is no longer counted as failed when only the closing `QUIT`
+  fails after the server accepted it. In the app, neighbouring notifications of the same kind for the same
+  organization within a day fold into one row with "+N more like this", read in one request (`PATCH
+  /me/notifications/read`).
+- Billing: when an owner cancels because it is too expensive, the dialog offers the next lower plan and yearly billing
+  (when cheaper than twelve months) with the list-price saving, and opens the existing downgrade or plan-change flow.
+  No discount is created, and nothing is offered during a trial or while a change is already scheduled. "Missing
+  features" and "switching provider" show a contact link when `VITE_CONTACT_URL` is set.
+- Studio: the dashboard has a "Cancellation reasons" card (30 or 90 days): how often each reason was picked, and the
+  latest free-text details.
 - Organization: a "Roles & permissions" reference, opened from the Members section for every role, built from the same
   permission matrix the app enforces.
 - CI: an `Images` job builds the API and worker images, scans each with Trivy (fails on a fixable HIGH/CRITICAL) and
@@ -56,8 +72,8 @@ owner membership becomes admin; an organization whose `owner_id` has no membersh
   deletion removes memberships first and never the owner membership of an organization that is not deleted: a user made
   an owner after asking to be deleted has the deletion task fail with a message, before any of their data is erased.
 - Organization: retrying a webhook delivery resends the exact body it was first delivered with (migration `000017`
-  keeps it), instead of a `{id, type, endpoint_id}` payload rebuilt from the delivery row. Deliveries recorded before keep the
-  rebuilt retry.
+  keeps it), instead of a `{id, type, endpoint_id}` payload rebuilt from the delivery row. Deliveries recorded before
+  keep the rebuilt retry.
 - Account: a failed export or deletion task records a fixed message for `GET /me/tasks` instead of the raw internal
   error; the cause is logged by the worker.
 - Web: only a refusal (401/403/404) now counts as lost access or a missing profile. An organization page that fails

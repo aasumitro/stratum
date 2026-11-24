@@ -91,6 +91,7 @@ func (m *Module) ListForUser(ctx context.Context, authSub string, limit int) ([]
 //	GET   /me/notifications/stream        SSE push (requires Redis)
 //	GET   /me/notifications/unread-count  ?organization_id= optional filter
 //	PATCH /me/notifications/read-all      ?organization_id= optional filter
+//	PATCH /me/notifications/read          {ids: [...]} (1-100)
 //	PATCH /me/notifications/:id/read
 func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 	h := &handler{svc: m.svc, closing: m.closing}
@@ -110,6 +111,7 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		g.GET("", h.listNotifications)
 		g.GET("/unread-count", h.unreadCount)
 		g.PATCH("/read-all", h.markAllRead)
+		g.PATCH("/read", h.markManyRead)
 		g.PATCH("/:id/read", h.markRead)
 		g.GET("/preferences", h.listPreferences)
 		g.PATCH("/preferences", h.upsertPreference)

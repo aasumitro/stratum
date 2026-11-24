@@ -296,3 +296,32 @@ func TestStripHTML(t *testing.T) {
 		}
 	}
 }
+
+// A cancelled ctx (no deadline) stops a conversation with a server that never
+// answers, instead of waiting for it.
+func TestSend_Cancelled_StopsAtOnce(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			defer conn.Close()
+			<-done // silent until the test ends
+		}
+	}()
+	m := &Mailer{host: "127.0.0.1", port: ln.Addr().(*net.TCPAddr).Port, username: "u@example.com", fromAddr: "u@example.com"}
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	if err := m.Send(ctx, Message{To: "r@example.com", Subject: "s", HTML: "<p>x</p>"}); err == nil {
+		t.Fatal("Send: want an error after cancel")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Send returned after %v, want right after the cancel", d)
+	}
+}

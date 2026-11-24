@@ -351,9 +351,9 @@ func (s *service) completeDeleteAccountTask(ctx context.Context, taskID string, 
 	return s.repo.completeTask(ctx, s.pool, taskID, resultJSON)
 }
 
-// exportEventLimit caps the notifications/audit-events sections of a GDPR
-// export at the most recent N rows — matches the pre-existing LIMIT this
-// flow has always used.
+// exportEventLimit caps the sections of a GDPR export at the most recent N
+// rows: audit events at N, notifications at N emails plus N other messages
+// (capped apart, so up to 2N).
 const exportEventLimit = 1000
 
 // exportData is the GDPR data-export payload. Organizations/Notifications
