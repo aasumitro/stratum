@@ -62,6 +62,13 @@ infra-observability-logs:
 		openobserve \
 		otel-collector
 
+.PHONY: operator-broker-dev
+operator-broker-dev: ## Create the local Studio operator's RabbitMQ and Redis logins (stratum_operator_dev)
+	@printf '%s' stratum_operator_dev | \
+		RABBITMQCTL='$(COMPOSE) -f $(COMPOSE_FILE) exec -T rabbitmq rabbitmqctl' \
+		REDIS_CLI='$(COMPOSE) -f $(COMPOSE_FILE) exec -T redis redis-cli' \
+		sh deploy/broker-init/operator.sh add stratum_operator_dev
+
 ## --- Migrations ---
 ## Usage: make migrate-create name=create_organizations_table
 

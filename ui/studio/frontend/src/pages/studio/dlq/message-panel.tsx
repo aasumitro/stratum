@@ -11,6 +11,7 @@ import type {
   RequeueResult,
 } from "../../../../bindings/github.com/aasumitro/stratum/studio/app/models.js"
 import { useMessages, useRequeueMessage } from "@/hooks/use-dlq"
+import { wailsError } from "@/lib/ui"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,6 +43,7 @@ export function MessagePanel({ projectId, queue, onClose }: MessagePanelProps) {
   const {
     data: messages,
     isLoading,
+    error,
     refetch,
   } = useMessages(projectId, queue.name)
   const requeue = useRequeueMessage(projectId)
@@ -76,6 +78,18 @@ export function MessagePanel({ projectId, queue, onClose }: MessagePanelProps) {
                 {Array.from({ length: 3 }).map((_, i) => (
                   <div key={i} className="h-24 rounded-lg bg-muted" />
                 ))}
+              </div>
+            ) : error ? (
+              <div
+                role="alert"
+                className="flex flex-col items-center gap-2 py-12 text-center"
+              >
+                <p className="text-sm font-medium text-destructive">
+                  Failed to load messages
+                </p>
+                <p className="max-w-md text-xs text-muted-foreground">
+                  {wailsError(error)}
+                </p>
               </div>
             ) : !messages || messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-muted-foreground">

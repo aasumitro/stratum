@@ -93,26 +93,30 @@ export function QueueTable({
               </div>
             </TableCell>
             <TableCell className="text-right">
-              <div className="flex items-center justify-end gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => onView(queue)}
-                >
-                  View
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs text-destructive hover:text-destructive"
-                  onClick={() => onPurge(queue)}
-                  disabled={queue.messages === 0}
-                >
-                  <IconTrash className="size-3.5" />
-                  Purge
-                </Button>
-              </div>
+              {/* An operator's broker login may read dead-letter queues only,
+                  so any other queue would be refused. */}
+              {isDLQ(queue.name) && (
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => onView(queue)}
+                  >
+                    View
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs text-destructive hover:text-destructive"
+                    onClick={() => onPurge(queue)}
+                    disabled={queue.messages === 0}
+                  >
+                    <IconTrash className="size-3.5" />
+                    Purge
+                  </Button>
+                </div>
+              )}
             </TableCell>
           </TableRow>
         ))}

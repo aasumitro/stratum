@@ -36,6 +36,16 @@ func IsOperator(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 	return false, fmt.Errorf("query.IsOperator: %w", err)
 }
 
+// SessionUser returns the login this connection authenticated as, the name every
+// audit row it writes carries.
+func SessionUser(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	var name string
+	if err := pool.QueryRow(ctx, `SELECT session_user::text`).Scan(&name); err != nil {
+		return "", fmt.Errorf("query.SessionUser: %w", err)
+	}
+	return name, nil
+}
+
 // RecordOperatorAction writes an audit row for an operator action no row trigger
 // can see: broker calls, and a broadcast's single logical send.
 func RecordOperatorAction(ctx context.Context, pool *pgxpool.Pool, action, resource string, metadata map[string]any) error {

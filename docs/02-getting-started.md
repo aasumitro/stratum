@@ -62,7 +62,7 @@ Everything is read once at startup from the environment (see `.env.example`). Th
 | `POSTGRES_URL` | Schema-owner connection for `make migrate-*` only; no binary reads it |
 | `POSTGRES_TEST_URL` | `stratum_test` role for `make test-integration`; local dev and CI only |
 | `POSTGRES_OPERATOR_URL` | `stratum_operator_dev` login for integration tests and local Studio; local dev and CI only |
-| `REDIS_URL` | Redis connection (required) |
+| `REDIS_URL` | Redis connection (required). Studio uses its own logins, not this one: `make operator-broker-dev` creates the local ones |
 | `RABBITMQ_URL` | RabbitMQ connection (required) |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER` | JWKS endpoint + issuer for token validation (required) |
 | `AUTH_AUDIENCE`, `AUTH_ADMIN_URL`, `AUTH_SERVICE_ROLE_KEY` | Supabase audience + Admin API (sessions, MFA sync) |

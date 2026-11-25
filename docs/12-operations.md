@@ -147,7 +147,7 @@ make db-restore-verify FILE=backups/<file>    # restores into a scratch database
 
 ## Runbooks
 
-**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Consumers are idempotent, so requeue is safe for a *transient* failure. One `billing.events.dlq` cause is not transient: an `organization.created` event whose cart-selected coupon was exhausted by someone else before provisioning ran — the organization exists (its create request already succeeded) but has no subscription. Requeuing retries the same now-exhausted coupon and fails identically; the fix is to provision the subscription manually via Studio (without the coupon, or with a different one) and purge the dead-lettered event, not requeue it. A dead-lettered `billing.subscription-apply-scheduled` message needs no requeue: the hourly reconcile sends a fresh one, at a doubling interval (1h, 2h, 4h, 8h, 16h, then daily) while it keeps failing, so purge it once the root cause is fixed; it then applies within about a day, or at once if you requeue it. A dead-lettered `billing.subscription-resume-covered` message is a Resume a coupon covers: requeue it once the cause is fixed, or the subscription stays ended until its owner presses Resume again. `stratum.dlq.messages` reports each dead-letter queue's depth (see the alert catalog).
+**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Both need your own operator login on the database and on RabbitMQ ("Operator access"). A message Studio took off the queue and could not put back is shown as lost, with its body: keep it and publish it by hand. Consumers are idempotent, so requeue is safe for a *transient* failure. One `billing.events.dlq` cause is not transient: an `organization.created` event whose cart-selected coupon was exhausted by someone else before provisioning ran — the organization exists (its create request already succeeded) but has no subscription. Requeuing retries the same now-exhausted coupon and fails identically; the fix is to provision the subscription manually via Studio (without the coupon, or with a different one) and purge the dead-lettered event, not requeue it. A dead-lettered `billing.subscription-apply-scheduled` message needs no requeue: the hourly reconcile sends a fresh one, at a doubling interval (1h, 2h, 4h, 8h, 16h, then daily) while it keeps failing, so purge it once the root cause is fixed; it then applies within about a day, or at once if you requeue it. A dead-lettered `billing.subscription-resume-covered` message is a Resume a coupon covers: requeue it once the cause is fixed, or the subscription stays ended until its owner presses Resume again. `stratum.dlq.messages` reports each dead-letter queue's depth (see the alert catalog).
 
 **Failing customer webhook** — Endpoints auto-disable after a three-day, 100%-failure window and warn below 70% success over 24 hours. Re-enable is only possible via a passing test event, not a direct toggle. Use the deliveries panel to diagnose, then bulk-retry failed deliveries once the receiver is fixed.
 
@@ -263,7 +263,7 @@ Each result needs manual verification against the payment provider's own dashboa
 - Compromised user: ban them in the Supabase dashboard, which stops sign-ins and token refresh. An access token already issued stays valid until it expires (`AUTH_ACCESS_TOKEN_MAX_TTL`).
 - Compromised organization: suspend it from Studio's organization page.
 - Exposed secret: rotate it (see "Secret rotation").
-- Compromised operator: `ALTER ROLE op_<name> NOLOGIN`, and rotate the shared RabbitMQ and Redis credentials they held.
+- Compromised operator: `ALTER ROLE op_<name> NOLOGIN`, then `operator.sh revoke op_<name>` (see "Operator access"), which removes their RabbitMQ and Redis logins and closes the connections those hold. It exits non-zero and names the store where the login is still there: do not close the step until it succeeds. If they also held a break-glass credential, rotate it.
 
 **2. Preserve evidence.** Before cleaning anything up, take a database snapshot (`make db-backup`), export the audit log as CSV from Studio's audit page, and copy the Postgres and application logs off the host. Retention sweeps keep running, so export anything close to its retention limit.
 
@@ -277,13 +277,37 @@ Each result needs manual verification against the payment provider's own dashboa
 **5. Review.** Within two weeks, write a post-incident review: timeline, root cause, what worked, and follow-up actions with owners. Keep it as audit evidence.
 
 ## Operator access
-Studio changes are attributed through one Postgres login per person. Never share a login.
+Studio changes are attributed through one login per person, with the same name `op_<name>` in Postgres, RabbitMQ and Redis. Never share a login, and never give a name to a second person.
 
 **Provision**, with a superuser-equivalent connection. `VALID UNTIL` at most 100 days out; `BYPASSRLS` is set on the login because Postgres does not inherit it through membership, and Studio refuses a login without it:
 ```sql
 CREATE ROLE op_<name> LOGIN BYPASSRLS PASSWORD '<generated>' VALID UNTIL '<date within 100 days>' IN ROLE stratum_operator;
 ```
-Then put that DSN in the project's Studio form. Editing a project reconnects it immediately.
+Then the same person's RabbitMQ and Redis logins, with the password on standard input. Run the script where `rabbitmqctl` runs: it passes permission patterns as arguments, and an `ssh` prefix would hand them to a remote shell, so it refuses one. It needs `openssl`, and `redis-cli` must reach Redis as its administrator:
+```sh
+export REDISCLI_AUTH='<redis admin password>'
+RABBITMQCTL='sudo rabbitmqctl' REDIS_CLI='redis-cli --tls --user <redis admin> -h cache.internal' \
+  sh deploy/broker-init/operator.sh add op_<name> < password-file
+```
+| Store | What the login may do |
+|---|---|
+| RabbitMQ | Tag `management`. List every queue of the virtual host (`RABBITMQ_VHOST`, default `/`; a login has one). Browse, requeue and purge dead-letter queues (`read` on `\.dlq$`), not live ones. Publish to the modules' exchanges (`write` on `\.events(\.dlx)?$`), which requeue needs. `configure` on nothing |
+| Redis | `PING`, `INFO`, `DBSIZE`. No key and no channel: keys hold session revocations and per-user cache entries |
+
+**What this does not stop.** `write` on a module's exchange lets the login publish any event by hand through the management API, such as one that marks an invoice paid, and the broker records neither that nor a browse, requeue or purge. Studio records its own actions before they run; a call made around Studio leaves nothing in `audit.events`. The same person could only use their own login for it, so treat that password like their database one.
+
+Running `add` again replaces both logins and closes their connections, which is how a password is rotated. Put the three DSNs in the project's Studio form; a project's credentials stay in that person's own keychain. Editing a project reconnects it immediately.
+
+**Upgrading from shared credentials.** Studio refuses to requeue or purge with a broker login that is not the person's own, or that is an administrator. Create each operator's logins before they upgrade Studio; until then they can list and browse only what their old login allows. Afterwards change the shared password the operators used to hold.
+
+**Redis prerequisites.** Per-operator logins protect nothing while the `default` user is open. In every real environment, in this order:
+1. Write an ACL file that keeps `default` as it is today (`user default on nopass ~* &* +@all`, or with `>password`), set `aclfile` to it and restart Redis once. An empty file would reopen `default`, and `requirepass` is ignored with an `aclfile`.
+2. `ACL SETUSER <app user> on ><password> ~* &* +@all -@admin`, then `ACL SAVE`. `&*` matters: notifications use channels, and a new user has none. `-@admin` keeps the app's password from changing operators' logins.
+3. Set `REDIS_URL=rediss://<app user>:<password>@host` on the API and worker and restart them.
+4. Create a Redis administrator for people and for the script: `ACL SETUSER <redis admin> on ><password> ~* &* +@all` (without `-@admin`), then `ACL SAVE`. Log in as it and run `ACL WHOAMI` and `ACL LIST`.
+5. Only then `ACL SETUSER default off` and `ACL SAVE`. Without a working administrator, nobody can change logins again short of editing the ACL file and restarting.
+
+Without an `aclfile` the script says its change lasts until Redis restarts.
 
 **Review every quarter** and keep the output as evidence. For each operator, either renew `VALID UNTIL` or set `NOLOGIN`:
 ```sql
@@ -298,9 +322,16 @@ WHERE operator_group.rolname = 'stratum_operator'
 ORDER BY login.rolname;
 ```
 
-**Revoke** with `ALTER ROLE op_<name> NOLOGIN`. Never `DROP` it, so its audit history stays attributable to a role that still exists.
+RabbitMQ and Redis logins have no expiry, so the same review lists them, and every `op_` name must belong to a Postgres login that can still log in:
+```sh
+rabbitmqctl -q list_users          # operators: tag management only
+rabbitmqctl -q list_permissions
+redis-cli ACL LIST | sed 's/#[0-9a-f]\{64\}/#hidden/g'   # never file the password hashes as evidence
+```
 
-**Break-glass.** The schema owner is the emergency path. The audit trigger does not capture owner or superuser sessions, so `ALTER ROLE <owner> SET log_statement = 'mod'` makes Postgres log every data-modifying statement the owner runs, and that log must be shipped off-host. Record why each break-glass session happened.
+**Revoke** with `ALTER ROLE op_<name> NOLOGIN`. Never `DROP` it, so its audit history stays attributable to a role that still exists. Then `sh deploy/broker-init/operator.sh revoke op_<name>`, run the same way as `add` (on the broker host, with `REDISCLI_AUTH` and both variables). It closes that person's open RabbitMQ and Redis connections, tries both stores even when one fails, and exits non-zero naming the one it could not clean.
+
+**Break-glass.** The schema owner is the emergency path. The audit trigger does not capture owner or superuser sessions, so `ALTER ROLE <owner> SET log_statement = 'mod'` makes Postgres log every data-modifying statement the owner runs, and that log must be shipped off-host. Record why each break-glass session happened. The broker's `administrator` user and Redis's administrator are the same kind of path: the broker keeps no record of who browsed, requeued or purged, so hold them like the owner's password. For extra evidence RabbitMQ can log management API requests to files (`management.http_log_dir`, needs a node restart).
 
 ## Secret rotation
 Rotate on a schedule, and immediately after any suspected exposure or when someone with access leaves. Restart the API and worker after changing their environment.
@@ -312,7 +343,8 @@ Rotate on a schedule, and immediately after any suspected exposure or when someo
 | `AUTH_SERVICE_ROLE_KEY`, `SUPABASE_WEBHOOK_SECRET` | Roll in Supabase, then update the environment and the database webhook's header together |
 | `STATS_TOKEN` | Change the environment and the value in Studio's project form |
 | Database role passwords | `ALTER ROLE <role> PASSWORD '<generated>'`, then update that role's `POSTGRES_*_URL`. Existing connections stay open until restart |
-| RabbitMQ and Redis credentials | Change them in the broker or cache, then update the environment and every Studio project form |
+| The app's RabbitMQ and Redis credentials | Change them in the broker or cache, then update the environment. In RabbitMQ also run `rabbitmqctl close_all_user_connections <user> rotated`: a changed password leaves open connections in place |
+| An operator's RabbitMQ and Redis passwords | `operator.sh add op_<name>` with the new password, then that person's Studio project form |
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | Follow "Rotating the webhook encryption key" above |
 
 ## No scheduler

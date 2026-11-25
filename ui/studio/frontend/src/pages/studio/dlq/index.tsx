@@ -71,8 +71,9 @@ export function DLQPage() {
             <p className="max-w-sm text-xs text-muted-foreground">
               {String(error)}
             </p>
-            <p className="text-xs text-muted-foreground">
-              Make sure the RabbitMQ Management plugin is enabled (port 15672).
+            <p className="max-w-sm text-center text-xs text-muted-foreground">
+              Check that your RabbitMQ login has the management tag and that the
+              management plugin answers (port 15672).
             </p>
             <Button variant="outline" size="sm" onClick={() => refetch()}>
               Try again
@@ -86,6 +87,11 @@ export function DLQPage() {
                 ? "No dead letter queues found"
                 : "No queues found"}
             </p>
+            {queues?.length === 0 && (
+              <p className="max-w-sm text-center text-xs text-muted-foreground">
+                Your RabbitMQ login may have no permission on this virtual host.
+              </p>
+            )}
           </div>
         ) : (
           <QueueTable

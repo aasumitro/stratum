@@ -101,6 +101,7 @@ MaxMind GeoLite2 is a local database file; no data leaves the host for a lookup.
 - [ ] `ALTER ROLE <owner> SET log_statement = 'mod'`, so everything the owner role changes is logged. Owner sessions are not captured in `audit.events`.
 - [ ] `log_connections = on`.
 - [ ] One login role per operator, with an expiry, as in [12-operations](12-operations.md).
+- [ ] One RabbitMQ and one Redis login per operator with that same name, the `administrator` broker user kept for break-glass, and Redis's `default` user off. An operator's broker login can publish events the broker does not record; see [12-operations](12-operations.md).
 - [ ] The Postgres log is shipped off-host. An owner can edit audit rows; this log is what shows it happened.
 
 **Backups**

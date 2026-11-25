@@ -48,6 +48,10 @@ owner membership becomes admin; an organization whose `owner_id` has no membersh
   features" and "switching provider" show a contact link when `VITE_CONTACT_URL` is set.
 - Studio: the dashboard has a "Cancellation reasons" card (30 or 90 days): how often each reason was picked, and the
   latest free-text details.
+- Operations: each operator gets their own RabbitMQ and Redis logins, with the same name as their Postgres login.
+  `deploy/broker-init/operator.sh add|revoke op_<name>` provisions them: the broker login carries the `management`
+  tag, reads dead-letter queues only and may publish to module exchanges (requeue needs it), the Redis one reaches no
+  key. `make operator-broker-dev` creates the local one.
 - Organization: a "Roles & permissions" reference, opened from the Members section for every role, built from the same
   permission matrix the app enforces.
 - CI: an `Images` job builds the API and worker images, scans each with Trivy (fails on a fixable HIGH/CRITICAL) and
@@ -57,6 +61,12 @@ owner membership becomes admin; an organization whose `owner_id` has no membersh
 
 ### Changed
 
+- Studio: requeue and purge need the operator's own RabbitMQ login. A login whose name differs from the database login,
+  or that has the `administrator` tag, is refused; the audit row of a queue action names the broker login
+  (`broker_user`). **Upgrade:** create each operator's broker login (`docs/12-operations.md` "Operator access") before
+  upgrading Studio, or requeue and purge stop working for them. View and Purge are offered on dead-letter queues only.
+  The connection test for Redis now logs in and pings (it only opened a socket), and the one for RabbitMQ also checks
+  the management API Studio works through. Neither repeats a password in its error.
 - Tooling: `make test-integration`, `make test-cover` and `make pre-push` run against a dedicated `stratum_test`
   database, which the new `make test-db` creates and migrates. `make test-db` refuses any Postgres URL it cannot
   move to that database. `make test` blanks the Postgres URLs, so its database tests skip. Neither writes into the
@@ -65,6 +75,9 @@ owner membership becomes admin; an organization whose `owner_id` has no membersh
 
 ### Fixed
 
+- Studio: a requeued message no queue is bound for is handed back as lost, with its body. It was reported as requeued
+  after the broker had dropped it. A message whose payload is not text is republished unchanged, and one the broker
+  sends in a form Studio cannot read is handed back too. A failed browse shows its error instead of an empty queue.
 - CI: runs only on pull requests to `main`. A push to `dev` with the release pull request open no longer starts a
   second, identical run.
 - Organization: an organization can no longer end up with two owner memberships (migration `000016`). Suspend and role
