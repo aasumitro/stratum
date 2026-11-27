@@ -54,7 +54,7 @@
     "jsdom": "^31.0.1",
     "prettier": "^3.8.3",
     "prettier-plugin-tailwindcss": "^0.8.0",
-    "rollup-plugin-visualizer": "^7.0.1",
+    "rollup-plugin-visualizer": "^7.3.0",
     "shadcn": "^4.16",
     "typescript": "~6",
     "typescript-eslint": "^8",
