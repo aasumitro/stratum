@@ -1,0 +1,13 @@
+<!-- subject: Ringkasan harian Anda -->
+<h2>Ringkasan harian Anda</h2>
+<p>Halo, berikut yang terjadi sejak ringkasan terakhir Anda.</p>
+<table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+  {{range .DigestItems}}
+  <tr>
+    <td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb;"><strong>{{.Subject}}</strong>{{if .Summary}}<br>{{.Summary}}{{end}}{{if .OrganizationName}}<br><span style="color: #6b7280;">{{.OrganizationName}}</span>{{end}}</td>
+    <td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280; text-align: right; white-space: nowrap;">{{.Date}}</td>
+  </tr>
+  {{end}}
+</table>
+<p><a href="{{.ActionURL}}" style="display: inline-block; padding: 12px 24px; background: #161b1d; color: #fff; text-decoration: none; border-radius: 6px;">Buka notifikasi</a></p>
+<p style="color: #6b7280; font-size: 13px;">Anda menerima ini dalam satu email per hari karena ringkasan harian aktif. Anda bisa mematikannya di pengaturan notifikasi.</p>

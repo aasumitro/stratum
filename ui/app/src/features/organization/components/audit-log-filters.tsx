@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate, useSearch } from "@tanstack/react-router"
 import { useTranslation } from "react-i18next"
 import { IconDownload, IconInfoCircle, IconX } from "@tabler/icons-react"
@@ -17,6 +17,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { downloadFile } from "@/lib/api/download"
+import { SearchBar } from "@/components/shared/search-bar"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { searchTerm } from "@/lib/search"
 import { useOrganizationMembers } from "@/features/organization/hooks/use-members"
 import {
   auditLogExportUrl,
@@ -69,6 +72,7 @@ export function AuditLogFilters({ organizationId, total }: Props) {
     if (!val || val === "all") return t("organization.auditLog.allActors")
     if (val === "system" || val === "anonymous")
       return t("organization.auditLog.systemActor")
+    if (val === "operator") return t("organization.auditLog.operatorActor")
     const m = members.find((m) => m.auth_sub === val)
     return m ? (m.full_name ?? m.email ?? m.auth_sub) : val
   }
@@ -77,8 +81,25 @@ export function AuditLogFilters({ organizationId, total }: Props) {
     actor: search.actor,
     action: search.action,
     resource: search.resource,
+    q: search.q,
     from: rangeToFrom(search.range),
   }
+
+  // Search text is local while typing; the URL gets it once it is long enough
+  // and has settled, so every keystroke does not refetch.
+  const [searchText, setSearchText] = useState(search.q ?? "")
+  const settled = searchTerm(useDebouncedValue(searchText))
+  const [prevQ, setPrevQ] = useState(search.q)
+  if (search.q !== prevQ) {
+    setPrevQ(search.q)
+    // Only an outside change (Clear, back/forward, a shared link) replaces the
+    // text; the URL following the box, e.g. "ab" dropping q, must not erase it.
+    if ((search.q ?? "") !== settled) setSearchText(search.q ?? "")
+  }
+  useEffect(() => {
+    if (settled !== (search.q ?? "")) setSearch({ q: settled || undefined })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a settled change should navigate
+  }, [settled])
 
   const [resourceText, setResourceText] = useState(search.resource ?? "")
   const [prevResource, setPrevResource] = useState(search.resource)
@@ -100,11 +121,19 @@ export function AuditLogFilters({ organizationId, total }: Props) {
     search.actor ||
     search.action ||
     search.resource ||
+    search.q ||
     (search.range && search.range !== "7d")
   )
 
   return (
     <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-1 sm:flex-wrap sm:items-center">
+      <SearchBar
+        value={searchText}
+        onChange={setSearchText}
+        placeholder={t("organization.auditLog.searchPlaceholder")}
+        autoFocusShortcut={false}
+        className="col-span-2 sm:w-48"
+      />
       <Select
         value={search.actor ?? "all"}
         onValueChange={(v) =>
@@ -123,6 +152,9 @@ export function AuditLogFilters({ organizationId, total }: Props) {
               {m.full_name ?? m.email ?? m.auth_sub}
             </SelectItem>
           ))}
+          <SelectItem value="operator">
+            {t("organization.auditLog.operatorActor")}
+          </SelectItem>
         </SelectContent>
       </Select>
 
@@ -183,14 +215,17 @@ export function AuditLogFilters({ organizationId, total }: Props) {
           variant="link"
           size="sm"
           className="px-2 text-[10px] font-bold text-muted-foreground uppercase hover:text-foreground"
-          onClick={() =>
+          onClick={() => {
+            // Also a term still too short, or not yet settled, to be in the URL.
+            setSearchText("")
             setSearch({
               actor: undefined,
               action: undefined,
               resource: undefined,
+              q: undefined,
               range: undefined,
             })
-          }
+          }}
         >
           <IconX className="mr-1 size-3" />
           {t("common.clear")}

@@ -530,19 +530,49 @@ type Filter struct {
 	Actor    string
 	Action   string
 	Resource string
-	From     *time.Time
-	To       *time.Time
+	// Query matches anywhere in the route and the before/after metadata,
+	// served by the idx_audit_search trigram index (same expression).
+	Query string
+	From  *time.Time
+	To    *time.Time
 }
 
+// SearchExpr is idx_audit_search's expression (migration 000021); a search
+// must use it verbatim for the index to apply.
+const SearchExpr = `(resource || ' ' || metadata::text)`
+
+// OperatorActor is how an organization's own log shows a change made by the
+// provider's operators: the operator's login role and address stay internal.
+const OperatorActor = "operator"
+
+// An organization's log reduces an operator row to OperatorActor, with no IP
+// address and no client: who at the provider made the change stays internal.
+const (
+	orgActorColumn     = `CASE WHEN actor LIKE 'operator:%' THEN 'operator' ELSE actor END`
+	orgIPColumn        = `CASE WHEN actor LIKE 'operator:%' THEN '' ELSE ip END`
+	orgUserAgentColumn = `CASE WHEN actor LIKE 'operator:%' THEN '' ELSE user_agent END`
+	orgEventColumns    = `id, organization_id, ` + orgActorColumn + `, action, resource, status_code, metadata, ` +
+		orgIPColumn + `, ` + orgUserAgentColumn + `, created_at`
+)
+
 func (f Filter) apply(query string, args *db.Args) string {
-	if f.Actor != "" {
+	switch {
+	case f.Actor == OperatorActor:
+		query += " AND actor LIKE 'operator:%'"
+	case strings.HasPrefix(f.Actor, "operator:"):
+		// A guessed operator name must not be confirmed by a match.
+		query += " AND false"
+	case f.Actor != "":
 		query += fmt.Sprintf(" AND actor = $%d", args.Add(f.Actor))
 	}
 	if f.Action != "" {
 		query += fmt.Sprintf(" AND action = $%d", args.Add(f.Action))
 	}
 	if f.Resource != "" {
-		query += fmt.Sprintf(" AND resource ILIKE $%d", args.Add("%"+f.Resource+"%"))
+		query += fmt.Sprintf(" AND resource ILIKE $%d", args.Add(db.ContainsPattern(f.Resource)))
+	}
+	if f.Query != "" {
+		query += fmt.Sprintf(" AND "+SearchExpr+" ILIKE $%d", args.Add(db.ContainsPattern(f.Query)))
 	}
 	if f.From != nil {
 		query += fmt.Sprintf(" AND created_at >= $%d", args.Add(*f.From))
@@ -567,8 +597,7 @@ func ListByOrganization(
 		return nil, 0, fmt.Errorf("audit.ListByOrganization: count: %w", err)
 	}
 
-	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
-		FROM audit.events WHERE organization_id = $1`
+	query := `SELECT ` + orgEventColumns + ` FROM audit.events WHERE organization_id = $1`
 	args := db.NewArgs(organizationID)
 	query = filter.apply(query, args)
 	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", args.Add(limit), args.Add(offset))
@@ -602,8 +631,7 @@ func ListByOrganizationCursor(
 	ctx context.Context, pool *pgxpool.Pool,
 	organizationID string, limit int, cursor string, filter Filter,
 ) ([]EventRecord, string, error) {
-	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
-		FROM audit.events WHERE organization_id = $1`
+	query := `SELECT ` + orgEventColumns + ` FROM audit.events WHERE organization_id = $1`
 	args := db.NewArgs(organizationID)
 
 	query = filter.apply(query, args)
@@ -664,11 +692,15 @@ func ListByOrganizationCursor(
 // "ORDER BY id DESC" does not actually mean newest-first.
 func ListByActorCursor(
 	ctx context.Context, pool *pgxpool.Pool,
-	authSub string, limit int, cursor string, from, to *time.Time,
+	authSub string, limit int, cursor string, from, to *time.Time, search string,
 ) ([]EventRecord, string, error) {
 	query := `SELECT id, organization_id, actor, action, resource, status_code, metadata, ip, user_agent, created_at
 		FROM audit.events WHERE actor = $1`
 	args := db.NewArgs(authSub)
+
+	if search != "" {
+		query += fmt.Sprintf(" AND "+SearchExpr+" ILIKE $%d", args.Add(db.ContainsPattern(search)))
+	}
 
 	if from != nil {
 		query += fmt.Sprintf(" AND created_at >= $%d", args.Add(*from))
@@ -746,7 +778,7 @@ func csvSafe(s string) string {
 // always the same value, so it'd be redundant on every row.
 func ExportByActor(
 	ctx context.Context, pool *pgxpool.Pool,
-	authSub string, from, to *time.Time, w io.Writer,
+	authSub string, from, to *time.Time, search string, w io.Writer,
 ) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
@@ -760,6 +792,9 @@ func ExportByActor(
 
 	query := `SELECT id, organization_id, action, resource, status_code, ip, user_agent, created_at FROM audit.events WHERE actor = $1`
 	args := db.NewArgs(authSub)
+	if search != "" {
+		query += fmt.Sprintf(" AND "+SearchExpr+" ILIKE $%d", args.Add(db.ContainsPattern(search)))
+	}
 	if from != nil {
 		query += fmt.Sprintf(" AND created_at >= $%d", args.Add(*from))
 	}
@@ -816,7 +851,9 @@ func ExportByOrganization(
 		return fmt.Errorf("audit.ExportByOrganization: write header: %w", err)
 	}
 
-	query := `SELECT id, organization_id, actor, action, resource, status_code, ip, user_agent, created_at FROM audit.events WHERE organization_id = $1`
+	query := `SELECT id, organization_id, ` + orgActorColumn + `, action, resource, status_code, ` +
+		orgIPColumn + `, ` + orgUserAgentColumn + `, created_at
+		FROM audit.events WHERE organization_id = $1`
 	args := db.NewArgs(organizationID)
 	query = filter.apply(query, args)
 	query += " ORDER BY created_at DESC"

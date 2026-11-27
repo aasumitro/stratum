@@ -28,6 +28,9 @@ type memberView struct {
 	Email          *string   `json:"email,omitempty"`
 	FullName       *string   `json:"full_name,omitempty"`
 	AvatarURL      *string   `json:"avatar_url,omitempty"`
+	// MFAEnabled is set only for an owner or admin caller, so they can see who
+	// a require-MFA policy would shut out; members never see it.
+	MFAEnabled *bool `json:"mfa_enabled,omitempty"`
 }
 
 // findFirstOrganizationIDByMember returns the earliest-joined organization for
@@ -65,12 +68,31 @@ func (r *repository) insertOwnerMembership(ctx context.Context, q db.Querier, or
 
 // removeAllMemberships deletes every membership row for a user across all
 // organizations — used by the GDPR account-deletion flow, not by any
-// single-organization membership management route.
-func (r *repository) removeAllMemberships(ctx context.Context, q db.Querier, authSub string) error {
-	if _, err := q.Exec(ctx, `DELETE FROM organization.memberships WHERE auth_sub = $1`, authSub); err != nil {
-		return fmt.Errorf("organization.removeAllMemberships: %w", err)
+// single-organization membership management route — except the owner
+// membership of an organization that is not deleted, so no organization loses
+// its owner. The filter is part of the DELETE, so a transfer that makes the
+// user an owner concurrently is re-checked on that row. It reports how many
+// owner memberships it kept, counted with the same filter, so a membership
+// added meanwhile for another organization is not taken for one.
+func (r *repository) removeAllMemberships(ctx context.Context, q db.Querier, authSub string) (int, error) {
+	if _, err := q.Exec(ctx, `
+		DELETE FROM organization.memberships m
+		WHERE m.auth_sub = $1
+		  AND NOT (m.role = 'owner' AND EXISTS (
+		      SELECT 1 FROM organization.organizations o
+		      WHERE o.id = m.organization_id AND o.status <> 'deleted'))`, authSub); err != nil {
+		return 0, fmt.Errorf("organization.removeAllMemberships: %w", err)
 	}
-	return nil
+	var kept int
+	if err := q.QueryRow(ctx, `
+		SELECT count(*) FROM organization.memberships m
+		WHERE m.auth_sub = $1
+		  AND m.role = 'owner' AND EXISTS (
+		      SELECT 1 FROM organization.organizations o
+		      WHERE o.id = m.organization_id AND o.status <> 'deleted')`, authSub).Scan(&kept); err != nil {
+		return 0, fmt.Errorf("organization.removeAllMemberships: count kept: %w", err)
+	}
+	return kept, nil
 }
 
 func (r *repository) listMembers(ctx context.Context, q db.Querier, organizationID string) ([]membershipRecord, error) {
@@ -155,6 +177,8 @@ func (r *repository) deleteMembership(ctx context.Context, q db.Querier, organiz
 	return tag.RowsAffected() > 0, nil
 }
 
+// updateMemberRole sets any membership's role, the owner's included; only a
+// transfer, which moves ownership under the organization lock, may call it.
 func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organizationID, authSub, role string) (bool, error) {
 	tag, err := q.Exec(ctx, `
 		UPDATE organization.memberships SET role = $3
@@ -167,14 +191,28 @@ func (r *repository) updateMemberRole(ctx context.Context, q db.Querier, organiz
 	return tag.RowsAffected() > 0, nil
 }
 
+// updateNonOwnerRole changes a member's role and never an owner membership's.
+func (r *repository) updateNonOwnerRole(ctx context.Context, q db.Querier, organizationID, authSub, role string) (bool, error) {
+	tag, err := q.Exec(ctx, `
+		UPDATE organization.memberships SET role = $3
+		WHERE organization_id = $1 AND auth_sub = $2 AND role <> 'owner'`,
+		organizationID, authSub, role,
+	)
+	if err != nil {
+		return false, fmt.Errorf("organization.updateNonOwnerRole: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // setMemberStatus flips a membership between 'active' and 'suspended', but
 // only when the row is currently in expectStatus — so a concurrent caller
 // that already made the transition loses the race cleanly (RowsAffected 0)
-// instead of both sides believing they did it. Reports whether a row moved.
+// instead of both sides believing they did it. An owner membership never
+// moves. Reports whether a row moved.
 func (r *repository) setMemberStatus(ctx context.Context, q db.Querier, organizationID, authSub, newStatus, expectStatus string) (bool, error) {
 	tag, err := q.Exec(ctx, `
 		UPDATE organization.memberships SET status = $3
-		WHERE organization_id = $1 AND auth_sub = $2 AND status = $4`,
+		WHERE organization_id = $1 AND auth_sub = $2 AND status = $4 AND role <> 'owner'`,
 		organizationID, authSub, newStatus, expectStatus,
 	)
 	if err != nil {
@@ -208,6 +246,23 @@ func (r *repository) getMemberRole(ctx context.Context, q db.Querier, organizati
 	).Scan(&role)
 	if err != nil {
 		return "", fmt.Errorf("organization.getMemberRole: %w", err)
+	}
+	return role, nil
+}
+
+// lockActiveMemberRole reads an active member's role and locks the membership
+// row, so the member cannot be suspended, removed or leave before the caller's
+// transaction commits. No row (not an active member) is pgx.ErrNoRows.
+func (r *repository) lockActiveMemberRole(ctx context.Context, q db.Querier, organizationID, authSub string) (string, error) {
+	db.RequireTx(q)
+	var role string
+	if err := q.QueryRow(ctx, `
+		SELECT role FROM organization.memberships
+		WHERE organization_id = $1 AND auth_sub = $2 AND status = 'active'
+		FOR UPDATE`,
+		organizationID, authSub,
+	).Scan(&role); err != nil {
+		return "", fmt.Errorf("organization.lockActiveMemberRole: %w", err)
 	}
 	return role, nil
 }

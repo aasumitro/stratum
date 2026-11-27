@@ -9,8 +9,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -264,6 +266,7 @@ func TestNormalizeStripeStatus(t *testing.T) {
 func TestNormalizeXenditStatus(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"PAID", "paid"},
+		{"SETTLED", "paid"},
 		{"EXPIRED", "expired"},
 		{"FAILED", "failed"},
 		{"PENDING", "pending"}, // default
@@ -273,6 +276,15 @@ func TestNormalizeXenditStatus(t *testing.T) {
 	for _, c := range cases {
 		if got := normalizeXenditStatus(c.in); got != c.want {
 			t.Errorf("normalizeXenditStatus(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// SETTLED is deduplicated under PAID's key; every other status keeps its own.
+func TestXenditEventStatus(t *testing.T) {
+	for in, want := range map[string]string{"PAID": "PAID", "SETTLED": "PAID", "EXPIRED": "EXPIRED", "FAILED": "FAILED"} {
+		if got := xenditEventStatus(in); got != want {
+			t.Errorf("xenditEventStatus(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -943,5 +955,15 @@ func TestScopeCatalogPrices(t *testing.T) {
 				t.Errorf("scopeCatalogPrices(%q) = %v, want key %q", c.currency, got, c.wantCurrency)
 			}
 		})
+	}
+}
+
+func TestErrorBody_BoundsAndKeepsUTF8Valid(t *testing.T) {
+	if got := errorBody([]byte(`{"error":"bad"}`)); got != `{"error":"bad"}` {
+		t.Errorf("short body: got %q", got)
+	}
+	got := errorBody([]byte(strings.Repeat("a", 511) + "é" + strings.Repeat("b", 2000)))
+	if len(got) > 512+len("…") || !utf8.ValidString(got) {
+		t.Errorf("long body: %d bytes, valid UTF-8 %v", len(got), utf8.ValidString(got))
 	}
 }

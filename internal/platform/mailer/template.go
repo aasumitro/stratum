@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"embed"
 	"fmt"
+	"html"
 	"html/template"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type parsedEmail struct {
 	subjectRaw  string
 	subjectTmpl *template.Template
 	body        *template.Template
+	summaryTmpl *template.Template
 }
 
 // templateFS is static (embed.FS, never changes at runtime), so parsed
@@ -50,6 +52,16 @@ type TemplateData struct {
 	// field rather than separate numeric fields since no other template
 	// needs the parts individually.
 	UsageDetail string
+	// DigestItems are the emails a daily digest gathers (template "digest").
+	DigestItems []DigestItem
+}
+
+// DigestItem is one held email in a daily digest.
+type DigestItem struct {
+	Subject          string
+	Summary          string
+	OrganizationName string
+	Date             string
 }
 
 // layoutData wraps TemplateData with the already-rendered body HTML for
@@ -96,6 +108,14 @@ func loadParsedEmail(name, lang string) (*parsedEmail, error) {
 			content = before + remaining
 		}
 	}
+	// Optional one-line summary, for a daily digest: <!-- summary: ... -->
+	var summaryTmpl *template.Template
+	if before, after, found := strings.Cut(content, "<!-- summary:"); found {
+		if raw, remaining, ok := strings.Cut(after, "-->"); ok {
+			summaryTmpl, _ = template.New("summary").Parse(strings.TrimSpace(raw))
+			content = before + remaining
+		}
+	}
 
 	// Subject may contain template vars like {{.OrganizationName}}; if it
 	// fails to parse, subjectTmpl stays nil and the raw literal is used.
@@ -109,7 +129,7 @@ func loadParsedEmail(name, lang string) (*parsedEmail, error) {
 		return nil, fmt.Errorf("mailer.loadParsedEmail: parsing template %s: %w", name, err)
 	}
 
-	parsed := &parsedEmail{subjectRaw: subject, subjectTmpl: subjectTmpl, body: bodyTmpl}
+	parsed := &parsedEmail{subjectRaw: subject, subjectTmpl: subjectTmpl, summaryTmpl: summaryTmpl, body: bodyTmpl}
 	emailCache.Store(key, parsed)
 	return parsed, nil
 }
@@ -150,7 +170,9 @@ func RenderTemplate(name, lang string, data TemplateData) (string, string, error
 	if parsed.subjectTmpl != nil {
 		var sb bytes.Buffer
 		if parsed.subjectTmpl.Execute(&sb, data) == nil {
-			subject = sb.String()
+			// A subject is a plain-text header, but html/template escaped the
+			// data in it ("R&amp;D"); undo that so it reads as typed.
+			subject = html.UnescapeString(sb.String())
 		}
 	}
 
@@ -176,4 +198,20 @@ func RenderTemplate(name, lang string, data TemplateData) (string, string, error
 	}
 
 	return subject, htmlBuf.String(), nil
+}
+
+// RenderSummary renders a template's optional one-line summary
+// (<!-- summary: ... -->) as plain text, or "" when it has none. A daily digest
+// lists it under the email's subject.
+func RenderSummary(name, lang string, data TemplateData) string {
+	data.AppName = cmp.Or(data.AppName, "Stratum")
+	parsed, err := loadParsedEmail(name, lang)
+	if err != nil || parsed.summaryTmpl == nil {
+		return ""
+	}
+	var sb bytes.Buffer
+	if parsed.summaryTmpl.Execute(&sb, data) != nil {
+		return ""
+	}
+	return html.UnescapeString(sb.String())
 }

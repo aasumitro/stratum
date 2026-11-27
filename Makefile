@@ -62,6 +62,38 @@ infra-observability-logs:
 		openobserve \
 		otel-collector
 
+.PHONY: operator-broker-dev
+operator-broker-dev: ## Create the local Studio operator's RabbitMQ and Redis logins (stratum_operator_dev)
+	@printf '%s' stratum_operator_dev | \
+		RABBITMQCTL='$(COMPOSE) -f $(COMPOSE_FILE) exec -T rabbitmq rabbitmqctl' \
+		REDIS_CLI='$(COMPOSE) -f $(COMPOSE_FILE) exec -T redis redis-cli' \
+		sh deploy/broker-init/operator.sh add stratum_operator_dev
+
+# Only this service is named, so the running infra containers are left alone. The bucket
+# is created with Object Lock, which cannot be turned on later.
+AUDIT_ARCHIVE_URL := http://localhost:8333/stratum-audit
+# The local server's public dev identity, from deploy/audit-archive/s3.json.
+AUDIT_ARCHIVE_ADMIN := stratum-archive-admin
+audit_archive_admin = curl -sS --aws-sigv4 aws:amz:us-east-1:s3 --user '$(AUDIT_ARCHIVE_ADMIN):$(AUDIT_ARCHIVE_ADMIN)'
+
+.PHONY: audit-archive-up
+audit-archive-up: ## Start the local audit archive (S3 with Object Lock) and create its bucket
+	$(COMPOSE) -f $(COMPOSE_FILE) --profile audit-archive up -d audit-archive
+	@for i in $$(seq 1 30); do \
+		status=$$($(audit_archive_admin) -o /dev/null -w '%{http_code}' -X HEAD -I $(AUDIT_ARCHIVE_URL) 2>/dev/null); \
+		case $$status in 200) \
+			$(audit_archive_admin) '$(AUDIT_ARCHIVE_URL)?object-lock' | grep -q '<ObjectLockEnabled>Enabled<' && \
+				{ echo "bucket exists, with Object Lock"; exit 0; }; \
+			echo "bucket exists without Object Lock; start the server on a new volume" >&2; exit 1;; 404) \
+			status=$$($(audit_archive_admin) -o /dev/null -w '%{http_code}' -X PUT -H 'x-amz-bucket-object-lock-enabled: true' $(AUDIT_ARCHIVE_URL)); \
+			[ "$$status" = 200 ] && { echo "bucket created"; exit 0; };; \
+		esac; sleep 1; \
+	done; echo "audit archive did not answer (last status $$status)" >&2; exit 1
+
+.PHONY: audit-archive-down
+audit-archive-down: ## Stop the local audit archive (keeps its container and volume)
+	$(COMPOSE) -f $(COMPOSE_FILE) --profile audit-archive stop audit-archive
+
 ## --- Migrations ---
 ## Usage: make migrate-create name=create_organizations_table
 
@@ -127,6 +159,10 @@ run-api: ## Run the HTTP API server
 run-worker: ## Run the background worker (RabbitMQ consumers)
 	go build -o bin/stratum-worker ./cmd/worker && ./bin/stratum-worker
 
+.PHONY: verify-audit-archive
+verify-audit-archive: ## Compare audit.events with its write-once copy
+	go build -o bin/stratum-worker ./cmd/worker && ./bin/stratum-worker verify-audit-archive
+
 .PHONY: run-web
 run-web: ## Run the web frontend dev server (ui/app)
 	cd ./ui/app && npm run dev
@@ -173,21 +209,53 @@ vet: ## go vet
 	go vet ./...
 
 .PHONY: test
-test: ## Run all tests
-	gotestsum --hide-summary=skipped ./... -race -count=1
+test: ## Run unit and handler tests; the Postgres URLs .env exports are blanked, so no test reaches a database
+	@$(foreach v,$(TEST_DB_URLS),$(v)=) gotestsum --hide-summary=skipped ./... -race -count=1
+
+# Integration tests run against their own database, so a running cmd/worker never
+# relays the outbox rows they write, and their relay runs never claim the dev data's
+# due rows. Every Postgres URL comes from .env with its database swapped for TEST_DB,
+# which expects the .env form .../stratum?... . test-db refuses a URL it cannot swap,
+# because a test pool or the migrate run on it would still reach the dev database.
+# TEST_DB is created in the compose postgres service, the server .env points at by
+# default. The roles are cluster-wide and the migrations grant them, so a migrated
+# TEST_DB needs nothing else.
+TEST_DB ?= stratum_test
+TEST_DB_URLS := POSTGRES_URL POSTGRES_APP_URL POSTGRES_WORKER_URL POSTGRES_WEBHOOK_URL POSTGRES_UNSCOPED_URL POSTGRES_OPERATOR_URL
+to_test_db = $(subst /stratum?,/$(TEST_DB)?,$(1))
+check_test_db = $(if $(findstring /$(TEST_DB)?,$(call to_test_db,$($(1)))),,$(error $(1) must name its database as /stratum?... so the tests can be moved to $(TEST_DB)))
+TEST_ENV = TEST_DATABASE_URL='$(call to_test_db,$(POSTGRES_TEST_URL))' \
+	$(foreach v,$(TEST_DB_URLS),$(v)='$(call to_test_db,$($(v)))') \
+	TEST_REDIS_URL='$(CACHE_URL)'
+# The bare export at the top would hand these DSN-bearing strings to every recipe.
+unexport TEST_ENV TEST_DB_URLS to_test_db check_test_db
+
+.PHONY: test-db
+test-db: ## Create the integration-test database (TEST_DB, default stratum_test) if missing and migrate it up
+	$(if $(filter stratum,$(TEST_DB)),$(error TEST_DB must not be stratum, the dev database))
+	$(call check_test_db,POSTGRES_TEST_URL)
+	$(foreach v,$(TEST_DB_URLS),$(if $($(v)),$(call check_test_db,$(v))))
+	@$(COMPOSE) -f $(COMPOSE_FILE) exec -T postgres psql -U stratum -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$(TEST_DB)'" | grep -qx 1 || \
+		$(COMPOSE) -f $(COMPOSE_FILE) exec -T postgres createdb -U stratum -O stratum $(TEST_DB)
+	@migrate -path $(MIGRATIONS_PATH) -database "$(call to_test_db,$(POSTGRES_URL))" up
 
 .PHONY: test-integration
-test-integration: ## Run all tests including integration (requires infra): make test-integration
-	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1
+test-integration: test-db ## Run all tests including integration (requires infra) against TEST_DB
+	@$(TEST_ENV) gotestsum -- ./... -race -count=1
 
 .PHONY: test-cover
-test-cover: ## Run all tests (incl. integration) with coverage and print the total %
-	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) TEST_REDIS_URL=$(CACHE_URL) gotestsum -- ./... -race -count=1 -coverprofile=coverage.out
+test-cover: test-db ## Run all tests (incl. integration) with coverage and print the total %
+	@$(TEST_ENV) gotestsum -- ./... -race -count=1 -coverprofile=coverage.out
 	go tool cover -func=coverage.out | tail -1
 
 .PHONY: test-cover-html
 test-cover-html: test-cover ## Same as test-cover, then open the HTML report in a browser
 	go tool cover -html=coverage.out
+
+.PHONY: test-audit-archive
+test-audit-archive: test-db audit-archive-up ## Test the audit archive against the local S3 server (leaves locked objects in it)
+	@$(TEST_ENV) AUDIT_ARCHIVE_TEST_ENDPOINT='$(dir $(AUDIT_ARCHIVE_URL))' \
+		go test ./internal/platform/audit -run 'ArchiveServer' -race -count=1 -v
 
 .PHONY: lint
 lint: ## Run golangci-lint (install separately: https://golangci-lint.run/welcome/install/)
@@ -226,8 +294,8 @@ sync-studio-deps: ## Upgrade studio deps to latest
 	cd ui/studio/frontend && npx npm-check-updates -u && npm install
 
 .PHONY: pre-push
-pre-push: verify-modules vet fmt lint vuln ## Mirror the GitHub CI api+web+studio jobs locally
-	TEST_DATABASE_URL=$(POSTGRES_TEST_URL) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
+pre-push: verify-modules vet fmt lint vuln test-db ## Mirror the GitHub CI api+web+studio jobs locally
+	@$(TEST_ENV) go test ./... -race -count=1 -timeout 120s -coverprofile=coverage.out -covermode=atomic
 	go tool cover -func=coverage.out
 	cd ui/app && npm ci && npm run typecheck && npm run lint && npx prettier --write "**/*.{ts,tsx}" && npm run build
 	cd ui/studio && go vet ./... && gofmt -w . && go build ./...

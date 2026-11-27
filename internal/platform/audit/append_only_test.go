@@ -752,3 +752,178 @@ func TestWriter_ValuesPostgresRefusesCostOnlyTheirOwnRow(t *testing.T) {
 		}
 	}
 }
+
+// An operator's change to an organization's data is recorded with that
+// organization's id, found from the row itself or through its subscription or
+// invoice, so it shows in the organization's own audit log.
+func TestOperator_ChangeIsRecordedForItsOrganization(t *testing.T) {
+	admin := testPool(t)
+	operator := operatorPool(t)
+
+	var orgID, subscription, invoice, link string
+	if err := admin.QueryRow(t.Context(), `
+		INSERT INTO organization.organizations (slug, name, owner_id) VALUES ('audit-capture-org', 'Capture Org', 'audit_capture_org_owner') RETURNING id`,
+	).Scan(&orgID); err != nil {
+		t.Fatalf("seed organization: %v", err)
+	}
+	if err := admin.QueryRow(t.Context(), `
+		INSERT INTO billing.subscriptions (subject_type, subject_id, status) VALUES ('organization', $1, 'active') RETURNING id`,
+		orgID).Scan(&subscription); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+	if err := admin.QueryRow(t.Context(), `
+		INSERT INTO billing.invoices (subscription_id, amount_cents) VALUES ($1, 1000) RETURNING id`,
+		subscription).Scan(&invoice); err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
+	if err := admin.QueryRow(t.Context(), `
+		INSERT INTO billing.payment_links (invoice_id, provider, currency, amount_cents) VALUES ($1, 'stripe', 'USD', 1000) RETURNING id`,
+		invoice).Scan(&link); err != nil {
+		t.Fatalf("seed payment link: %v", err)
+	}
+	resources := []string{
+		"organization.organizations/" + orgID,
+		"billing.subscriptions/" + subscription,
+		"billing.invoices/" + invoice,
+		"billing.payment_links/" + link,
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		admin.Exec(ctx, `DELETE FROM billing.payment_links WHERE id = $1`, link)
+		admin.Exec(ctx, `DELETE FROM billing.invoices WHERE id = $1`, invoice)
+		admin.Exec(ctx, `DELETE FROM billing.subscriptions WHERE id = $1`, subscription)
+		admin.Exec(ctx, `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		admin.Exec(ctx, `DELETE FROM audit.events WHERE resource = ANY($1)`, resources)
+	})
+
+	ids := []string{orgID, subscription, invoice, link}
+	stmts := []string{
+		`UPDATE organization.organizations SET name = 'Renamed' WHERE id = $1`,
+		`UPDATE billing.subscriptions SET cycle = 'yearly' WHERE id = $1`,
+		`UPDATE billing.invoices SET amount_cents = 2000 WHERE id = $1`,
+		`UPDATE billing.payment_links SET status = 'expired' WHERE id = $1`,
+	}
+	for i, stmt := range stmts {
+		if _, err := operator.Exec(t.Context(), stmt, ids[i]); err != nil {
+			t.Fatalf("operator %s: %v", stmt, err)
+		}
+	}
+	for _, resource := range resources {
+		var got *string
+		if err := admin.QueryRow(t.Context(),
+			`SELECT organization_id FROM audit.events WHERE resource = $1 AND actor LIKE 'operator:%'`, resource).Scan(&got); err != nil {
+			t.Fatalf("%s: read audit row: %v", resource, err)
+		}
+		if got == nil || *got != orgID {
+			t.Errorf("%s: organization_id = %v, want %s", resource, got, orgID)
+		}
+	}
+
+	// The organization's own log names neither the operator's login role nor
+	// their address, and the "operator" actor filter finds these rows.
+	events, _, err := audit.ListByOrganizationCursor(t.Context(), admin, orgID, 20, "", audit.Filter{Actor: audit.OperatorActor})
+	if err != nil {
+		t.Fatalf("list organization log: %v", err)
+	}
+	if len(events) != len(resources) {
+		t.Fatalf("operator filter: want %d rows, got %d", len(resources), len(events))
+	}
+	for _, e := range events {
+		if e.Actor != audit.OperatorActor || e.IP != "" || e.UserAgent != "" {
+			t.Errorf("%s: actor %q ip %q client %q, want %q and nothing else", e.Resource, e.Actor, e.IP, e.UserAgent, audit.OperatorActor)
+		}
+	}
+
+	// Guessing an operator's login name must not be confirmed by a match.
+	guessed, _, err := audit.ListByOrganizationCursor(t.Context(), admin, orgID, 20, "", audit.Filter{Actor: "operator:stratum_operator_dev"})
+	if err != nil || len(guessed) != 0 {
+		t.Errorf("guessed operator name: want no rows, got %d (%v)", len(guessed), err)
+	}
+
+	// The CSV export masks the same way.
+	var csv strings.Builder
+	if err := audit.ExportByOrganization(t.Context(), admin, orgID, audit.Filter{}, &csv); err != nil {
+		t.Fatalf("export organization log: %v", err)
+	}
+	if strings.Contains(csv.String(), "stratum_operator_dev") || strings.Contains(csv.String(), "stratum-studio") {
+		t.Errorf("export names the operator or their client:\n%s", csv.String())
+	}
+	var operatorIP string
+	if err := admin.QueryRow(t.Context(), `SELECT ip FROM audit.events WHERE resource = $1`, resources[0]).Scan(&operatorIP); err != nil {
+		t.Fatalf("read operator ip: %v", err)
+	}
+	// Over a Unix socket there is no address to leak; over TCP there is.
+	if operatorIP != "" && strings.Contains(csv.String(), operatorIP) {
+		t.Errorf("export shows the operator's address %q:\n%s", operatorIP, csv.String())
+	}
+}
+
+// A queued action records its organization from the envelope; a change with no
+// organization (a subscription aimed at a user) stays out of every log.
+func TestOperator_OrganizationFromOutboxAndNoneForAUser(t *testing.T) {
+	admin := testPool(t)
+	operator := operatorPool(t)
+	const orgID = "0e1e0000-0000-0000-0000-0000000000b9"
+
+	var outboxID, userSub string
+	if err := operator.QueryRow(t.Context(), `
+		INSERT INTO messaging.outbox (id, exchange, routing_key, payload)
+		VALUES (gen_random_uuid(), 'billing.events', 'billing.invoice.mark-paid', jsonb_build_object('org_id', $1::text))
+		RETURNING id`, orgID).Scan(&outboxID); err != nil {
+		t.Fatalf("operator outbox insert: %v", err)
+	}
+	if err := admin.QueryRow(t.Context(), `
+		INSERT INTO billing.subscriptions (subject_type, subject_id, status) VALUES ('user', 'audit_capture_user_sub', 'active') RETURNING id`,
+	).Scan(&userSub); err != nil {
+		t.Fatalf("seed user subscription: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		admin.Exec(ctx, `DELETE FROM messaging.outbox WHERE id = $1`, outboxID)
+		admin.Exec(ctx, `DELETE FROM billing.subscriptions WHERE id = $1`, userSub)
+		admin.Exec(ctx, `DELETE FROM audit.events WHERE resource = ANY($1)`,
+			[]string{"messaging.outbox/" + outboxID, "billing.subscriptions/" + userSub})
+	})
+	if _, err := operator.Exec(t.Context(), `UPDATE billing.subscriptions SET cycle = 'yearly' WHERE id = $1`, userSub); err != nil {
+		t.Fatalf("operator update user subscription: %v", err)
+	}
+
+	var got *string
+	if err := admin.QueryRow(t.Context(), `SELECT organization_id FROM audit.events WHERE resource = $1`,
+		"messaging.outbox/"+outboxID).Scan(&got); err != nil {
+		t.Fatalf("outbox audit row: %v", err)
+	}
+	if got == nil || *got != orgID {
+		t.Errorf("outbox: organization_id = %v, want %s", got, orgID)
+	}
+	if err := admin.QueryRow(t.Context(), `SELECT organization_id FROM audit.events WHERE resource = $1`,
+		"billing.subscriptions/"+userSub).Scan(&got); err != nil {
+		t.Fatalf("user subscription audit row: %v", err)
+	}
+	if got != nil {
+		t.Errorf("user subscription: organization_id = %v, want NULL", *got)
+	}
+}
+
+// The capture function looks subscriptions and invoices up as its owner. Where
+// that owner is not a superuser, FORCE ROW LEVEL SECURITY would hide every row
+// unless operator_audit_lookup is granted to it.
+func TestOperator_LookupPolicyCoversTheCaptureFunctionsOwner(t *testing.T) {
+	admin := testPool(t)
+	for _, table := range []string{"billing.subscriptions", "billing.invoices"} {
+		var covered bool
+		if err := admin.QueryRow(t.Context(), `
+			SELECT EXISTS (
+			    SELECT 1 FROM pg_policy pol
+			    WHERE pol.polrelid = $1::regclass AND pol.polname = 'operator_audit_lookup'
+			      AND p.proowner = ANY (pol.polroles))
+			FROM pg_proc p
+			JOIN pg_namespace n ON n.oid = p.pronamespace
+			WHERE n.nspname = 'audit' AND p.proname = 'capture_operator_change'`, table).Scan(&covered); err != nil {
+			t.Fatalf("%s: read policy: %v", table, err)
+		}
+		if !covered {
+			t.Errorf("%s: operator_audit_lookup does not cover the capture function's owner", table)
+		}
+	}
+}

@@ -106,6 +106,21 @@ func NewModuleEngineWithAdmin(pool *pgxpool.Pool, authSub, adminURL, serviceRole
 	return e
 }
 
+// NewModuleEngineWithLegal is NewModuleEngine with legal documents required.
+func NewModuleEngineWithLegal(pool *pgxpool.Pool, authSub string, docs []LegalDocument) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	authMW := func(c *gin.Context) {
+		c.Set("auth.claims", middleware.Claims{Subject: authSub, Raw: jwtgo.MapClaims{"email": authSub + "@test.local", "email_verified": true}})
+		c.Next()
+	}
+	noopGate := func(c *gin.Context) { c.Next() }
+	mod := New(pool, "", "", nil, nil, "", time.Hour)
+	mod.SetLegalDocuments(docs)
+	mod.Register(e.Group("/api"), httpserver.RouteDeps{Auth: authMW, RateLimit: noopGate, MFA: noopGate})
+	return e
+}
+
 // NewWebhookModuleEngine creates a gin.Engine with only the public webhook
 // routes mounted (no /me routes, no auth middleware) — mirrors how
 // internal/app/api.go wires RegisterWebhooks onto a separate router group.

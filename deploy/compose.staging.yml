@@ -105,9 +105,21 @@ services:
       args:
         SERVICE_VERSION: ${SERVICE_VERSION:-staging}
     restart: unless-stopped
+    # Longer than one email's whole send (20s): a stopping worker finishes the
+    # email in flight instead of being killed mid-send.
+    stop_grace_period: 30s
     env_file: [.env.staging]
     environment:
       APP_ENV: staging
+      # Only the worker writes the audit archive, so its bucket key stays out of the API's
+      # container: set these in the shell that runs compose, or in deploy/.env, never in
+      # .env.staging. Empty leaves the archive off.
+      AUDIT_ARCHIVE_ENDPOINT: ${AUDIT_ARCHIVE_ENDPOINT:-}
+      AUDIT_ARCHIVE_REGION: ${AUDIT_ARCHIVE_REGION:-us-east-1}
+      AUDIT_ARCHIVE_BUCKET: ${AUDIT_ARCHIVE_BUCKET:-}
+      AUDIT_ARCHIVE_ACCESS_KEY: ${AUDIT_ARCHIVE_ACCESS_KEY:-}
+      AUDIT_ARCHIVE_SECRET_KEY: ${AUDIT_ARCHIVE_SECRET_KEY:-}
+      AUDIT_ARCHIVE_RETENTION_DAYS: ${AUDIT_ARCHIVE_RETENTION_DAYS:-0}
     volumes:
       - ./secrets/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro
     depends_on:

@@ -96,12 +96,14 @@ func (m *Module) GetUsersByAuthSubs(ctx context.Context, authSubs []string) (map
 	out := make(map[string]contracts.UserInfo, len(users))
 	for _, u := range users {
 		out[u.AuthSub] = contracts.UserInfo{
-			ID:        u.ID,
-			AuthSub:   u.AuthSub,
-			Email:     u.Email,
-			Name:      u.FullName,
-			AvatarURL: u.AvatarURL,
-			Lang:      preferredLang(u.Preferences),
+			ID:         u.ID,
+			AuthSub:    u.AuthSub,
+			Email:      u.Email,
+			Name:       u.FullName,
+			AvatarURL:  u.AvatarURL,
+			Lang:       preferredLang(u.Preferences),
+			MFAEnabled: u.MFAEnabled,
+			Timezone:   preferredTimezone(u.Preferences),
 		}
 	}
 	return out, nil
@@ -117,6 +119,16 @@ func preferredLang(prefs json.RawMessage) string {
 	return v.Lang
 }
 
+// preferredTimezone extracts the "timezone" key (set at onboarding) from a
+// user's preferences JSON. Empty if unset or unparseable.
+func preferredTimezone(prefs json.RawMessage) string {
+	var v struct {
+		Timezone string `json:"timezone"`
+	}
+	_ = json.Unmarshal(prefs, &v)
+	return v.Timezone
+}
+
 // IsMFAEnabled implements contracts.UserReader.
 func (m *Module) IsMFAEnabled(ctx context.Context, authSub string) (bool, error) {
 	return m.svc.isMFAEnabled(ctx, authSub)
@@ -127,6 +139,17 @@ func (m *Module) IsMFAEnabled(ctx context.Context, authSub string) (bool, error)
 // organization module is created.
 func (m *Module) SetOrganizationWriter(w contracts.OrganizationWriter) {
 	m.svc.orgWriter = w
+}
+
+// SetLegalDocuments sets the documents a user must accept. One with no version
+// is not required and is left out.
+func (m *Module) SetLegalDocuments(docs []LegalDocument) {
+	m.svc.legal = nil
+	for _, d := range docs {
+		if d.Version != "" {
+			m.svc.legal = append(m.svc.legal, d)
+		}
+	}
 }
 
 // SetNotificationWriter wires the notification writer after construction to
@@ -219,6 +242,8 @@ func (m *Module) RecordLoginEvent(ctx context.Context, authSub, ip, ua string) {
 //	POST   /me/password/changed
 //	GET    /me/audit-log
 //	GET    /me/audit-log/export
+//	GET    /me/consents
+//	POST   /me/consents
 //
 // mfaGate is applied to account deletion — an aal2-only gate for users who
 // have MFA enabled, see contracts.UserReader.IsMFAEnabled.
@@ -244,6 +269,8 @@ func (m *Module) Register(r *gin.RouterGroup, deps httpserver.RouteDeps) {
 		me.POST("/password/changed", h.recordPasswordChanged)
 		me.GET("/audit-log", h.auditLog)
 		me.GET("/audit-log/export", h.exportAuditLog)
+		me.GET("/consents", h.listConsents)
+		me.POST("/consents", h.acceptConsent)
 	}
 }
 

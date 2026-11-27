@@ -246,11 +246,16 @@ type updateSettingsRequest struct {
 	// with only their own fields, so omission must never wipe the other
 	// tab's setting.
 	AllowedIPs *[]string `json:"allowed_ips"`
+	// RequireMFA follows the same rule: nil keeps the current policy. Turning it
+	// on needs a session with a verified second factor, so the owner cannot
+	// lock themselves out.
+	RequireMFA *bool `json:"require_mfa"`
 }
 
 // updateSettings godoc
 // @Summary      Update organization settings
-// @Description  Updates timezone, locale, and the IP allowlist. Owner only.
+// @Description  Updates timezone, locale, the IP allowlist and the require-MFA policy. Owner only.
+// @Description  Turning require_mfa on needs an aal2 session (422 MFA_ENROLLMENT_REQUIRED).
 // @Tags         organization
 // @Accept       json
 // @Security     BearerAuth
@@ -264,18 +269,19 @@ type updateSettingsRequest struct {
 func (h *handler) updateSettings(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
 
-	audit.SetBefore(c, map[string]any{"timezone": ws.Timezone, "locale": ws.Locale, settingAllowedIPs: ws.AllowedIPs})
+	audit.SetBefore(c, map[string]any{"timezone": ws.Timezone, "locale": ws.Locale, settingAllowedIPs: ws.AllowedIPs, settingRequireMFA: ws.RequireMFA})
 
 	var req updateSettingsRequest
 	if !request.Bind(c, &req) {
 		return
 	}
 
-	if err := h.svc.updateSettings(c.Request.Context(), ws.ID, req.Timezone, req.Locale, c.ClientIP(), req.AllowedIPs); err != nil {
+	if err := h.svc.updateSettings(c.Request.Context(), ws.ID, req.Timezone, req.Locale, c.ClientIP(), req.AllowedIPs,
+		req.RequireMFA, middleware.SessionIsAAL2(c)); err != nil {
 		response.FromError(c, err)
 		return
 	}
-	audit.SetAfter(c, map[string]any{"timezone": req.Timezone, "locale": req.Locale, settingAllowedIPs: req.AllowedIPs})
+	audit.SetAfter(c, map[string]any{"timezone": req.Timezone, "locale": req.Locale, settingAllowedIPs: req.AllowedIPs, settingRequireMFA: req.RequireMFA})
 	h.invalidateOrg(c, ws.ID)
 	c.Status(http.StatusNoContent)
 }

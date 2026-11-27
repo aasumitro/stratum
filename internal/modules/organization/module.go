@@ -158,6 +158,7 @@ func (m *Module) GetOrganizationByID(ctx context.Context, organizationID string)
 	}
 	var s struct {
 		AllowedIPs []string `json:"allowed_ips"`
+		RequireMFA bool     `json:"require_mfa"`
 	}
 	if len(t.Settings) > 0 {
 		_ = json.Unmarshal(t.Settings, &s)
@@ -175,6 +176,7 @@ func (m *Module) GetOrganizationByID(ctx context.Context, organizationID string)
 		Locale:            t.Locale,
 		CountryCode:       t.CountryCode,
 		AllowedIPs:        s.AllowedIPs,
+		RequireMFA:        s.RequireMFA,
 	}, nil
 }
 

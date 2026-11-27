@@ -449,6 +449,14 @@ export function MembersTable({ organizationId, currentRole }: Props) {
                                     )}
                                   />
                                 )}
+                                {row.data.mfa_enabled === false && (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px]"
+                                  >
+                                    {t("organization.members.noMfaBadge")}
+                                  </Badge>
+                                )}
                               </span>
                               <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
                                 {row.data.email && (
@@ -569,6 +577,15 @@ export function MembersTable({ organizationId, currentRole }: Props) {
                               status="suspended"
                               label={t("organization.members.suspendedBadge")}
                             />
+                          )}
+                        {row.kind === "member" &&
+                          row.data.mfa_enabled === false && (
+                            <Badge
+                              variant="outline"
+                              className="shrink-0 text-[10px]"
+                            >
+                              {t("organization.members.noMfaBadge")}
+                            </Badge>
                           )}
                       </div>
                       {row.kind === "member" && (

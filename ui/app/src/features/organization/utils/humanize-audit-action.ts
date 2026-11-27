@@ -73,7 +73,35 @@ const PATTERNS: { test: RegExp; method?: string; label: string }[] = [
   { test: /\/audit-log\/export$/, label: "Exported audit log" },
 ]
 
+// A change made by the provider's support team in Studio is recorded as
+// "studio.<schema>.<table>.<insert|update|delete>" on the row it touched.
+const OPERATOR_SUBJECTS: Record<string, string> = {
+  organizations: "Organization",
+  subscriptions: "Subscription",
+  subscription_addons: "Add-on",
+  coupon_redemptions: "Coupon",
+  invoices: "Invoice",
+  payment_links: "Payment link",
+  payments: "Payment",
+}
+const OPERATOR_VERBS: Record<string, string> = {
+  insert: "created",
+  update: "updated",
+  delete: "removed",
+}
+
+function humanizeOperatorAction(action: string): string | undefined {
+  const [, , table, op] = action.split(".")
+  if (table === "outbox") return "Action requested by support"
+  const subject = OPERATOR_SUBJECTS[table]
+  const verb = OPERATOR_VERBS[op]
+  return subject && verb ? `${subject} ${verb} by support` : undefined
+}
+
 export function humanizeAuditAction(action: string, resource: string): string {
+  if (action.startsWith("studio.")) {
+    return humanizeOperatorAction(action) ?? action
+  }
   for (const p of PATTERNS) {
     if ((!p.method || p.method === action) && p.test.test(resource))
       return p.label

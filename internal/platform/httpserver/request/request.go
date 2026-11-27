@@ -4,9 +4,11 @@ package request
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -88,4 +90,19 @@ func toSnake(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// MinSearchLength is the shortest search term a trigram index can serve.
+const MinSearchLength = 3
+
+// SearchTerm reads the optional "q" query parameter, trimmed. A term shorter
+// than MinSearchLength gets 422 SEARCH_TOO_SHORT and ok=false; no term is fine.
+func SearchTerm(c *gin.Context) (term string, ok bool) {
+	term = strings.TrimSpace(c.Query("q"))
+	if term == "" || utf8.RuneCountInString(term) >= MinSearchLength {
+		return term, true
+	}
+	response.Error("SEARCH_TOO_SHORT", fmt.Sprintf("a search needs at least %d characters", MinSearchLength)).
+		JSON(c, http.StatusUnprocessableEntity)
+	return "", false
 }

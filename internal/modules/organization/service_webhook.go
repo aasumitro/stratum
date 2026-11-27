@@ -13,7 +13,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpclient"
-	"github.com/aasumitro/stratum/internal/platform/logger"
 )
 
 // ── Webhook endpoints ──────────────────────────────────────────────────────
@@ -23,9 +22,9 @@ import (
 // first call site wiring it up.
 const webhookFeatureID = "webhooks"
 
-// Shared JSON keys for the synthetic payloads webhook retries/test-events
-// re-send — a real published event envelope isn't retained, so these are
-// reconstructed from the stored delivery row instead.
+// Shared JSON keys for the synthetic payloads test events send, and for the
+// payload a retry rebuilds for a delivery recorded before its exact body was
+// kept.
 const (
 	eventPayloadIDKey         = "id"
 	eventPayloadTypeKey       = "type"
@@ -72,7 +71,6 @@ func (s *service) createWebhookEndpoint(
 		case errors.Is(err, ErrWebhookURLNotAllowed):
 			err = apperr.Validation("WEBHOOK_URL_NOT_ALLOWED", "webhook url must be https and resolve to a public address")
 		default:
-			logger.FromContext(ctx).Error("createWebhook failed", "error", err)
 			err = apperr.Internal("WEBHOOK_CREATE_FAILED", "failed to create webhook", err)
 		}
 	}()
@@ -236,7 +234,6 @@ func (s *service) listWebhookDeliveries(
 func (s *service) retryWebhookDelivery(ctx context.Context, organizationID, webhookID, deliveryID string) (err error) {
 	defer func() {
 		if err != nil {
-			logger.FromContext(ctx).Error("retryWebhookDelivery failed", "error", err)
 			switch {
 			case errors.Is(err, pgx.ErrNoRows), errors.Is(err, ErrWebhookDeliveryMismatch):
 				err = apperr.NotFound("WEBHOOK_NOT_FOUND", "webhook not found", err)
@@ -282,7 +279,6 @@ func (s *service) retryAllFailedWebhookDeliveries(
 ) (n int, err error) {
 	defer func() {
 		if err != nil {
-			logger.FromContext(ctx).Error("retryAllFailedWebhookDeliveries failed", "error", err)
 			n = 0
 			if errors.Is(err, pgx.ErrNoRows) {
 				err = apperr.NotFound("WEBHOOK_NOT_FOUND", "webhook not found", err)
@@ -313,10 +309,13 @@ func (s *service) retryAllFailedWebhookDeliveries(
 	return len(dels), nil
 }
 
-// retryPayload re-sends a minimal envelope built from the stored event
-// metadata — the original event payload isn't retained, a known limitation
-// carried forward unchanged from before this milestone.
+// retryPayload returns the exact body first delivered. A delivery recorded
+// before bodies were kept has none, so it gets a minimal envelope rebuilt from
+// the stored event metadata: {id, type, endpoint_id}.
 func retryPayload(del *webhookDeliveryRecord, endpointID string) ([]byte, error) {
+	if len(del.Payload) > 0 {
+		return del.Payload, nil
+	}
 	payload, err := json.Marshal(map[string]string{
 		eventPayloadIDKey:         del.EventID,
 		eventPayloadTypeKey:       del.EventType,
@@ -360,7 +359,7 @@ func (s *service) sendTestEvent(
 		"org":               organizationID,
 		"message":           "This is a test event from Stratum.",
 	})
-	del, err = s.repo.insertWebhookDelivery(ctx, pool, ep.ID, "test-event", "test.ping")
+	del, err = s.repo.insertWebhookDelivery(ctx, pool, ep.ID, "test-event", "test.ping", payload)
 	if err != nil {
 		return nil, false, fmt.Errorf("organization.sendTestEvent: %w", err)
 	}

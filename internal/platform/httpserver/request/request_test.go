@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -112,5 +117,34 @@ func TestSniffImageType_RewindsReaderToStart(t *testing.T) {
 	}
 	if !bytes.Equal(rest, content) {
 		t.Errorf("reader wasn't rewound: got %d bytes, want the full %d-byte original content", len(rest), len(content))
+	}
+}
+
+// A search term needs three characters, counted as characters, not bytes; no
+// term at all is fine.
+func TestSearchTerm(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		q      string
+		wantOK bool
+	}{
+		{"", true},
+		{"  ", true},
+		{"ab", false},
+		{"abc", true},
+		{"é€", false},
+		{"é€x", true},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/?q="+url.QueryEscape(tc.q), nil)
+		_, ok := SearchTerm(c)
+		if ok != tc.wantOK {
+			t.Errorf("q=%q: ok = %v, want %v", tc.q, ok, tc.wantOK)
+		}
+		if !ok && (w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "SEARCH_TOO_SHORT")) {
+			t.Errorf("q=%q: want 422 SEARCH_TOO_SHORT, got %d %s", tc.q, w.Code, w.Body)
+		}
 	}
 }

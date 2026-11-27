@@ -1,14 +1,18 @@
 package response
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/aasumitro/stratum/internal/platform/apperr"
+	"github.com/aasumitro/stratum/internal/platform/logger"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -118,10 +122,48 @@ func Error(code, message string, details ...any) *Payload {
 // anything else is treated as an unclassified internal error.
 func FromError(c *gin.Context, err error) {
 	if ae, ok := errors.AsType[*apperr.Error](err); ok {
-		Error(ae.Code, ae.Message, detailsOf(ae)...).JSON(c, ae.Kind.HTTPStatus())
+		status := ae.Kind.HTTPStatus()
+		if status >= http.StatusInternalServerError {
+			LogInternal(c, ae.Code, err)
+		}
+		Error(ae.Code, ae.Message, detailsOf(ae)...).JSON(c, status)
 		return
 	}
+	LogInternal(c, "INTERNAL_ERROR", err)
 	Error("INTERNAL_ERROR", "an unexpected error occurred").JSON(c, http.StatusInternalServerError)
+}
+
+// LogInternal records the error behind a 5xx response, once, on the
+// request-scoped logger (which carries request_id and trace IDs) and on the
+// request span. The client gets only a code and a fixed message, so this is the
+// one record of what failed: the error and, for an *apperr.Error, the cause its
+// Error() leaves out. Every 5xx writer calls it, through FromError or directly
+// when it writes its own body. A request the client abandoned is logged as a
+// warning, since its context.Canceled is not a server fault. Readiness probes
+// report their own dependency state and a recovered panic logs itself, so
+// neither comes through here.
+func LogInternal(c *gin.Context, code string, err error) {
+	ctx := c.Request.Context()
+	attrs := []any{"code", code, "method", c.Request.Method, "route", c.FullPath(), "error", err}
+	recorded := err
+	if cause := apperr.Cause(err); cause != nil {
+		attrs = append(attrs, "cause", cause)
+		recorded = cause
+		// The cause an *apperr.Error wraps directly can carry context (an ID) that
+		// a nested *apperr.Error between it and the innermost cause hides.
+		if ae, ok := errors.AsType[*apperr.Error](err); ok && ae.Unwrap() != cause {
+			attrs = append(attrs, "wrapped", ae.Unwrap())
+		}
+	}
+	log := logger.FromContext(ctx)
+	// Only a request the client abandoned is benign; a cancel from inside the
+	// server, with the request still live, is a fault like any other.
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		log.WarnContext(ctx, "request cancelled", attrs...)
+		return
+	}
+	log.ErrorContext(ctx, "request failed", attrs...)
+	trace.SpanFromContext(ctx).RecordError(recorded, trace.WithAttributes(attribute.String("error.code", code)))
 }
 
 func detailsOf(ae *apperr.Error) []any {

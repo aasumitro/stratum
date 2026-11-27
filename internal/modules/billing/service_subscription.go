@@ -269,8 +269,11 @@ func (s *service) composeAndInsertActivationInvoice(
 // nothing to charge. A coupon covering an activation settles it here. A covered
 // renewal is left to the auto-invoice, which rolls the period when it comes due and
 // is the one to use the coupon, unless the subscription is past due: the auto-invoice
-// ignores that status, and the renewal is already due, so it settles here as well. A
-// plan with no price and no coupon owes nothing.
+// ignores that status, and the renewal is already due, so it settles here as well. On
+// an ended subscription the renewal is the Resume invoice the owner asked for. The
+// auto-invoice ignores that status too, and settling here would reactivate inside the
+// caller's transaction, so the Resume is finished after it commits
+// (enqueueCoveredResume). A plan with no price and no coupon owes nothing.
 func (s *service) issuePeriodInvoice(
 	ctx context.Context, sub *subscriptionRecord, planInfo *contracts.PlanInfo, kind string,
 ) (*invoiceRecord, error) {
@@ -294,6 +297,8 @@ func (s *service) issuePeriodInvoice(
 		switch {
 		case couponCode == "":
 			return nil, nil
+		case kind == invoiceKindSubscription && (sub.Status == statusExpired || sub.Status == statusCancelled):
+			return nil, s.enqueueCoveredResume(ctx, sub)
 		case kind == invoiceKindSubscription && sub.Status != statusPastDue:
 			return nil, s.enqueueAutoInvoice(ctx, sub)
 		}
@@ -301,7 +306,19 @@ func (s *service) issuePeriodInvoice(
 		if err != nil {
 			return nil, fmt.Errorf("billing.issuePeriodInvoice: %w", err)
 		}
-		s.afterOutcome(ctx, outcome)
+		// This runs inside the caller's transaction, so only the part of a paid outcome
+		// that belongs in it runs here: the renewal sequence, outbox rows that commit
+		// with the change. Lifting an organization's suspension cannot (see
+		// afterOutcome). No caller reaches it: expiry fails every pending invoice, so an
+		// ended subscription holds no pending activation, and a covered renewal settles
+		// here only while past_due. A charge that would lift one is refused, rather than
+		// reactivating the subscription with its organization still suspended.
+		if outcome.unsuspendOrgID != "" {
+			return nil, fmt.Errorf("billing.issuePeriodInvoice: covered %s charge would reactivate subscription %s inside its caller's transaction", kind, sub.ID)
+		}
+		if outcome.scheduleRenewal != nil {
+			s.scheduleRenewalSequence(ctx, outcome.scheduleRenewal)
+		}
 		return nil, nil
 	}
 	taxRate := 0

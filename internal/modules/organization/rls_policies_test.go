@@ -228,7 +228,7 @@ func TestRLS_ScopedOperations_WorkUnderStratumApp(t *testing.T) {
 	ctx := t.Context()
 	mod := newRLSModule(p, true)
 
-	members, err := mod.svc.listMembers(ctx, rlsOrgA)
+	members, err := mod.svc.listMembers(ctx, rlsOrgA, false)
 	if err != nil || len(members) != 2 {
 		t.Fatalf("listMembers(A): want 2, got %d, %v", len(members), err)
 	}

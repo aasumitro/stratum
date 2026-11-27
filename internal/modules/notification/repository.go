@@ -115,9 +115,15 @@ func (r *repository) insertMessages(
 // user's in_app messages — organizationID/channel/cursor are all optional
 // filters, used by both listMessages (paginated feed) and countTotal (the
 // matching count for offset pagination, which never has a cursor).
-func buildListMessagesFilters(authSub, organizationID, channel, cursor string) ([]string, *db.Args, error) {
+func buildListMessagesFilters(authSub, organizationID, channel, search, cursor string) ([]string, *db.Args, error) {
 	conds := []string{"kind = 'in_app'", "auth_sub = $1"}
 	args := db.NewArgs(authSub)
+
+	if search != "" {
+		// No index serves this: the table is under FORCE RLS and ILIKE is not
+		// leakproof, so it filters the caller's own rows (idx_messages_auth_sub).
+		conds = append(conds, fmt.Sprintf("(subject || ' ' || body) ILIKE $%d", args.Add(db.ContainsPattern(search))))
+	}
 
 	if organizationID != "" {
 		conds = append(conds, fmt.Sprintf("organization_id = $%d", args.Add(organizationID)))
@@ -145,10 +151,10 @@ func buildListMessagesFilters(authSub, organizationID, channel, cursor string) (
 
 func (r *repository) listMessages(
 	ctx context.Context, q db.Querier,
-	authSub, organizationID, channel, cursor string,
+	authSub, organizationID, channel, search, cursor string,
 	limit, offset int,
 ) ([]messageRecord, error) {
-	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, cursor)
+	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, search, cursor)
 	if err != nil {
 		return nil, err
 	}
@@ -189,20 +195,28 @@ func (r *repository) listMessages(
 	return out, nil
 }
 
-// listForExport returns up to limit of a user's most recent notification
-// messages across every kind/channel, newest first — used by the GDPR
-// data-export flow. Unlike listMessages (scoped to kind='in_app' for the
-// in-app notification feed), this has no kind/channel filter at all.
+// listForExport returns a user's most recent notification messages for the
+// GDPR data export, newest first: up to limit emails and up to limit of every
+// other kind, capped apart so a user with many emails still gets their in-app
+// history. Unlike listMessages (kind='in_app' only), every kind is included.
 func (r *repository) listForExport(
 	ctx context.Context, q db.Querier, authSub string, limit int,
 ) ([]messageRecord, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, organization_id, auth_sub, kind, channel, subject, body,
-		       payload, status, sent_at, read_at, created_at, updated_at
-		FROM notification.messages
-		WHERE auth_sub = $1
-		ORDER BY created_at DESC
-		LIMIT $2`,
+		SELECT * FROM (
+		    (SELECT id, organization_id, auth_sub, kind, channel, subject, body,
+		            payload, status, sent_at, read_at, created_at, updated_at
+		     FROM notification.messages
+		     WHERE auth_sub = $1 AND kind <> 'email'
+		     ORDER BY created_at DESC LIMIT $2)
+		    UNION ALL
+		    (SELECT id, organization_id, auth_sub, kind, channel, subject, body,
+		            payload, status, sent_at, read_at, created_at, updated_at
+		     FROM notification.messages
+		     WHERE auth_sub = $1 AND kind = 'email'
+		     ORDER BY created_at DESC LIMIT $2)
+		) m
+		ORDER BY created_at DESC`,
 		authSub, limit,
 	)
 	if err != nil {
@@ -230,9 +244,9 @@ func (r *repository) listForExport(
 
 func (r *repository) countTotal(
 	ctx context.Context, q db.Querier,
-	authSub, organizationID, channel string,
+	authSub, organizationID, channel, search string,
 ) (int64, error) {
-	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, "")
+	conds, args, err := buildListMessagesFilters(authSub, organizationID, channel, search, "")
 	if err != nil {
 		return 0, err
 	}
@@ -287,6 +301,19 @@ func (r *repository) markRead(ctx context.Context, q db.Querier, authSub, id str
 	)
 	if err != nil {
 		return fmt.Errorf("notification.markRead: %w", err)
+	}
+	return nil
+}
+
+// markManyRead marks the caller's in-app messages among ids read.
+func (r *repository) markManyRead(ctx context.Context, q db.Querier, authSub string, ids []string) error {
+	if _, err := q.Exec(ctx, `
+		UPDATE notification.messages
+		SET read_at = now(), updated_at = now()
+		WHERE id = ANY($1::uuid[]) AND auth_sub = $2 AND kind = 'in_app' AND read_at IS NULL`,
+		ids, authSub,
+	); err != nil {
+		return fmt.Errorf("notification.markManyRead: %w", err)
 	}
 	return nil
 }

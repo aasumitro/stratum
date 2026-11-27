@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -26,12 +27,18 @@ type OrganizationInfo struct {
 	Locale            string
 	CountryCode       string
 	AllowedIPs        []string // CIDR blocks; empty = allow all
+	RequireMFA        bool     // every member must use a session with a verified second factor (aal2)
 }
 
 // OrganizationReader is implemented by the organization module and consumed by
 // any module that needs to resolve organization data without owning its schema.
 type OrganizationReader interface {
+	// GetOrganizationByID reports a missing organization, including an ID that
+	// is not a UUID, as an error wrapping pgx.ErrNoRows; any other error is a
+	// failed lookup.
 	GetOrganizationByID(ctx context.Context, organizationID string) (*OrganizationInfo, error)
+	// GetMemberRole reports a caller who is not an active member as an error
+	// wrapping pgx.ErrNoRows; any other error is a failed lookup.
 	GetMemberRole(ctx context.Context, organizationID, authSub string) (string, error)
 	ListMemberAuthSubs(ctx context.Context, organizationID string) ([]string, error)
 	// GetFirstOrganizationIDForMember returns the auth_sub's earliest-joined
@@ -90,12 +97,19 @@ type OrganizationCacheInvalidator interface {
 	InvalidateMemberRole(ctx context.Context, organizationID, authSub string)
 }
 
+// ErrOwnsActiveOrganization is RemoveAllMemberships' refusal while the user
+// still owns an organization that is not deleted. Retrying cannot help until
+// ownership moves.
+var ErrOwnsActiveOrganization = errors.New("organization: the user still owns an organization")
+
 // OrganizationWriter is implemented by the organization module and consumed
 // by modules that need to mutate organization-owned data across a schema
 // boundary — currently only the GDPR account-deletion flow.
 type OrganizationWriter interface {
 	// RemoveAllMemberships deletes every membership row for a user across
-	// all organizations.
+	// all organizations. It removes nothing and fails with
+	// ErrOwnsActiveOrganization while the user still owns an organization that
+	// is not deleted, so none is left without its owner.
 	RemoveAllMemberships(ctx context.Context, authSub string) error
 }
 

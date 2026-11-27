@@ -279,7 +279,20 @@ func (r *repository) lockOrganizationForUpdate(ctx context.Context, q db.Querier
 	return nil
 }
 
-func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs *[]string) error {
+// lockOrganizationOwner locks the organization row and returns its owner, so a
+// change of ownership can check the owner it starts from and keep any other
+// change of ownership out until it commits. NO KEY UPDATE is enough for that and,
+// unlike FOR UPDATE, does not block inserts that only reference the row.
+func (r *repository) lockOrganizationOwner(ctx context.Context, q db.Querier, id string) (string, error) {
+	db.RequireTx(q)
+	var owner string
+	if err := q.QueryRow(ctx, `SELECT owner_id FROM organization.organizations WHERE id = $1 FOR NO KEY UPDATE`, id).Scan(&owner); err != nil {
+		return "", fmt.Errorf("organization.lockOrganizationOwner: %w", err)
+	}
+	return owner, nil
+}
+
+func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timezone, locale string, allowedIPs *[]string, requireMFA *bool) error {
 	// Only include allowed_ips in the patch when the caller actually sent
 	// it — jsonb's `||` operator leaves keys absent from the right-hand
 	// operand untouched, so an omitted field never overwrites the existing
@@ -287,6 +300,9 @@ func (r *repository) updateSettings(ctx context.Context, q db.Querier, id, timez
 	patch := map[string]any{}
 	if allowedIPs != nil {
 		patch[settingAllowedIPs] = *allowedIPs
+	}
+	if requireMFA != nil {
+		patch[settingRequireMFA] = *requireMFA
 	}
 	settingsJSON, _ := json.Marshal(patch)
 	_, err := q.Exec(ctx, `

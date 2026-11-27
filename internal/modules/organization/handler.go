@@ -11,6 +11,7 @@ import (
 const (
 	maxLogoSize       = 2 << 20 // 2 MB
 	settingAllowedIPs = "allowed_ips"
+	settingRequireMFA = "require_mfa"
 )
 
 type handler struct {

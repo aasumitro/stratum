@@ -626,8 +626,11 @@ func (s *service) resumeWithInvoice(ctx context.Context, sub *subscriptionRecord
 			return nil
 		}
 		planInfo, cycle, quantities, err := s.futurePricing(ctx, tx, current)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("billing.resumeWithInvoice: %w", ErrUnknownPlan)
+		}
 		if err != nil {
-			return fmt.Errorf("billing.resumeWithInvoice: %w: %w", ErrUnknownPlan, err)
+			return fmt.Errorf("billing.resumeWithInvoice: %w", err)
 		}
 		composed, addonLines, couponCode, discountCents, err := s.composeInvoiceAmount(
 			ctx, tx, current.ID, planInfo, current.Currency, cycle, quantities)
@@ -662,11 +665,23 @@ func (s *service) resumeWithInvoice(ctx context.Context, sub *subscriptionRecord
 		); err != nil {
 			return err
 		}
-		_, err = s.repo.insertHistory(
+		if _, err = s.repo.insertHistory(
 			ctx, s.querier(ctx), current.ID, "resume", &current.Plan,
 			&current.Plan, composed, current.Currency, resumedBy, nil,
-		)
-		return err
+		); err != nil {
+			return err
+		}
+		// An owner who pressed Resume sees the invoice at once. One issued while a
+		// Resume is finished in the background (a coupon that stopped covering it)
+		// is how the owner learns there is something to pay.
+		if resumedBy != changedBySystem {
+			return nil
+		}
+		return events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling, events.RoutingKeyInvoiceCreated, "billing", current.SubjectID,
+			events.InvoiceCreated{
+				OrgID: current.SubjectID, InvoiceID: inv.ID, Plan: planInfo.ID,
+				AmountCents: inv.AmountCents, Currency: inv.Currency, DueAt: *inv.DueAt,
+			})
 	})
 	if err != nil {
 		return nil, err
@@ -717,6 +732,28 @@ func (s *service) enqueueAutoInvoice(ctx context.Context, sub *subscriptionRecor
 		events.RoutingKeySubscriptionAutoInvoice, "billing", sub.SubjectID, check, delay)
 }
 
+// enqueueCoveredResume queues finishing an ended subscription's Resume, whose
+// reissued invoice a coupon now covers in full, in the caller's transaction so it
+// commits with the reissue. HandleCoveredResume runs the Resume again on delivery:
+// it settles the charge and reactivates, or issues an invoice if the coupon no
+// longer covers it.
+func (s *service) enqueueCoveredResume(ctx context.Context, sub *subscriptionRecord) error {
+	// The end it carries marks the Resume it finishes: an ended subscription's
+	// period_end stays put (one that ended from a trial has it equal to trial_end),
+	// and any reactivation since moves it (HandleCoveredResume).
+	if sub.PeriodEnd == nil {
+		return fmt.Errorf("billing.enqueueCoveredResume: subscription %s has no period end", sub.ID)
+	}
+	check := events.SubscriptionCheck{
+		SubscriptionID: sub.ID, SubjectType: sub.SubjectType, SubjectID: sub.SubjectID, ExpectedEnd: *sub.PeriodEnd,
+	}
+	if err := events.Enqueue(ctx, s.querier(ctx), events.ExchangeBilling,
+		events.RoutingKeySubscriptionResumeCovered, "billing", sub.SubjectID, check); err != nil {
+		return fmt.Errorf("billing.enqueueCoveredResume: %w", err)
+	}
+	return nil
+}
+
 // scheduleRenewalSequence enqueues delayed messages for the renewal flow:
 // remind (7 days before a normal period end, 2 days before a trial end —
 // trials run exactly 7 days, so a 7-day lead would resolve to ~now and
@@ -727,9 +764,9 @@ func (s *service) enqueueAutoInvoice(ctx context.Context, sub *subscriptionRecor
 // function's existing "duplicate delayed messages are harmless" tolerance
 // for the class of loss this can still leave (a rare DB-level failure on the
 // outbox insert itself, not a broker outage — the outbox+relay already
-// covers that case durably). changePlanWithMetadata runs it inside the
-// request transaction instead, where a failed insert aborts that
-// transaction and the plan change fails as a whole.
+// covers that case durably). changePlanWithMetadata and issuePeriodInvoice
+// run it inside their caller's transaction instead, where a failed insert
+// aborts that transaction and the change fails as a whole.
 func (s *service) scheduleRenewalSequence(ctx context.Context, sub *subscriptionRecord) {
 	checkPayload, ok := renewalCheck(sub)
 	if !ok {

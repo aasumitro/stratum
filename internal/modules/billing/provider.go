@@ -99,7 +99,7 @@ func createStripeCheckoutSession(
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("billing.createStripeCheckoutSession: status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("billing.createStripeCheckoutSession: status %d: %s", resp.StatusCode, errorBody(body))
 	}
 
 	var out struct {
@@ -156,7 +156,7 @@ func createXenditInvoice(
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("billing.createXenditInvoice: status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("billing.createXenditInvoice: status %d: %s", resp.StatusCode, errorBody(body))
 	}
 
 	var out struct {
@@ -222,4 +222,14 @@ func sendCheckoutExpiry(req *http.Request, op string) error {
 	default:
 		return fmt.Errorf("%s: status %d: %w", op, resp.StatusCode, errCheckoutNotOpen)
 	}
+}
+
+// errorBody bounds a provider's error response for an error message: the message
+// ends up in a log line, and a provider or proxy error page can run to kilobytes.
+func errorBody(body []byte) string {
+	const limit = 512
+	if len(body) > limit {
+		return strings.ToValidUTF8(string(body[:limit]), "") + "…"
+	}
+	return string(body)
 }

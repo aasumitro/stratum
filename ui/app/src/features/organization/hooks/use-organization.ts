@@ -16,7 +16,7 @@ export function useOrganizations() {
 
 export function useOrganization(
   organizationId: string,
-  options?: { retry?: boolean; enabled?: boolean }
+  options?: { enabled?: boolean }
 ) {
   return useHTTPQuery<Organization>({
     queryKey: queryKeys.organizations.detail(organizationId),

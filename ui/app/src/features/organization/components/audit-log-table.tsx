@@ -12,6 +12,7 @@ import {
   IconDeviceDesktop,
   IconClock,
   IconCode,
+  IconHeadset,
 } from "@tabler/icons-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -103,6 +104,14 @@ export function AuditLogTable({ organizationId, onTotalChange }: Props) {
   const members = membersData?.data ?? []
 
   function resolveActor(event: AuditEvent) {
+    if (event.actor === "operator") {
+      return {
+        label: t("organization.auditLog.operatorActor"),
+        isSystem: false,
+        isOperator: true,
+        email: undefined,
+      }
+    }
     const isSystem = event.actor === "system" || event.actor === "anonymous"
     if (isSystem) {
       return {
@@ -123,6 +132,7 @@ export function AuditLogTable({ organizationId, onTotalChange }: Props) {
     actor: search.actor,
     action: search.action,
     resource: search.resource,
+    q: search.q,
     from: rangeToFrom(search.range),
   }
 
@@ -140,7 +150,12 @@ export function AuditLogTable({ organizationId, onTotalChange }: Props) {
     cursor
   )
   const { items, nextCursor } = useCursorAccumulator(data, cursor)
-  const hasFilters = !!(search.actor || search.action || search.resource)
+  const hasFilters = !!(
+    search.actor ||
+    search.action ||
+    search.resource ||
+    search.q
+  )
 
   useEffect(() => {
     onTotalChange(items.length)
@@ -156,12 +171,18 @@ export function AuditLogTable({ organizationId, onTotalChange }: Props) {
       key: "actor",
       header: t("organization.auditLog.actorCol"),
       cell: (event) => {
-        const { label, isSystem } = resolveActor(event)
+        const { label, isSystem, isOperator } = resolveActor(event)
         return (
           <span className="flex items-center gap-2">
             <Avatar className="size-6 shrink-0 rounded-lg">
               <AvatarFallback className="rounded-lg text-[10px]">
-                {isSystem ? "⚙" : initials(label)}
+                {isOperator ? (
+                  <IconHeadset className="size-3.5" aria-hidden />
+                ) : isSystem ? (
+                  "⚙"
+                ) : (
+                  initials(label)
+                )}
               </AvatarFallback>
             </Avatar>
             <span className="truncate text-sm">{label}</span>
@@ -239,7 +260,7 @@ export function AuditLogTable({ organizationId, onTotalChange }: Props) {
       )}
       <div
         className={cn(
-          "absolute inset-y-0 right-0 z-20 flex w-full flex-col border-l bg-popover shadow-xl transition-transform duration-200 sm:w-[32rem]",
+          "absolute inset-y-0 right-0 z-20 flex w-full flex-col border-l bg-popover shadow-xl transition-transform duration-200 sm:w-lg",
           detail ? "translate-x-0" : "translate-x-full"
         )}
       >

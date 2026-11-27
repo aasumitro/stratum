@@ -91,6 +91,7 @@ func ConcurrentSSELimitMiddleware(redisClient *goredis.Client, maxStreams int) g
 // @Security     BearerAuth
 // @Param        organization_id  query     string  false  "filter by organization"
 // @Param        channel          query     string  false  "filter by channel"
+// @Param        q                query     string  false  "search subject and body (at least 3 characters; 422 SEARCH_TOO_SHORT)"
 // @Param        limit            query     int     false  "max results (default 20, max 100)"
 // @Param        page             query     int     false  "page number; sending this forces page-based pagination (default 1)"
 // @Param        cursor           query     string  false  "pagination cursor from a previous response; switches to cursor mode"
@@ -98,6 +99,10 @@ func ConcurrentSSELimitMiddleware(redisClient *goredis.Client, maxStreams int) g
 // @Failure      401              {object}  response.Payload  "missing/invalid auth token"
 // @Router       /me/notifications [get]
 func (h *handler) listNotifications(c *gin.Context) {
+	search, ok := request.SearchTerm(c)
+	if !ok {
+		return
+	}
 	limit := queryIntClamped(c, "limit", 20, 100)
 	cursor := c.Query("cursor")
 	pageRequested := c.Query("page") != ""
@@ -113,6 +118,7 @@ func (h *handler) listNotifications(c *gin.Context) {
 		reqctx.Subject(c),
 		c.Query("organization_id"),
 		c.Query("channel"),
+		search,
 		cursor,
 		limit,
 		offset,
@@ -215,6 +221,33 @@ func (h *handler) unreadCount(c *gin.Context) {
 // @Router       /me/notifications/{id}/read [patch]
 func (h *handler) markRead(c *gin.Context) {
 	if err := h.svc.markRead(c.Request.Context(), reqctx.Subject(c), c.Param("id")); err != nil {
+		response.FromError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+type markManyReadRequest struct {
+	IDs []string `json:"ids" binding:"required,min=1,max=100,dive,uuid"`
+}
+
+// markManyRead godoc
+// @Summary      Mark several notifications as read
+// @Description  Marks the caller's notifications among ids (1-100) read, e.g. a folded run in the feed.
+// @Tags         notification
+// @Accept       json
+// @Security     BearerAuth
+// @Param        body  body  markManyReadRequest  true  "Notification ids"
+// @Success      204   "no content"
+// @Failure      422   {object}  response.Payload  "validation failed"
+// @Failure      401   {object}  response.Payload  "missing/invalid auth token"
+// @Router       /me/notifications/read [patch]
+func (h *handler) markManyRead(c *gin.Context) {
+	var req markManyReadRequest
+	if !request.Bind(c, &req) {
+		return
+	}
+	if err := h.svc.markManyRead(c.Request.Context(), reqctx.Subject(c), req.IDs); err != nil {
 		response.FromError(c, err)
 		return
 	}

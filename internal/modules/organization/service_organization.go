@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
@@ -19,7 +18,6 @@ import (
 	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
-	"github.com/aasumitro/stratum/internal/platform/logger"
 )
 
 var ErrUnknownPlan = errors.New("unknown plan")
@@ -85,8 +83,8 @@ func (s *service) createOrganization(
 		case isUniqueViolation(err):
 			err = apperr.Conflict("SLUG_TAKEN", "slug already taken")
 		default:
-			logger.FromContext(ctx).Error("createOrganization failed", "slug", slug, "owner", ownerID, "error", err)
-			err = apperr.Internal("ORGANIZATION_CREATE_FAILED", "failed to create organization", err)
+			err = apperr.Internal("ORGANIZATION_CREATE_FAILED", "failed to create organization",
+				fmt.Errorf("slug %q, owner %s: %w", slug, ownerID, err))
 		}
 	}()
 
@@ -233,6 +231,12 @@ func (s *service) getOrganization(ctx context.Context, id string) (*organization
 // which runs before any organization scope exists — so it reads through the
 // unscoped pool, by id.
 func (s *service) lookupOrganization(ctx context.Context, id string) (*organizationRecord, error) {
+	// An ID that is not a UUID names no organization. Checking it here keeps
+	// malformed input (bad UTF-8 or a NUL byte fails in Postgres as 22021, not
+	// 22P02) from reaching the database and reading as a failed lookup.
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", fmt.Errorf("%w: %w", pgx.ErrNoRows, err))
+	}
 	t, err := s.repo.findOrganizationByID(ctx, s.unscoped(), id)
 	if err != nil {
 		return nil, classifyOrganizationFetch(err)
@@ -241,8 +245,14 @@ func (s *service) lookupOrganization(ctx context.Context, id string) (*organizat
 }
 
 func classifyOrganizationFetch(err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", err)
+	case isInvalidTextRepresentation(err):
+		// An ID that is not a UUID names no organization; Postgres rejects the
+		// cast before it can report no row. It wraps pgx.ErrNoRows so every
+		// caller's not-found check holds.
+		return apperr.NotFound("ORGANIZATION_NOT_FOUND", "organization not found", fmt.Errorf("%w: %w", pgx.ErrNoRows, err))
 	}
 	return apperr.Internal("ORGANIZATION_FETCH_FAILED", "failed to get organization", err)
 }
@@ -359,6 +369,7 @@ func (s *service) updateSettings(
 	ctx context.Context,
 	organizationID, timezone, locale, callerIP string,
 	allowedIPs *[]string,
+	requireMFA *bool, callerAAL2 bool,
 ) error {
 	if err := validateSettings(timezone, locale); err != nil {
 		return err
@@ -368,8 +379,13 @@ func (s *service) updateSettings(
 	if allowedIPs != nil && ipLocksOutCaller(callerIP, *allowedIPs) {
 		return apperr.Validation("IP_ALLOWLIST_LOCKS_OUT_CALLER", ErrIPAllowlistLocksOutCaller.Error())
 	}
+	// Same reasoning for MFA: requiring it from a session without a second
+	// factor would shut the caller out on their next request.
+	if requireMFA != nil && *requireMFA && !callerAAL2 {
+		return apperr.Validation("MFA_ENROLLMENT_REQUIRED", "verify a second factor in this session before requiring MFA for the organization")
+	}
 	if err := db.WithOrgTx(ctx, s.pool, organizationID, func(ctx context.Context, q db.Querier) error {
-		return s.repo.updateSettings(ctx, q, organizationID, timezone, locale, allowedIPs)
+		return s.repo.updateSettings(ctx, q, organizationID, timezone, locale, allowedIPs, requireMFA)
 	}); err != nil {
 		return apperr.Internal("SETTINGS_UPDATE_FAILED", "failed to update settings", err)
 	}

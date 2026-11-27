@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/aasumitro/stratum/internal/platform/apperr"
 )
 
 // Handler processes one delivery's body. Returning an error causes the
@@ -180,10 +182,17 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
 
 	err := c.safeHandle(msgCtx, delivery.Body)
 	if err != nil {
-		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		c.logger.Warn("delivery processing failed, rejecting for retry",
-			"queue", c.spec.Queue.Name, "error", err)
+		attrs := []any{"queue", c.spec.Queue.Name, "error", err}
+		// An *apperr.Error's Error() is only its client-facing message; the
+		// cause is what failed.
+		if cause := apperr.Cause(err); cause != nil {
+			attrs = append(attrs, "cause", cause)
+			span.RecordError(cause)
+		} else {
+			span.RecordError(err)
+		}
+		c.logger.WarnContext(msgCtx, "delivery processing failed, rejecting for retry", attrs...)
 
 		// Reject (not Nack) so delivery-count increments — required for
 		// the queue's x-delayed-retry-type:"failed" and x-delivery-limit

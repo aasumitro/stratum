@@ -1,6 +1,6 @@
 # Stratum Studio
 
-Desktop operator console for managing multiple deployed Stratum projects — built with Wails v3 (Go + React). It connects directly to each project's PostgreSQL, RabbitMQ, and Redis; it does not depend on the API.
+Desktop operator console for managing multiple deployed Stratum projects — built with Wails v3 (Go + React). It connects directly to each project's PostgreSQL, RabbitMQ, and Redis (each with the operator's own login, created as in `docs/12-operations.md`; `make operator-broker-dev` for local dev); it does not depend on the API.
 
 ## Documentation
 

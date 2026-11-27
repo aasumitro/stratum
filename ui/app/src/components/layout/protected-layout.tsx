@@ -9,6 +9,7 @@ import { KeyboardShortcuts } from "@/components/shared/keyboard-shortcuts"
 import { SignOutDialog } from "@/components/shared/sign-out-dialog"
 import { CreateOrganizationPortal } from "@/components/layout/create-organization-portal"
 import { JoinOrganizationPortal } from "@/components/layout/join-organization-portal"
+import { ConsentGate } from "@/features/account/components/consent-gate"
 import { useTheme } from "@/components/theme-provider"
 import { useNotificationStream } from "@/features/notification/hooks"
 import { useResponsiveSidebarOpen } from "@/hooks/use-responsive-sidebar"
@@ -65,6 +66,7 @@ export function ProtectedLayout() {
       <SignOutDialog />
       <CreateOrganizationPortal />
       <JoinOrganizationPortal />
+      <ConsentGate />
     </SidebarProvider>
   )
 }

@@ -444,7 +444,7 @@ func TestIntegration_ExportByActor_CSV_DateRange(t *testing.T) {
 
 	from := now.Add(-36 * time.Hour)
 	var buf bytes.Buffer
-	if err := audit.ExportByActor(t.Context(), pool, actor, &from, nil, &buf); err != nil {
+	if err := audit.ExportByActor(t.Context(), pool, actor, &from, nil, "", &buf); err != nil {
 		t.Fatalf("ExportByActor: %v", err)
 	}
 
@@ -482,7 +482,7 @@ func TestIntegration_ListByActorCursor_AcrossOrganizations(t *testing.T) {
 	seedEvent(t, pool, &orgA, actor, "DELETE", "/organizations/:id/members/:authSub", base.Add(-2*time.Second))
 	seedEvent(t, pool, &orgA, "not_this_actor", "POST", "/organizations/:id/members", base) // noise
 
-	page1, cursor1, err := audit.ListByActorCursor(t.Context(), pool, actor, 2, "", nil, nil)
+	page1, cursor1, err := audit.ListByActorCursor(t.Context(), pool, actor, 2, "", nil, nil, "")
 	if err != nil {
 		t.Fatalf("ListByActorCursor page 1: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestIntegration_ListByActorCursor_AcrossOrganizations(t *testing.T) {
 		}
 	}
 
-	page2, cursor2, err := audit.ListByActorCursor(t.Context(), pool, actor, 2, cursor1, nil, nil)
+	page2, cursor2, err := audit.ListByActorCursor(t.Context(), pool, actor, 2, cursor1, nil, nil, "")
 	if err != nil {
 		t.Fatalf("ListByActorCursor page 2: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestIntegration_ListByActorCursor_DateRange(t *testing.T) {
 	seedEvent(t, pool, &orgA, actor, "DELETE", "/organizations/:id/members/:authSub", now)         // inside
 
 	from := now.Add(-36 * time.Hour)
-	events, cursor, err := audit.ListByActorCursor(t.Context(), pool, actor, 10, "", &from, nil)
+	events, cursor, err := audit.ListByActorCursor(t.Context(), pool, actor, 10, "", &from, nil, "")
 	if err != nil {
 		t.Fatalf("ListByActorCursor: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestIntegration_InsertDirect_BypassesWriter(t *testing.T) {
 		t.Fatalf("InsertDirect: %v", err)
 	}
 
-	events, _, err := audit.ListByActorCursor(t.Context(), pool, actor, 10, "", nil, nil)
+	events, _, err := audit.ListByActorCursor(t.Context(), pool, actor, 10, "", nil, nil, "")
 	if err != nil {
 		t.Fatalf("ListByActorCursor: %v", err)
 	}
@@ -826,5 +826,96 @@ func TestIntegration_Writer_MalformedBody_KeepsTheRestOfTheBatch(t *testing.T) {
 	if stored != len(bodies) || emptyMetadata != 1 {
 		t.Errorf("want all %d events stored (the malformed one with {} metadata), got %d stored, %d with {}",
 			len(bodies), stored, emptyMetadata)
+	}
+}
+
+// A search matches anywhere in the route or the before/after metadata, takes
+// LIKE characters literally, and is served by the trigram index.
+func TestIntegration_ListByOrganization_Search(t *testing.T) {
+	pool := testPool(t)
+	orgID := "search_test_org_" + t.Name()
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE organization_id = $1`, orgID)
+	})
+	for _, r := range []struct{ resource, metadata string }{
+		{"/organizations/:id/members", `{"after":{"email":"zed-7788@example.com"}}`},
+		{"/organizations/:id/settings", `{"after":{"note":"discount 50% off"}}`},
+		{"/organizations/:id/webhooks", `{"after":{"note":"discount 50 off"}}`},
+	} {
+		if _, err := pool.Exec(t.Context(), `
+			INSERT INTO audit.events (organization_id, actor, action, resource, status_code, metadata)
+			VALUES ($1, 'search_actor', 'POST', $2, 200, $3::jsonb)`, orgID, r.resource, r.metadata); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+	}
+
+	count := func(q string) int {
+		t.Helper()
+		events, _, err := audit.ListByOrganizationCursor(t.Context(), pool, orgID, 20, "", audit.Filter{Query: q})
+		if err != nil {
+			t.Fatalf("search %q: %v", q, err)
+		}
+		return len(events)
+	}
+	if n := count("zed-7788"); n != 1 {
+		t.Errorf("metadata search: want 1, got %d", n)
+	}
+	if n := count("webhooks"); n != 1 {
+		t.Errorf("route search: want 1, got %d", n)
+	}
+	if n := count("50% off"); n != 1 {
+		t.Errorf("literal %% search: want 1, got %d", n)
+	}
+
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(t.Context(), `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable seqscan: %v", err)
+	}
+	var plan strings.Builder
+	rows, err := tx.Query(t.Context(), `EXPLAIN SELECT id FROM audit.events WHERE `+audit.SearchExpr+` ILIKE '%zed-7788%'`)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	for rows.Next() {
+		var line string
+		rows.Scan(&line)
+		plan.WriteString(line + "\n")
+	}
+	rows.Close()
+	if !strings.Contains(plan.String(), "idx_audit_search") {
+		t.Errorf("search does not use idx_audit_search:\n%s", plan.String())
+	}
+}
+
+// The personal log and its export search the same way, scoped to the actor.
+func TestIntegration_ListByActorCursor_Search(t *testing.T) {
+	pool := testPool(t)
+	const actor = "search_personal_actor"
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM audit.events WHERE actor = $1`, actor)
+	})
+	for _, resource := range []string{"/me/avatar", "/organizations/:id/webhooks"} {
+		if _, err := pool.Exec(t.Context(), `
+			INSERT INTO audit.events (actor, action, resource, status_code) VALUES ($1, 'POST', $2, 200)`, actor, resource); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+	}
+	events, _, err := audit.ListByActorCursor(t.Context(), pool, actor, 10, "", nil, nil, "webhook")
+	if err != nil {
+		t.Fatalf("ListByActorCursor: %v", err)
+	}
+	if len(events) != 1 || events[0].Resource != "/organizations/:id/webhooks" {
+		t.Errorf("search webhook: got %+v", events)
+	}
+	var buf bytes.Buffer
+	if err := audit.ExportByActor(t.Context(), pool, actor, nil, nil, "avatar", &buf); err != nil {
+		t.Fatalf("ExportByActor: %v", err)
+	}
+	if !strings.Contains(buf.String(), "/me/avatar") || strings.Contains(buf.String(), "webhooks") {
+		t.Errorf("export search avatar:\n%s", buf.String())
 	}
 }

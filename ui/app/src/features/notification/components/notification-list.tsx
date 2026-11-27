@@ -8,8 +8,16 @@ import { Card } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/shared/empty-state"
 import {
+  chunk,
+  collapseRuns,
+  isRunOpen,
+  toggleRun as toggledRuns,
+  type NotificationRun,
+} from "@/features/notification/collapse"
+import {
   useNotifications,
   useMarkNotificationRead,
+  useMarkNotificationsRead,
 } from "@/features/notification/hooks"
 import { useCursorAccumulator } from "@/lib/api/use-cursor-accumulator"
 import {
@@ -85,23 +93,29 @@ interface Props {
   organizationId?: string
   organizationNames: Record<string, string>
   category?: NotificationCategory
+  // Server-side search over subject and body; "" means none.
+  search?: string
 }
 
 export function NotificationList({
   organizationId,
   organizationNames,
   category,
+  search,
 }: Props) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const [cursor, setCursor] = useState<string | undefined>(undefined)
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   // Category tabs are a frontend grouping over the backend's flat
   // `channel` column — filtered client-side below, not via the API, so the
   // cursor stays anchored to the full unfiltered timeline.
   const { data, isLoading, isFetching } = useNotifications(
     organizationId,
     cursor,
-    20
+    20,
+    undefined,
+    search || undefined
   )
   const { items: allItems, nextCursor } = useCursorAccumulator<Notification>(
     data,
@@ -115,6 +129,7 @@ export function NotificationList({
   }, [allItems, category])
   const groups = useMemo(() => groupByDate(items), [items])
   const { mutate: markRead } = useMarkNotificationRead(organizationId)
+  const { mutate: markManyRead } = useMarkNotificationsRead(organizationId)
 
   if (isLoading && items.length === 0) {
     return (
@@ -139,6 +154,108 @@ export function NotificationList({
     )
   }
 
+  function toggleRun(run: NotificationRun) {
+    setExpanded((prev) => toggledRuns(run, prev))
+  }
+
+  function markRunRead(n: Notification, run?: NotificationRun) {
+    const unread = [n, ...(run?.rest ?? [])]
+      .filter((x) => !x.read_at)
+      .map((x) => x.id)
+    if (unread.length === 1) markRead(unread[0])
+    // The API takes at most 100 ids a request.
+    else for (const ids of chunk(unread, 100)) markManyRead({ ids })
+  }
+
+  // One notification row. A run's lead also carries the folded count and the
+  // toggle; reading it reads the whole run.
+  function renderRow(n: Notification, run?: NotificationRun) {
+    const isUnread = !n.read_at || (run?.rest.some((x) => !x.read_at) ?? false)
+    const actionPath = actionPathFor(n)
+    const rowCategory = CHANNEL_CATEGORY[n.channel]
+    const Icon = rowCategory ? CATEGORY_ICON[rowCategory] : IconBell
+    const { subject, body } = notificationDisplayText(
+      n,
+      t,
+      i18n.exists.bind(i18n)
+    )
+    return (
+      <div
+        key={n.id}
+        className={cn(
+          "flex items-start gap-3 px-4 py-3.5 transition-colors hover:bg-muted/40",
+          isUnread && "bg-muted/25"
+        )}
+      >
+        <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
+          <Icon className="size-4 text-muted-foreground" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            className="w-full text-left"
+            onClick={() => markRunRead(n, run)}
+          >
+            <div className="flex w-full items-center gap-2">
+              <span
+                className={cn(
+                  "text-sm",
+                  isUnread ? "font-semibold" : "font-medium"
+                )}
+              >
+                {subject}
+              </span>
+              {isUnread && (
+                <span
+                  className="size-1.5 shrink-0 rounded-full bg-foreground"
+                  aria-label={t("notifications.unread")}
+                />
+              )}
+              <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                {timeAgo(n.created_at)}
+              </span>
+            </div>
+            <p className="line-clamp-2 text-xs text-muted-foreground">{body}</p>
+            {organizationNames[n.organization_id] && (
+              <span className="text-xs text-muted-foreground/70">
+                {organizationNames[n.organization_id]}
+              </span>
+            )}
+          </button>
+          {run && run.rest.length > 0 && (
+            <button
+              type="button"
+              aria-expanded={isRunOpen(run, expanded)}
+              aria-controls={`notification-run-${run.lead.id}`}
+              className="mt-1 text-xs font-medium text-foreground underline-offset-4 hover:underline"
+              onClick={() => toggleRun(run)}
+            >
+              {isRunOpen(run, expanded)
+                ? t("notifications.showLess")
+                : t("notifications.moreLikeThis", {
+                    count: run.rest.length,
+                  })}
+            </button>
+          )}
+        </div>
+        {actionPath && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0"
+            onClick={() => {
+              markRunRead(n, run)
+              void navigate({ to: actionPath })
+            }}
+          >
+            {t("common.view")}
+            <IconArrowRight data-icon="inline-end" />
+          </Button>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <Card
@@ -151,77 +268,21 @@ export function NotificationList({
               {t(`notifications.dateGroups.${key}`)}
             </p>
             <div className="divide-y">
-              {groupItems.map((n) => {
-                const isUnread = !n.read_at
-                const actionPath = actionPathFor(n)
-                const rowCategory = CHANNEL_CATEGORY[n.channel]
-                const Icon = rowCategory ? CATEGORY_ICON[rowCategory] : IconBell
-                const { subject, body } = notificationDisplayText(
-                  n,
-                  t,
-                  i18n.exists.bind(i18n)
-                )
-                return (
-                  <div
-                    key={n.id}
-                    className={cn(
-                      "flex items-start gap-3 px-4 py-3.5 transition-colors hover:bg-muted/40",
-                      isUnread && "bg-muted/25"
-                    )}
-                  >
-                    <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                      <Icon className="size-4 text-muted-foreground" />
-                    </span>
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 text-left"
-                      onClick={() => isUnread && markRead(n.id)}
+              {collapseRuns(groupItems).map((run) => (
+                <div key={run.lead.id}>
+                  {renderRow(run.lead, run)}
+                  {isRunOpen(run, expanded) && run.rest.length > 0 && (
+                    <div
+                      id={`notification-run-${run.lead.id}`}
+                      className="divide-y border-t bg-muted/10 pl-6"
                     >
-                      <div className="flex w-full items-center gap-2">
-                        <span
-                          className={cn(
-                            "text-sm",
-                            isUnread ? "font-semibold" : "font-medium"
-                          )}
-                        >
-                          {subject}
-                        </span>
-                        {isUnread && (
-                          <span
-                            className="size-1.5 shrink-0 rounded-full bg-foreground"
-                            aria-label={t("notifications.unread")}
-                          />
-                        )}
-                        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                          {timeAgo(n.created_at)}
-                        </span>
-                      </div>
-                      <p className="line-clamp-2 text-xs text-muted-foreground">
-                        {body}
-                      </p>
-                      {organizationNames[n.organization_id] && (
-                        <span className="text-xs text-muted-foreground/70">
-                          {organizationNames[n.organization_id]}
-                        </span>
-                      )}
-                    </button>
-                    {actionPath && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0"
-                        onClick={() => {
-                          if (isUnread) markRead(n.id)
-                          void navigate({ to: actionPath })
-                        }}
-                      >
-                        {t("common.view")}
-                        <IconArrowRight data-icon="inline-end" />
-                      </Button>
-                    )}
-                  </div>
-                )
-              })}
+                      {run.rest.map((n) => (
+                        <div key={n.id}>{renderRow(n)}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         ))}

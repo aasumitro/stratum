@@ -17,6 +17,8 @@
 #   - openobserve:v0.91.1, otel-collector-contrib:0.156.0 → latest stable
 #     as of pinning (2026-07-13). Behind the `observability` profile, opt-in
 #     via `make infra-observability-up`. Bump deliberately, same as above.
+#   - seaweedfs:4.55 → the S3 server its Object Lock was tried on. Behind the
+#     `audit-archive` profile, opt-in via `make audit-archive-up`.
 #
 # Usage: see Makefile targets `infra-up` / `infra-down` at the project root.
 
@@ -103,8 +105,32 @@ services:
     depends_on:
       - openobserve
 
+  # A local stand-in for a bucket with S3 Object Lock, for the audit archive. It runs on
+  # this host, so it proves the mechanism and protects nothing from whoever owns the host.
+  audit-archive:
+    image: docker.io/chrislusf/seaweedfs:4.55
+    container_name: stratum-audit-archive
+    profiles:
+      - audit-archive
+    restart: unless-stopped
+    # Small volumes, as many as the disk holds: every bucket takes volumes of its own, and the
+    # archive's tests create one per run.
+    command:
+      - "server"
+      - "-dir=/data"
+      - "-master.volumeSizeLimitMB=64"
+      - "-volume.max=0"
+      - "-s3"
+      - "-s3.config=/etc/seaweedfs/s3.json"
+    ports:
+      - "8333:8333"
+    volumes:
+      - ./audit-archive/s3.json:/etc/seaweedfs/s3.json:ro
+      - stratum-audit-archive-data:/data
+
 volumes:
   stratum-postgres-data:
   stratum-rabbitmq-data:
   stratum-redis-data:
   stratum-openobserve-data:
+  stratum-audit-archive-data:

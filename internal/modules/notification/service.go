@@ -22,6 +22,10 @@ import (
 // server can't stall the whole notification consumer queue behind it.
 const emailSendTimeout = 15 * time.Second
 
+// emailTotalTimeout bounds a whole sendEmail: the SMTP send plus the
+// preference check, digest hold and record around it.
+const emailTotalTimeout = emailSendTimeout + 5*time.Second
+
 type service struct {
 	repo       *repository
 	pool       *pgxpool.Pool
@@ -161,6 +165,12 @@ func (s *service) sendEmail(
 	if s.mailer == nil || !s.mailer.IsConfigured() {
 		return
 	}
+	// The event is already claimed and will be acked, so nothing retries this
+	// email: a worker shutting down lets the whole of it run (preference,
+	// digest hold, send, record) rather than cut it off half-way, bounded by
+	// one overall timeout.
+	ctx, cancelAll := context.WithTimeout(context.WithoutCancel(ctx), emailTotalTimeout)
+	defer cancelAll()
 
 	if authSub != "" {
 		allowed, err := s.repo.isPreferenceEnabled(ctx, s.pool, authSub, "email", templateName)
@@ -182,6 +192,12 @@ func (s *service) sendEmail(
 		return
 	}
 
+	// A digest-eligible email for a user who takes the digest waits for it.
+	if s.holdForDigest(ctx, organizationID, to, authSub, templateName, subject,
+		mailer.RenderSummary(templateName, lang, data)) {
+		return
+	}
+
 	status := "sent"
 	var sentAt *time.Time
 	sendCtx, cancel := context.WithTimeout(ctx, emailSendTimeout)
@@ -196,8 +212,14 @@ func (s *service) sendEmail(
 		sentAt = &t
 	}
 
+	// The row names its recipient when they have an account, so it is in their
+	// data export and removed with their account, like a held one.
+	var recipient *string
+	if authSub != "" {
+		recipient = &authSub
+	}
 	if _, err := s.repo.insertMessage(
-		ctx, s.pool, organizationID, nil, "email", templateName, subject, html,
+		ctx, s.pool, organizationID, recipient, "email", templateName, subject, html,
 		json.RawMessage(fmt.Sprintf(`{"to":%q}`, to)), status, sentAt,
 	); err != nil {
 		slog.Error("failed to record sent email", "organization_id",
@@ -292,7 +314,7 @@ func (s *service) resolveFirstOrganizationID(ctx context.Context, authSub string
 //     showing up on that first response to know there's more to load.
 func (s *service) listForUser(
 	ctx context.Context,
-	authSub, organizationID, channel, cursor string,
+	authSub, organizationID, channel, search, cursor string,
 	limit, offset int,
 	pageRequested bool,
 ) (*listResult, error) {
@@ -304,7 +326,7 @@ func (s *service) listForUser(
 	nextCursor := ""
 	err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
 		var err error
-		messages, err = s.repo.listMessages(ctx, q, authSub, organizationID, channel, cursor, limit, offset)
+		messages, err = s.repo.listMessages(ctx, q, authSub, organizationID, channel, search, cursor, limit, offset)
 		if err != nil {
 			return err
 		}
@@ -317,7 +339,7 @@ func (s *service) listForUser(
 			cursorMode = true
 			return nil
 		}
-		total, err = s.repo.countTotal(ctx, q, authSub, organizationID, channel)
+		total, err = s.repo.countTotal(ctx, q, authSub, organizationID, channel, search)
 		return err
 	})
 	if err != nil {
@@ -348,6 +370,15 @@ func (s *service) unreadCount(ctx context.Context, authSub, organizationID strin
 func (s *service) markRead(ctx context.Context, authSub, id string) error {
 	if err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
 		return s.repo.markRead(ctx, q, authSub, id)
+	}); err != nil {
+		return apperr.Internal("MARK_READ_FAILED", "failed to mark as read", err)
+	}
+	return nil
+}
+
+func (s *service) markManyRead(ctx context.Context, authSub string, ids []string) error {
+	if err := db.WithAuthTx(ctx, s.pool, authSub, func(ctx context.Context, q db.Querier) error {
+		return s.repo.markManyRead(ctx, q, authSub, ids)
 	}); err != nil {
 		return apperr.Internal("MARK_READ_FAILED", "failed to mark as read", err)
 	}

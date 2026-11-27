@@ -58,6 +58,20 @@ func isUniqueViolation(err error) bool {
 	return ok && pgErr.Code == "23505"
 }
 
+// isDataException reports Postgres rejecting a value itself (SQLSTATE class 22:
+// invalid text, invalid UTF-8, a NUL byte), as opposed to failing to run.
+func isDataException(err error) bool {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	return ok && len(pgErr.Code) == 5 && pgErr.Code[:2] == "22"
+}
+
+// isInvalidTextRepresentation reports Postgres rejecting a value's text form,
+// such as a malformed UUID (22P02).
+func isInvalidTextRepresentation(err error) bool {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	return ok && pgErr.Code == "22P02"
+}
+
 // generateToken is shared by invitation tokens, invite codes, and webhook
 // secrets — all need a random hex string, just at different strengths.
 // byteLength is a count of random bytes, not output characters: the

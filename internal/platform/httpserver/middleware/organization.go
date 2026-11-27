@@ -1,11 +1,13 @@
 package middleware
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/platform/db"
@@ -59,9 +61,19 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 			return
 		}
 
+		// Only a missing organization is a 404. Any other failure (the database
+		// unreachable) is a retryable 503 with its cause logged, not a "not
+		// found" that would send the client away from an organization that exists.
 		ws, err := reader.GetOrganizationByID(c.Request.Context(), organizationID)
-		if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "organization not found"})
+			return
+		}
+		if err != nil {
+			response.LogInternal(c, "ORGANIZATION_UNAVAILABLE", err)
+			response.Error("ORGANIZATION_UNAVAILABLE", "could not load this organization, try again").
+				JSON(c, http.StatusServiceUnavailable)
+			c.Abort()
 			return
 		}
 
@@ -77,6 +89,13 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 		}
 
 		role, err := reader.GetMemberRole(c.Request.Context(), organizationID, claims.Subject)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			response.LogInternal(c, "MEMBERSHIP_UNAVAILABLE", err)
+			response.Error("MEMBERSHIP_UNAVAILABLE", "could not verify your membership of this organization, try again").
+				JSON(c, http.StatusServiceUnavailable)
+			c.Abort()
+			return
+		}
 		if err != nil || role == "" {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not a member of this organization"})
 			return
@@ -84,6 +103,15 @@ func NewOrganizationMiddleware(reader contracts.OrganizationReader) gin.HandlerF
 
 		if len(ws.AllowedIPs) > 0 && !ipAllowed(c.ClientIP(), ws.AllowedIPs) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "access denied from this IP address"})
+			return
+		}
+
+		// An organization that requires MFA admits only a session with a verified
+		// second factor. Leaving stays open, so a member who will not enroll can go.
+		if ws.RequireMFA && !SessionIsAAL2(c) && !strings.HasSuffix(c.FullPath(), "/leave") {
+			response.Error("ORGANIZATION_MFA_REQUIRED", "this organization requires two-factor authentication").
+				JSON(c, http.StatusForbidden)
+			c.Abort()
 			return
 		}
 
@@ -119,6 +147,7 @@ func NewActivationGateMiddleware(gate contracts.ActivationGate) gin.HandlerFunc 
 		}
 		unpaid, err := gate.HasUnpaidActivation(c.Request.Context(), ws.ID)
 		if err != nil {
+			response.LogInternal(c, "BILLING_STATUS_UNAVAILABLE", err)
 			response.Error("BILLING_STATUS_UNAVAILABLE", "could not verify this organization's billing status, try again").
 				JSON(c, http.StatusServiceUnavailable)
 			c.Abort()

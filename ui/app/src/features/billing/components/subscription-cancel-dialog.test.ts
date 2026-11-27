@@ -30,6 +30,23 @@ vi.mock("@/lib/api/axios", () => ({
   api: { get: vi.fn(), post: vi.fn() },
 }))
 
+// The offers' wizards have their own tests; here they only need Back and Close.
+vi.mock("./downgrade-wizard", async () => {
+  const { createElement: h } = await import("react")
+  return {
+    DowngradeWizard: (p: {
+      onBackToPlans: () => void
+      onOpenChange: (v: boolean) => void
+    }) =>
+      h(
+        "div",
+        null,
+        h("button", { onClick: p.onBackToPlans }, "Wizard back"),
+        h("button", { onClick: () => p.onOpenChange(false) }, "Wizard close")
+      ),
+  }
+})
+
 import { api } from "@/lib/api/axios"
 import { queryKeys } from "@/lib/api/keys"
 import { SubscriptionCancelDialog } from "./subscription-cancel-dialog"
@@ -75,6 +92,19 @@ const plans: Plan[] = [
     limits: { members: 20 },
     features: [],
     sort_order: 2,
+    config_values: {},
+    active: true,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "starter",
+    name: "Starter",
+    description: "",
+    prices: { USD: { monthly: 2000, yearly: 24000 } },
+    limits: { members: 5 },
+    features: [],
+    sort_order: 1,
     config_values: {},
     active: true,
     created_at: "2026-01-01T00:00:00Z",
@@ -138,7 +168,7 @@ afterEach(() => {
   cleanup()
 })
 
-function renderDialog() {
+function renderDialog(offersAllowed = true) {
   const rootRoute = createRootRoute()
   const route = createRoute({
     getParentRoute: () => rootRoute,
@@ -151,6 +181,8 @@ function renderDialog() {
         currency: "USD",
         periodEnd: "2026-09-01T00:00:00Z",
         canCancel: true,
+        subscriptionStatus: "active",
+        offersAllowed,
       }),
   })
   const router = createRouter({
@@ -176,6 +208,92 @@ async function goThroughToConfirm() {
 }
 
 describe("SubscriptionCancelDialog", () => {
+  it("offers the lower plan and yearly billing, with their savings, for too expensive", async () => {
+    setupApi()
+    renderDialog()
+    ;(
+      await screen.findByRole("button", { name: "Cancel subscription" })
+    ).click()
+    ;(await screen.findByRole("radio", { name: "It's too expensive" })).click()
+
+    await screen.findByText(
+      "Switch to Starter: $20/mo instead of $50/mo (save $30/mo)."
+    )
+    screen.getByRole("button", { name: "Downgrade instead" })
+    screen.getByRole("button", { name: "Switch to yearly" })
+  })
+
+  it("returns from an offer's wizard to the reasons, with the choice kept", async () => {
+    setupApi()
+    renderDialog()
+    ;(
+      await screen.findByRole("button", { name: "Cancel subscription" })
+    ).click()
+    ;(await screen.findByRole("radio", { name: "It's too expensive" })).click()
+    ;(await screen.findByRole("button", { name: "Downgrade instead" })).click()
+    ;(await screen.findByRole("button", { name: "Wizard back" })).click()
+
+    const radio = await screen.findByRole("radio", {
+      name: "It's too expensive",
+    })
+    expect(radio.getAttribute("aria-checked")).toBe("true")
+    screen.getByRole("button", { name: "Downgrade instead" })
+  })
+
+  it("links a contact page for missing features only when one is configured", async () => {
+    // Stubbed both ways: a developer's .env may set it, CI has none.
+    try {
+      vi.stubEnv("VITE_CONTACT_URL", "mailto:support@example.com")
+      setupApi()
+      renderDialog()
+      ;(
+        await screen.findByRole("button", { name: "Cancel subscription" })
+      ).click()
+      ;(
+        await screen.findByRole("radio", { name: "Missing features I need" })
+      ).click()
+      const link = await screen.findByRole("link", {
+        name: "Tell us what you need",
+      })
+      expect(link.getAttribute("href")).toBe("mailto:support@example.com")
+      expect(link.getAttribute("target")).toBeNull()
+
+      cleanup()
+      vi.stubEnv("VITE_CONTACT_URL", "")
+      setupApi()
+      renderDialog()
+      ;(
+        await screen.findByRole("button", { name: "Cancel subscription" })
+      ).click()
+      ;(
+        await screen.findByRole("radio", { name: "Missing features I need" })
+      ).click()
+      expect(
+        screen.queryByRole("link", { name: "Tell us what you need" })
+      ).toBeNull()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("offers nothing while a change is already scheduled or a trial runs", async () => {
+    setupApi()
+    renderDialog(false)
+    ;(
+      await screen.findByRole("button", { name: "Cancel subscription" })
+    ).click()
+    ;(await screen.findByRole("radio", { name: "It's too expensive" })).click()
+    await screen.findByText(
+      "Downgrading to a lower plan might be a better fit than cancelling entirely."
+    )
+    expect(
+      screen.queryByRole("button", { name: "Downgrade instead" })
+    ).toBeNull()
+    expect(
+      screen.queryByRole("button", { name: "Switch to yearly" })
+    ).toBeNull()
+  })
+
   it("shows scheduled-cancellation success copy and an Undo cancellation action", async () => {
     setupApi()
     vi.mocked(api.post).mockResolvedValue(httpResponse({}))

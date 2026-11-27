@@ -38,7 +38,7 @@ func TestVerifyWebhookSecret(t *testing.T) {
 // report success with PII still live, or wedges deletion behind a
 // non-essential step.
 func TestCriticalCleanupSteps_Classification(t *testing.T) {
-	critical := []string{"notifications", "memberships", "audit_log", "billing_history"}
+	critical := []string{"notifications", "audit_log", "billing_history"}
 	bestEffort := []string{"login_events", "avatar"}
 
 	for _, name := range critical {

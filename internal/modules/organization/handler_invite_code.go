@@ -78,6 +78,7 @@ func (h *handler) toggleInviteCode(c *gin.Context) {
 // @Success      200   {object}  response.Payload{data=inviteCodePreview}
 // @Failure      422   {object}  response.Payload  "missing code, invalid code, invite code disabled, or already a member"
 // @Failure      401   {object}  response.Payload  "missing/invalid auth token"
+// @Failure      500   {object}  response.Payload  "the lookup failed (ORGANIZATION_FETCH_FAILED)"
 // @Router       /organizations/join/preview [get]
 func (h *handler) previewInviteCode(c *gin.Context) {
 	code := c.Query("code")
@@ -112,6 +113,7 @@ type joinByCodeRequest struct {
 // @Success      200   {object}  response.Payload{data=organizationRecord}
 // @Failure      422   {object}  response.Payload  "validation failed, invalid code, invite code disabled, already a member, or plan limit reached"
 // @Failure      401   {object}  response.Payload  "missing/invalid auth token"
+// @Failure      500   {object}  response.Payload  "the lookup or the join failed (ORGANIZATION_FETCH_FAILED, ORGANIZATION_JOIN_FAILED)"
 // @Router       /organizations/join [post]
 func (h *handler) joinByCode(c *gin.Context) {
 	var req joinByCodeRequest

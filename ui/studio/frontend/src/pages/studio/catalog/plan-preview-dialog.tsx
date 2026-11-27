@@ -206,7 +206,7 @@ export function PlanPreviewDialog({
         if (!o) onClose()
       }}
     >
-      <AlertDialogContent className="max-h-[85vh] w-[95vw] !max-w-6xl overflow-y-auto">
+      <AlertDialogContent className="max-h-[85vh] w-[95vw] max-w-6xl! overflow-y-auto">
         <AlertDialogHeader>
           <AlertDialogTitle>Plan preview</AlertDialogTitle>
           <AlertDialogDescription>

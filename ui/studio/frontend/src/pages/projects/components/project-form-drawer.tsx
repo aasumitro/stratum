@@ -229,6 +229,12 @@ export function ProjectFormDrawer({
             />
           </div>
 
+          <p className="text-xs text-muted-foreground">
+            Use your own operator login, with the same name, for the database,
+            RabbitMQ and Redis. Studio refuses changes on a shared database
+            login, and requeue or purge on a shared RabbitMQ login.
+          </p>
+
           <DsnField
             id="db-dsn"
             label="Database DSN"
@@ -252,7 +258,7 @@ export function ProjectFormDrawer({
           <DsnField
             id="redis-dsn"
             label="Redis DSN"
-            placeholder="redis://host:6379 (optional)"
+            placeholder="redis://user:pass@host:6379 (optional)"
             value={redisDsn}
             onType="redis"
             onChange={setRedisDsn}

@@ -45,6 +45,10 @@ type service struct {
 	// (see buildExportData).
 	orgReader   contracts.OrganizationReader
 	notifReader contracts.NotificationReader
+
+	// legal lists the documents a user must accept (config LEGAL_*); empty
+	// means none is required.
+	legal []LegalDocument
 }
 
 func (s *service) upsertProfile(ctx context.Context, authSub, email, fullName, avatarURL string) (*userRecord, error) {
@@ -204,12 +208,12 @@ func (s *service) requestExportData(ctx context.Context, authSub string) (*taskR
 // these blocks the deletion: executeDeleteAccount returns an error before
 // the user row is removed, so the delete-account consumer redelivers (its
 // MaxDeliveries cap, then a monitored dead-letter queue) and the whole
-// idempotent handler runs again. Steps not listed here (login_events,
+// idempotent handler runs again. Memberships are not a step: they run
+// before every step, in executeDeleteAccount. Steps not listed here (login_events,
 // avatar) are best-effort — their failure is only recorded in the task
 // result's failed_steps so a partial cleanup is visible rather than silent.
 var criticalCleanupSteps = map[string]bool{
 	"notifications":   true,
-	"memberships":     true,
 	"audit_log":       true,
 	"billing_history": true,
 }
@@ -227,13 +231,40 @@ var criticalCleanupSteps = map[string]bool{
 func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub string) error {
 	_ = s.repo.markTaskProcessing(ctx, s.pool, taskID)
 
+	// The request was refused while the user owned an organization, but a
+	// transfer can have made them an owner since. Deleting now would leave that
+	// organization without its owner, and retrying cannot help until ownership
+	// moves, so the task fails for good.
+	if s.orgReader != nil {
+		owned, err := s.orgReader.CountActiveOwnedOrganizations(ctx, authSub)
+		if err != nil {
+			return fmt.Errorf("account.executeDeleteAccount: %w", err)
+		}
+		if owned > 0 {
+			return s.repo.failTask(ctx, s.pool, taskID, taskFailedOwner)
+		}
+	}
+
+	// Memberships go first and alone: a transfer that makes the user an owner
+	// after the check above is refused here, before any other personal data is
+	// erased for an account that will not be deleted.
+	if s.orgWriter == nil {
+		return errors.New("account.executeDeleteAccount: organization writer not wired")
+	}
+	if err := s.orgWriter.RemoveAllMemberships(ctx, authSub); err != nil {
+		if errors.Is(err, contracts.ErrOwnsActiveOrganization) {
+			return s.repo.failTask(ctx, s.pool, taskID, taskFailedOwner)
+		}
+		return fmt.Errorf("account.executeDeleteAccount: memberships: %w", err)
+	}
+
 	failedCritical, failedBestEffort := s.runDeleteAccountCleanupSteps(ctx, authSub)
 	if len(failedCritical) > 0 {
 		return fmt.Errorf("account.executeDeleteAccount: critical cleanup steps failed, will retry: %v", failedCritical)
 	}
 
 	if err := s.repo.deleteUser(ctx, s.pool, authSub); err != nil {
-		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
+		_ = s.repo.failTask(ctx, s.pool, taskID, taskFailedDelete)
 		return fmt.Errorf("account.executeDeleteAccount: %w", err)
 	}
 
@@ -242,8 +273,8 @@ func (s *service) executeDeleteAccount(ctx context.Context, taskID, authSub stri
 	return s.completeDeleteAccountTask(ctx, taskID, failedBestEffort)
 }
 
-// runDeleteAccountCleanupSteps runs every cross-schema cleanup step (plus
-// wiping the avatar blob) and returns the names of the ones that failed,
+// runDeleteAccountCleanupSteps runs every cross-schema cleanup step after the
+// memberships (plus wiping the avatar blob) and returns the names of the ones that failed,
 // split into critical (personal-data erasure/anonymization in another
 // schema — see criticalCleanupSteps) and best-effort. Each failure is
 // logged here rather than silently discarded — see the executeDeleteAccount
@@ -259,12 +290,6 @@ func (s *service) runDeleteAccountCleanupSteps(ctx context.Context, authSub stri
 				return errors.New("notification writer not wired")
 			}
 			return s.notifWriter.DeleteAllForUser(ctx, authSub)
-		}},
-		{"memberships", func() error {
-			if s.orgWriter == nil {
-				return errors.New("organization writer not wired")
-			}
-			return s.orgWriter.RemoveAllMemberships(ctx, authSub)
 		}},
 		{"audit_log", func() error {
 			return audit.AnonymizeActor(ctx, s.pool, authSub)
@@ -326,9 +351,9 @@ func (s *service) completeDeleteAccountTask(ctx context.Context, taskID string, 
 	return s.repo.completeTask(ctx, s.pool, taskID, resultJSON)
 }
 
-// exportEventLimit caps the notifications/audit-events sections of a GDPR
-// export at the most recent N rows — matches the pre-existing LIMIT this
-// flow has always used.
+// exportEventLimit caps the sections of a GDPR export at the most recent N
+// rows: audit events at N, notifications at N emails plus N other messages
+// (capped apart, so up to 2N).
 const exportEventLimit = 1000
 
 // exportData is the GDPR data-export payload. Organizations/Notifications
@@ -341,6 +366,7 @@ type exportData struct {
 	Organizations []contracts.OrgMembershipInfo `json:"organizations"`
 	Notifications []contracts.MessageInfo       `json:"notifications"`
 	AuditEvents   []exportAuditEvent            `json:"audit_events"`
+	Consents      []consentRecord               `json:"consents"`
 }
 
 // exportAuditEvent is the audit.events projection this export has always
@@ -382,7 +408,7 @@ func (s *service) buildExportData(ctx context.Context, authSub string) (*exportD
 		return nil, fmt.Errorf("account.buildExportData: notifications: %w", err)
 	}
 
-	records, _, err := audit.ListByActorCursor(ctx, s.pool, authSub, exportEventLimit, "", nil, nil)
+	records, _, err := audit.ListByActorCursor(ctx, s.pool, authSub, exportEventLimit, "", nil, nil, "")
 	if err != nil {
 		return nil, fmt.Errorf("account.buildExportData: audit events: %w", err)
 	}
@@ -394,13 +420,28 @@ func (s *service) buildExportData(ctx context.Context, authSub string) (*exportD
 		}
 	}
 
+	consents, err := s.repo.listConsents(ctx, s.pool, authSub)
+	if err != nil {
+		return nil, fmt.Errorf("account.buildExportData: consents: %w", err)
+	}
+
 	return &exportData{
 		Profile:       profile,
 		Organizations: orgs,
 		Notifications: notifs,
 		AuditEvents:   auditEvents,
+		Consents:      consents,
 	}, nil
 }
+
+// The failure a task records is what GET /me/tasks shows its owner, so it is a
+// fixed message per task type. The cause goes back to the worker, which logs it
+// and retries the delivery; it is never stored where the client can read it.
+const (
+	taskFailedExport = "the data export failed; request a new export"
+	taskFailedDelete = "the account deletion failed; request it again if it does not complete"
+	taskFailedOwner  = "the account owns an organization; transfer or delete it, then request deletion again"
+)
 
 // executeExportData is called by the worker, not by HTTP handlers.
 func (s *service) executeExportData(ctx context.Context, taskID, authSub string) error {
@@ -408,7 +449,7 @@ func (s *service) executeExportData(ctx context.Context, taskID, authSub string)
 
 	data, err := s.buildExportData(ctx, authSub)
 	if err != nil {
-		_ = s.repo.failTask(ctx, s.pool, taskID, err.Error())
+		_ = s.repo.failTask(ctx, s.pool, taskID, taskFailedExport)
 		return fmt.Errorf("account.executeExportData: %w", err)
 	}
 
@@ -584,8 +625,8 @@ func (s *service) listSessions(ctx context.Context, authSub, cursor string, limi
 
 // listAuditLog returns the caller's own audit trail across every organization
 // they've acted in, newest first. Optional from/to bound created_at.
-func (s *service) listAuditLog(ctx context.Context, authSub string, limit int, cursor string, from, to *time.Time) ([]audit.EventRecord, string, error) {
-	records, next, err := audit.ListByActorCursor(ctx, s.pool, authSub, limit, cursor, from, to)
+func (s *service) listAuditLog(ctx context.Context, authSub string, limit int, cursor string, from, to *time.Time, search string) ([]audit.EventRecord, string, error) {
+	records, next, err := audit.ListByActorCursor(ctx, s.pool, authSub, limit, cursor, from, to, search)
 	if err != nil {
 		return nil, "", apperr.Internal("AUDIT_LOG_FETCH_FAILED", "failed to list audit log", err)
 	}
@@ -593,8 +634,8 @@ func (s *service) listAuditLog(ctx context.Context, authSub string, limit int, c
 }
 
 // exportAuditLog streams the caller's own audit trail as CSV.
-func (s *service) exportAuditLog(ctx context.Context, authSub string, from, to *time.Time, w io.Writer) error {
-	return audit.ExportByActor(ctx, s.pool, authSub, from, to, w)
+func (s *service) exportAuditLog(ctx context.Context, authSub string, from, to *time.Time, search string, w io.Writer) error {
+	return audit.ExportByActor(ctx, s.pool, authSub, from, to, search, w)
 }
 
 // recordLoginEvent inserts a login event, rate-gated to once per 30 minutes

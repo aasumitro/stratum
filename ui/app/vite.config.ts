@@ -1,4 +1,4 @@
-// <reference types="vitest/config" />
+/// <reference types="vitest/config" />
 import path from "path"
 import { EventEmitter } from "events"
 

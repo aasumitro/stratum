@@ -245,6 +245,49 @@ func (w *Worker) HandleApplyScheduled(ctx context.Context, body []byte) error {
 	return w.svc.applyScheduledAtBoundary(ctx, check)
 }
 
+// HandleCoveredResume finishes a Resume whose reissued invoice a coupon covers
+// (events.RoutingKeySubscriptionResumeCovered) through the owner's own Resume
+// path, which lifts the suspension after its transaction commits. A
+// message is dropped when its subscription is gone, its end moved since it was
+// written (a reactivation), its organization was deleted, or Resume refuses it
+// (already resumed): retrying would not change the answer.
+func (w *Worker) HandleCoveredResume(ctx context.Context, body []byte) error {
+	check, err := events.Decode[events.SubscriptionCheck](body)
+	if err != nil {
+		return fmt.Errorf("billing.HandleCoveredResume: decode: %w", err)
+	}
+	sub, err := w.svc.repo.findSubscriptionByID(ctx, w.svc.pool, check.SubscriptionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("billing.HandleCoveredResume: %w", err)
+	}
+	// A reactivation since the message was written moved the end: this Resume is done.
+	if staleSubscriptionCheck(sub, check) {
+		slog.InfoContext(ctx, "billing.HandleCoveredResume: stale, the subscription's end moved since",
+			"subscription_id", check.SubscriptionID)
+		return nil
+	}
+	// A deleted organization's subscription stays ended, as for a late payment.
+	deleted, err := w.svc.subjectDeleted(ctx, sub)
+	if err != nil {
+		return fmt.Errorf("billing.HandleCoveredResume: %w", err)
+	}
+	if deleted {
+		slog.InfoContext(ctx, "billing.HandleCoveredResume: organization deleted, not resumed",
+			"subscription_id", check.SubscriptionID)
+		return nil
+	}
+	_, err = w.svc.resumeSubscription(ctx, check.SubjectType, check.SubjectID, changedBySystem)
+	var appErr *apperr.Error
+	if errors.As(err, &appErr) && appErr.Kind != apperr.KindInternal {
+		slog.WarnContext(ctx, "billing.HandleCoveredResume: not resumed", "subscription_id", check.SubscriptionID, "error", err)
+		return nil
+	}
+	return err
+}
+
 // HandleOperatorTrialExtend applies a Studio operator's trial extension
 // (events.RoutingKeyOperatorTrialExtend).
 func (w *Worker) HandleOperatorTrialExtend(ctx context.Context, body []byte) error {

@@ -1,7 +1,10 @@
 package app
 
 import (
+	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/studio/internal/connect"
 	"github.com/aasumitro/stratum/studio/internal/query"
@@ -65,4 +68,42 @@ func (d *DashboardService) GetMetrics(projectID string) (ProjectMetrics, error) 
 		StorageBytesTotal:       m.StorageBytesTotal,
 		TopPlansByOrganization:  plans,
 	}, nil
+}
+
+type ReasonCount struct {
+	Reason string `json:"reason"`
+	Count  int64  `json:"count"`
+}
+
+type CancellationDetail struct {
+	Reason  string    `json:"reason"`
+	Details string    `json:"details"`
+	Plan    string    `json:"plan"`
+	At      time.Time `json:"at"`
+}
+
+type CancellationReport struct {
+	Counts []ReasonCount        `json:"counts"`
+	Latest []CancellationDetail `json:"latest"`
+}
+
+// GetCancellationReasons reports the reasons owners gave when cancelling in
+// the last days (clamped to 1..365), read-only.
+func (d *DashboardService) GetCancellationReasons(projectID string, days int) (CancellationReport, error) {
+	days = min(max(days, 1), 365)
+	r, err := withProjectDB(d.projects, d.pool, projectID, "DashboardService.GetCancellationReasons", 15*time.Second,
+		func(ctx context.Context, db *pgxpool.Pool) (*query.CancellationReport, error) {
+			return query.GetCancellationReasons(ctx, db, days)
+		})
+	if err != nil {
+		return CancellationReport{}, err
+	}
+	out := CancellationReport{Counts: []ReasonCount{}, Latest: []CancellationDetail{}}
+	for _, c := range r.Counts {
+		out.Counts = append(out.Counts, ReasonCount{Reason: c.Reason, Count: c.Count})
+	}
+	for _, l := range r.Latest {
+		out.Latest = append(out.Latest, CancellationDetail{Reason: l.Reason, Details: l.Details, Plan: l.Plan, At: l.At})
+	}
+	return out, nil
 }

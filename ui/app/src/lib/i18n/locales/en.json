@@ -129,6 +129,15 @@
       "MEMBER_NOT_FOUND": "Member not found.",
       "MEMBER_ADD_FAILED": "Failed to add member.",
       "MEMBER_REMOVE_FAILED": "Failed to remove member.",
+      "OWNER_CANNOT_LEAVE": "The owner cannot leave. Transfer ownership first.",
+      "ORGANIZATION_LEAVE_FAILED": "Failed to leave the organization.",
+      "ORGANIZATION_JOIN_FAILED": "Failed to join the organization.",
+      "TRANSFER_TARGET_NOT_MEMBER": "The new owner must be an active member of this organization.",
+      "TRANSFER_TARGET_ALREADY_OWNER": "That member is already the owner.",
+      "OWNERSHIP_CHANGED": "The organization's owner changed. Reload and try again.",
+      "OWNERSHIP_TRANSFER_FAILED": "Failed to transfer ownership.",
+      "ORGANIZATION_UNAVAILABLE": "Couldn't load this organization. Try again.",
+      "MEMBERSHIP_UNAVAILABLE": "Couldn't verify your membership of this organization. Try again.",
       "MEMBER_ROLE_UPDATE_FAILED": "Failed to update member role.",
       "MEMBER_ALREADY_SUSPENDED": "This member is already suspended.",
       "MEMBER_NOT_SUSPENDED": "This member is not suspended.",
@@ -212,7 +221,14 @@
       "PDF_GENERATION_FAILED": "Failed to generate the invoice PDF.",
       "WEBHOOK_FAILED": "Webhook processing failed.",
       "ADDON_ATTACH_FAILED": "Failed to attach add-on.",
-      "ADDON_DETACH_FAILED": "Failed to detach add-on."
+      "ADDON_DETACH_FAILED": "Failed to detach add-on.",
+      "ORGANIZATION_MFA_REQUIRED": "This organization requires two-factor authentication.",
+      "MFA_ENROLLMENT_REQUIRED": "Sign in with two-factor authentication before requiring it for the organization.",
+      "CONSENT_VERSION_OUTDATED": "A newer version of this document is in force. Review it and accept again.",
+      "CONSENT_DOCUMENT_UNKNOWN": "This document does not need to be accepted.",
+      "CONSENT_RECORD_FAILED": "Could not record your acceptance. Try again.",
+      "CONSENT_STATUS_FAILED": "Could not load the documents to accept. Try again.",
+      "SEARCH_TOO_SHORT": "Type at least 3 characters to search."
     },
     "validation": {
       "required": "The {{field}} field is required.",
@@ -419,7 +435,13 @@
         "title": "Approaching usage limit",
         "body": "{{metric}} usage is at {{current}} / {{limit}}."
       }
-    }
+    },
+    "searchPlaceholder": "Search notifications…",
+    "moreLikeThis_one": "+{{count}} more like this",
+    "moreLikeThis_other": "+{{count}} more like this",
+    "showLess": "Show less",
+    "digestTitle": "Daily email digest",
+    "digestDescription": "Get payment receipts, usage warnings and webhook health warnings in one email a day, at 08:00 your time, instead of one by one. Anything that needs action still arrives at once."
   },
   "breadcrumb": {
     "dashboard": "Dashboard",
@@ -487,7 +509,8 @@
       "failed": "Could not create account",
       "emailAlreadyRegistered": "An account with this email already exists. Try signing in instead.",
       "checkEmailTitle": "Check your email",
-      "checkEmailDesc": "We sent a confirmation link to {{email}}. Click it to activate your account, then sign in."
+      "checkEmailDesc": "We sent a confirmation link to {{email}}. Click it to activate your account, then sign in.",
+      "termsWithLinks": "By creating an account you agree to:"
     },
     "forgotPassword": {
       "title": "Reset your password",
@@ -752,7 +775,8 @@
       "importRowError": "row {{row}}: {{reason}}",
       "importMoreErrors": "+{{count}} more",
       "downloadErrorRows": "Download error rows",
-      "actions": "Actions"
+      "actions": "Actions",
+      "noMfaBadge": "No MFA"
     },
     "invitations": {
       "count": "{{count}} pending invitation",
@@ -890,7 +914,15 @@
       "removeIp": "Remove {{entry}}",
       "slugChangeConfirm": "Save and update slug",
       "slugChangeDescription": "Changing the slug breaks any existing invite links, webhook URLs, or bookmarks that reference the old one.",
-      "slugChangeTitle": "Changing the slug breaks existing links"
+      "slugChangeTitle": "Changing the slug breaks existing links",
+      "requireMfaTitle": "Require two-factor authentication",
+      "requireMfaDescription": "Every member must sign in with a second factor to open this organization. Members without one keep their membership and are asked to set it up.",
+      "requireMfaLabel": "Require two-factor authentication for all members",
+      "requireMfaNeedsAal2": "Set up two-factor authentication on your own account and sign in with it before turning this on.",
+      "requireMfaConfirmTitle": "Require two-factor authentication?",
+      "requireMfaConfirmDescription_one": "{{count}} active member has no two-factor authentication yet and will be blocked until they set it up.",
+      "requireMfaConfirmDescription_other": "{{count}} active members have no two-factor authentication yet and will be blocked until they set it up.",
+      "requireMfaConfirm": "Require it"
     },
     "danger": {
       "title": "Danger zone",
@@ -937,6 +969,30 @@
       "member": "Member",
       "memberDesc": "Can view and create resources"
     },
+    "permissions": {
+      "open": "Roles & permissions",
+      "title": "Roles and permissions",
+      "description": "What each role can do in this organization. An owner can do everything an admin can, and an admin everything a member can.",
+      "capability": "Capability",
+      "allowed": "Allowed",
+      "notAllowed": "Not allowed",
+      "features": {
+        "members": "Members",
+        "invitations": "Invitations",
+        "webhooks": "Webhooks",
+        "auditLog": "Audit log",
+        "billing": "Billing",
+        "settingsGeneral": "General settings",
+        "settingsSecurity": "Security settings",
+        "settingsDanger": "Danger zone"
+      },
+      "actions": {
+        "view": "View",
+        "manage": "Manage",
+        "edit": "Edit",
+        "delete": "Delete"
+      }
+    },
     "auditLog": {
       "actorCol": "Actor",
       "methodCol": "Method",
@@ -961,6 +1017,7 @@
       "retentionNote": "Audit events are retained according to your plan's retention window.",
       "copiedJson": "Event JSON copied",
       "systemActor": "System",
+      "operatorActor": "Provider support",
       "clearFiltersHint": "No events match — clear filters",
       "eventDetail": "Event detail",
       "copyJson": "Copy event JSON",
@@ -968,7 +1025,8 @@
       "deviceLabel": "Device",
       "noPayload": "No additional data recorded for this event.",
       "pageDescription": "A record of every action taken in this organization.",
-      "viewFullLog": "View Full Log"
+      "viewFullLog": "View Full Log",
+      "searchPlaceholder": "Search the log…"
     },
     "suspendedBanner": "This organization has been suspended. Contact support to reactivate it.",
     "accessDenied": "You no longer have access to this organization.",
@@ -1078,7 +1136,12 @@
     "suspendedOwnerBillingBanner": "Unpaid invoice — pay to reactivate instantly.",
     "suspendedOwnerExpiredBanner": "Subscription ended — resume it to reactivate.",
     "suspendedOwnerSelfBanner": "You paused this organization — unsuspend it to restore access.",
-    "suspendedOwnerSupportBanner": "Suspended by support: {{reason}}. Contact support to lift it."
+    "suspendedOwnerSupportBanner": "Suspended by support: {{reason}}. Contact support to lift it.",
+    "mfaGate": {
+      "title": "This organization requires two-factor authentication",
+      "description": "Set up two-factor authentication on your account to continue. You can also leave the organization.",
+      "setUp": "Set up two-factor authentication"
+    }
   },
   "settings": {
     "title": "Settings",
@@ -1305,7 +1368,14 @@
       "exportOrganizationData": "Export organization data (Audit log)",
       "confirmCancel": "Confirm cancellation",
       "scheduledSuccessTitle": "Cancellation scheduled",
-      "scheduledSuccessDescription": "Your subscription remains active until {{date}} and will not renew. You can undo this anytime before then."
+      "scheduledSuccessDescription": "Your subscription remains active until {{date}} and will not renew. You can undo this anytime before then.",
+      "offers": {
+        "downgrade": "Switch to {{plan}}: {{price}} instead of {{instead}} (save {{saving}}).",
+        "downgradeAction": "Downgrade instead",
+        "yearly": "Pay yearly: {{price}} instead of {{instead}} (save {{saving}}).",
+        "yearlyAction": "Switch to yearly",
+        "contact": "Tell us what you need"
+      }
     },
     "upgrade": {
       "changesTitle": "What changes",
@@ -1639,7 +1709,8 @@
       "empty": "No activity yet.",
       "fromDate": "From",
       "toDate": "To",
-      "exportCsv": "Export CSV"
+      "exportCsv": "Export CSV",
+      "searchPlaceholder": "Search your activity…"
     },
     "preferencesSaved": "Preferences saved",
     "timezone": "Timezone",
@@ -1655,5 +1726,16 @@
       "comingSoon": "Coming soon",
       "comingSoonDescription": "API tokens for programmatic access aren't available yet."
     }
+  },
+  "legal": {
+    "documents": {
+      "terms": "Terms of Service",
+      "privacy": "Privacy Policy"
+    },
+    "agree": "I have read and agree to:",
+    "gateTitle": "Accept the terms to continue",
+    "gateDescription": "Read and accept the documents below to keep using the app. They may have changed since you last accepted them.",
+    "accept": "Accept and continue",
+    "acceptFailed": "Could not record your acceptance. Try again."
   }
 }

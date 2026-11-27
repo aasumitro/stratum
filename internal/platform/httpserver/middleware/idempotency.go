@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/aasumitro/stratum/internal/platform/cache"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
 // idempotencyLockTTL bounds how long a concurrent duplicate request waits
@@ -100,6 +101,7 @@ func NewIdempotencyMiddleware(ns *cache.Namespace) gin.HandlerFunc {
 		lockKey := key + ":lock"
 		acquired, lockErr := ns.SetNX(ctx, lockKey, "1", idempotencyLockTTL)
 		if lockErr != nil {
+			response.LogInternal(c, "IDEMPOTENCY_LOCK_UNAVAILABLE", lockErr)
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable,
 				gin.H{"error": "could not acquire idempotency lock, please retry"})
 			return

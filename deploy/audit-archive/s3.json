@@ -1,0 +1,31 @@
+{
+  "identities": [
+    {
+      "name": "admin",
+      "credentials": [{ "accessKey": "stratum-archive-admin", "secretKey": "stratum-archive-admin" }],
+      "actions": ["Admin", "Read", "Write", "List"]
+    },
+    {
+      "name": "writer",
+      "credentials": [{ "accessKey": "stratum-archive-writer", "secretKey": "stratum-archive-writer" }],
+      "actions": [
+        "Read:stratum-audit",
+        "Write:stratum-audit",
+        "List:stratum-audit",
+        "PutObjectRetention:stratum-audit",
+        "GetObjectRetention:stratum-audit",
+        "GetBucketObjectLockConfiguration:stratum-audit"
+      ]
+    },
+    {
+      "name": "verifier",
+      "credentials": [{ "accessKey": "stratum-archive-verifier", "secretKey": "stratum-archive-verifier" }],
+      "actions": [
+        "Read:stratum-audit",
+        "List:stratum-audit",
+        "GetObjectRetention:stratum-audit",
+        "GetBucketObjectLockConfiguration:stratum-audit"
+      ]
+    }
+  ]
+}

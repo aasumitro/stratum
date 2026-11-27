@@ -90,6 +90,7 @@ type Config struct {
 	WebhookSecretEncryptionKeyVersion int `env:"WEBHOOK_SECRET_ENCRYPTION_KEY_VERSION" envDefault:"1"`
 
 	Postgres PostgresConfig
+	Legal    LegalConfig
 	Redis    RedisConfig
 	RabbitMQ RabbitMQConfig
 	Auth     AuthConfig
@@ -99,6 +100,17 @@ type Config struct {
 	Xendit   XenditConfig
 	SMTP     SMTPConfig
 	Storage  StorageConfig
+	Archive  AuditArchiveConfig
+}
+
+// LegalConfig names the legal documents a user must accept: an opaque version
+// (e.g. a date) and the URL of the text, for each. A document with no version
+// is not required, so acceptance is off until the adopting project sets them.
+type LegalConfig struct {
+	TermsVersion   string `env:"LEGAL_TERMS_VERSION"`
+	TermsURL       string `env:"LEGAL_TERMS_URL"`
+	PrivacyVersion string `env:"LEGAL_PRIVACY_VERSION"`
+	PrivacyURL     string `env:"LEGAL_PRIVACY_URL"`
 }
 
 type PostgresConfig struct {
@@ -198,6 +210,91 @@ type StorageConfig struct {
 	URL string `env:"STORAGE_URL"`
 }
 
+// AuditArchiveConfig addresses the bucket the worker copies audit events to, on any
+// provider that speaks the S3 API with Object Lock. An empty Endpoint turns the copy
+// off.
+type AuditArchiveConfig struct {
+	Endpoint  string `env:"AUDIT_ARCHIVE_ENDPOINT"`
+	Region    string `env:"AUDIT_ARCHIVE_REGION" envDefault:"us-east-1"`
+	Bucket    string `env:"AUDIT_ARCHIVE_BUCKET"`
+	AccessKey string `env:"AUDIT_ARCHIVE_ACCESS_KEY"`
+	SecretKey string `env:"AUDIT_ARCHIVE_SECRET_KEY"`
+	// RetentionDays is how long a stored object stays locked. Zero means
+	// AUDIT_RETENTION_DAYS.
+	RetentionDays int `env:"AUDIT_ARCHIVE_RETENTION_DAYS"`
+}
+
+// Enabled reports whether audit events are copied anywhere.
+func (c AuditArchiveConfig) Enabled() bool { return c.Endpoint != "" }
+
+// maxArchiveRetentionDays catches a mistyped retention: nobody can shorten a
+// compliance lock once an object is stored under it.
+const maxArchiveRetentionDays = 3650
+
+// ValidateArchive checks the archive's settings when it is on, and fills in its
+// retention. Only the worker reads them, so only the worker calls it: the API does not
+// fail on a setting it never uses.
+func (c *Config) ValidateArchive() error {
+	return validateArchive(&c.Archive, c.AuditRetentionDays)
+}
+
+// ArchiveVerifyConfig is all that verifying the archive reads, so the host that runs it
+// needs no other secret. DatabaseURL may name any login that can read audit.events,
+// audit.exports, account.users and account.tasks. AuditRetentionDays must be the API's.
+type ArchiveVerifyConfig struct {
+	DatabaseURL        string `env:"POSTGRES_WORKER_URL,required"`
+	AuditRetentionDays int    `env:"AUDIT_RETENTION_DAYS" envDefault:"400"`
+	Archive            AuditArchiveConfig
+}
+
+// LoadArchiveVerify reads ArchiveVerifyConfig from the environment.
+func LoadArchiveVerify() (*ArchiveVerifyConfig, error) {
+	cfg := &ArchiveVerifyConfig{}
+	if err := env.Parse(cfg); err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	if !cfg.Archive.Enabled() {
+		return nil, errors.New("config: AUDIT_ARCHIVE_ENDPOINT is not set")
+	}
+	// Rows older than this count as expired, so a short value would excuse deletions.
+	if cfg.AuditRetentionDays < minAuditRetentionDays {
+		return nil, fmt.Errorf("config: AUDIT_RETENTION_DAYS must be at least %d, got %d", minAuditRetentionDays, cfg.AuditRetentionDays)
+	}
+	if err := validateArchive(&cfg.Archive, cfg.AuditRetentionDays); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// validateArchive checks the archive's settings when it is on, and fills in its
+// retention. No message carries a value, since some of them are credentials.
+func validateArchive(c *AuditArchiveConfig, auditRetentionDays int) error {
+	if !c.Enabled() {
+		return nil
+	}
+	if u, err := url.Parse(c.Endpoint); err != nil ||
+		(u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || strings.Trim(u.Path, "/") != "" || u.RawQuery != "" {
+		return errors.New("config: AUDIT_ARCHIVE_ENDPOINT must be an http(s) URL of a host, without credentials or a path")
+	}
+	for _, required := range []struct{ env, value string }{
+		{"AUDIT_ARCHIVE_BUCKET", c.Bucket},
+		{"AUDIT_ARCHIVE_ACCESS_KEY", c.AccessKey},
+		{"AUDIT_ARCHIVE_SECRET_KEY", c.SecretKey},
+	} {
+		if required.value == "" {
+			return fmt.Errorf("config: %s is required when AUDIT_ARCHIVE_ENDPOINT is set", required.env)
+		}
+	}
+	if c.RetentionDays == 0 {
+		c.RetentionDays = auditRetentionDays
+	}
+	if c.RetentionDays < auditRetentionDays || c.RetentionDays > maxArchiveRetentionDays {
+		return fmt.Errorf("config: AUDIT_ARCHIVE_RETENTION_DAYS must be between AUDIT_RETENTION_DAYS (%d) and %d, got %d",
+			auditRetentionDays, maxArchiveRetentionDays, c.RetentionDays)
+	}
+	return nil
+}
+
 // envDevelopment is Config.Env's "relax production-only checks" value —
 // bootstrap.EnvDevelopment holds the same string for callers outside this
 // package (api.go/worker.go, which can't import this unexported constant),
@@ -246,6 +343,19 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// A required document needs a page the user can read before accepting it.
+	for _, doc := range []struct{ env, version, url string }{
+		{"LEGAL_TERMS", cfg.Legal.TermsVersion, cfg.Legal.TermsURL},
+		{"LEGAL_PRIVACY", cfg.Legal.PrivacyVersion, cfg.Legal.PrivacyURL},
+	} {
+		if doc.version == "" {
+			continue
+		}
+		if u, err := url.Parse(doc.url); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return nil, fmt.Errorf("config: %s_URL must be an http(s) URL when %s_VERSION is set", doc.env, doc.env)
+		}
+	}
+
 	return cfg, nil
 }
 
@@ -267,6 +377,7 @@ func (c *Config) WarnPlaintextTransport(logger *slog.Logger) {
 		{"POSTGRES_UNSCOPED_URL", postgresPlaintext(c.Postgres.UnscopedURL)},
 		{"REDIS_URL", strings.HasPrefix(c.Redis.URL, "redis://")},
 		{"RABBITMQ_URL", strings.HasPrefix(c.RabbitMQ.URL, "amqp://")},
+		{"AUDIT_ARCHIVE_ENDPOINT", strings.HasPrefix(c.Archive.Endpoint, "http://")},
 	} {
 		if ds.plaintext {
 			logger.Warn("plaintext datastore transport outside development", "env", ds.env)

@@ -158,6 +158,18 @@ definitions:
       request_id:
         type: string
     type: object
+  acceptConsentRequest:
+    properties:
+      document:
+        maxLength: 32
+        type: string
+      version:
+        maxLength: 100
+        type: string
+    required:
+    - document
+    - version
+    type: object
   acceptInvitationRequest:
     properties:
       token:
@@ -254,6 +266,19 @@ definitions:
     - cycle
     - plan
     - terms_agreed
+    type: object
+  consentStatus:
+    properties:
+      accepted_at:
+        type: string
+      accepted_version:
+        type: string
+      document:
+        type: string
+      url:
+        type: string
+      version:
+        type: string
     type: object
   countryRecord:
     properties:
@@ -687,6 +712,17 @@ definitions:
       user_agent:
         type: string
     type: object
+  markManyReadRequest:
+    properties:
+      ids:
+        items:
+          type: string
+        maxItems: 100
+        minItems: 1
+        type: array
+    required:
+    - ids
+    type: object
   memberView:
     properties:
       auth_sub:
@@ -701,6 +737,11 @@ definitions:
         type: string
       joined_at:
         type: string
+      mfa_enabled:
+        description: |-
+          MFAEnabled is set only for an owner or admin caller, so they can see who
+          a require-MFA policy would shut out; members never see it.
+        type: boolean
       organization_id:
         type: string
       role:
@@ -1157,6 +1198,12 @@ definitions:
         type: array
       locale:
         type: string
+      require_mfa:
+        description: |-
+          RequireMFA follows the same rule: nil keeps the current policy. Turning it
+          on needs a session with a verified second factor, so the owner cannot
+          lock themselves out.
+        type: boolean
       timezone:
         type: string
     required:
@@ -1581,6 +1628,11 @@ paths:
         in: query
         name: to
         type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
+        type: string
       produces:
       - application/json
       responses:
@@ -1616,6 +1668,11 @@ paths:
       - description: RFC3339 end timestamp
         in: query
         name: to
+        type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
         type: string
       produces:
       - text/csv
@@ -1697,6 +1754,66 @@ paths:
       security:
       - BearerAuth: []
       summary: Upload an avatar
+      tags:
+      - account
+  /me/consents:
+    get:
+      description: |-
+        Each required document (terms, privacy) with its current version and URL, and the version the
+        caller last accepted. Works before the profile exists. Empty when none is required.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/Payload'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/consentStatus'
+                  type: array
+              type: object
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Legal documents to accept
+      tags:
+      - account
+    post:
+      consumes:
+      - application/json
+      description: Records that the caller accepted the current version of a required
+        document, with IP and user agent.
+      parameters:
+      - description: Document and version
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/acceptConsentRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "409":
+          description: CONSENT_VERSION_OUTDATED
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: CONSENT_DOCUMENT_UNKNOWN or validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Accept a legal document
       tags:
       - account
   /me/export:
@@ -1793,6 +1910,10 @@ paths:
       - description: filter by channel
         in: query
         name: channel
+        type: string
+      - description: search subject and body (at least 3 characters; 422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
         type: string
       - description: max results (default 20, max 100)
         in: query
@@ -1916,6 +2037,35 @@ paths:
       security:
       - BearerAuth: []
       summary: Set a notification preference
+      tags:
+      - notification
+  /me/notifications/read:
+    patch:
+      consumes:
+      - application/json
+      description: Marks the caller's notifications among ids (1-100) read, e.g. a
+        folded run in the feed.
+      parameters:
+      - description: Notification ids
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/markManyReadRequest'
+      responses:
+        "204":
+          description: no content
+        "401":
+          description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: validation failed
+          schema:
+            $ref: '#/definitions/Payload'
+      security:
+      - BearerAuth: []
+      summary: Mark several notifications as read
       tags:
       - notification
   /me/notifications/read-all:
@@ -2361,6 +2511,11 @@ paths:
         in: query
         name: resource
         type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
+        type: string
       - description: RFC3339 lower bound on created_at
         in: query
         name: from
@@ -2417,6 +2572,11 @@ paths:
       - description: filter by resource
         in: query
         name: resource
+        type: string
+      - description: search the route and before/after values (at least 3 characters;
+          422 SEARCH_TOO_SHORT)
+        in: query
+        name: q
         type: string
       - description: RFC3339 lower bound on created_at
         in: query
@@ -3393,8 +3553,8 @@ paths:
           schema:
             $ref: '#/definitions/Payload'
         "422":
-          description: not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE), or the
-            plan has no price (PLAN_NOT_SELF_SERVICE)
+          description: not cancelled or expired (SUBSCRIPTION_NOT_RESUMABLE), the
+            plan has no price (PLAN_NOT_SELF_SERVICE), or the plan is retired (UNKNOWN_PLAN)
           schema:
             $ref: '#/definitions/Payload'
       security:
@@ -3664,6 +3824,18 @@ paths:
           description: no content
         "401":
           description: missing/invalid auth token
+          schema:
+            $ref: '#/definitions/Payload'
+        "404":
+          description: no membership to remove (MEMBER_NOT_FOUND)
+          schema:
+            $ref: '#/definitions/Payload'
+        "422":
+          description: the owner cannot leave (OWNER_CANNOT_LEAVE)
+          schema:
+            $ref: '#/definitions/Payload'
+        "500":
+          description: ORGANIZATION_LEAVE_FAILED
           schema:
             $ref: '#/definitions/Payload'
       security:
@@ -4013,7 +4185,9 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Updates timezone, locale, and the IP allowlist. Owner only.
+      description: |-
+        Updates timezone, locale, the IP allowlist and the require-MFA policy. Owner only.
+        Turning require_mfa on needs an aal2 session (422 MFA_ENROLLMENT_REQUIRED).
       parameters:
       - description: Organization ID
         in: path
@@ -4101,8 +4275,18 @@ paths:
           description: owner role or MFA step-up required
           schema:
             $ref: '#/definitions/Payload'
+        "409":
+          description: the owner changed meanwhile (OWNERSHIP_CHANGED)
+          schema:
+            $ref: '#/definitions/Payload'
         "422":
-          description: validation failed
+          description: missing auth_sub (VALIDATION_FAILED), malformed body (INVALID_REQUEST),
+            target is not an active member (TRANSFER_TARGET_NOT_MEMBER) or already
+            the owner (TRANSFER_TARGET_ALREADY_OWNER)
+          schema:
+            $ref: '#/definitions/Payload'
+        "500":
+          description: OWNERSHIP_TRANSFER_FAILED
           schema:
             $ref: '#/definitions/Payload'
       security:
@@ -4598,6 +4782,10 @@ paths:
             a member, or plan limit reached
           schema:
             $ref: '#/definitions/Payload'
+        "500":
+          description: the lookup or the join failed (ORGANIZATION_FETCH_FAILED, ORGANIZATION_JOIN_FAILED)
+          schema:
+            $ref: '#/definitions/Payload'
       security:
       - BearerAuth: []
       summary: Join an organization by invite code
@@ -4632,6 +4820,10 @@ paths:
         "422":
           description: missing code, invalid code, invite code disabled, or already
             a member
+          schema:
+            $ref: '#/definitions/Payload'
+        "500":
+          description: the lookup failed (ORGANIZATION_FETCH_FAILED)
           schema:
             $ref: '#/definitions/Payload'
       security:

@@ -224,9 +224,9 @@ func (r *repository) listOverdueSubscriptions(ctx context.Context, q db.Querier)
 }
 
 // listDueSchedules returns every subscription whose schedule
-// applyScheduledAtBoundary would apply now: the boundary has passed, and the
-// renewal priced from it is paid (period_end moved past it) or the subscription
-// expired there. The condition mirrors scheduleDue, so nothing comes back that
+// applyScheduledAtBoundary would apply now, and whose re-send backoff has passed
+// (markScheduleResent): the boundary has passed, and the renewal priced from it
+// is paid (period_end moved past it) or the subscription expired there. The condition mirrors scheduleDue, so nothing comes back that
 // the apply would turn down. Only ID, SubjectType, SubjectID and
 // ScheduledEffectiveAt are filled.
 func (r *repository) listDueSchedules(ctx context.Context, q db.Querier) ([]subscriptionRecord, error) {
@@ -235,7 +235,10 @@ func (r *repository) listDueSchedules(ctx context.Context, q db.Querier) ([]subs
 		FROM billing.subscriptions
 		WHERE scheduled_effective_at < now()
 		  AND (status = 'expired'
-		       OR (status IN ('active', 'past_due') AND period_end > scheduled_effective_at))`)
+		       OR (status IN ('active', 'past_due') AND period_end > scheduled_effective_at))
+		  -- Due again only once its backoff has passed. The slack keeps an hourly
+		  -- tick from missing an hour-long backoff by the seconds the tick drifts.
+		  AND (schedule_resend_at IS NULL OR schedule_resend_at <= now() + interval '5 minutes')`)
 	if err != nil {
 		return nil, fmt.Errorf("billing.listDueSchedules: %w", err)
 	}
@@ -481,6 +484,8 @@ func (r *repository) syncScheduledEffectiveAt(ctx context.Context, q db.Querier,
 		            WHERE sa.subscription_id = s.id AND sa.scheduled_quantity IS NOT NULL)
 		        THEN COALESCE(s.scheduled_effective_at, s.period_end)
 		    END,
+		    schedule_resend_count = 0,
+		    schedule_resend_at = NULL,
 		    updated_at = now()
 		WHERE s.id = $1
 		RETURNING s.scheduled_effective_at`, subscriptionID).Scan(&effective)
@@ -494,9 +499,27 @@ func (r *repository) syncScheduledEffectiveAt(ctx context.Context, q db.Querier,
 // what moved period_end (an extension) was not priced from it.
 func (r *repository) moveScheduledEffectiveAt(ctx context.Context, q db.Querier, subscriptionID string, effective time.Time) error {
 	if _, err := q.Exec(ctx, `
-		UPDATE billing.subscriptions SET scheduled_effective_at = $2, updated_at = now()
+		UPDATE billing.subscriptions
+		SET scheduled_effective_at = $2, schedule_resend_count = 0, schedule_resend_at = NULL, updated_at = now()
 		WHERE id = $1 AND scheduled_effective_at IS NOT NULL`, subscriptionID, effective); err != nil {
 		return fmt.Errorf("billing.moveScheduledEffectiveAt: %w", err)
+	}
+	return nil
+}
+
+// markScheduleResent records that the reconcile re-sent a due schedule's apply,
+// and holds the next re-send off for twice as long as the last: 1h, 2h, 4h, 8h,
+// 16h, then a day. A schedule whose apply fails every time would otherwise
+// dead-letter again every hour. The shift is capped so the interval cannot
+// overflow however long a schedule stays stuck. It matches the boundary that was
+// listed, so a schedule whose boundary moved or cleared since is left alone.
+func (r *repository) markScheduleResent(ctx context.Context, q db.Querier, subscriptionID string, effective time.Time) error {
+	if _, err := q.Exec(ctx, `
+		UPDATE billing.subscriptions
+		SET schedule_resend_at = now() + least(make_interval(hours => 1 << least(schedule_resend_count, 5)), interval '24 hours'),
+		    schedule_resend_count = schedule_resend_count + 1
+		WHERE id = $1 AND scheduled_effective_at = $2`, subscriptionID, effective); err != nil {
+		return fmt.Errorf("billing.markScheduleResent: %w", err)
 	}
 	return nil
 }

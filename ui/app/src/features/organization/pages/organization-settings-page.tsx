@@ -12,8 +12,10 @@ import { DocumentationLinks } from "@/features/organization/components/documenta
 import { OrganizationDetailsCard } from "@/features/organization/components/organization-details-card"
 import { OrganizationLogoForm } from "@/features/organization/components/organization-logo-form"
 import { OrganizationIPAllowlistForm } from "@/features/organization/components/organization-ip-allowlist-form"
+import { OrganizationRequireMfaForm } from "@/features/organization/components/organization-require-mfa-form"
 import { OrganizationDangerZone } from "@/features/organization/components/organization-danger-zone"
 import { MembersTable } from "@/features/organization/components/members-table"
+import { RolesPermissionsDialog } from "@/features/organization/components/roles-permissions-dialog"
 import { WebhooksSectionPreview } from "@/features/organization/components/webhooks-section-preview"
 import { AuditLogSectionPreview } from "@/features/organization/components/audit-log-section-preview"
 import { OverlayPanel } from "@/components/shared/overlay-panel"
@@ -205,12 +207,14 @@ export function OrganizationSettingsPage() {
           titleBadge={billingDot}
           description={t("organization.members.settingsDescription")}
           actions={
-            canManageMembers &&
-            !isMemberSeatLocked && (
-              <Button size="sm" onClick={() => setAddMembersOpen(true)}>
-                {t("organization.members.addMembers")}
-              </Button>
-            )
+            <div className="flex items-center gap-2">
+              <RolesPermissionsDialog />
+              {canManageMembers && !isMemberSeatLocked && (
+                <Button size="sm" onClick={() => setAddMembersOpen(true)}>
+                  {t("organization.members.addMembers")}
+                </Button>
+              )}
+            </div>
           }
           docLinks={
             isAdminUp && (
@@ -293,10 +297,16 @@ export function OrganizationSettingsPage() {
               />
             }
           >
-            <OrganizationIPAllowlistForm
-              organizationId={organizationId}
-              isOwner={isOwner}
-            />
+            <div className="flex flex-col gap-4">
+              <OrganizationIPAllowlistForm
+                organizationId={organizationId}
+                isOwner={isOwner}
+              />
+              <OrganizationRequireMfaForm
+                organizationId={organizationId}
+                isOwner={isOwner}
+              />
+            </div>
           </SettingsSection>
         )}
 

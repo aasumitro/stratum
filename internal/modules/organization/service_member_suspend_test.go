@@ -3,6 +3,8 @@ package organization_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
+	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 )
 
@@ -199,5 +202,48 @@ func TestIntegration_SuspendReinstate_Guards(t *testing.T) {
 	}
 	if w := serveOrg(t, ownerEng, http.MethodPost, base+"mem_1/suspend"); w.Code != http.StatusConflict {
 		t.Errorf("second suspend: want 409, got %d", w.Code)
+	}
+}
+
+// The owner checks made under the organization lock refuse the owner even
+// when the caller's view of the organization is stale, and the SQL never moves
+// an owner membership that has drifted away from owner_id.
+func TestIntegration_MemberMutations_NeverTouchTheOwner(t *testing.T) {
+	pool := testPool(t)
+	orgID := setupOrgWithMembers(t, pool, "test-owner-guard-locked")
+	cleanupSuspendOrg(t, pool, orgID)
+	_, mod := organization.NewModuleEngineAndModule(pool, "owner_sub")
+	ctx := t.Context()
+
+	codeOf := func(err error) string {
+		ae, ok := errors.AsType[*apperr.Error](err)
+		if !ok {
+			return fmt.Sprintf("not an apperr: %v", err)
+		}
+		return ae.Code
+	}
+	if got := codeOf(mod.SuspendMemberForTest(ctx, orgID, "owner_sub")); got != "CANNOT_SUSPEND_OWNER" {
+		t.Errorf("suspend owner: want CANNOT_SUSPEND_OWNER, got %s", got)
+	}
+	if got := codeOf(mod.UpdateMemberRoleForTest(ctx, orgID, "owner_sub", "member")); got != "CANNOT_MODIFY_OWNER" {
+		t.Errorf("demote owner: want CANNOT_MODIFY_OWNER, got %s", got)
+	}
+
+	// Drift: owner_id names mem_1 while owner_sub still holds the owner membership.
+	if _, err := pool.Exec(ctx, `UPDATE organization.organizations SET owner_id = 'mem_1' WHERE id = $1`, orgID); err != nil {
+		t.Fatalf("drift owner_id: %v", err)
+	}
+	if got := codeOf(mod.SuspendMemberForTest(ctx, orgID, "owner_sub")); got != "MEMBER_NOT_FOUND" {
+		t.Errorf("suspend drifted owner membership: want MEMBER_NOT_FOUND, got %s", got)
+	}
+	if got := codeOf(mod.UpdateMemberRoleForTest(ctx, orgID, "owner_sub", "member")); got != "MEMBER_NOT_FOUND" {
+		t.Errorf("demote drifted owner membership: want MEMBER_NOT_FOUND, got %s", got)
+	}
+	var role, status string
+	if err := pool.QueryRow(ctx, `SELECT role, status FROM organization.memberships WHERE organization_id = $1 AND auth_sub = 'owner_sub'`, orgID).Scan(&role, &status); err != nil {
+		t.Fatalf("read owner membership: %v", err)
+	}
+	if role != "owner" || status != "active" {
+		t.Errorf("owner membership: want owner/active, got %s/%s", role, status)
 	}
 }

@@ -34,6 +34,7 @@ func RequireMFAIfEnabled(userReader contracts.UserReader) gin.HandlerFunc {
 
 		enabled, err := userReader.IsMFAEnabled(c.Request.Context(), claims.Subject)
 		if err != nil {
+			response.LogInternal(c, "MFA_STATUS_UNAVAILABLE", err)
 			response.Error("MFA_STATUS_UNAVAILABLE",
 				"could not verify your account's MFA status, try again").
 				JSON(c, http.StatusServiceUnavailable)
@@ -45,7 +46,7 @@ func RequireMFAIfEnabled(userReader contracts.UserReader) gin.HandlerFunc {
 			return
 		}
 
-		if aal, _ := claims.Raw["aal"].(string); aal != "aal2" {
+		if !SessionIsAAL2(c) {
 			response.Error("MFA_REQUIRED",
 				"this action requires a verified second factor").
 				JSON(c, http.StatusForbidden)
@@ -54,4 +55,15 @@ func RequireMFAIfEnabled(userReader contracts.UserReader) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// SessionIsAAL2 reports whether the caller's token carries a verified second
+// factor: Supabase's aal claim is "aal2" only after an MFA challenge.
+func SessionIsAAL2(c *gin.Context) bool {
+	claims, ok := ClaimsFromContext(c)
+	if !ok {
+		return false
+	}
+	aal, _ := claims.Raw["aal"].(string)
+	return aal == "aal2"
 }

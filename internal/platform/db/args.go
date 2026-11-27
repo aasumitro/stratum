@@ -1,5 +1,7 @@
 package db
 
+import "strings"
+
 // Args accumulates positional query parameters and tracks the SQL $N
 // placeholder for each — the shared piece of the "conds []string / args
 // []any / n++" pattern hand-rolled across several repositories for dynamic
@@ -42,4 +44,11 @@ func (a *Args) Next() int {
 // pass as the variadic query parameters.
 func (a *Args) Values() []any {
 	return a.values
+}
+
+// ContainsPattern turns a user's search term into an ILIKE pattern matching it
+// anywhere, with LIKE's own characters (backslash, %, _) matched literally.
+func ContainsPattern(term string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(term) + "%"
 }

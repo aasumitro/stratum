@@ -178,6 +178,7 @@ func (h *handler) invoicePDF(c *gin.Context) {
 
 	pdfBytes, err := pdf.RenderInvoice(data, c.DefaultQuery("lang", "en"))
 	if err != nil {
+		response.LogInternal(c, "PDF_GENERATION_FAILED", err)
 		response.Error(
 			"PDF_GENERATION_FAILED",
 			"failed to generate invoice PDF",

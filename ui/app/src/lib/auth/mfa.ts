@@ -13,3 +13,11 @@ export async function needsMfaChallenge(): Promise<boolean> {
   if (error || !data) return false
   return data.nextLevel === "aal2" && data.currentLevel !== data.nextLevel
 }
+
+// True when this session has passed an MFA challenge (aal2). Requiring MFA for
+// an organization from any other session would shut the caller out.
+export async function sessionIsAAL2(): Promise<boolean> {
+  const { data, error } =
+    await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+  return !error && data?.currentLevel === "aal2"
+}

@@ -36,6 +36,7 @@ billing.events|billing.subscription-check|[billing.subscription.check]|5|2s|1m0s
 billing.events|billing.subscription-payment-final|[billing.subscription.payment-final]|5|2s|1m0s|billing.events.dlx|billing.subscription-payment-final|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-payment-remind|[billing.subscription.payment-remind]|5|2s|1m0s|billing.events.dlx|billing.subscription-payment-remind|billing.events.dlx|billing.events.dlq|10
 billing.events|billing.subscription-remind|[billing.subscription.remind]|5|2s|1m0s|billing.events.dlx|billing.subscription-remind|billing.events.dlx|billing.events.dlq|10
+billing.events|billing.subscription-resume-covered|[billing.subscription.resume-covered]|5|2s|1m0s|billing.events.dlx|billing.subscription-resume-covered|billing.events.dlx|billing.events.dlq|10
 account.events|notification.email-changed|[user.email_changed]|5|2s|1m0s|notification.events.dlx|notification.email-changed|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.invitation-declined|[organization.invitation.declined]|5|2s|1m0s|notification.events.dlx|notification.invitation-declined|notification.events.dlx|notification.events.dlq|10
 organization.events|notification.invitation-requested|[organization.invitation.requested]|5|2s|1m0s|notification.events.dlx|notification.invitation-requested|notification.events.dlx|notification.events.dlq|10
@@ -68,7 +69,7 @@ billing.events|organization.webhook-billing|[billing.invoice.created billing.inv
 organization.events|organization.webhook-organization|[organization.created organization.member.invited]|3|5s|1m0s|organization.events.dlx|organization.webhook-organization|organization.events.dlx|organization.events.dlq|10
 organization.events|organization.webhook-retry|[organization.webhook.retry-requested]|3|5s|1m0s|organization.events.dlx|organization.webhook-retry|organization.events.dlx|organization.events.dlq|1`
 
-const goldenConsumerCount = 45
+const goldenConsumerCount = 46
 
 // consumerTopologyLines renders consumers to the same pipe-delimited format
 // goldenConsumerTopology was captured in, sorted by queue name (the golden

@@ -84,7 +84,10 @@ like `billing`'s. Two consequences for operators:
 - **A data migration on these tables must scope itself.** `FORCE` also binds a non-superuser
   table owner: set `app.organization_id` (`SELECT set_config('app.organization_id', '<org id>',
   true)`) per organization inside the migration's transaction, or wrap the change in `ALTER
-  TABLE … NO FORCE ROW LEVEL SECURITY` / `… FORCE ROW LEVEL SECURITY`.
+  TABLE … NO FORCE ROW LEVEL SECURITY` / `… FORCE ROW LEVEL SECURITY`. One exception: since `000018`
+  the owner of `audit.capture_operator_change()` (the migrator) reads `billing.subscriptions` and
+  `billing.invoices` through the `operator_audit_lookup` SELECT policy, so that function can find an
+  operator change's organization.
 If this step is skipped, `make migrate-up` fails immediately and clearly on `000008`'s first
 `GRANT ... TO stratum_app` with `role "stratum_app" does not exist` — run the step above, then
 retry.
@@ -118,6 +121,8 @@ Stratum emits these signals but evaluates none of them. Configure these conditio
 |---|---|---|
 | `stratum.audit.events.dropped` > 0 in 5 min | high | The audit buffer overflowed, so the audit trail has a gap |
 | `stratum.audit.write.failures` > 0 in 5 min | high | The database refused a batch of audit events |
+| `stratum.audit.archive.failures` > 0 in 2 h | high | The write-once copy of the audit log is not being written; the worker log says why |
+| `stratum.audit.archive.pending` > 0 for 2 h | high | Audit rows more than two hours old have no write-once copy, or an export claimed that long ago has not finished; see "Audit archive" |
 | `stratum.http.auth.failures{status=401}` above 5× its 7-day hourly baseline | medium | Possible credential stuffing or token probing |
 | any `stratum.http.auth.failures` on a `/webhooks/*` route in 15 min | medium | A forged or misconfigured provider callback |
 | `stratum.outbox.due_unpublished` > 100 for 10 min | high | Event delivery has stalled: rows are due or failed and waiting to retry |
@@ -144,11 +149,21 @@ make db-restore-verify FILE=backups/<file>    # restores into a scratch database
 
 ## Runbooks
 
-**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Consumers are idempotent, so requeue is safe for a *transient* failure. One `billing.events.dlq` cause is not transient: an `organization.created` event whose cart-selected coupon was exhausted by someone else before provisioning ran — the organization exists (its create request already succeeded) but has no subscription. Requeuing retries the same now-exhausted coupon and fails identically; the fix is to provision the subscription manually via Studio (without the coupon, or with a different one) and purge the dead-lettered event, not requeue it. A dead-lettered `billing.subscription-apply-scheduled` message needs no requeue: the hourly reconcile sends a fresh one, so purge it once the root cause is fixed. `stratum.dlq.messages` reports each dead-letter queue's depth (see the alert catalog).
+**Dead-letter backlog** — In Studio's queue monitor, inspect the messages, fix the root cause, then requeue (FIFO) or purge poison messages. Both need your own operator login on the database and on RabbitMQ ("Operator access"). A message Studio took off the queue and could not put back is shown as lost, with its body: keep it and publish it by hand. Consumers are idempotent, so requeue is safe for a *transient* failure. One `billing.events.dlq` cause is not transient: an `organization.created` event whose cart-selected coupon was exhausted by someone else before provisioning ran — the organization exists (its create request already succeeded) but has no subscription. Requeuing retries the same now-exhausted coupon and fails identically; the fix is to provision the subscription manually via Studio (without the coupon, or with a different one) and purge the dead-lettered event, not requeue it. A dead-lettered `billing.subscription-apply-scheduled` message needs no requeue: the hourly reconcile sends a fresh one, at a doubling interval (1h, 2h, 4h, 8h, 16h, then daily) while it keeps failing, so purge it once the root cause is fixed; it then applies within about a day, or at once if you requeue it. A dead-lettered `billing.subscription-resume-covered` message is a Resume a coupon covers: requeue it once the cause is fixed, or the subscription stays ended until its owner presses Resume again. `stratum.dlq.messages` reports each dead-letter queue's depth (see the alert catalog).
 
 **Failing customer webhook** — Endpoints auto-disable after a three-day, 100%-failure window and warn below 70% success over 24 hours. Re-enable is only possible via a passing test event, not a direct toggle. Use the deliveries panel to diagnose, then bulk-retry failed deliveries once the receiver is fixed.
 
 **Payment reconciliation** — Billing state only advances on a verified gateway webhook. If a customer paid but nothing changed, check that the webhook was received (and its signing secret), then use Studio's support tools to mark the invoice paid as a manual override (which is logged).
+
+**Failed concurrent index build (migrations `000021`, `000023`, `000026`)** — three indexes are built with `CREATE INDEX
+CONCURRENTLY`. If a build fails (a lock timeout, a cancelled session), Postgres leaves an INVALID index behind and
+`migrate` marks that version dirty. Drop the index, force the version before it, and migrate again:
+
+| Migration | Recover | Check |
+|---|---|---|
+| `000021` | `DROP INDEX CONCURRENTLY IF EXISTS audit.idx_audit_search;` then `make migrate-force version=20`, then `make migrate-up` | `SELECT indisvalid FROM pg_index WHERE indexrelid = 'audit.idx_audit_search'::regclass;` |
+| `000023` | `DROP INDEX CONCURRENTLY IF EXISTS notification.idx_messages_held;` then `make migrate-force version=22`, then `make migrate-up` | `SELECT indisvalid FROM pg_index WHERE indexrelid = 'notification.idx_messages_held'::regclass;` |
+| `000026` | `DROP INDEX CONCURRENTLY IF EXISTS audit.idx_audit_export;` then `make migrate-force version=25`, then `make migrate-up` | `SELECT indisvalid FROM pg_index WHERE indexrelid = 'audit.idx_audit_export'::regclass;` |
 
 **Degraded readiness** — A 503 from `/health/ready` means a dependency check failed; `/health/stats` shows pool and GC pressure. Check Postgres, Redis, and RabbitMQ reachability. Don't restart infrastructure from inside an automated session — surface it to a human.
 
@@ -251,7 +266,7 @@ Each result needs manual verification against the payment provider's own dashboa
 - Compromised user: ban them in the Supabase dashboard, which stops sign-ins and token refresh. An access token already issued stays valid until it expires (`AUTH_ACCESS_TOKEN_MAX_TTL`).
 - Compromised organization: suspend it from Studio's organization page.
 - Exposed secret: rotate it (see "Secret rotation").
-- Compromised operator: `ALTER ROLE op_<name> NOLOGIN`, and rotate the shared RabbitMQ and Redis credentials they held.
+- Compromised operator: `ALTER ROLE op_<name> NOLOGIN`, then `operator.sh revoke op_<name>` (see "Operator access"), which removes their RabbitMQ and Redis logins and closes the connections those hold. It exits non-zero and names the store where the login is still there: do not close the step until it succeeds. If they also held a break-glass credential, rotate it.
 
 **2. Preserve evidence.** Before cleaning anything up, take a database snapshot (`make db-backup`), export the audit log as CSV from Studio's audit page, and copy the Postgres and application logs off the host. Retention sweeps keep running, so export anything close to its retention limit.
 
@@ -265,13 +280,37 @@ Each result needs manual verification against the payment provider's own dashboa
 **5. Review.** Within two weeks, write a post-incident review: timeline, root cause, what worked, and follow-up actions with owners. Keep it as audit evidence.
 
 ## Operator access
-Studio changes are attributed through one Postgres login per person. Never share a login.
+Studio changes are attributed through one login per person, with the same name `op_<name>` in Postgres, RabbitMQ and Redis. Never share a login, and never give a name to a second person.
 
 **Provision**, with a superuser-equivalent connection. `VALID UNTIL` at most 100 days out; `BYPASSRLS` is set on the login because Postgres does not inherit it through membership, and Studio refuses a login without it:
 ```sql
 CREATE ROLE op_<name> LOGIN BYPASSRLS PASSWORD '<generated>' VALID UNTIL '<date within 100 days>' IN ROLE stratum_operator;
 ```
-Then put that DSN in the project's Studio form. Editing a project reconnects it immediately.
+Then the same person's RabbitMQ and Redis logins, with the password on standard input. Run the script where `rabbitmqctl` runs: it passes permission patterns as arguments, and an `ssh` prefix would hand them to a remote shell, so it refuses one. It needs `openssl`, and `redis-cli` must reach Redis as its administrator:
+```sh
+export REDISCLI_AUTH='<redis admin password>'
+RABBITMQCTL='sudo rabbitmqctl' REDIS_CLI='redis-cli --tls --user <redis admin> -h cache.internal' \
+  sh deploy/broker-init/operator.sh add op_<name> < password-file
+```
+| Store | What the login may do |
+|---|---|
+| RabbitMQ | Tag `management`. List every queue of the virtual host (`RABBITMQ_VHOST`, default `/`; a login has one). Browse, requeue and purge dead-letter queues (`read` on `\.dlq$`), not live ones. Publish to the modules' exchanges (`write` on `\.events(\.dlx)?$`), which requeue needs. `configure` on nothing |
+| Redis | `PING`, `INFO`, `DBSIZE`. No key and no channel: keys hold session revocations and per-user cache entries |
+
+**What this does not stop.** `write` on a module's exchange lets the login publish any event by hand through the management API, such as one that marks an invoice paid, and the broker records neither that nor a browse, requeue or purge. Studio records its own actions before they run; a call made around Studio leaves nothing in `audit.events`. The same person could only use their own login for it, so treat that password like their database one.
+
+Running `add` again replaces both logins and closes their connections, which is how a password is rotated. Put the three DSNs in the project's Studio form; a project's credentials stay in that person's own keychain. Editing a project reconnects it immediately.
+
+**Upgrading from shared credentials.** Studio refuses to requeue or purge with a broker login that is not the person's own, or that is an administrator. Create each operator's logins before they upgrade Studio; until then they can list and browse only what their old login allows. Afterwards change the shared password the operators used to hold.
+
+**Redis prerequisites.** Per-operator logins protect nothing while the `default` user is open. In every real environment, in this order:
+1. Write an ACL file that keeps `default` as it is today (`user default on nopass ~* &* +@all`, or with `>password`), set `aclfile` to it and restart Redis once. An empty file would reopen `default`, and `requirepass` is ignored with an `aclfile`.
+2. `ACL SETUSER <app user> on ><password> ~* &* +@all -@admin`, then `ACL SAVE`. `&*` matters: notifications use channels, and a new user has none. `-@admin` keeps the app's password from changing operators' logins.
+3. Set `REDIS_URL=rediss://<app user>:<password>@host` on the API and worker and restart them.
+4. Create a Redis administrator for people and for the script: `ACL SETUSER <redis admin> on ><password> ~* &* +@all` (without `-@admin`), then `ACL SAVE`. Log in as it and run `ACL WHOAMI` and `ACL LIST`.
+5. Only then `ACL SETUSER default off` and `ACL SAVE`. Without a working administrator, nobody can change logins again short of editing the ACL file and restarting.
+
+Without an `aclfile` the script says its change lasts until Redis restarts.
 
 **Review every quarter** and keep the output as evidence. For each operator, either renew `VALID UNTIL` or set `NOLOGIN`:
 ```sql
@@ -286,9 +325,60 @@ WHERE operator_group.rolname = 'stratum_operator'
 ORDER BY login.rolname;
 ```
 
-**Revoke** with `ALTER ROLE op_<name> NOLOGIN`. Never `DROP` it, so its audit history stays attributable to a role that still exists.
+RabbitMQ and Redis logins have no expiry, so the same review lists them, and every `op_` name must belong to a Postgres login that can still log in:
+```sh
+rabbitmqctl -q list_users          # operators: tag management only
+rabbitmqctl -q list_permissions
+redis-cli ACL LIST | sed 's/#[0-9a-f]\{64\}/#hidden/g'   # never file the password hashes as evidence
+```
 
-**Break-glass.** The schema owner is the emergency path. The audit trigger does not capture owner or superuser sessions, so `ALTER ROLE <owner> SET log_statement = 'mod'` makes Postgres log every data-modifying statement the owner runs, and that log must be shipped off-host. Record why each break-glass session happened.
+**Revoke** with `ALTER ROLE op_<name> NOLOGIN`. Never `DROP` it, so its audit history stays attributable to a role that still exists. Then `sh deploy/broker-init/operator.sh revoke op_<name>`, run the same way as `add` (on the broker host, with `REDISCLI_AUTH` and both variables). It closes that person's open RabbitMQ and Redis connections, tries both stores even when one fails, and exits non-zero naming the one it could not clean.
+
+**Break-glass.** The schema owner is the emergency path. The audit trigger does not capture owner or superuser sessions, so `ALTER ROLE <owner> SET log_statement = 'mod'` makes Postgres log every data-modifying statement the owner runs, and that log must be shipped off-host. Record why each break-glass session happened. The broker's `administrator` user and Redis's administrator are the same kind of path: the broker keeps no record of who browsed, requeued or purged, so hold them like the owner's password. For extra evidence RabbitMQ can log management API requests to files (`management.http_log_dir`, needs a node restart).
+
+## Audit archive
+The worker can copy `audit.events` every hour to a bucket with S3 Object Lock, where an object stored in `COMPLIANCE` mode cannot be changed or deleted before its retention ends, by anyone, the owner of the database and the administrator of the bucket included. It is off until `AUDIT_ARCHIVE_ENDPOINT` is set on the worker. The API does not read these settings.
+
+**What it protects, and what it does not.**
+- A row changed or deleted after its copy was written shows in the next verification. A row changed before its copy is copied as changed.
+- **Rows not yet copied are in the hands of whoever controls the database.** The schema owner, or someone with the worker's database login, decides when a row is claimed and what time it carries, and can keep a row from ever being copied without the verification being able to tell it from real work: it sees a row only once the bucket has it. The archive proves what it holds; the Postgres log, shipped off-host, is what covers the rest.
+- It is off-host only when the bucket is. Use another account, or another provider, than the one that runs the database: whoever owns the account can close it. The container `make audit-archive-up` starts is on the same host and is for development.
+- An operator's row is copied whole. An unauthenticated row is copied with its address and client, and its request body only as a digest: a member whose session had expired can have sent their own data in it. Of a person's row the copy holds the action, route, status, organization and time, the SHA-256 of the actor, and digests of the metadata and of the address and client. The digests are keyed with a salt only the database holds (`audit.exports.salt`), so whoever reads the bucket alone cannot test a guess against them. Such a row can be proven unchanged, not restored.
+- The verification reads the table through the database it checks. An owner who can replace `audit.events` with something else can show it a doctored table. The archive is the evidence; keep it, and the verification's output, where that owner cannot reach.
+- Runtime roles write only the columns an event is made of: never `export_seq`, never `created_at`.
+
+**Set up.**
+1. Pick a provider whose S3 API has Object Lock **and** honours `If-None-Match: *` on `PUT`. Without the second, a resumed upload stores a second version and every verification fails. The bucket is addressed in the path (`https://host/bucket/key`).
+2. Create the bucket **with Object Lock**; it cannot be turned on later. It needs no default retention: each object carries its own.
+3. Create two credentials. The worker's may `PutObject`, `PutObjectRetention`, `GetObject`, `GetObjectVersion`, `GetObjectRetention`, `ListBucketVersions` and `GetBucketObjectLockConfiguration`. The verifier's may do the same without the two `Put`s. Neither gets `DeleteObjectVersion`, `BypassGovernanceRetention` or `PutBucketObjectLockConfiguration`.
+4. Optionally add a lifecycle rule under `events/`: expire current versions older than `AUDIT_ARCHIVE_RETENTION_DAYS` plus a few days, expire noncurrent versions a day later, and remove expired delete markers (`ExpiredObjectDeleteMarker`). The verification expects exactly that: a marker or a removed object once its lock has ended, at the low end of the numbers.
+5. Migrate, set `AUDIT_ARCHIVE_*` on the worker only (the staging compose passes them to it from the shell or `deploy/.env`) and restart it. Its boot fails when a setting is missing, when the lock would be shorter than `AUDIT_RETENTION_DAYS`, or when the bucket answers that it has no Object Lock. A bucket that does not answer within five seconds is logged, and every run asks again.
+6. The first run copies everything the table still holds, at most 5,000 rows an object. A run stops at the first object that is not full; the rest waits for the next hour.
+
+A lock cannot be shortened. Check `AUDIT_ARCHIVE_RETENTION_DAYS` before the first run (the cap is 3,650 days). Raising it later is safe: each object names the retention it was written for. `AUDIT_RETENTION_DAYS` must be the same on the API, the worker and the verifier: the worker leaves rows older than its own value out of the copy, as the API's sweep's. Raising it later is safe too, for the same reason, but objects written before keep their shorter lock, so the oldest rows outlive their copies: once a lifecycle rule removes those objects, the verification lists their rows as copies expired, without failing.
+
+**Verify** on a schedule, from a host that is not the database's, with the verifier's credentials:
+```sh
+POSTGRES_WORKER_URL=... AUDIT_ARCHIVE_ENDPOINT=... AUDIT_ARCHIVE_BUCKET=... \
+AUDIT_ARCHIVE_ACCESS_KEY=... AUDIT_ARCHIVE_SECRET_KEY=... stratum-worker verify-audit-archive [-known FILE]
+```
+It reads only those, `AUDIT_ARCHIVE_REGION`, `_RETENTION_DAYS` and `AUDIT_RETENTION_DAYS`, which must be the API's (at least 365). `POSTGRES_WORKER_URL` may name any login that can read `audit.events`, `audit.exports`, `account.users` and `account.tasks`; a read-only one is better. It trusts the bucket. What the database records about its exports gives the salts, and excuses exports as in flight: those numbered above the bucket's highest, claimed less than two hours ago or finished while the bucket was listed, and only while something reached the bucket in the last three hours. It fails when the database's clock is more than 15 minutes from the host's. It compares every object with the table in both directions, prints `RESULT: PASS` or `RESULT: FAIL`, and exits 0 on a pass, 1 on a finding, and 2 when it could not run. Keep the output as evidence.
+
+| Reported | Means | Do |
+|---|---|---|
+| `altered`, `missing` | A row differs from its copy, or is gone before `AUDIT_RETENTION_DAYS` | Security incident: preserve the database and its log, and read the copy (below). An anonymized row whose account still exists is `altered` |
+| `unstored` | A row is marked as copied and is in no object of that number | The worker's database login was misused, or a row was marked by hand. Investigate |
+| `overwritten` | Something was written over an object, or a marker hides it, while its lock holds. The first version is still there and is what was compared | Find who holds the bucket's write credential |
+| `weak lock`, `object`, `chain` | An object is not held as it should be, unreadable, misnamed, stored twice under one number, missing between two others, or does not follow the one before it; or an export is kept in flight while nothing reaches the bucket | Compare the bucket's own access log. Right after a quiet period, an export in flight can read as stalled: run again in an hour |
+| `clock` | The database's clock is far from this host's, and it decides what has expired | Fix the clock |
+| `late for export` above 0 | Rows older than two hours have no copy, or an export has not finished for that long | Same as the `pending` alert |
+| `anonymized`, `expired`, `known` | An account was deleted; a row passed its retention; a row listed in `-known` is gone | Nothing |
+| rows whose copy expired before the table lets them go | The table's retention was raised after they were copied, and their objects have reached the end of their lock; listed by id | Nothing: they are no longer covered by the archive |
+| anonymized while the account's deletion is under way | The account asked for its deletion less than three days ago and still exists; listed by id | Nothing, unless the list does not shrink |
+
+**After restoring the database from a backup**, rows written after that backup are in the archive and not in the table, so they are reported `missing`, and the objects the restored database has no record of are reported as `object`. That is the truth about the table. Record the restore, put the ids reported `missing` and the names of the objects reported as having no record in a file, one per line (`#` starts a comment), and pass it as `-known FILE` from then on. The same file takes `numbers X-Y` for a gap in the numbering that has been looked into, and the name of an object a stranger put in the bucket, which then counts for nothing but its place in the numbering, also when it repeats a number. New objects are numbered above the highest number in the bucket, unless that is more than 100,000 above the database's own, which no restore explains.
+
+**Read an object** (the oldest version of its key): `aws s3api list-object-versions --bucket <bucket> --prefix events/`, then `aws s3api get-object --bucket <bucket> --key <key> --version-id <id> out.gz` and `zcat out.gz`. The first line is the header, then one JSON event per line.
 
 ## Secret rotation
 Rotate on a schedule, and immediately after any suspected exposure or when someone with access leaves. Restart the API and worker after changing their environment.
@@ -299,15 +389,17 @@ Rotate on a schedule, and immediately after any suspected exposure or when someo
 | `XENDIT_API_KEY`, `XENDIT_CALLBACK_TOKEN` | Generate new values in the Xendit dashboard and update the environment in the same deploy, then check Xendit's callback log for anything rejected in between |
 | `AUTH_SERVICE_ROLE_KEY`, `SUPABASE_WEBHOOK_SECRET` | Roll in Supabase, then update the environment and the database webhook's header together |
 | `STATS_TOKEN` | Change the environment and the value in Studio's project form |
+| `AUDIT_ARCHIVE_ACCESS_KEY`, `AUDIT_ARCHIVE_SECRET_KEY` | Create a second key in the bucket's account, update the worker's environment, then remove the first |
 | Database role passwords | `ALTER ROLE <role> PASSWORD '<generated>'`, then update that role's `POSTGRES_*_URL`. Existing connections stay open until restart |
-| RabbitMQ and Redis credentials | Change them in the broker or cache, then update the environment and every Studio project form |
+| The app's RabbitMQ and Redis credentials | Change them in the broker or cache, then update the environment. In RabbitMQ also run `rabbitmqctl close_all_user_connections <user> rotated`: a changed password leaves open connections in place |
+| An operator's RabbitMQ and Redis passwords | `operator.sh add op_<name>` with the new password, then that person's Studio project form |
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | Follow "Rotating the webhook encryption key" above |
 
 ## No scheduler
 Stratum has no cron. Anything that looks periodic is one of:
 
 - **A future-dated outbox row.** Dunning notices, renewal reminders, and the end-of-period expiry check are written to `messaging.outbox` with a future `not_before`; the relay claims each only once it comes due and publishes it like any immediate event. The delay is a timestamp in the database, not a broker plugin or a scheduler.
-- **A worker-local ticker.** `cmd/worker` runs a handful of `time.Ticker` goroutines in-process — the outbox relay (2s), the outbox and module retention sweeps (hourly; module sweeps remove 10,000 rows at a time until none are left and log what they removed), expired-invitation cleanup (hourly), and `ReconcileOverdueSubscriptions` (hourly), which re-enqueues an expiry check for any active/trialing/past-due subscription already past its end date so a lost scheduled check can't leave a lapsed subscription entitled, and the apply for any scheduled downgrade already due so a dead-lettered one can't leave it unapplied. These are not external jobs; they stop when the worker stops.
+- **A worker-local ticker.** `cmd/worker` runs a handful of `time.Ticker` goroutines in-process — the outbox relay (2s), the outbox and module retention sweeps (hourly; module sweeps remove 10,000 rows at a time until none are left and log what they removed), expired-invitation cleanup (hourly), the audit archive (hourly, when configured), and `ReconcileOverdueSubscriptions` (hourly), which re-enqueues an expiry check for any active/trialing/past-due subscription already past its end date so a lost scheduled check can't leave a lapsed subscription entitled, and the apply for any scheduled downgrade already due so a dead-lettered one can't leave it unapplied. These are not external jobs; they stop when the worker stops.
 - **Lazy/opportunistic work** — e.g. webhook health computed on delivery.
 
 Adding a general-purpose scheduler still isn't judged worth the operational surface.

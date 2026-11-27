@@ -88,7 +88,7 @@ export function SaveConfirmDialog({
               className="flex items-start justify-between gap-4 py-2 text-sm"
             >
               <span className="shrink-0 text-muted-foreground">{f.label}</span>
-              <span className="text-right font-medium break-words">
+              <span className="text-right font-medium wrap-break-word">
                 {f.value}
               </span>
             </div>

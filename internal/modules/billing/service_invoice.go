@@ -318,8 +318,8 @@ func (s *service) createPaymentLinkForOwner(
 		case errors.Is(err, ErrInvoiceNotPayable):
 			return nil, apperr.Validation("UNPROCESSABLE", err.Error())
 		default:
-			slog.Error("createPaymentLink failed", "invoice_id", invoiceID, "error", err)
-			return nil, apperr.Internal("PAYMENT_LINK_CREATE_FAILED", "failed to create payment link", err)
+			return nil, apperr.Internal("PAYMENT_LINK_CREATE_FAILED", "failed to create payment link",
+				fmt.Errorf("invoice %s: %w", invoiceID, err))
 		}
 	}
 	return link, nil

@@ -13,8 +13,8 @@ SOC 2 is a CPA firm's attestation that an organization's controls meet the AICPA
 | Retention sweeps for personal data | Choosing retention periods that match its own legal obligations |
 | Security metrics, and an alert catalog ([12-operations](12-operations.md)) | An OpenTelemetry backend that evaluates those alerts, and someone who answers them |
 | Backup and restore tooling, and a restore check | Scheduling backups, off-host copies, and quarterly restore tests |
-| CI with tests, dependency audits, vulnerability and secret scanning | GitHub settings: branch protection, required checks, required review, 2FA |
-| Incident, access-review and secret-rotation runbooks | Running them, recording the results, and a `SECURITY.md` with a real reporting channel |
+| CI with tests, dependency audits, vulnerability and secret scanning, and an image scan (Trivy) with an SBOM (syft) for each backend image | GitHub settings: branch protection, required checks, required review, 2FA |
+| Incident, access-review and secret-rotation runbooks, and a `SECURITY.md` policy (placeholder contact) | Running them, recording the results, and replacing the `SECURITY.md` contact with a real channel someone watches |
 | — | Production infrastructure: cloud IAM, disk encryption, network, central log storage |
 | — | Supabase project settings: password policy, leaked-password protection, session timeouts, MFA |
 | — | Vendor management, including collecting each subprocessor's SOC report |
@@ -26,22 +26,22 @@ Owner **T** means the template implements the mechanism; **A** means the adopter
 | Criteria | Mechanism | Evidence source | Owner |
 |---|---|---|---|
 | CC1 Control environment | Policies, org structure, accountability | The adopter's own records | A |
-| CC2 Communication | This document, [12-operations](12-operations.md), a `SECURITY.md` with a reporting channel | These files | T+A |
+| CC2 Communication | This document, [12-operations](12-operations.md), a `SECURITY.md` policy whose placeholder contact the adopter replaces with a watched channel | These files | T+A |
 | CC3 Risk assessment | Risk register and its reviews | The adopter's own records | A |
-| CC4 Monitoring of controls | CI on every pull request and `dev` push; the alert catalog | CI run history; alert history in the adopter's backend | T+A |
+| CC4 Monitoring of controls | CI on every pull request to `main`; the alert catalog | CI run history; alert history in the adopter's backend | T+A |
 | CC5 Control activities | Controls below are defined in code and migrations, so they are reviewable | Git history, `db/migrations/` | T+A |
-| CC6 Logical access | Supabase JWT validation, aal2 on high-impact routes, RBAC, `FORCE ROW LEVEL SECURITY`, per-plan rate limits, webhook signatures, HSTS, secrets from the environment only, one Postgres login per operator, Studio refusing unattributed changes | `middleware/auth.go`, `middleware/mfa_gate.go`, `db/migrations/000008`, `000010`, `000011`, the access-review query in [12-operations](12-operations.md) | T+A |
-| CC7 System operations | `audit.events` append-only for runtime roles, and operator rows cannot be anonymized; failed provider webhooks recorded; dropped events counted; `govulncheck`, `golangci-lint` with `gosec`, `npm audit` and `gitleaks` in CI; incident runbook | `information_schema.role_table_grants`, `audit.events`, `stratum.*` metrics, CI runs | T+A |
-| CC8 Change management | CI on pull requests to `main` and pushes to `dev`, pinned tool versions, versioned migrations, `CHANGELOG.md`, Dependabot | `.github/workflows/ci.yml`, `.github/dependabot.yml`, git history | T+A |
+| CC6 Logical access | Supabase JWT validation, aal2 on high-impact routes, an owner-set organization policy requiring aal2 for every member, RBAC, `FORCE ROW LEVEL SECURITY`, per-plan rate limits, webhook signatures, HSTS, secrets from the environment only, one Postgres login per operator, Studio refusing unattributed changes | `middleware/auth.go`, `middleware/mfa_gate.go`, `db/migrations/000008`, `000010`, `000011`, the access-review query in [12-operations](12-operations.md) | T+A |
+| CC7 System operations | `audit.events` append-only for runtime roles, and operator rows cannot be anonymized; an operator's change to an organization shows in that organization's own log, without the operator's identity; an hourly write-once copy of the audit log when a bucket with Object Lock is configured, and a command that compares the two; failed provider webhooks recorded; dropped events counted; `govulncheck`, `golangci-lint` with `gosec`, `npm audit` and `gitleaks` in CI; incident runbook | `information_schema.role_table_grants`, `audit.events`, `verify-audit-archive` output, `stratum.*` metrics, CI runs | T+A |
+| CC8 Change management | CI on pull requests to `main`, pinned tool versions, versioned migrations, `CHANGELOG.md`, Dependabot | `.github/workflows/ci.yml`, `.github/dependabot.yml`, git history | T+A |
 | CC9 Risk mitigation | Subprocessor list below; vendor reviews | This document; the adopter's vendor records | A |
 | A1 Availability | Liveness and readiness probes, graceful shutdown, transactional outbox, per-module dead-letter queues, hourly reconciler, `make db-backup`, `make db-restore-verify` | `/health/ready`, `stratum.outbox.due_unpublished`, `stratum.dlq.messages`, recorded restore results | T+A |
 | C1 Confidentiality | Webhook signing secrets encrypted with pgcrypto, Studio DSNs in the OS keychain, the retention sweeps below, audit field redaction | `platform/audit/redact.go`, `organization.webhook_endpoints`, the schedule below | T+A |
 | PI1 Processing integrity | Money moves only on verified webhooks; idempotency table, row locks, transactional outbox, integration tests | `billing.webhook_events`, `billing.subscription_history`, CI runs | T |
-| P Privacy | Async data export and account deletion; deletion anonymizes audit and billing records. Recording consent to terms is not built | `account.tasks`, `audit.events`, [03-modules](03-modules.md) | T+A |
+| P Privacy | Async data export and account deletion; deletion anonymizes audit and billing records. Acceptance of each terms/privacy version is recorded (P2.1) once the adopter sets `LEGAL_*` | `account.tasks`, `account.consents`, `audit.events`, [03-modules](03-modules.md) | T+A |
 
 The audit trail records every non-GET request, handler-flagged GETs, and provider webhook calls that fail. An unflagged GET writes no row, including one answered 401 or 403; `stratum.http.auth.failures` counts those instead.
 
-**What append-only does not cover.** Runtime roles keep INSERT, so a stolen runtime credential can add false rows, though not ones naming an operator, and it cannot change or remove real ones. A stolen `stratum_worker` credential can also anonymize a named customer's rows through `audit.anonymize_actor`, though not operator or `anonymous` rows. The schema owner can edit anything, and only the Postgres log shows it.
+**What append-only does not cover.** Runtime roles keep INSERT, so a stolen runtime credential can add false rows, though not ones naming an operator, and it cannot change or remove real ones. A stolen `stratum_worker` credential can also anonymize a named customer's rows through `audit.anonymize_actor`, though not operator or `anonymous` rows. The schema owner can edit anything; the Postgres log shows it, and so does verifying the audit archive for any row that was copied before it was edited (within the hour). The owner can also show the verification a doctored table, so the archive itself, and the verification's output, are the evidence.
 
 ## Data inventory and retention
 
@@ -53,10 +53,12 @@ Every period below is the default and can be changed through its environment var
 | `account.login_events` | IP address, user agent | `LOGIN_EVENT_RETENTION_DAYS`, 400 days | Worker sweep; also account deletion |
 | `account.tasks.result` | A full personal-data export | `DATA_EXPORT_RETENTION_DAYS`, 7 days | Worker sweep clears the payload and keeps the task row |
 | `audit.events` | Actor, IP address, user agent; before/after values in `metadata`. Operator rows' `metadata` leaves out invite codes, checkout URLs, organization owners and the person a coupon target or subscription is aimed at | `AUDIT_RETENTION_DAYS`, 400 days, minimum 365 | `audit.sweep_expired`, hourly from the API. Account deletion anonymizes the actor and clears the IP address and user agent; everything else stays until retention removes the row |
+| The audit archive (off unless configured) | An operator's row whole. An unauthenticated row's address and client. For a person: the SHA-256 of the actor (a random identifier). Request bodies, and a person's address and client, only as digests keyed with a salt the database holds | `AUDIT_ARCHIVE_RETENTION_DAYS`, at least `AUDIT_RETENTION_DAYS` | The bucket's lifecycle rule, once the lock has ended. Account deletion does not reach it. What it holds of a person is a hash of a random identifier and salted digests, which the bucket alone cannot reverse. Whoever holds both the database and the bucket can test a guessed value against a digest |
 | `notification.messages` | Message content | `NOTIFICATION_RETENTION_DAYS`, 180 days | Worker sweep; also account deletion |
 | `organization.invitations` | Email | Until expiry | Hourly expired-invitation cleanup; also organization purge |
+| `account.consents` | Accepted document versions, IP address, user agent | Life of the account | Account deletion. Not swept: rows from an onboarding never finished, or from a stale tab posting after deletion, stay under an `auth_sub` with no account |
 | `organization.memberships` | The member's `auth_sub` | Life of the membership | Account deletion, member removal, organization purge |
-| `organization.webhook_deliveries` | Customer response bodies | `WEBHOOK_DELIVERY_RETENTION_DAYS`, 30 days | Worker sweep; also organization purge |
+| `organization.webhook_deliveries` | Customer response bodies; the delivered event body (`payload`), which for `organization.member.invited` holds the invitee email and invitation token (the token alone cannot accept: the invitee's verified email must match) | `WEBHOOK_DELIVERY_RETENTION_DAYS`, 30 days | Worker sweep; also organization purge. Account deletion does not scrub payloads, as with the outbox |
 | `organization.organizations` with `status = 'deleted'` | Organization name, owner `auth_sub` | `DELETED_ORGANIZATION_RETENTION_DAYS`, 30 days after deletion | Worker sweep, which cascades to memberships, invitations, webhook endpoints and deliveries |
 | `billing.webhook_events` | None; replay markers | `WEBHOOK_EVENT_RETENTION_DAYS`, 90 days | Worker sweep |
 | `messaging.outbox` | Event payloads | `OUTBOX_RETENTION_DAYS`, 30 days once published | Worker sweep |
@@ -76,6 +78,7 @@ The plan catalog's `audit_retention_days` feature (30 days on Solo, 90 on Growth
 | The adopter's SMTP provider | Transactional email | Recipient address, message content |
 | The adopter's OpenTelemetry backend | Traces, metrics, logs | Telemetry; logs carry no secrets or credentials |
 | The adopter's hosting provider | Compute and storage | Everything at rest |
+| The adopter's archive bucket provider, when one is configured | Write-once copy of the audit log | What the data inventory lists for the audit archive |
 
 MaxMind GeoLite2 is a local database file; no data leaves the host for a lookup.
 
@@ -93,13 +96,16 @@ MaxMind GeoLite2 is a local database file; no data leaves the host for a lookup.
 **GitHub**
 - [ ] Branch protection on `main` and `dev`: required checks, required review, no force-push.
 - [ ] 2FA required for the organization.
-- [ ] `SECURITY.md` added, with a reporting channel someone watches.
+- [ ] `SECURITY.md`'s placeholder contact replaced with a reporting channel someone watches.
+- [ ] `LEGAL_TERMS_*` / `LEGAL_PRIVACY_*` set (and `VITE_LEGAL_*_URL` for the sign-up page), so consent is recorded.
 
 **Postgres**
 - [ ] `ALTER ROLE <owner> SET log_statement = 'mod'`, so everything the owner role changes is logged. Owner sessions are not captured in `audit.events`.
 - [ ] `log_connections = on`.
 - [ ] One login role per operator, with an expiry, as in [12-operations](12-operations.md).
+- [ ] One RabbitMQ and one Redis login per operator with that same name, the `administrator` broker user kept for break-glass, and Redis's `default` user off. An operator's broker login can publish events the broker does not record; see [12-operations](12-operations.md).
 - [ ] The Postgres log is shipped off-host. An owner can edit audit rows; this log is what shows it happened.
+- [ ] The audit archive writes to a bucket with Object Lock in another account, and `verify-audit-archive` runs on a schedule with its own read-only credential, its output kept.
 
 **Backups**
 - [ ] Backups are scheduled by the host or the provider, and copied off-host.

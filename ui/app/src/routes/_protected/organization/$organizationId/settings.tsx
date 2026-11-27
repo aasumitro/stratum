@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { searchTerm } from "@/lib/search"
 import { OrganizationSettingsPage } from "@/features/organization/pages/organization-settings-page"
 
 // `panel` drives which "View All" OverlayPanel is open (Webhooks, Audit
@@ -11,6 +12,7 @@ export interface SettingsSearch {
   actor?: string
   action?: string
   resource?: string
+  q?: string
   range?: "7d" | "30d" | "90d" | "all"
 }
 
@@ -26,6 +28,11 @@ export const Route = createFileRoute(
     actor: typeof search.actor === "string" ? search.actor : undefined,
     action: typeof search.action === "string" ? search.action : undefined,
     resource: typeof search.resource === "string" ? search.resource : undefined,
+    // A hand-edited or shared link may carry a term the API would refuse.
+    q:
+      typeof search.q === "string" && searchTerm(search.q)
+        ? searchTerm(search.q)
+        : undefined,
     range: (["7d", "30d", "90d", "all"] as const).includes(
       search.range as never
     )

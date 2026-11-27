@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
 	"github.com/aasumitro/stratum/internal/contracts/events"
 	"github.com/aasumitro/stratum/internal/modules/organization"
+	"github.com/aasumitro/stratum/internal/platform/apperr"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 )
 
@@ -668,8 +670,126 @@ func TestIntegration_TransferOwnership_ToNonMember_Fails(t *testing.T) {
 	// transfer to someone who is not a member
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/transfer",
 		`{"auth_sub":"sub_not_a_member"}`))
-	if w2.Code == http.StatusNoContent {
-		t.Errorf("transfer to non-member should fail, got 204")
+	if w2.Code != http.StatusUnprocessableEntity || errorCodeOf(t, w2) != "TRANSFER_TARGET_NOT_MEMBER" {
+		t.Errorf("transfer to non-member: want 422 TRANSFER_TARGET_NOT_MEMBER, got %d %s", w2.Code, w2.Body)
+	}
+	// transfer to the current owner
+	w3 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations/"+orgID+"/transfer",
+		`{"auth_sub":"`+testAuthSub+`"}`))
+	if w3.Code != http.StatusUnprocessableEntity || errorCodeOf(t, w3) != "TRANSFER_TARGET_ALREADY_OWNER" {
+		t.Errorf("transfer to the owner: want 422 TRANSFER_TARGET_ALREADY_OWNER, got %d %s", w3.Code, w3.Body)
+	}
+}
+
+// A transfer by someone who is no longer the owner (their owner role was read
+// before another transfer committed) is refused under the organization lock, so
+// two concurrent transfers can never leave two owners.
+func TestIntegration_TransferOwnership_StaleOwnerIsRefused(t *testing.T) {
+	pool := testPool(t)
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+	w := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations", `{"slug":"integ-ws-tr-stale","name":"Stale Owner WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d", w.Code)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	// A former owner still holding an admin membership, transferring to an
+	// ordinary member: without the check under the lock this would commit and
+	// leave two owners.
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO organization.memberships (organization_id, auth_sub, role)
+		VALUES ($1, 'sub_former_owner', 'admin'), ($1, 'sub_target_member', 'member')`, orgID); err != nil {
+		t.Fatalf("seed members: %v", err)
+	}
+	err := organization.TransferOwnershipForTest(t.Context(), organization.NewModuleForTest(pool), orgID, "sub_former_owner", "sub_target_member")
+	ae, ok := errors.AsType[*apperr.Error](err)
+	if !ok || ae.Code != "OWNERSHIP_CHANGED" || ae.Kind.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("want 409 OWNERSHIP_CHANGED, got %v", err)
+	}
+	var owner string
+	var owners int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT o.owner_id, (SELECT count(*) FROM organization.memberships m WHERE m.organization_id = o.id AND m.role = 'owner')
+		FROM organization.organizations o WHERE o.id = $1`, orgID).Scan(&owner, &owners); err != nil {
+		t.Fatalf("read owner: %v", err)
+	}
+	if owner != testAuthSub || owners != 1 {
+		t.Errorf("want the owner unchanged and exactly one owner membership, got owner %q and %d owners", owner, owners)
+	}
+}
+
+// Account deletion never strips an organization of its owner: while the user
+// still owns one that is not deleted, RemoveAllMemberships removes nothing and
+// fails; once those are deleted, it removes every membership. At most one owner
+// membership per organization is enforced by the database itself.
+func TestIntegration_RemoveAllMemberships_KeepsAnActiveOwnersMembership(t *testing.T) {
+	pool := testPool(t)
+	const owner = "sub_gdpr_owner_keep"
+	var orgID string
+	t.Cleanup(func() {
+		if orgID != "" {
+			pool.Exec(context.Background(), `DELETE FROM organization.organizations WHERE id = $1`, orgID)
+		}
+	})
+	w := httptest.NewRecorder()
+	organization.NewModuleEngine(pool, owner).ServeHTTP(w, httpserver.JSONTestRequest(http.MethodPost, "/api/organizations",
+		`{"slug":"integ-ws-gdpr-keep","name":"GDPR Keep WS","plan":"solo","cycle":"monthly"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: want 201, got %d: %s", w.Code, w.Body)
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	orgID = resp["data"].(map[string]any)["id"].(string)
+
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO organization.memberships (organization_id, auth_sub, role) VALUES ($1, 'sub_second_owner', 'owner')`, orgID); err == nil {
+		t.Error("a second owner membership was accepted")
+	} else if pgErr, ok := errors.AsType[*pgconn.PgError](err); !ok || pgErr.Code != "23505" {
+		t.Errorf("a second owner membership: want a unique violation, got %v", err)
+	}
+
+	mod := organization.NewModuleForTest(pool)
+	err := mod.RemoveAllMemberships(t.Context(), owner)
+	if !errors.Is(err, contracts.ErrOwnsActiveOrganization) {
+		t.Fatalf("active owner: want ErrOwnsActiveOrganization, got %v", err)
+	}
+	count := func() int {
+		var n int
+		pool.QueryRow(t.Context(), `SELECT count(*) FROM organization.memberships WHERE auth_sub = $1`, owner).Scan(&n)
+		return n
+	}
+	if n := count(); n != 1 {
+		t.Errorf("active owner: want the owner membership kept, got %d", n)
+	}
+
+	if _, err := pool.Exec(t.Context(), `UPDATE organization.organizations SET status = 'deleted' WHERE id = $1`, orgID); err != nil {
+		t.Fatalf("delete organization: %v", err)
+	}
+	if err := mod.RemoveAllMemberships(t.Context(), owner); err != nil {
+		t.Fatalf("deleted organization: want every membership removed, got %v", err)
+	}
+	if n := count(); n != 0 {
+		t.Errorf("deleted organization: want no memberships left, got %d", n)
+	}
+}
+
+// An organization ID that is not a UUID names no organization: the middleware
+// answers 404, not the 503 of a failed lookup.
+func TestIntegration_OrganizationRoute_MalformedIDIsNotFound(t *testing.T) {
+	pool := testPool(t)
+	// Plain text, an invalid UTF-8 byte and a NUL: none may read as a failed lookup.
+	for _, id := range []string{"not-a-uuid", "%FF", "%00"} {
+		w := serveWS(t, pool, httptest.NewRequest(http.MethodGet, "/api/organizations/"+id, nil))
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s: want 404, got %d %s", id, w.Code, w.Body)
+		}
 	}
 }
 
@@ -735,9 +855,23 @@ func TestIntegration_LeaveOrganization_AsOwner_Fails(t *testing.T) {
 
 	// owner cannot leave their own organization
 	w2 := serveWS(t, pool, httpserver.JSONTestRequest(http.MethodDelete, "/api/organizations/"+orgID+"/leave", ""))
-	if w2.Code == http.StatusNoContent {
-		t.Errorf("owner leaving should fail, got 204")
+	if w2.Code != http.StatusUnprocessableEntity || errorCodeOf(t, w2) != "OWNER_CANNOT_LEAVE" {
+		t.Errorf("owner leaving: want 422 OWNER_CANNOT_LEAVE, got %d %s", w2.Code, w2.Body)
 	}
+}
+
+// errorCodeOf returns the status.code of an error response.
+func errorCodeOf(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Status struct {
+			Code string `json:"code"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response %q: %v", w.Body, err)
+	}
+	return body.Status.Code
 }
 
 func TestIntegration_LeaveOrganization_AsMember_Succeeds(t *testing.T) {

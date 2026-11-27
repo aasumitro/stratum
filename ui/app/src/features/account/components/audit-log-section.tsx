@@ -1,4 +1,7 @@
 import { useState } from "react"
+import { SearchBar } from "@/components/shared/search-bar"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { searchTerm } from "@/lib/search"
 import { useTranslation } from "react-i18next"
 import { IconDownload } from "@tabler/icons-react"
 import {
@@ -37,11 +40,25 @@ export function AuditLogSection() {
   const [fromDate, setFromDate] = useState("")
   const [toDate, setToDate] = useState("")
   const [cursor, setCursor] = useState<string | undefined>(undefined)
+  const [searchText, setSearchText] = useState("")
+  const search = searchTerm(useDebouncedValue(searchText))
+  // A new search needs a fresh first page, like a new date range.
+  const [prevSearch, setPrevSearch] = useState(search)
+  if (search !== prevSearch) {
+    setPrevSearch(search)
+    setCursor(undefined)
+  }
 
   const from = fromDate ? new Date(fromDate).toISOString() : undefined
   const to = toDate ? endOfDayISO(toDate) : undefined
 
-  const { data, isLoading, isFetching } = useAuditLog(cursor, 20, from, to)
+  const { data, isLoading, isFetching } = useAuditLog(
+    cursor,
+    20,
+    from,
+    to,
+    search || undefined
+  )
   const { items, nextCursor } = useCursorAccumulator(data, cursor)
 
   // The date range scopes both the visible table and the CSV export to the
@@ -63,6 +80,7 @@ export function AuditLogSection() {
     const params = new URLSearchParams()
     if (from) params.set("from", from)
     if (to) params.set("to", to)
+    if (search) params.set("q", search)
     if (params.size) url += "?" + params.toString()
     await downloadFile(url, "audit-log.csv", "blob")
   }
@@ -78,7 +96,14 @@ export function AuditLogSection() {
             {t("account.auditLog.description")}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <SearchBar
+            value={searchText}
+            onChange={setSearchText}
+            placeholder={t("account.auditLog.searchPlaceholder")}
+            autoFocusShortcut={false}
+            className="w-full sm:w-48"
+          />
           <input
             type="date"
             value={fromDate}

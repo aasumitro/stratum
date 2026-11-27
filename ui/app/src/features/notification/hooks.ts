@@ -24,18 +24,21 @@ export function useNotifications(
   organizationId?: string,
   cursor?: string,
   limit = 20,
-  channel?: string
+  channel?: string,
+  search?: string
 ) {
   const params = new URLSearchParams({ limit: String(limit) })
   if (organizationId) params.set("organization_id", organizationId)
   if (cursor !== undefined) params.set("cursor", cursor)
   if (channel) params.set("channel", channel)
+  if (search) params.set("q", search)
   return useHTTPQuery<Notification[]>({
     queryKey: [
       ...queryKeys.account.notifications(organizationId),
       cursor,
       limit,
       channel,
+      search,
     ],
     url: `${API.me("notifications")}?${params.toString()}`,
     options: { retry: false },
@@ -139,6 +142,24 @@ export function useMarkNotificationRead(organizationId?: string) {
     options: {
       onSuccess: () => {
         // invalidate all notification list variants and the count
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.account.notifications(organizationId),
+        })
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.account.notificationCount(),
+        })
+      },
+    },
+  })
+}
+
+// Marks several notifications read in one request (a folded run in the feed).
+export function useMarkNotificationsRead(organizationId?: string) {
+  const queryClient = useQueryClient()
+  return useHTTPActionPatch<void, { ids: string[] }>({
+    url: API.me("notifications", "read"),
+    options: {
+      onSuccess: () => {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.account.notifications(organizationId),
         })

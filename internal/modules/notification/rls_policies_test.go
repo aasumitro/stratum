@@ -124,7 +124,7 @@ func TestRLS_NotificationService_WorksUnderStratumApp(t *testing.T) {
 	ctx := t.Context()
 	svc := &service{repo: &repository{}, pool: app}
 
-	res, err := svc.listForUser(ctx, rlsNotifAlice, "", "", "", 50, 0, true)
+	res, err := svc.listForUser(ctx, rlsNotifAlice, "", "", "", "", 50, 0, true)
 	if err != nil || len(res.Messages) != 2 || res.Total != 2 {
 		t.Fatalf("listForUser(alice): want 2 messages, total 2; got %+v, %v", res, err)
 	}

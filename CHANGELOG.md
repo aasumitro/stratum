@@ -6,6 +6,181 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+**Upgrade:** run `make migrate-up` (migrations `000016`–`000026`) before starting the API or worker. `000016` first
+reconciles owner memberships to `organizations.owner_id` (the `owner_id` member becomes the one active owner, any other
+owner membership becomes admin; an organization whose `owner_id` has no membership is left as it is), then adds the index.
+
+### Added
+
+- Organization: an owner can require two-factor authentication for every member (Settings → Security). The policy is
+  stored in `settings.require_mfa`; while it is on, a session without a verified second factor gets 403
+  `ORGANIZATION_MFA_REQUIRED` on every organization route except leaving, and the web app shows how to set up MFA
+  instead of leaving the organization. Turning it on needs the owner's own session to be MFA-verified (422
+  `MFA_ENROLLMENT_REQUIRED`). Owners and admins see which members have no MFA (`mfa_enabled` on the members list).
+- Organization: a change the provider's operators make in Studio to an organization's data (the organization, its
+  subscription, invoices, payment links, payments, add-ons, coupon redemptions, queued actions) now shows in that
+  organization's audit log as "Provider support", filterable as its own actor. The log hides the operator's login role
+  and IP address. Migration `000018`; operator changes recorded before it stay out of organization logs.
+- Account: acceptance of the terms of service and privacy policy is recorded, per version, with IP address and user
+  agent (`account.consents`, migration `000019`). Set `LEGAL_TERMS_VERSION`/`_URL` and `LEGAL_PRIVACY_VERSION`/`_URL`
+  to turn it on (off by default). `GET /me/consents` lists what to accept; `POST /me/consents` accepts only the current
+  version (409 `CONSENT_VERSION_OUTDATED`). The web app asks at onboarding and, when a version changes, blocks the app
+  until the user accepts or signs out. `VITE_LEGAL_TERMS_URL`/`VITE_LEGAL_PRIVACY_URL` link the documents on sign-up.
+  The records are in the data export and are deleted with the account.
+- Search: the organization audit log, the personal audit log (and both CSV exports) and the notifications feed take
+  a `q` search parameter that matches anywhere in the route and before/after values (audit) or the subject and body
+  (notifications), with a search box in each. The audit log is backed by a `pg_trgm` trigram index (migrations
+  `000020`, `000021`, built `CONCURRENTLY`; recovery from a failed build in `docs/12-operations.md`). A term under
+  three characters is 422 `SEARCH_TOO_SHORT`. The audit `resource` filter now matches `%`, `_` and `\` literally.
+- Notifications: a daily email digest, opt-in under Notifications → preferences. With it on, payment receipts, usage
+  warnings and webhook health warnings arrive in one email a day after 08:00 in the user's timezone instead of one by
+  one, each with a one-line summary; anything that needs action is still sent at once. Held emails use a new message
+  status `held` (migrations `000022`–`000024`); the worker checks hourly and gives up on items that have failed for a
+  full day. Sent email rows now name their recipient, so they are part of the data export and are deleted with the
+  account. Email subjects no longer show HTML escapes (`R&amp;D`). A worker that is shutting down finishes the email
+  it is sending instead of cutting it off, and an email is no longer counted as failed when only the closing `QUIT`
+  fails after the server accepted it. In the app, neighbouring notifications of the same kind for the same
+  organization within a day fold into one row with "+N more like this", read in one request (`PATCH
+  /me/notifications/read`).
+- Billing: when an owner cancels because it is too expensive, the dialog offers the next lower plan and yearly billing
+  (when cheaper than twelve months) with the list-price saving, and opens the existing downgrade or plan-change flow.
+  No discount is created, and nothing is offered during a trial or while a change is already scheduled. "Missing
+  features" and "switching provider" show a contact link when `VITE_CONTACT_URL` is set.
+- Studio: the dashboard has a "Cancellation reasons" card (30 or 90 days): how often each reason was picked, and the
+  latest free-text details.
+- Audit: the worker can copy the audit log every hour to a bucket with S3 Object Lock (`AUDIT_ARCHIVE_*`, off by
+  default), where nobody can change or delete it before its retention ends. Operator and unauthenticated rows are copied
+  whole; an unauthenticated row keeps its address and client and its request body only as a digest; a person's row
+  keeps the hash of its actor and salted digests of the rest. `stratum-worker verify-audit-archive [-known FILE]`
+  trusts only the bucket, compares it with the table in both directions, and exits 1 on an altered, missing, unstored
+  or late row (2 when it cannot run). Two new metrics, `stratum.audit.archive.failures` and `.pending`. No new
+  dependency. Migrations `000025`, `000026` (`CONCURRENTLY`; recovery in `docs/12-operations.md`). Each row is
+  rewritten once when it is marked as copied, which costs one new entry in every index of `audit.events`. `make
+  audit-archive-up` starts a local bucket.
+- Audit: the runtime roles may insert only the columns an event is made of. Setting `created_at` or the new
+  `export_seq` on an insert is refused (42501). The application never did; custom code that dates its own rows must
+  stop. The worker may no longer insert into `account.tasks`, and of a task it may change only `status`, `result`, `error` and `completed_at`; only the API asks for an export or a deletion.
+- Operations: each operator gets their own RabbitMQ and Redis logins, with the same name as their Postgres login.
+  `deploy/broker-init/operator.sh add|revoke op_<name>` provisions them: the broker login carries the `management`
+  tag, reads dead-letter queues only and may publish to module exchanges (requeue needs it), the Redis one reaches no
+  key. `make operator-broker-dev` creates the local one.
+- Organization: a "Roles & permissions" reference, opened from the Members section for every role, built from the same
+  permission matrix the app enforces.
+- CI: an `Images` job builds the API and worker images, scans each with Trivy (fails on a fixable HIGH/CRITICAL) and
+  records an SPDX SBOM per image (syft). Third-party actions are pinned to a commit.
+- `SECURITY.md`: a vulnerability reporting policy with a placeholder contact (`security@your-domain.example`) for the
+  adopting project to replace.
+
+### Changed
+
+- Studio: requeue and purge need the operator's own RabbitMQ login. A login whose name differs from the database login,
+  or that has the `administrator` tag, is refused; the audit row of a queue action names the broker login
+  (`broker_user`). **Upgrade:** create each operator's broker login (`docs/12-operations.md` "Operator access") before
+  upgrading Studio, or requeue and purge stop working for them. View and Purge are offered on dead-letter queues only.
+  The connection test for Redis now logs in and pings (it only opened a socket), and the one for RabbitMQ also checks
+  the management API Studio works through. Neither repeats a password in its error.
+- Tooling: `make test-integration`, `make test-cover` and `make pre-push` run against a dedicated `stratum_test`
+  database, which the new `make test-db` creates and migrates. `make test-db` refuses any Postgres URL it cannot
+  move to that database. `make test` blanks the Postgres URLs, so its database tests skip. Neither writes into the
+  dev database any more: a running local worker never relays the suite's outbox rows, and the relay tests never
+  claim the dev data's due rows.
+
+### Fixed
+
+- Studio: a requeued message no queue is bound for is handed back as lost, with its body. It was reported as requeued
+  after the broker had dropped it. A message whose payload is not text is republished unchanged, and one the broker
+  sends in a form Studio cannot read is handed back too. A failed browse shows its error instead of an empty queue.
+- CI: runs only on pull requests to `main`. A push to `dev` with the release pull request open no longer starts a
+  second, identical run.
+- Organization: an organization can no longer end up with two owner memberships (migration `000016`). Suspend and role
+  change re-check the owner under the organization lock a transfer takes, and never move an owner membership. Account
+  deletion removes memberships first and never the owner membership of an organization that is not deleted: a user made
+  an owner after asking to be deleted has the deletion task fail with a message, before any of their data is erased.
+- Organization: retrying a webhook delivery resends the exact body it was first delivered with (migration `000017`
+  keeps it), instead of a `{id, type, endpoint_id}` payload rebuilt from the delivery row. Deliveries recorded before
+  keep the rebuilt retry.
+- Account: a failed export or deletion task records a fixed message for `GET /me/tasks` instead of the raw internal
+  error; the cause is logged by the worker.
+- Web: only a refusal (401/403/404) now counts as lost access or a missing profile. An organization page that fails
+  any other way (an outage, a rate limit, a 500, a proxy error page) shows a retry instead of leaving the organization,
+  and a failed background refresh keeps the page. The sign-in, landing and onboarding guards no longer send a user with
+  a profile back to onboarding when `/me` fails that way. Queries retry only transient failures (no response,
+  502/503/504; up to three times); the old retry rule never matched, so every failure was retried.
+- Web and Studio: the moderate npm advisories (all from `minimatch` < 11.0.1, GHSA-g3hv-75wg-m249) are cleared:
+  eslint 10.15 and typescript-eslint 8.73, plus an `overrides` entry giving the `shadcn` CLI's `ts-morph` `minimatch`
+  11. `npm audit` reports 0 vulnerabilities in both.
+- Billing: a Xendit invoice callback with status `SETTLED` now counts as the payment. It used to read as pending,
+  so an invoice whose `PAID` callback never arrived stayed unpaid. `SETTLED` is deduplicated under the same key as
+  `PAID`, so receiving both pays the invoice once, and keys already stored stay valid. Not retroactive: an invoice
+  whose `SETTLED` was acknowledged before this change still needs marking paid by hand.
+- Billing: a `PENDING` or unrecognized Xendit callback is acknowledged without changing anything, and an unrecognized
+  one is logged. Before, it was written onto the payment link and could reopen an expired or failed checkout.
+- Billing: an expired payment link now only ever moves to paid, for every provider. A later pending or failure report
+  (such as Stripe's completed-but-unpaid for an async payment method finishing after the checkout was closed) no
+  longer reopens it as payable, or marks the subscription `past_due` and sends dunning for an invoice that was
+  already settled or voided. A paid report still applies.
+- Web: `vite.config.ts` loads Vitest's config types (`///` instead of `//` on the reference), so the `test` block
+  is type-checked, and `tsconfig.node.json` turns on `strict` like the app and e2e configs.
+- Organization (API): leaving an organization and transferring ownership no longer send raw internal errors to
+  the client.
+  - Their refusals have their own codes: 422 `OWNER_CANNOT_LEAVE`, `TRANSFER_TARGET_NOT_MEMBER`,
+    `TRANSFER_TARGET_ALREADY_OWNER` (all were 422 `UNPROCESSABLE`), 404 `MEMBER_NOT_FOUND`, and the new 409
+    `OWNERSHIP_CHANGED`.
+  - Any other failure is a 500 `ORGANIZATION_LEAVE_FAILED` / `OWNERSHIP_TRANSFER_FAILED` with its cause logged.
+  - Before, repository text such as `organization.getMemberRole: no rows in result set` reached the client as a 422,
+    unlogged, and a transfer whose target lookup failed for any reason answered "target user is not a member".
+- Organization: a transfer now locks the organization row and checks that the caller is still the owner, so two
+  transfers at once can no longer leave two owners (`OWNERSHIP_CHANGED`). It also locks the target's active
+  membership, so the target cannot be suspended, removed or leave before it commits, and a non-member or suspended
+  member is never made owner. A leave that removes no row (a transfer made the caller the
+  owner) answers `OWNER_CANNOT_LEAVE` instead of a false 204.
+- Organization (API): for a lookup error, the organization middleware answers 404 only for a missing organization
+  and 403 only for a non-member. It still answers 403 for an inactive organization or an IP outside the allowlist.
+  - An ID that is not a UUID, including one with invalid UTF-8 or a NUL byte, is a 404.
+  - A failed lookup (database unreachable) is now a retryable 503 `ORGANIZATION_UNAVAILABLE` /
+    `MEMBERSHIP_UNAVAILABLE` with its cause logged. Before, any lookup error answered 404 "organization not found" or
+    403 "not a member", unlogged.
+  - Invite-code preview and join likewise answer a failed lookup with a logged 500 `ORGANIZATION_FETCH_FAILED`,
+    and a failed join a logged 500 `ORGANIZATION_JOIN_FAILED`, instead of 422 `INVITE_CODE_INVALID` or treating the
+    caller as not a member. A code with invalid bytes is still `INVITE_CODE_INVALID`.
+  - Billing reads a non-UUID organization subject as a deleted organization.
+- Billing: on an ended subscription whose Resume invoice is pending, a plan change, an add-on decrease or removal, or
+  undoing a scheduled downgrade that a coupon now covers in full no longer drops the Resume. The reissue queues
+  `billing.subscription.resume-covered`, and the worker finishes the Resume after it commits: the subscription
+  reactivates and the organization's suspension lifts. The worker drops the message if the subscription's end moved
+  since, its organization was deleted, or Resume refuses it, and retries a failed organization lookup. If the coupon
+  stopped covering it, the worker issues the Resume invoice and announces it with `billing.invoice.created` (an owner's
+  own Resume still sends none). Before, the Resume invoice was voided and nothing replaced it, so the subscription
+  stayed ended until the owner pressed Resume again.
+- Billing (API): `POST /billing/resume` on a retired plan answers 422 `UNKNOWN_PLAN` (was 404
+  `SUBSCRIPTION_NOT_FOUND`), and a database error while pricing it answers 500 and is retried by the worker (was 422
+  `UNKNOWN_PLAN`).
+- Billing: the hourly reconcile backs off per schedule when re-sending a due schedule's apply (1h, 2h, 4h, 8h, 16h,
+  then daily; reset whenever the schedule changes) instead of re-sending every hour. A schedule whose apply always
+  fails no longer dead-letters again every hour. Migration `000015` adds `schedule_resend_count` and
+  `schedule_resend_at` to `billing.subscriptions`. **Upgrade:** run `make migrate-up` before starting the API or
+  worker; the schedule paths write the new columns.
+- Platform: every 5xx a handler or middleware writes now logs its cause, once, on the request logger with its
+  `request_id`. `response.LogInternal` (used by `FromError` and by every handler and middleware that writes its own
+  5xx) logs the code, route and the wrapped cause of an `apperr.Internal`. The client still sees only the code and
+  message. A request the client abandoned is a warning. The worker consumer adds the cause to its retry log.
+  Services no longer log an error they also return. Webhook delivery logs and errors no longer carry the endpoint
+  URL, which can hold a token, and provider and storage error bodies are capped at 512 bytes. Before,
+  `apperr.Error.Error()` returned only the client message, so the cause of any internal error was lost.
+- Billing: a coupon-covered charge settled while an invoice is reissued (a plan change, an add-on reprice, a renewal
+  reissued after a schedule change or a past-due cancel) runs inside its caller's transaction. If it would
+  reactivate an ended subscription and lift its organization's suspension there, it is now refused and rolled back.
+  Before, the suspension was lifted in a second transaction that committed on its own, even if the caller's then
+  rolled back, and that transaction held a second pool connection. No current path reaches it: expiry fails every
+  pending invoice, so an ended subscription holds no pending activation.
+- Web: `npm run typecheck` runs `tsc -b --force`. It used to run `tsc --noEmit` against the root `tsconfig.json`,
+  which lists no files of its own, so it checked nothing.
+
+## [0.6.1] - 2026-11-21
+
+Dependency updates for the web app, the Studio frontend and CI, as Dependabot proposed them. No API, database or
+Go change.
+
 ### Changed
 
 - Web: `i18next` 27 and `react-i18next` 18 (major; the translate helpers take a shared `Translate` type, since

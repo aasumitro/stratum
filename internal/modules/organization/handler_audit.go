@@ -9,16 +9,22 @@ import (
 
 	"github.com/aasumitro/stratum/internal/platform/audit"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
+	"github.com/aasumitro/stratum/internal/platform/httpserver/request"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/response"
 )
 
 // auditLogFilter parses the shared actor/action/resource/from/to query
 // params (the UI's chip filters) used by both the list and export routes.
-func auditLogFilter(c *gin.Context) audit.Filter {
+func auditLogFilter(c *gin.Context) (audit.Filter, bool) {
+	q, ok := request.SearchTerm(c)
+	if !ok {
+		return audit.Filter{}, false
+	}
 	f := audit.Filter{
 		Actor:    c.Query("actor"),
 		Action:   c.Query("action"),
 		Resource: c.Query("resource"),
+		Query:    q,
 	}
 	if s := c.Query("from"); s != "" {
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
@@ -30,7 +36,7 @@ func auditLogFilter(c *gin.Context) audit.Filter {
 			f.To = &t
 		}
 	}
-	return f
+	return f, true
 }
 
 // auditLog godoc
@@ -46,6 +52,7 @@ func auditLogFilter(c *gin.Context) audit.Filter {
 // @Param        actor           query     string  false  "filter by actor"
 // @Param        action          query     string  false  "filter by action"
 // @Param        resource        query     string  false  "filter by resource"
+// @Param        q               query     string  false  "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)"
 // @Param        from            query     string  false  "RFC3339 lower bound on created_at"
 // @Param        to              query     string  false  "RFC3339 upper bound on created_at"
 // @Success      200             {object}  response.Payload{data=[]audit.EventRecord}
@@ -59,11 +66,15 @@ func (h *handler) auditLog(c *gin.Context) {
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 && v <= 100 {
 		limit = v
 	}
-	filter := auditLogFilter(c)
+	filter, ok := auditLogFilter(c)
+	if !ok {
+		return
+	}
 
 	if cursor, hasCursor := c.GetQuery("cursor"); hasCursor {
 		events, nextCursor, err := audit.ListByOrganizationCursor(c.Request.Context(), h.pool, ws.ID, limit, cursor, filter)
 		if err != nil {
+			response.LogInternal(c, "AUDIT_LOG_FETCH_FAILED", err)
 			response.Error("AUDIT_LOG_FETCH_FAILED", "failed to list audit log").JSON(c, http.StatusInternalServerError)
 			return
 		}
@@ -79,6 +90,7 @@ func (h *handler) auditLog(c *gin.Context) {
 
 	events, total, err := audit.ListByOrganization(c.Request.Context(), h.pool, ws.ID, limit, offset, filter)
 	if err != nil {
+		response.LogInternal(c, "AUDIT_LOG_FETCH_FAILED", err)
 		response.Error("AUDIT_LOG_FETCH_FAILED", "failed to list audit log").JSON(c, http.StatusInternalServerError)
 		return
 	}
@@ -95,6 +107,7 @@ func (h *handler) auditLog(c *gin.Context) {
 // @Param        actor           query  string  false  "filter by actor"
 // @Param        action          query  string  false  "filter by action"
 // @Param        resource        query  string  false  "filter by resource"
+// @Param        q               query  string  false  "search the route and before/after values (at least 3 characters; 422 SEARCH_TOO_SHORT)"
 // @Param        from            query  string  false  "RFC3339 lower bound on created_at"
 // @Param        to              query  string  false  "RFC3339 upper bound on created_at"
 // @Success      200             {file}  file
@@ -103,13 +116,17 @@ func (h *handler) auditLog(c *gin.Context) {
 // @Router       /organizations/{organizationID}/audit-log/export [get]
 func (h *handler) exportAuditLog(c *gin.Context) {
 	ws, _ := middleware.OrganizationFromContext(c)
-	filter := auditLogFilter(c)
+	filter, ok := auditLogFilter(c)
+	if !ok {
+		return
+	}
 
 	c.Set("audit.action", "audit_log.export")
 	c.Header("Content-Type", "text/csv")
 	c.Header("Content-Disposition", "attachment; filename=audit-log.csv")
 
 	if err := audit.ExportByOrganization(c.Request.Context(), h.pool, ws.ID, filter, c.Writer); err != nil {
+		response.LogInternal(c, "AUDIT_LOG_EXPORT_FAILED", err)
 		c.Status(http.StatusInternalServerError)
 	}
 }

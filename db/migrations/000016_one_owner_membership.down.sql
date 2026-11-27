@@ -1,0 +1,1 @@
+DROP INDEX organization.memberships_one_owner_per_organization;

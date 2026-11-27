@@ -2,7 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 import { getFn } from "@/lib/api/query"
 import { API } from "@/lib/api/path"
 import { queryKeys } from "@/lib/api/keys"
-import { isConnectionError } from "@/lib/api/error"
+import { isRefusal } from "@/lib/api/error"
 import type { UserProfile } from "@/types/account"
 import { needsMfaChallenge } from "@/lib/auth/mfa"
 import { ProtectedLayout } from "@/components/layout/protected-layout"
@@ -33,11 +33,10 @@ export const Route = createFileRoute("/_protected")({
         profile?.preferences?.onboarding_completed === true
       )
     } catch (err) {
-      // Can't tell if the user needs onboarding or not — the API is
-      // unreachable, not "no profile yet". Don't guess; show the real
+      // Only a refusal (404 no profile yet, 401) means onboarding. An outage
+      // or a server error says nothing about the profile: show the real
       // problem instead of silently dropping them into onboarding.
-      if (isConnectionError(err)) throw err
-      // Anything else (404 profile not found, etc.) → needs onboarding.
+      if (!isRefusal(err)) throw err
     }
 
     if (!onboarded) {

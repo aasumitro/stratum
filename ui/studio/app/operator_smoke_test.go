@@ -26,11 +26,16 @@ import (
 //
 //	STUDIO_SMOKE_OWNER_URL     schema owner, used for fixtures and the refusal case
 //	STUDIO_SMOKE_OPERATOR_URL  a login in the stratum_operator group, same database
-//	STUDIO_SMOKE_MQ_URL        broker with its management API on the usual port
+//	STUDIO_SMOKE_MQ_URL        the same operator's broker login (deploy/broker-init/operator.sh)
+//	STUDIO_SMOKE_MQ_ADMIN_URL  an administrator of that broker, used for fixtures and the refusal case
 const (
-	smokeActor     = "operator:stratum_operator_dev"
+	smokeOperator  = "stratum_operator_dev"
+	smokeActor     = "operator:" + smokeOperator
 	smokeOrgSlug   = "studio-smoke"
 	smokeQueue     = "studio.smoke.dlq"
+	smokeLiveQueue = "studio.smoke.live"
+	smokeExchange  = "studio.smoke.events"
+	smokeDLX       = smokeExchange + ".dlx"
 	smokeOwnerSub  = "studio_smoke_owner"
 	smokeMemberSub = "studio_smoke_member"
 )
@@ -40,6 +45,7 @@ type smokeEnv struct {
 	services              *Services
 	ownerProject          string
 	operatorProject       string
+	sharedMQProject       string
 	orgID, paidInvoice    string
 	voidInvoice, ownerDSN string
 	payment               string
@@ -50,9 +56,9 @@ func newSmokeEnv(t *testing.T) *smokeEnv {
 	t.Helper()
 	ownerDSN := os.Getenv("STUDIO_SMOKE_OWNER_URL")
 	operatorDSN := os.Getenv("STUDIO_SMOKE_OPERATOR_URL")
-	mqDSN := os.Getenv("STUDIO_SMOKE_MQ_URL")
-	if ownerDSN == "" || operatorDSN == "" || mqDSN == "" {
-		t.Skip("STUDIO_SMOKE_OWNER_URL, STUDIO_SMOKE_OPERATOR_URL and STUDIO_SMOKE_MQ_URL required")
+	mqDSN, mqAdminDSN := os.Getenv("STUDIO_SMOKE_MQ_URL"), os.Getenv("STUDIO_SMOKE_MQ_ADMIN_URL")
+	if ownerDSN == "" || operatorDSN == "" || mqDSN == "" || mqAdminDSN == "" {
+		t.Skip("STUDIO_SMOKE_OWNER_URL, STUDIO_SMOKE_OPERATOR_URL, STUDIO_SMOKE_MQ_URL and STUDIO_SMOKE_MQ_ADMIN_URL required")
 	}
 	keyring.MockInit()
 
@@ -72,9 +78,9 @@ func newSmokeEnv(t *testing.T) *smokeEnv {
 	}
 	t.Cleanup(admin.Close)
 
-	add := func(name, dsn string) string {
+	add := func(name, dsn, mq string) string {
 		t.Helper()
-		project, err := services.Project.Add(ProjectInput{Name: name, APIURL: "http://localhost:1", DBDSN: dsn, MQDSN: mqDSN, Color: "#000000"})
+		project, err := services.Project.Add(ProjectInput{Name: name, APIURL: "http://localhost:1", DBDSN: dsn, MQDSN: mq, Color: "#000000"})
 		if err != nil {
 			t.Fatalf("add project %s: %v", name, err)
 		}
@@ -84,8 +90,9 @@ func newSmokeEnv(t *testing.T) *smokeEnv {
 	env := &smokeEnv{
 		admin:           admin,
 		services:        services,
-		ownerProject:    add("owner", ownerDSN),
-		operatorProject: add("operator", operatorDSN),
+		ownerProject:    add("owner", ownerDSN, mqAdminDSN),
+		operatorProject: add("operator", operatorDSN, mqDSN),
+		sharedMQProject: add("shared broker login", operatorDSN, mqAdminDSN),
 		ownerDSN:        ownerDSN,
 		started:         time.Now().Add(-time.Second),
 	}
@@ -135,7 +142,9 @@ func (e *smokeEnv) cleanup(t *testing.T) {
 		t.Logf("smoke cleanup: %v", err)
 	}
 	if cfg, err := e.services.DLQ.getConfig(e.ownerProject); err == nil {
-		_, _ = e.services.DLQ.request(ctx, cfg, http.MethodDelete, fmt.Sprintf("/queues/%s/%s", cfg.vhost, smokeQueue), nil)
+		for _, path := range []string{"/queues/%s/" + smokeQueue, "/queues/%s/" + smokeLiveQueue, "/exchanges/%s/" + smokeExchange, "/exchanges/%s/" + smokeDLX} {
+			_, _ = e.services.DLQ.request(ctx, cfg, http.MethodDelete, fmt.Sprintf(path, cfg.vhost), nil)
+		}
 	}
 }
 
@@ -204,27 +213,53 @@ func (e *smokeEnv) broker(t *testing.T, method, path string, body any) {
 	}
 }
 
+// seedQueue builds the shape every module has: a live queue on the module's exchange,
+// and a dead-letter queue behind it. One message has died there, and one is live.
 func (e *smokeEnv) seedQueue(t *testing.T) {
 	t.Helper()
+	for _, exchange := range []string{smokeExchange, smokeDLX} {
+		e.broker(t, http.MethodPut, "/exchanges/%s/"+exchange, map[string]any{"type": "topic", "durable": true})
+	}
 	e.broker(t, http.MethodPut, "/queues/%s/"+smokeQueue, map[string]any{"durable": true})
-	e.broker(t, http.MethodPost, "/bindings/%s/e/amq.topic/q/"+smokeQueue, map[string]any{"routing_key": smokeQueue})
+	e.broker(t, http.MethodPost, "/bindings/%s/e/"+smokeDLX+"/q/"+smokeQueue, map[string]any{"routing_key": "#"})
+	e.broker(t, http.MethodPut, "/queues/%s/"+smokeLiveQueue, map[string]any{
+		"durable": true, "arguments": map[string]any{"x-dead-letter-exchange": smokeDLX},
+	})
+	e.broker(t, http.MethodPost, "/bindings/%s/e/"+smokeExchange+"/q/"+smokeLiveQueue, map[string]any{"routing_key": smokeLiveQueue})
+
+	e.publish(t)
+	e.broker(t, http.MethodPost, "/queues/%s/"+smokeLiveQueue+"/get", map[string]any{
+		"count": 1, "ackmode": "reject_requeue_false", "encoding": "auto",
+	})
+	// Dead-lettering happens after the broker has answered.
+	for attempt := 0; e.messagesIn(t, smokeQueue) != 1; attempt++ {
+		if attempt == 50 {
+			t.Fatal("the rejected message never reached the dead-letter queue")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	e.publish(t)
 }
 
 func (e *smokeEnv) publish(t *testing.T) {
 	t.Helper()
-	e.broker(t, http.MethodPost, "/exchanges/%s/amq.topic/publish", map[string]any{
-		"routing_key": smokeQueue, "payload": "{}", "payload_encoding": "string", "properties": map[string]any{},
+	e.broker(t, http.MethodPost, "/exchanges/%s/"+smokeExchange+"/publish", map[string]any{
+		"routing_key": smokeLiveQueue, "payload": "{}", "payload_encoding": "string", "properties": map[string]any{},
 	})
+}
+
+func (e *smokeEnv) messagesIn(t *testing.T, queue string) int {
+	t.Helper()
+	messages, err := e.services.DLQ.GetMessages(e.ownerProject, queue, 20)
+	if err != nil {
+		t.Fatalf("read queue %s: %v", queue, err)
+	}
+	return len(messages)
 }
 
 func (e *smokeEnv) queuedMessages(t *testing.T) int {
 	t.Helper()
-	messages, err := e.services.DLQ.GetMessages(e.ownerProject, smokeQueue, 20)
-	if err != nil {
-		t.Fatalf("read queue: %v", err)
-	}
-	return len(messages)
+	return e.messagesIn(t, smokeQueue)
 }
 
 // smokeMutation is one call of a mutating method, in an order that works as a
@@ -548,6 +583,56 @@ func TestOperatorSmoke(t *testing.T) {
 		}
 	})
 
+	t.Run("a shared broker login is refused before anything is recorded or touched", func(t *testing.T) {
+		if _, err := e.services.DLQ.PurgeQueue(e.sharedMQProject, smokeQueue); !errors.Is(err, ErrNotOwnBrokerLogin) {
+			t.Errorf("purge: want ErrNotOwnBrokerLogin, got %v", err)
+		}
+		if _, err := e.services.DLQ.RequeueMessage(e.sharedMQProject, smokeQueue); !errors.Is(err, ErrNotOwnBrokerLogin) {
+			t.Errorf("requeue: want ErrNotOwnBrokerLogin, got %v", err)
+		}
+		var rows int
+		if err := e.admin.QueryRow(t.Context(), `
+			SELECT count(*) FROM audit.events WHERE action LIKE 'studio.dlq.%' AND created_at >= $1`, e.started).Scan(&rows); err != nil {
+			t.Fatalf("count audit rows: %v", err)
+		}
+		if rows != 0 {
+			t.Errorf("%d rows written by a refused login", rows)
+		}
+		if got := e.queuedMessages(t); got != 1 {
+			t.Errorf("queue holds %d messages, want the seeded one untouched", got)
+		}
+		if _, err := e.services.DLQ.ListQueues(e.sharedMQProject); err != nil {
+			t.Errorf("reading must still work: %v", err)
+		}
+	})
+
+	t.Run("the broker refuses an operator a queue that is not a dead-letter one", func(t *testing.T) {
+		refused := func(what string, err error) {
+			t.Helper()
+			var status *brokerStatusError
+			if !errors.As(err, &status) || status.status != http.StatusUnauthorized {
+				t.Errorf("%s: want the broker's refusal, got %v", what, err)
+			}
+		}
+		_, err := e.services.DLQ.GetMessages(e.operatorProject, smokeLiveQueue, 1)
+		refused("browse", err)
+		_, err = e.services.DLQ.PurgeQueue(e.operatorProject, smokeLiveQueue)
+		refused("purge", err)
+		if got := e.messagesIn(t, smokeLiveQueue); got != 1 {
+			t.Errorf("live queue holds %d messages, want its one untouched", got)
+		}
+		if n := e.auditCount(t, "studio.dlq.purge.failed"); n != 1 {
+			t.Errorf("%d failed-purge rows, want the refused attempt recorded once", n)
+		}
+		queues, err := e.services.DLQ.ListQueues(e.operatorProject)
+		if err != nil {
+			t.Fatalf("list queues: %v", err)
+		}
+		if !slices.ContainsFunc(queues, func(q DLQInfo) bool { return q.Name == smokeLiveQueue }) {
+			t.Error("the list must still show every queue's depth")
+		}
+	})
+
 	t.Run("a failed audit record stops the action", func(t *testing.T) {
 		ctx := t.Context()
 		if _, err := e.admin.Exec(ctx, `
@@ -669,6 +754,42 @@ func TestOperatorSmoke(t *testing.T) {
 			if after := e.auditCount(t, m.action); after <= before {
 				t.Errorf("%s: no %s row added (%d before, %d after)", m.method, m.action, before, after)
 			}
+		}
+	})
+
+	t.Run("a requeued message goes back to the queue it died in", func(t *testing.T) {
+		if got := e.messagesIn(t, smokeLiveQueue); got != 2 {
+			t.Errorf("live queue holds %d messages, want the live one and the requeued one", got)
+		}
+	})
+
+	t.Run("a message nothing is bound for is reported as lost, not as requeued", func(t *testing.T) {
+		e.broker(t, http.MethodPost, "/exchanges/%s/"+smokeDLX+"/publish", map[string]any{
+			"routing_key": "unbound", "payload": "kept", "payload_encoding": "string",
+			"properties": map[string]any{"headers": map[string]any{"x-death": []any{
+				map[string]any{"exchange": smokeExchange, "routing-keys": []any{"unbound"}},
+			}}},
+		})
+		result, err := e.services.DLQ.RequeueMessage(e.operatorProject, smokeQueue)
+		if err != nil {
+			t.Fatalf("requeue: %v", err)
+		}
+		if result.Requeued || result.Lost == nil || result.Lost.Body != "kept" {
+			t.Errorf("result = %+v, want the message handed back as lost", result)
+		}
+	})
+
+	t.Run("a broker action's row names the broker login", func(t *testing.T) {
+		var unnamed int
+		if err := e.admin.QueryRow(t.Context(), `
+			SELECT count(*) FROM audit.events
+			WHERE actor = $1 AND action LIKE 'studio.dlq.%' AND created_at >= $2
+			  AND metadata->>'broker_user' IS DISTINCT FROM $3`,
+			smokeActor, e.started, smokeOperator).Scan(&unnamed); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if unnamed != 0 {
+			t.Errorf("%d broker rows without the broker login", unnamed)
 		}
 	})
 
@@ -857,7 +978,7 @@ func TestOperatorSmoke(t *testing.T) {
 		}
 		operatorDSN := os.Getenv("STUDIO_SMOKE_OPERATOR_URL")
 		if _, err := e.services.Project.Update(e.ownerProject, ProjectInput{
-			Name: "owner", APIURL: "http://localhost:1", DBDSN: operatorDSN, MQDSN: os.Getenv("STUDIO_SMOKE_MQ_URL"), Color: "#000000",
+			Name: "owner", APIURL: "http://localhost:1", DBDSN: operatorDSN, MQDSN: os.Getenv("STUDIO_SMOKE_MQ_ADMIN_URL"), Color: "#000000",
 		}); err != nil {
 			t.Fatalf("update project: %v", err)
 		}

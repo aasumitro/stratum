@@ -89,7 +89,7 @@ func (c *Client) createBucket(ctx context.Context, b BucketConfig) error {
 			// with a "statusCode":"409" field embedded in the JSON body, not as
 			// an actual HTTP 409, so the status-code check above doesn't catch it.
 		}
-		return fmt.Errorf("storage.createBucket: status %d: %s", resp.StatusCode, respBody)
+		return fmt.Errorf("storage.createBucket: status %d: %s", resp.StatusCode, errorBody(respBody))
 	}
 	return nil
 }
@@ -124,7 +124,7 @@ func (c *Client) Upload(ctx context.Context, bucket, path string, r io.Reader, c
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("storage.Upload: status %d: %s", resp.StatusCode, b)
+		return fmt.Errorf("storage.Upload: status %d: %s", resp.StatusCode, errorBody(b))
 	}
 	return nil
 }
@@ -149,7 +149,7 @@ func (c *Client) SignedURL(ctx context.Context, bucket, path string, ttl time.Du
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("storage.SignedURL: status %d: %s", resp.StatusCode, b)
+		return "", fmt.Errorf("storage.SignedURL: status %d: %s", resp.StatusCode, errorBody(b))
 	}
 
 	var result struct {
@@ -184,7 +184,7 @@ func (c *Client) Delete(ctx context.Context, bucket, path string) error {
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("storage.Delete: status %d: %s", resp.StatusCode, b)
+		return fmt.Errorf("storage.Delete: status %d: %s", resp.StatusCode, errorBody(b))
 	}
 	return nil
 }
@@ -192,4 +192,15 @@ func (c *Client) Delete(ctx context.Context, bucket, path string) error {
 func (c *Client) setAuthHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.key)
 	req.Header.Set("apikey", c.key)
+}
+
+// errorBody bounds a storage error response for an error message: the message
+// can end up in a log line, and an error page can run to kilobytes. A cut through
+// a multi-byte character is dropped rather than left invalid.
+func errorBody(body []byte) string {
+	const limit = 512
+	if len(body) > limit {
+		return strings.ToValidUTF8(string(body[:limit]), "") + "…"
+	}
+	return string(body)
 }

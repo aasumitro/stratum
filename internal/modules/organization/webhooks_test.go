@@ -6,9 +6,11 @@ package organization_test
 // role a real webhook consumer would play.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -461,6 +463,56 @@ func TestIntegration_Webhooks_RetryAllFailed(t *testing.T) {
 	}
 	if hits != 2 {
 		t.Errorf("receiver hits after processing retry jobs = %d, want 2", hits)
+	}
+}
+
+// A retry resends the exact bytes the event was first delivered with, not a
+// payload rebuilt from the delivery row: a receiver that verifies or parses the
+// body sees the same event both times.
+func TestIntegration_Webhooks_Retry_ResendsTheExactBody(t *testing.T) {
+	pool := testPool(t)
+	orgID := createWebhookTestOrg(t, "retry-exact")
+	e, mod := organization.NewModuleEngineAndModule(pool, testAuthSub)
+
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, b)
+		if len(bodies) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	wCreate := httptest.NewRecorder()
+	e.ServeHTTP(wCreate, httpserver.JSONTestRequest(http.MethodPost, webhooksURL(orgID), `{"url":"`+srv.URL+`"}`))
+	endpointID := decodeData(t, wCreate)["id"].(string)
+
+	// Key order and spacing a re-marshal would not reproduce.
+	envelope := []byte(`{"type":"organization.created","id":"evt-exact","org_id":"` + orgID + `",  "data":{"z":1,"a":[2,3]}}`)
+	// A failed delivery is recorded on its row and logged; the handler itself
+	// does not fail.
+	if err := mod.Worker.HandleOutboundEvent(t.Context(), envelope); err != nil {
+		t.Fatalf("HandleOutboundEvent: %v", err)
+	}
+	var deliveryID string
+	if err := pool.QueryRow(t.Context(),
+		`SELECT id FROM organization.webhook_deliveries WHERE endpoint_id = $1 AND event_id = 'evt-exact'`, endpointID).Scan(&deliveryID); err != nil {
+		t.Fatalf("find delivery: %v", err)
+	}
+
+	wRetry := httptest.NewRecorder()
+	e.ServeHTTP(wRetry, httpserver.JSONTestRequest(http.MethodPost, webhooksURL(orgID, endpointID, "deliveries", deliveryID, "retry"), ""))
+	if wRetry.Code >= 400 {
+		t.Fatalf("retry: want success, got %d: %s", wRetry.Code, wRetry.Body)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("receiver got %d deliveries, want 2", len(bodies))
+	}
+	if !bytes.Equal(bodies[0], envelope) || !bytes.Equal(bodies[1], envelope) {
+		t.Errorf("want both deliveries byte-identical to the event, got %q then %q", bodies[0], bodies[1])
 	}
 }
 

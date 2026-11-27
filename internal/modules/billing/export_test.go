@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aasumitro/stratum/internal/contracts"
+	"github.com/aasumitro/stratum/internal/platform/db"
 	"github.com/aasumitro/stratum/internal/platform/httpserver"
 	"github.com/aasumitro/stratum/internal/platform/httpserver/middleware"
 )
@@ -113,6 +114,12 @@ func (m *Module) CreatePaymentLinkForTest(ctx context.Context, invoiceID string)
 // optional-dependency comments).
 func NewModuleForTest(pool *pgxpool.Pool, ref referenceStub) *Module {
 	return New(pool, ProviderConfig{}, ref, nil, nil)
+}
+
+// NewModuleForTestWithSuspender is NewModuleForTest with suspender wired, so a
+// worker test can assert the unsuspend calls a handler makes.
+func NewModuleForTestWithSuspender(pool *pgxpool.Pool, suspender contracts.OrganizationSuspender) *Module {
+	return New(pool, ProviderConfig{}, nil, suspender, nil)
 }
 
 // NewWebhookModuleEngine creates a gin.Engine with both billing routes (authed)
@@ -233,4 +240,17 @@ func NewModuleEngineWithRealRLS(pool *pgxpool.Pool, authSub, organizationID stri
 		RLS: middleware.NewRLSTxMiddleware(pool), MFA: noopMW,
 	})
 	return e
+}
+
+// ReissuePendingRenewalForTest runs reissuePendingRenewal on subID in its own
+// transaction, the way a schedule change reissues a pending renewal.
+func ReissuePendingRenewalForTest(ctx context.Context, m *Module, pool *pgxpool.Pool, subID string) error {
+	return db.WithTx(ctx, pool, func(tx db.Querier) error {
+		ctx := db.WithQuerier(ctx, tx)
+		sub, err := m.svc.repo.findSubscriptionByID(ctx, tx, subID)
+		if err != nil {
+			return err
+		}
+		return m.svc.reissuePendingRenewal(ctx, sub)
+	})
 }
