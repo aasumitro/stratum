@@ -9,7 +9,7 @@ require (
 	github.com/rabbitmq/amqp091-go v1.17.0
 	github.com/wailsapp/wails/v3 v3.1.0
 	github.com/zalando/go-keyring v0.2.8
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
