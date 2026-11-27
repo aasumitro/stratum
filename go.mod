@@ -13,7 +13,7 @@ require (
 	github.com/oschwald/geoip2-golang/v2 v2.5.0
 	github.com/rabbitmq/amqp091-go v1.17.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
-	github.com/redis/go-redis/v9 v9.23.0
+	github.com/redis/go-redis/v9 v9.24.0
 	github.com/signintech/gopdf v0.38.4
 	github.com/swaggo/files v1.0.1
 	github.com/swaggo/gin-swagger v1.6.1
