@@ -12,8 +12,8 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/oschwald/geoip2-golang/v2 v2.5.0
 	github.com/rabbitmq/amqp091-go v1.17.0
-	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
-	github.com/redis/go-redis/v9 v9.23.0
+	github.com/redis/go-redis/extra/redisotel/v9 v9.24.0
+	github.com/redis/go-redis/v9 v9.24.0
 	github.com/signintech/gopdf v0.38.4
 	github.com/swaggo/files v1.0.1
 	github.com/swaggo/gin-swagger v1.6.1
@@ -78,7 +78,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.65.0 // indirect
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.23.0 // indirect
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.24.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.2 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.10.0 // indirect
