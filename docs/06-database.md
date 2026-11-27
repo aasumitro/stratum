@@ -42,8 +42,10 @@ Migrations live in `db/migrations/` as numbered up/down pairs: one per schema th
 | 000022 | `notification` | `messages.status` gains `held` (an email waiting for its recipient's daily digest); down marks held rows `failed` |
 | 000023 | `notification` | `idx_messages_held` partial index, built `CONCURRENTLY` in its own file |
 | 000024 | `notification` | Validates the 000022 status check (`VALIDATE CONSTRAINT`, writes continue during the scan) |
+| 000025 | `audit` | `audit.events.export_seq` and `audit.exports`: what the write-once copy has taken, written only through `audit.claim_export` and `audit.finish_export` (worker); the runtime roles may insert only an event's own columns, not `created_at` or `export_seq` |
+| 000026 | `audit` | `idx_audit_export` on `(export_seq, created_at)`, built `CONCURRENTLY` (its own one-statement file) |
 
-`000011`–`000024` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000025`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
+`000011`–`000026` change released schemas as new pairs, so a 0.5.0 database upgrades with `make migrate-up` once the `stratum_operator` role exists ([12-operations](12-operations.md)). Earlier releases edited schema files **in place**, which needed fresh infra (0.5.0's upgrade notes in `CHANGELOG.md`). The next free number is `000027`. Apply with `make migrate-up`; create a new pair with `make migrate-create name=<snake_case>`. A single schema can be extracted with `pg_dump --schema=<schema>`.
 
 ## The billing catalog
 

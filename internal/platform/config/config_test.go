@@ -3,6 +3,7 @@ package config_test
 import (
 	"bytes"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,105 @@ func TestLoad_WebhookSecretEncryptionKey(t *testing.T) {
 			t.Error("expected an error when WEBHOOK_SECRET_ENCRYPTION_KEY is set but empty, got nil")
 		}
 	})
+}
+
+func TestLoad_AuditArchive(t *testing.T) {
+	load := func(t *testing.T, env map[string]string) (*config.Config, error) {
+		t.Helper()
+		for name, value := range map[string]string{
+			"POSTGRES_APP_URL": "postgres://u:p@localhost:5432/db", "POSTGRES_WORKER_URL": "postgres://u:p@localhost:5432/db",
+			"POSTGRES_WEBHOOK_URL": "postgres://u:p@localhost:5432/db", "POSTGRES_UNSCOPED_URL": "postgres://u:p@localhost:5432/db",
+			"REDIS_URL": "redis://localhost:6379", "RABBITMQ_URL": "amqp://localhost:5672",
+			"AUTH_JWKS_URL": "https://example.com/.well-known/jwks.json", "AUTH_ISSUER": "https://example.com",
+			"WEBHOOK_SECRET_ENCRYPTION_KEY": "a-real-key", "AUDIT_RETENTION_DAYS": "400",
+			"AUDIT_ARCHIVE_ENDPOINT": "https://s3.example.com", "AUDIT_ARCHIVE_REGION": "eu-west-1",
+			"AUDIT_ARCHIVE_BUCKET": "audit", "AUDIT_ARCHIVE_ACCESS_KEY": "id", "AUDIT_ARCHIVE_SECRET_KEY": "sec-ret",
+			"AUDIT_ARCHIVE_RETENTION_DAYS": "0",
+		} {
+			t.Setenv(name, value)
+		}
+		for name, value := range env {
+			t.Setenv(name, value)
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, err
+		}
+		return cfg, cfg.ValidateArchive()
+	}
+
+	t.Run("the API ignores what only the worker reads", func(t *testing.T) {
+		if _, err := load(t, map[string]string{"AUDIT_ARCHIVE_BUCKET": ""}); err == nil {
+			t.Fatal("precondition: the worker refuses it")
+		}
+		if _, err := config.Load(); err != nil {
+			t.Errorf("load: %v", err)
+		}
+	})
+	t.Run("verifying needs only the database and the archive", func(t *testing.T) {
+		_, _ = load(t, nil)
+		for _, name := range []string{"POSTGRES_APP_URL", "REDIS_URL", "AUTH_JWKS_URL", "WEBHOOK_SECRET_ENCRYPTION_KEY"} {
+			os.Unsetenv(name)
+		}
+		cfg, err := config.LoadArchiveVerify()
+		if err != nil || cfg.Archive.RetentionDays != 400 || cfg.DatabaseURL == "" {
+			t.Errorf("verify config = %+v, %v", cfg, err)
+		}
+		t.Setenv("AUDIT_RETENTION_DAYS", "30")
+		if _, err := config.LoadArchiveVerify(); err == nil {
+			t.Error("want a retention shorter than the floor refused")
+		}
+		t.Setenv("AUDIT_RETENTION_DAYS", "400")
+		t.Setenv("AUDIT_ARCHIVE_ENDPOINT", "")
+		if _, err := config.LoadArchiveVerify(); err == nil {
+			t.Error("want an error without an archive")
+		}
+	})
+
+	t.Run("on, locked as long as the table keeps a row", func(t *testing.T) {
+		cfg, err := load(t, nil)
+		if err != nil || !cfg.Archive.Enabled() || cfg.Archive.RetentionDays != 400 {
+			t.Errorf("archive = %+v, %v", cfg, err)
+		}
+	})
+	t.Run("off without an endpoint, whatever else is set", func(t *testing.T) {
+		cfg, err := load(t, map[string]string{"AUDIT_ARCHIVE_ENDPOINT": "", "AUDIT_ARCHIVE_BUCKET": ""})
+		if err != nil || cfg.Archive.Enabled() {
+			t.Errorf("archive = %+v, %v", cfg, err)
+		}
+	})
+	t.Run("an empty region is the default one", func(t *testing.T) {
+		if cfg, err := load(t, map[string]string{"AUDIT_ARCHIVE_REGION": ""}); err != nil || cfg.Archive.Region != "us-east-1" {
+			t.Errorf("archive = %+v, %v", cfg, err)
+		}
+	})
+	t.Run("a longer lock", func(t *testing.T) {
+		if cfg, err := load(t, map[string]string{"AUDIT_ARCHIVE_RETENTION_DAYS": "3650"}); err != nil || cfg.Archive.RetentionDays != 3650 {
+			t.Errorf("archive = %+v, %v", cfg, err)
+		}
+	})
+	for name, env := range map[string]map[string]string{
+		"no bucket":                   {"AUDIT_ARCHIVE_BUCKET": ""},
+		"no access key":               {"AUDIT_ARCHIVE_ACCESS_KEY": ""},
+		"no secret key":               {"AUDIT_ARCHIVE_SECRET_KEY": ""},
+		"lock shorter than the table": {"AUDIT_ARCHIVE_RETENTION_DAYS": "399"},
+		"negative lock":               {"AUDIT_ARCHIVE_RETENTION_DAYS": "-1"},
+		"lock past the cap":           {"AUDIT_ARCHIVE_RETENTION_DAYS": "3651"},
+		"not a URL":                   {"AUDIT_ARCHIVE_ENDPOINT": "s3.example.com"},
+		"another scheme":              {"AUDIT_ARCHIVE_ENDPOINT": "s3://audit"},
+		"credentials in the URL":      {"AUDIT_ARCHIVE_ENDPOINT": "https://id:sec-ret@s3.example.com"},
+		"a path":                      {"AUDIT_ARCHIVE_ENDPOINT": "https://s3.example.com/audit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := load(t, env)
+			if err == nil {
+				t.Fatal("want boot to fail")
+			}
+			if strings.Contains(err.Error(), "sec-ret") {
+				t.Errorf("the error carries a credential: %v", err)
+			}
+		})
+	}
 }
 
 func TestLoad_WebhookSecretEncryptionKeyRotationFields(t *testing.T) {

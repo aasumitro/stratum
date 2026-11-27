@@ -69,6 +69,31 @@ operator-broker-dev: ## Create the local Studio operator's RabbitMQ and Redis lo
 		REDIS_CLI='$(COMPOSE) -f $(COMPOSE_FILE) exec -T redis redis-cli' \
 		sh deploy/broker-init/operator.sh add stratum_operator_dev
 
+# Only this service is named, so the running infra containers are left alone. The bucket
+# is created with Object Lock, which cannot be turned on later.
+AUDIT_ARCHIVE_URL := http://localhost:8333/stratum-audit
+# The local server's public dev identity, from deploy/audit-archive/s3.json.
+AUDIT_ARCHIVE_ADMIN := stratum-archive-admin
+audit_archive_admin = curl -sS --aws-sigv4 aws:amz:us-east-1:s3 --user '$(AUDIT_ARCHIVE_ADMIN):$(AUDIT_ARCHIVE_ADMIN)'
+
+.PHONY: audit-archive-up
+audit-archive-up: ## Start the local audit archive (S3 with Object Lock) and create its bucket
+	$(COMPOSE) -f $(COMPOSE_FILE) --profile audit-archive up -d audit-archive
+	@for i in $$(seq 1 30); do \
+		status=$$($(audit_archive_admin) -o /dev/null -w '%{http_code}' -X HEAD -I $(AUDIT_ARCHIVE_URL) 2>/dev/null); \
+		case $$status in 200) \
+			$(audit_archive_admin) '$(AUDIT_ARCHIVE_URL)?object-lock' | grep -q '<ObjectLockEnabled>Enabled<' && \
+				{ echo "bucket exists, with Object Lock"; exit 0; }; \
+			echo "bucket exists without Object Lock; start the server on a new volume" >&2; exit 1;; 404) \
+			status=$$($(audit_archive_admin) -o /dev/null -w '%{http_code}' -X PUT -H 'x-amz-bucket-object-lock-enabled: true' $(AUDIT_ARCHIVE_URL)); \
+			[ "$$status" = 200 ] && { echo "bucket created"; exit 0; };; \
+		esac; sleep 1; \
+	done; echo "audit archive did not answer (last status $$status)" >&2; exit 1
+
+.PHONY: audit-archive-down
+audit-archive-down: ## Stop the local audit archive (keeps its container and volume)
+	$(COMPOSE) -f $(COMPOSE_FILE) --profile audit-archive stop audit-archive
+
 ## --- Migrations ---
 ## Usage: make migrate-create name=create_organizations_table
 
@@ -133,6 +158,10 @@ run-api: ## Run the HTTP API server
 .PHONY: run-worker
 run-worker: ## Run the background worker (RabbitMQ consumers)
 	go build -o bin/stratum-worker ./cmd/worker && ./bin/stratum-worker
+
+.PHONY: verify-audit-archive
+verify-audit-archive: ## Compare audit.events with its write-once copy
+	go build -o bin/stratum-worker ./cmd/worker && ./bin/stratum-worker verify-audit-archive
 
 .PHONY: run-web
 run-web: ## Run the web frontend dev server (ui/app)
@@ -222,6 +251,11 @@ test-cover: test-db ## Run all tests (incl. integration) with coverage and print
 .PHONY: test-cover-html
 test-cover-html: test-cover ## Same as test-cover, then open the HTML report in a browser
 	go tool cover -html=coverage.out
+
+.PHONY: test-audit-archive
+test-audit-archive: test-db audit-archive-up ## Test the audit archive against the local S3 server (leaves locked objects in it)
+	@$(TEST_ENV) AUDIT_ARCHIVE_TEST_ENDPOINT='$(dir $(AUDIT_ARCHIVE_URL))' \
+		go test ./internal/platform/audit -run 'ArchiveServer' -race -count=1 -v
 
 .PHONY: lint
 lint: ## Run golangci-lint (install separately: https://golangci-lint.run/welcome/install/)

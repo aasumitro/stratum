@@ -84,6 +84,7 @@ Everything is read once at startup from the environment (see `.env.example`). Th
 | `OTEL_COLLECTOR_URL` | OpenTelemetry collector (optional — telemetry disabled if empty) |
 | `CORS_ORIGINS` | Comma-separated allowed origins (empty = allow all, dev only) |
 | `AUDIT_RETENTION_DAYS` | Audit log retention (default 400). Boot fails below 365, and the database enforces the same floor |
+| `AUDIT_ARCHIVE_ENDPOINT`, `_REGION`, `_BUCKET`, `_ACCESS_KEY`, `_SECRET_KEY`, `_RETENTION_DAYS` | Hourly write-once copy of the audit log in an S3 bucket with Object Lock (optional; off when the endpoint is empty). `make audit-archive-up` starts a local one. See [12-operations](12-operations.md) |
 | `OUTBOX_RETENTION_DAYS` | How long published outbox rows are kept (default 30) |
 | `LOGIN_EVENT_RETENTION_DAYS` | Login history retention (default 400) |
 | `DATA_EXPORT_RETENTION_DAYS` | How long a completed GDPR export stays downloadable (default 7) |

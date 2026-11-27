@@ -31,7 +31,7 @@ Owner **T** means the template implements the mechanism; **A** means the adopter
 | CC4 Monitoring of controls | CI on every pull request to `main`; the alert catalog | CI run history; alert history in the adopter's backend | T+A |
 | CC5 Control activities | Controls below are defined in code and migrations, so they are reviewable | Git history, `db/migrations/` | T+A |
 | CC6 Logical access | Supabase JWT validation, aal2 on high-impact routes, an owner-set organization policy requiring aal2 for every member, RBAC, `FORCE ROW LEVEL SECURITY`, per-plan rate limits, webhook signatures, HSTS, secrets from the environment only, one Postgres login per operator, Studio refusing unattributed changes | `middleware/auth.go`, `middleware/mfa_gate.go`, `db/migrations/000008`, `000010`, `000011`, the access-review query in [12-operations](12-operations.md) | T+A |
-| CC7 System operations | `audit.events` append-only for runtime roles, and operator rows cannot be anonymized; an operator's change to an organization shows in that organization's own log, without the operator's identity; failed provider webhooks recorded; dropped events counted; `govulncheck`, `golangci-lint` with `gosec`, `npm audit` and `gitleaks` in CI; incident runbook | `information_schema.role_table_grants`, `audit.events`, `stratum.*` metrics, CI runs | T+A |
+| CC7 System operations | `audit.events` append-only for runtime roles, and operator rows cannot be anonymized; an operator's change to an organization shows in that organization's own log, without the operator's identity; an hourly write-once copy of the audit log when a bucket with Object Lock is configured, and a command that compares the two; failed provider webhooks recorded; dropped events counted; `govulncheck`, `golangci-lint` with `gosec`, `npm audit` and `gitleaks` in CI; incident runbook | `information_schema.role_table_grants`, `audit.events`, `verify-audit-archive` output, `stratum.*` metrics, CI runs | T+A |
 | CC8 Change management | CI on pull requests to `main`, pinned tool versions, versioned migrations, `CHANGELOG.md`, Dependabot | `.github/workflows/ci.yml`, `.github/dependabot.yml`, git history | T+A |
 | CC9 Risk mitigation | Subprocessor list below; vendor reviews | This document; the adopter's vendor records | A |
 | A1 Availability | Liveness and readiness probes, graceful shutdown, transactional outbox, per-module dead-letter queues, hourly reconciler, `make db-backup`, `make db-restore-verify` | `/health/ready`, `stratum.outbox.due_unpublished`, `stratum.dlq.messages`, recorded restore results | T+A |
@@ -41,7 +41,7 @@ Owner **T** means the template implements the mechanism; **A** means the adopter
 
 The audit trail records every non-GET request, handler-flagged GETs, and provider webhook calls that fail. An unflagged GET writes no row, including one answered 401 or 403; `stratum.http.auth.failures` counts those instead.
 
-**What append-only does not cover.** Runtime roles keep INSERT, so a stolen runtime credential can add false rows, though not ones naming an operator, and it cannot change or remove real ones. A stolen `stratum_worker` credential can also anonymize a named customer's rows through `audit.anonymize_actor`, though not operator or `anonymous` rows. The schema owner can edit anything, and only the Postgres log shows it.
+**What append-only does not cover.** Runtime roles keep INSERT, so a stolen runtime credential can add false rows, though not ones naming an operator, and it cannot change or remove real ones. A stolen `stratum_worker` credential can also anonymize a named customer's rows through `audit.anonymize_actor`, though not operator or `anonymous` rows. The schema owner can edit anything; the Postgres log shows it, and so does verifying the audit archive for any row that was copied before it was edited (within the hour). The owner can also show the verification a doctored table, so the archive itself, and the verification's output, are the evidence.
 
 ## Data inventory and retention
 
@@ -53,6 +53,7 @@ Every period below is the default and can be changed through its environment var
 | `account.login_events` | IP address, user agent | `LOGIN_EVENT_RETENTION_DAYS`, 400 days | Worker sweep; also account deletion |
 | `account.tasks.result` | A full personal-data export | `DATA_EXPORT_RETENTION_DAYS`, 7 days | Worker sweep clears the payload and keeps the task row |
 | `audit.events` | Actor, IP address, user agent; before/after values in `metadata`. Operator rows' `metadata` leaves out invite codes, checkout URLs, organization owners and the person a coupon target or subscription is aimed at | `AUDIT_RETENTION_DAYS`, 400 days, minimum 365 | `audit.sweep_expired`, hourly from the API. Account deletion anonymizes the actor and clears the IP address and user agent; everything else stays until retention removes the row |
+| The audit archive (off unless configured) | An operator's row whole. An unauthenticated row's address and client. For a person: the SHA-256 of the actor (a random identifier). Request bodies, and a person's address and client, only as digests keyed with a salt the database holds | `AUDIT_ARCHIVE_RETENTION_DAYS`, at least `AUDIT_RETENTION_DAYS` | The bucket's lifecycle rule, once the lock has ended. Account deletion does not reach it. What it holds of a person is a hash of a random identifier and salted digests, which the bucket alone cannot reverse. Whoever holds both the database and the bucket can test a guessed value against a digest |
 | `notification.messages` | Message content | `NOTIFICATION_RETENTION_DAYS`, 180 days | Worker sweep; also account deletion |
 | `organization.invitations` | Email | Until expiry | Hourly expired-invitation cleanup; also organization purge |
 | `account.consents` | Accepted document versions, IP address, user agent | Life of the account | Account deletion. Not swept: rows from an onboarding never finished, or from a stale tab posting after deletion, stay under an `auth_sub` with no account |
@@ -77,6 +78,7 @@ The plan catalog's `audit_retention_days` feature (30 days on Solo, 90 on Growth
 | The adopter's SMTP provider | Transactional email | Recipient address, message content |
 | The adopter's OpenTelemetry backend | Traces, metrics, logs | Telemetry; logs carry no secrets or credentials |
 | The adopter's hosting provider | Compute and storage | Everything at rest |
+| The adopter's archive bucket provider, when one is configured | Write-once copy of the audit log | What the data inventory lists for the audit archive |
 
 MaxMind GeoLite2 is a local database file; no data leaves the host for a lookup.
 
@@ -103,6 +105,7 @@ MaxMind GeoLite2 is a local database file; no data leaves the host for a lookup.
 - [ ] One login role per operator, with an expiry, as in [12-operations](12-operations.md).
 - [ ] One RabbitMQ and one Redis login per operator with that same name, the `administrator` broker user kept for break-glass, and Redis's `default` user off. An operator's broker login can publish events the broker does not record; see [12-operations](12-operations.md).
 - [ ] The Postgres log is shipped off-host. An owner can edit audit rows; this log is what shows it happened.
+- [ ] The audit archive writes to a bucket with Object Lock in another account, and `verify-audit-archive` runs on a schedule with its own read-only credential, its output kept.
 
 **Backups**
 - [ ] Backups are scheduled by the host or the provider, and copied off-host.

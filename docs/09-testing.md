@@ -43,6 +43,8 @@ Use another database name with `make test-integration TEST_DB=<name>`. Drop the 
 
 To drop it, run `podman exec stratum-postgres dropdb -U stratum stratum_test`, using your `TEST_DB` name if you override it.
 
+The audit archive's tests run against a fake bucket. `make test-audit-archive` runs the ones that need a real S3 server: it starts the local one and proves that the server itself refuses to change a locked object, for its administrator too. It leaves a bucket of locked objects per run in that server's volume; `make audit-archive-down` stops the server, and removing its volume (`stratum-audit-archive-data`) starts it clean.
+
 Web's unit tests run with `npm test` in `ui/app`, which pins `LC_ALL=en_US.UTF-8` and `TZ=UTC`, so date assertions hold on any machine. Studio's Go tests (`go test ./...` in `ui/studio`) use an in-memory keychain; the operator smoke test runs only when `STUDIO_SMOKE_OWNER_URL`, `STUDIO_SMOKE_OPERATOR_URL`, `STUDIO_SMOKE_MQ_URL` and `STUDIO_SMOKE_MQ_ADMIN_URL` point at a database and broker.
 
 Web's e2e suite runs separately, from `ui/app`:

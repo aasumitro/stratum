@@ -55,6 +55,11 @@ func RunWorker() error {
 		})
 	}
 
+	archive, err := newAuditArchive(ctx, cfg, infra.Pool, infra.Log)
+	if err != nil {
+		return err
+	}
+
 	mods := bootstrap.NewWorkerModules(infra, storageClient)
 	consumers := bootstrap.NewConsumers(infra.MQConn, mods, infra.Log)
 
@@ -65,6 +70,15 @@ func RunWorker() error {
 		infra.Log.Warn("registering worker gauges failed", "error", err)
 	} else {
 		defer func() { _ = gauges.Unregister() }()
+	}
+
+	if archive != nil {
+		gauge, err := registerArchiveGauge(archive, infra.Log)
+		if err != nil {
+			infra.Log.Warn("registering audit archive gauge failed", "error", err)
+		} else {
+			defer func() { _ = gauge.Unregister() }()
+		}
 	}
 
 	// wg tracks every consumer/background goroutine below so shutdown can
@@ -125,6 +139,22 @@ func RunWorker() error {
 			}
 		}
 	})
+
+	// Hourly copy of new audit events to write-once storage, when one is configured.
+	if archive != nil {
+		wg.Go(func() {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					archive.Run(ctx)
+				}
+			}
+		})
+	}
 
 	// Outbox relay: delivers messaging.outbox rows (written transactionally
 	// by events.Enqueue/EnqueueDelayed) to the broker. A 2-second poll, not

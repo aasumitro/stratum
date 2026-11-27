@@ -6,7 +6,7 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
-**Upgrade:** run `make migrate-up` (migrations `000016`–`000024`) before starting the API or worker. `000016` first
+**Upgrade:** run `make migrate-up` (migrations `000016`–`000026`) before starting the API or worker. `000016` first
 reconciles owner memberships to `organizations.owner_id` (the `owner_id` member becomes the one active owner, any other
 owner membership becomes admin; an organization whose `owner_id` has no membership is left as it is), then adds the index.
 
@@ -48,6 +48,18 @@ owner membership becomes admin; an organization whose `owner_id` has no membersh
   features" and "switching provider" show a contact link when `VITE_CONTACT_URL` is set.
 - Studio: the dashboard has a "Cancellation reasons" card (30 or 90 days): how often each reason was picked, and the
   latest free-text details.
+- Audit: the worker can copy the audit log every hour to a bucket with S3 Object Lock (`AUDIT_ARCHIVE_*`, off by
+  default), where nobody can change or delete it before its retention ends. Operator and unauthenticated rows are copied
+  whole; an unauthenticated row keeps its address and client and its request body only as a digest; a person's row
+  keeps the hash of its actor and salted digests of the rest. `stratum-worker verify-audit-archive [-known FILE]`
+  trusts only the bucket, compares it with the table in both directions, and exits 1 on an altered, missing, unstored
+  or late row (2 when it cannot run). Two new metrics, `stratum.audit.archive.failures` and `.pending`. No new
+  dependency. Migrations `000025`, `000026` (`CONCURRENTLY`; recovery in `docs/12-operations.md`). Each row is
+  rewritten once when it is marked as copied, which costs one new entry in every index of `audit.events`. `make
+  audit-archive-up` starts a local bucket.
+- Audit: the runtime roles may insert only the columns an event is made of. Setting `created_at` or the new
+  `export_seq` on an insert is refused (42501). The application never did; custom code that dates its own rows must
+  stop. The worker may no longer insert into `account.tasks`, and of a task it may change only `status`, `result`, `error` and `completed_at`; only the API asks for an export or a deletion.
 - Operations: each operator gets their own RabbitMQ and Redis logins, with the same name as their Postgres login.
   `deploy/broker-init/operator.sh add|revoke op_<name>` provisions them: the broker login carries the `management`
   tag, reads dead-letter queues only and may publish to module exchanges (requeue needs it), the Redis one reaches no
